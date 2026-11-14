@@ -10,6 +10,19 @@ if [[ -f "$ENV_FILE" ]]; then
   source "$ENV_FILE"
 fi
 
+EXECUTION_BACKEND_LIB="${BASE_DIR}/scripts/execution_backend_lib.sh"
+INTRA_RELEASE_GUARD="${BASE_DIR}/scripts/intra_release_guard.sh"
+for helper in "$EXECUTION_BACKEND_LIB" "$INTRA_RELEASE_GUARD"; do
+  if [[ ! -f "$helper" ]]; then
+    echo "[ERROR] required helper not found: $helper" >&2
+    exit 1
+  fi
+done
+# shellcheck disable=SC1090
+source "$EXECUTION_BACKEND_LIB"
+# shellcheck disable=SC1090
+source "$INTRA_RELEASE_GUARD"
+
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
 
@@ -79,11 +92,14 @@ dir_lc="${dir_name,,}"
 
 EXCHANGE=""
 ENV_TAG="intra"
-if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+MODE="intra"
+if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
-  ENV_TAG="${BASH_REMATCH[2]//-/_}"
-elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra$ ]]; then
+  MODE="${BASH_REMATCH[2]}"
+  ENV_TAG="${BASH_REMATCH[3]//-/_}"
+elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
+  MODE="${BASH_REMATCH[2]}"
 fi
 
 if [[ "$EXCHANGE" == "okx" ]]; then
@@ -95,6 +111,14 @@ if [[ -z "$EXCHANGE" ]]; then
   exit 1
 fi
 
+EXEC_BACKEND="$(execution_backend_for_exchange "$EXCHANGE")" || exit 1
+MONITOR_RELEASE_NAME="$(intra_release_account_monitor_name "$EXCHANGE" "$EXEC_BACKEND")"
+MONITOR_PATH="${BASE_DIR}/account_monitor_${EXCHANGE}"
+intra_release_verify_file "$BASE_DIR" pre_trade "$BIN_PATH"
+intra_release_verify_file "$BASE_DIR" "$MONITOR_RELEASE_NAME" "$MONITOR_PATH"
+intra_release_verify_running_file "$BASE_DIR" "$MONITOR_RELEASE_NAME" "$MONITOR_PATH"
+echo "[INFO] release guard passed release_id=$(intra_release_id "$BASE_DIR") binaries=pre_trade,$MONITOR_RELEASE_NAME"
+
 # OPEN_VENUE / HEDGE_VENUE 优先来自 env.sh，否则按 exchange 默认
 OPEN_VENUE="${OPEN_VENUE:-${EXCHANGE}-margin}"
 HEDGE_VENUE="${HEDGE_VENUE:-${EXCHANGE}-futures}"
@@ -105,7 +129,7 @@ if [[ -z "${IPC_NAMESPACE:-}" ]]; then
   exit 1
 fi
 
-DEFAULT_PROC_NAME="intra_pt_${EXCHANGE}_${ENV_TAG}"
+DEFAULT_PROC_NAME="${MODE}_pt_${EXCHANGE}_${ENV_TAG}"
 PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-$DEFAULT_PROC_NAME}}"
 
 # 绑核来源：env.sh 里 export PRE_TRADE_CORE=<N>，单个整数；未设置则不绑。
@@ -143,7 +167,31 @@ json_shell="$(json_escape "/bin/bash")"
 json_base="$(json_escape "$BASE_DIR")"
 json_rust_log="$(json_escape "${RUST_LOG:-info}")"
 json_ipc_ns="$(json_escape "$IPC_NAMESPACE")"
-cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH")"
+
+normalize_test_flag() {
+  local name="$1"
+  local value="$2"
+  case "$value" in
+    ""|0|false|FALSE|False|off|OFF|Off) printf '0' ;;
+    1|true|TRUE|True|on|ON|On) printf '1' ;;
+    *)
+      echo "[ERROR] $name must be a boolean flag (0/1/false/true/off/on), got: $value" >&2
+      return 1
+      ;;
+  esac
+}
+
+partial_hedge="$(normalize_test_flag ARB_OPEN_PARTIAL_HEDGE "${ARB_OPEN_PARTIAL_HEDGE:-}")" || exit 1
+force_taker="$(normalize_test_flag ARB_HEDGE_FORCE_TAKER "${ARB_HEDGE_FORCE_TAKER:-}")" || exit 1
+rapidx_cash_business="${RAPIDX_BINANCE_CASH_BUSINESS_TYPE:-}"
+case "${rapidx_cash_business^^}" in
+  ""|SPOT|MARGIN) rapidx_cash_business="${rapidx_cash_business^^}" ;;
+  *)
+    echo "[ERROR] RAPIDX_BINANCE_CASH_BUSINESS_TYPE must be SPOT or MARGIN, got: $rapidx_cash_business" >&2
+    exit 1
+    ;;
+esac
+cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; export ARB_OPEN_PARTIAL_HEDGE=$(shell_quote "$partial_hedge") ARB_HEDGE_FORCE_TAKER=$(shell_quote "$force_taker") RAPIDX_BINANCE_CASH_BUSINESS_TYPE=$(shell_quote "$rapidx_cash_business"); exec $(shell_quote "$BIN_PATH")"
 for arg in "${args[@]}"; do
   cmd+=" $(shell_quote "$arg")"
 done
@@ -159,7 +207,10 @@ cat >"$cfg_file" <<JSON
       "cwd": "${json_base}",
       "env": {
         "RUST_LOG": "${json_rust_log}",
-        "IPC_NAMESPACE": "${json_ipc_ns}"
+        "IPC_NAMESPACE": "${json_ipc_ns}",
+        "ARB_OPEN_PARTIAL_HEDGE": "${partial_hedge}",
+        "ARB_HEDGE_FORCE_TAKER": "${force_taker}",
+        "RAPIDX_BINANCE_CASH_BUSINESS_TYPE": "${rapidx_cash_business}"
       }
     }
   ]

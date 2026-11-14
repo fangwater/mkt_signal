@@ -17,7 +17,7 @@ source "$ROOT_DIR/scripts/deploy_intra_lib.sh"
 
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_setup_env_intra.sh --exchange <binance> [--env-suffix intra-trade] [--env-name binance-intra-trade] [--namespace <ns>]
+用法: scripts/deploy_setup_env_intra.sh --exchange <binance> [--exec-backend native|ltp] [--env-suffix intra-trade] [--env-name binance-intra-trade] [--namespace <ns>]
 
 示例:
   scripts/deploy_setup_env_intra.sh --exchange binance
@@ -35,22 +35,25 @@ ENV_NAME=""
 NAMESPACE=""
 EXCHANGE=""
 ENV_SUFFIX_EXPLICIT="0"
+EXEC_BACKEND="native"
 
-# 从 env_name 推 exchange + env_suffix（intra 唯一格式：<exchange>-intra-<tag>）
+# 从 env_name 推 exchange + env_suffix（格式：<exchange>-intra-<tag>）
 infer_meta_from_env_name() {
   local name="${1,,}"
   local ex=""
+  local mode=""
   local tag=""
 
-  if [[ "$name" =~ ^([a-z0-9]+)[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+  if [[ "$name" =~ ^([a-z0-9]+)[-_](intra)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
     ex="${BASH_REMATCH[1]}"
-    tag="${BASH_REMATCH[2]}"
+    mode="${BASH_REMATCH[2]}"
+    tag="${BASH_REMATCH[3]}"
   fi
   if [[ "$ex" == "okx" ]]; then
     ex="okex"
   fi
-  if [[ -n "$ex" && -n "$tag" ]]; then
-    echo "${ex},${tag}"
+  if [[ -n "$ex" && -n "$mode" && -n "$tag" ]]; then
+    echo "${ex},${mode}-${tag}"
   fi
 }
 
@@ -73,6 +76,10 @@ while [[ $# -gt 0 ]]; do
       EXCHANGE="${2:-}"
       shift 2
       ;;
+    --exec-backend)
+      EXEC_BACKEND="${2:-}"
+      shift 2
+      ;;
     *)
       echo "[ERROR] 未知参数: $1"
       usage
@@ -88,7 +95,7 @@ if [[ -n "$ENV_NAME" ]]; then
       EXCHANGE="${inferred%%,*}"
     fi
     if [[ "$ENV_SUFFIX_EXPLICIT" != "1" ]]; then
-      ENV_SUFFIX="intra-${inferred##*,}"
+      ENV_SUFFIX="${inferred##*,}"
     fi
   fi
 fi
@@ -100,11 +107,25 @@ if [[ -z "$EXCHANGE" ]]; then
 fi
 
 EXCHANGE="$(intra_ensure_exchange "$EXCHANGE")"
+case "${EXEC_BACKEND,,}" in
+  native) EXEC_BACKEND="native" ;;
+  ltp|rapidx) EXEC_BACKEND="ltp" ;;
+  *) echo "[ERROR] --exec-backend must be native or ltp" >&2; exit 1 ;;
+esac
+if [[ "$EXEC_BACKEND" == "ltp" && ! "$EXCHANGE" =~ ^(binance|okex)$ ]]; then
+  echo "[ERROR] LTP intra only supports Binance/OKX" >&2
+  exit 1
+fi
 
 read -r OPEN_VENUE HEDGE_VENUE <<<"$(intra_venues_for_exchange "$EXCHANGE")"
 
 if [[ -z "$ENV_NAME" ]]; then
   ENV_NAME="${EXCHANGE}-${ENV_SUFFIX}"
+fi
+
+if [[ "${ENV_NAME,,}" =~ (^|[-_])cta([-_]|$) ]]; then
+  echo "[ERROR] Legacy CTA execution is retired; use CTA target publishers with Exec" >&2
+  exit 1
 fi
 
 if [[ -z "$NAMESPACE" ]]; then
@@ -114,6 +135,22 @@ fi
 
 emit_creds_block() {
   local ex="$1"
+  if [[ "$EXEC_BACKEND" == "ltp" ]]; then
+    cat <<EOF
+
+# RapidX / LTP portfolio execution
+export TRADE_ENGINE_EXEC_BACKEND_MAP='${ex}=ltp'
+export LTP_API_KEY="\${LTP_API_KEY:-}"
+export LTP_API_SECRET="\${LTP_API_SECRET:-}"
+export LTP_PORTFOLIO_ID="\${LTP_PORTFOLIO_ID:-}"
+EOF
+    if [[ "$ex" == "binance" ]]; then
+      cat <<'EOF'
+export RAPIDX_BINANCE_CASH_BUSINESS_TYPE="${RAPIDX_BINANCE_CASH_BUSINESS_TYPE:-MARGIN}"
+EOF
+    fi
+    return
+  fi
   case "$ex" in
     okex)
       cat <<'EOF'
@@ -157,11 +194,25 @@ export BITGET_API_SECRET="${BITGET_API_SECRET:-}"
 export BITGET_API_PASSPHRASE="${BITGET_API_PASSPHRASE:-${BITGET_PASSPHRASE:-}}"
 EOF
       ;;
+    hyperliquid)
+      cat <<'EOF'
+
+# Hyperliquid API wallet and target account
+export HYPERLIQUID_PRIVATE_KEY="${HYPERLIQUID_PRIVATE_KEY:-}"
+export HYPERLIQUID_ACCOUNT_ADDRESS="${HYPERLIQUID_ACCOUNT_ADDRESS:-}"
+export HYPERLIQUID_VAULT_ADDRESS="${HYPERLIQUID_VAULT_ADDRESS:-}"
+export HYPERLIQUID_TESTNET="${HYPERLIQUID_TESTNET:-0}"
+EOF
+      ;;
   esac
 }
 
 TARGET_DIR="$HOME/${ENV_NAME}"
-mkdir -p "$TARGET_DIR"
+mkdir -p "$TARGET_DIR/config"
+if [[ ! -f "$TARGET_DIR/config/iceoryx2.toml" ]]; then
+  install -m 644 "$ROOT_DIR/config/iceoryx2.toml" "$TARGET_DIR/config/iceoryx2.toml"
+  echo "[INFO] iceoryx2 config deployed to $TARGET_DIR/config/iceoryx2.toml"
+fi
 
 ENV_FILE="$TARGET_DIR/env.sh"
 if [[ -f "$ENV_FILE" ]]; then
@@ -175,11 +226,13 @@ else
 # exchange: $EXCHANGE
 # open venue: $OPEN_VENUE
 # hedge venue: $HEDGE_VENUE
+# execution backend: $EXEC_BACKEND
 # 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
 
 # IceOryx 命名空间（非 dat_pbs 通道会被加上该前缀）
 export IPC_NAMESPACE='$NAMESPACE'
 export TRADE_SIGNAL_ENABLE_QUEUE_POSITION='0'
+export PRE_TRADE_NOTIFICATION_URL="\${PRE_TRADE_NOTIFICATION_URL:-http://127.0.0.1:18100/v1/notify}"
 
 # 同所 venue
 export OPEN_VENUE='$OPEN_VENUE'

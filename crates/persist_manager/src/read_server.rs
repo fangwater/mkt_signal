@@ -373,6 +373,7 @@ impl TableKind {
                 "status",
                 "from_key",
                 "from_key_hex",
+                "fill_liquidity",
                 "bbo_spread",
                 "signal_open_venue",
                 "signal_open_ts",

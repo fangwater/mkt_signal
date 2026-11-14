@@ -196,11 +196,7 @@ impl UnimmrForceClose {
             );
             return 0;
         };
-        let mark_price = monitor
-            .price_table()
-            .borrow()
-            .mark_price(&symbol)
-            .unwrap_or(0.0);
+        let mark_price = monitor.mark_price_for_symbol(&symbol).unwrap_or(0.0);
         if !(mark_price.is_finite() && mark_price > 0.0) {
             warn!(
                 "UniMMR Force Close skip symbol={} because mark price is unavailable",

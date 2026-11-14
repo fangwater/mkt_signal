@@ -1,4 +1,5 @@
-use anyhow::Result;
+use crate::strategy::intra_trailing_stop::TrailingStopConfig;
+use anyhow::{Context, Result};
 use log::{debug, info, warn};
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -30,8 +31,22 @@ type MaxPosUOverrideTable = FastHashMap<String, f64>;
 type MaxPosUOverrides = FastHashMap<TradingVenue, MaxPosUOverrideTable>;
 type AmountUOverrideTable = FastHashMap<String, f64>;
 
-fn is_mm_pre_trade_mode(open_venue: TradingVenue, hedge_venue: TradingVenue) -> bool {
-    open_venue == hedge_venue
+fn allows_missing_arb_close_limits(
+    redis: &RedisSettings,
+    env_name: Option<&str>,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> bool {
+    if open_venue == hedge_venue {
+        return true;
+    }
+    // Mixed-market Exec still owns one venue-scoped risk hash. Arb deployments
+    // use a two-venue prefix and must retain their required close limits.
+    let prefix = match env_name.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => format!("{name}:{}:", open_venue.data_pub_slug()),
+        None => format!("{}:", open_venue.data_pub_slug()),
+    };
+    redis.prefix.as_deref() == Some(prefix.as_str())
 }
 
 /// 从 Redis 加载的 Pre-Trade 风控参数（内部数据结构）
@@ -41,6 +56,7 @@ struct PreTradeParamsData {
     max_pos_u_overrides: MaxPosUOverrides,
     arb_order_amount_u: f64,
     arb_amount_u_overrides: AmountUOverrideTable,
+    intra_trailing_stop_overrides: FastHashMap<String, TrailingStopConfig>,
     open_orders_per_round: u32,
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
@@ -81,6 +97,7 @@ impl Default for PreTradeParamsData {
             max_pos_u_overrides: fast_hash_map(),
             arb_order_amount_u: DEFAULT_ARB_ORDER_AMOUNT_U,
             arb_amount_u_overrides: fast_hash_map(),
+            intra_trailing_stop_overrides: fast_hash_map(),
             open_orders_per_round: DEFAULT_OPEN_ORDERS_PER_ROUND,
             max_symbol_exposure_ratio: 0.8,
             max_total_exposure_ratio: 1.0,
@@ -201,9 +218,50 @@ fn arb_amount_u_override_key(
 fn is_internal_symbol_key(symbol: &str) -> bool {
     !symbol.is_empty()
         && !symbol.ends_with("SWAP")
+        && !symbol.ends_with("USDPERP")
         && symbol
             .bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+fn intra_trailing_stop_key(
+    env_name: Option<&str>,
+    open: TradingVenue,
+    hedge: TradingVenue,
+) -> Option<String> {
+    let env = env_name.map(str::trim).filter(|s| !s.is_empty())?;
+    if open == hedge || open.trade_engine_exchange() != hedge.trade_engine_exchange() {
+        return None;
+    }
+    Some(format!(
+        "{env}:{}:{}:intra_trailing_stop_overrides",
+        open.data_pub_slug(),
+        hedge.data_pub_slug()
+    ))
+}
+
+fn parse_intra_trailing_stop(
+    raw: &str,
+    key: &str,
+) -> Result<FastHashMap<String, TrailingStopConfig>> {
+    let values: HashMap<String, TrailingStopConfig> =
+        serde_json::from_str(raw).with_context(|| format!("invalid trailing stop JSON: {key}"))?;
+    let mut normalized = fast_hash_map();
+    for (symbol, config) in values {
+        let symbol = normalize_symbol_for_internal(symbol.trim());
+        anyhow::ensure!(
+            is_internal_symbol_key(&symbol),
+            "invalid trailing stop symbol in {key}"
+        );
+        let config = config
+            .validate()
+            .with_context(|| format!("{key} symbol={symbol}"))?;
+        anyhow::ensure!(
+            normalized.insert(symbol.clone(), config).is_none(),
+            "duplicate normalized symbol {symbol} in {key}"
+        );
+    }
+    Ok(normalized)
 }
 
 fn max_pos_u_symbol_key(symbol: &str) -> Cow<'_, str> {
@@ -469,14 +527,21 @@ impl PreTradeParamsLoader {
             }
         }
 
+        let mut trailing_stops = fast_hash_map();
+        if let Some(key) = intra_trailing_stop_key(env_name, open_venue, hedge_venue) {
+            if let Some(raw) = client.get_string(&key).await? {
+                trailing_stops = parse_intra_trailing_stop(&raw, &key)?;
+            }
+        }
         self.apply_loaded_params(
             hash_map,
             max_pos_u_overrides,
             arb_order_amount_u,
             open_orders_per_round,
             amount_u_overrides,
-            is_mm_pre_trade_mode(open_venue, hedge_venue),
+            allows_missing_arb_close_limits(redis, env_name, open_venue, hedge_venue),
         );
+        PARAMS_DATA.with(|data| data.borrow_mut().intra_trailing_stop_overrides = trailing_stops);
         Ok(())
     }
 
@@ -562,14 +627,21 @@ impl PreTradeParamsLoader {
             }
         }
 
+        let mut trailing_stops = fast_hash_map();
+        if let Some(key) = intra_trailing_stop_key(env_name, open_venue, hedge_venue) {
+            if let Some(raw) = client.get_string(&key)? {
+                trailing_stops = parse_intra_trailing_stop(&raw, &key)?;
+            }
+        }
         self.apply_loaded_params(
             hash_map,
             max_pos_u_overrides,
             arb_order_amount_u,
             open_orders_per_round,
             amount_u_overrides,
-            is_mm_pre_trade_mode(open_venue, hedge_venue),
+            allows_missing_arb_close_limits(redis, env_name, open_venue, hedge_venue),
         );
+        PARAMS_DATA.with(|data| data.borrow_mut().intra_trailing_stop_overrides = trailing_stops);
         Ok(())
     }
 
@@ -580,7 +652,7 @@ impl PreTradeParamsLoader {
         arb_order_amount_u: Option<f64>,
         open_orders_per_round: Option<u32>,
         arb_amount_u_overrides: AmountUOverrideTable,
-        mm_pre_trade_mode: bool,
+        arb_close_limits_optional: bool,
     ) {
         let parse_f64 =
             |k: &str| -> Option<f64> { hash_map.get(k).and_then(|v| v.parse::<f64>().ok()) };
@@ -752,7 +824,7 @@ impl PreTradeParamsLoader {
 
             if let Some(v) = parse_i64("arb_close_max_pending_limit_buy_orders") {
                 data.arb_close_max_pending_limit_buy_orders = v.max(0) as i32;
-            } else if !mm_pre_trade_mode {
+            } else if !arb_close_limits_optional {
                 panic!(
                     "pre_trade_risk_params missing or invalid required field: arb_close_max_pending_limit_buy_orders"
                 );
@@ -760,7 +832,7 @@ impl PreTradeParamsLoader {
 
             if let Some(v) = parse_i64("arb_close_max_pending_limit_sell_orders") {
                 data.arb_close_max_pending_limit_sell_orders = v.max(0) as i32;
-            } else if !mm_pre_trade_mode {
+            } else if !arb_close_limits_optional {
                 panic!(
                     "pre_trade_risk_params missing or invalid required field: arb_close_max_pending_limit_sell_orders"
                 );
@@ -997,6 +1069,15 @@ impl PreTradeParamsLoader {
 
     pub fn arb_order_amount_u(&self) -> f64 {
         PARAMS_DATA.with(|data| data.borrow().arb_order_amount_u)
+    }
+
+    pub fn intra_trailing_stop_for_symbol(&self, symbol: &str) -> Option<TrailingStopConfig> {
+        PARAMS_DATA.with(|data| {
+            data.borrow()
+                .intra_trailing_stop_overrides
+                .get(max_pos_u_symbol_key(symbol).as_ref())
+                .copied()
+        })
     }
 
     pub fn arb_amount_u_for_symbol(&self, symbol: &str) -> f64 {
@@ -1432,6 +1513,26 @@ mod tests {
     }
 
     #[test]
+    fn trailing_stop_config_is_strict_and_normalized() {
+        let values = parse_intra_trailing_stop(
+            r#"{"btc-usdt":{"take_profit":0.005,"reward_risk_ratio":2}}"#,
+            "test",
+        )
+        .unwrap();
+        assert_eq!(values["BTCUSDT"].take_profit, 0.005);
+        assert!(values.get("ETHUSDT").is_none());
+        assert!(parse_intra_trailing_stop("{}", "test").unwrap().is_empty());
+        for raw in [
+            r#"{"BTCUSDT":{"take_profit":0,"reward_risk_ratio":2}}"#,
+            r#"{"BTCUSDT":{"take_profit":0.005,"reward_risk_ratio":0}}"#,
+            r#"{"BTCUSDT":{"take_profit":0.005,"reward_risk_ratio":2,"extra":1}}"#,
+            r#"{"BTCUSDT":{"take_profit":0.005}}"#,
+        ] {
+            assert!(parse_intra_trailing_stop(raw, "test").is_err());
+        }
+    }
+
+    #[test]
     fn test_resolve_max_pos_u_for_symbol_uses_override() {
         let mut overrides = fast_hash_map();
         let mut binance = fast_hash_map();
@@ -1479,6 +1580,40 @@ mod tests {
 
         assert_eq!(binance_val, 2500.0);
         assert_eq!(okex_val, 1500.0);
+    }
+
+    #[test]
+    fn mixed_market_exec_loads_its_risk_hash_without_arb_close_limits() {
+        let loader = PreTradeParamsLoader::instance();
+        for (open, cash) in [
+            (TradingVenue::BinanceFutures, TradingVenue::BinanceMargin),
+            (TradingVenue::OkexFutures, TradingVenue::OkexMargin),
+        ] {
+            let mut redis = RedisSettings::default();
+            redis.prefix = Some(format!("test_exec:{}:", open.data_pub_slug()));
+            let optional = allows_missing_arb_close_limits(&redis, Some("test_exec"), open, cash);
+            assert!(optional);
+            loader.apply_loaded_params(
+                HashMap::from([("exec_order_rate_limit_per_min".into(), "400".into())]),
+                fast_hash_map(),
+                None,
+                None,
+                fast_hash_map(),
+                optional,
+            );
+            assert_eq!(loader.exec_order_rate_limit_per_min(), 400);
+            redis.prefix = Some(format!(
+                "test_exec:{}:{}:",
+                open.data_pub_slug(),
+                cash.data_pub_slug()
+            ));
+            assert!(!allows_missing_arb_close_limits(
+                &redis,
+                Some("test_exec"),
+                open,
+                cash
+            ));
+        }
     }
 
     #[test]

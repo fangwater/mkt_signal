@@ -1,0 +1,282 @@
+[
+  {
+    "symbol_group": "top-5",
+    "interval": "1min",
+    "nq": "0.50",
+    "factor": "baseline_200",
+    "weight": -1,
+    "symbols": [
+      "BTC",
+      "ETH",
+      "DOGE"
+    ]
+  },
+  {
+    "symbol_group": "top-5",
+    "interval": "1min",
+    "nq": "0.50",
+    "factor": "baseline_141",
+    "weight": 1,
+    "symbols": [
+      "SOL",
+      "DOGE"
+    ]
+  },
+  {
+    "symbol_group": "top-5",
+    "interval": "5min",
+    "nq": "关闭",
+    "factor": "factor_049",
+    "weight": 1,
+    "symbols": [
+      "SOL",
+      "DOGE"
+    ]
+  },
+  {
+    "symbol_group": "top-5",
+    "interval": "15min",
+    "nq": "0.2/0.8",
+    "factor": "TD_MT_040",
+    "weight": 1,
+    "symbols": [
+      "SOL",
+      "DOGE"
+    ]
+  },
+  {
+    "symbol_group": "top-5",
+    "interval": "15min",
+    "nq": "0.2/0.8",
+    "factor": "baseline_077",
+    "weight": -1,
+    "symbols": []
+  },
+  {
+    "symbol_group": "top-5",
+    "interval": "15min",
+    "nq": "0.2/0.8",
+    "factor": "baseline_022",
+    "weight": -1,
+    "symbols": [
+      "BTC",
+      "XRP"
+    ]
+  },
+  {
+    "symbol_group": "top-5",
+    "interval": "15min",
+    "nq": "关闭",
+    "factor": "baseline_104",
+    "weight": 1,
+    "symbols": [
+      "SOL"
+    ]
+  },
+  {
+    "symbol_group": "top-5",
+    "interval": "15min",
+    "nq": "0.50",
+    "factor": "factor_125",
+    "weight": -1,
+    "symbols": [
+      "ETH",
+      "SOL"
+    ]
+  },
+  {
+    "symbol_group": "top-5",
+    "interval": "15min",
+    "nq": "0.50",
+    "factor": "TD_TI_027",
+    "weight": -1,
+    "symbols": []
+  },
+  {
+    "symbol_group": "top-20",
+    "interval": "1min",
+    "nq": "0.2/0.8",
+    "factor": "baseline_141",
+    "weight": 1,
+    "symbols": [
+      "DOGE",
+      "ADA",
+      "LINK",
+      "LTC",
+      "ETC",
+      "DOT",
+      "FIL",
+      "NEAR",
+      "AXS",
+      "ATOM",
+      "UNI"
+    ]
+  },
+  {
+    "symbol_group": "top-20",
+    "interval": "1min",
+    "nq": "0.50",
+    "factor": "TD_TI_024",
+    "weight": -1,
+    "symbols": [
+      "ETH",
+      "SOL",
+      "XRP",
+      "DOGE",
+      "BNB",
+      "ADA",
+      "AVAX",
+      "LINK",
+      "LTC",
+      "ETC",
+      "BCH",
+      "NEAR",
+      "AXS",
+      "ATOM",
+      "AAVE",
+      "UNI"
+    ]
+  },
+  {
+    "symbol_group": "top-20",
+    "interval": "15min",
+    "nq": "关闭",
+    "factor": "baseline_104",
+    "weight": 1,
+    "symbols": [
+      "SOL",
+      "BNB",
+      "LINK",
+      "ETC",
+      "AXS"
+    ]
+  },
+  {
+    "symbol_group": "top-20",
+    "interval": "15min",
+    "nq": "0.2/0.8",
+    "factor": "baseline_022",
+    "weight": -1,
+    "symbols": [
+      "BTC",
+      "XRP",
+      "LTC",
+      "ETC",
+      "NEAR"
+    ]
+  },
+  {
+    "symbol_group": "last-20",
+    "interval": "1min",
+    "nq": "0.50",
+    "factor": "TD_TI_043",
+    "weight": -1,
+    "symbols": [
+      "1INCH",
+      "EGLD",
+      "YFI",
+      "KNC",
+      "RSR",
+      "KAVA",
+      "ZEN",
+      "QTUM",
+      "BEL",
+      "RLC",
+      "DASH",
+      "ZRX",
+      "IOTA",
+      "ONT",
+      "SKL",
+      "IOST",
+      "ICX"
+    ]
+  },
+  {
+    "symbol_group": "last-20",
+    "interval": "1min",
+    "nq": "0.2/0.8",
+    "factor": "baseline_141",
+    "weight": 1,
+    "symbols": [
+      "YFI",
+      "KNC",
+      "RSR",
+      "KAVA",
+      "ZEN",
+      "QTUM",
+      "DASH",
+      "KSM",
+      "IOTA",
+      "ONT"
+    ]
+  },
+  {
+    "symbol_group": "last-20",
+    "interval": "5min",
+    "nq": "关闭",
+    "factor": "TD_MT_021",
+    "weight": -1,
+    "symbols": [
+      "1INCH",
+      "DASH"
+    ]
+  },
+  {
+    "symbol_group": "last-20",
+    "interval": "5min",
+    "nq": "关闭",
+    "factor": "TD_MT_019",
+    "weight": -1,
+    "symbols": [
+      "EGLD",
+      "DASH",
+      "IOTA"
+    ]
+  },
+  {
+    "symbol_group": "last-20",
+    "interval": "15min",
+    "nq": "关闭",
+    "factor": "TD_TI_027",
+    "weight": -1,
+    "symbols": [
+      "ZEN",
+      "DASH",
+      "KSM",
+      "IOTA",
+      "ICX"
+    ]
+  },
+  {
+    "symbol_group": "last-20",
+    "interval": "15min",
+    "nq": "关闭",
+    "factor": "baseline_104",
+    "weight": 1,
+    "symbols": [
+      "YFI",
+      "KNC",
+      "ZEN",
+      "QTUM",
+      "KSM",
+      "IOTA",
+      "BAT",
+      "ICX"
+    ]
+  },
+  {
+    "symbol_group": "last-20",
+    "interval": "15min",
+    "nq": "关闭",
+    "factor": "baseline_040",
+    "weight": -1,
+    "symbols": [
+      "BEL",
+      "RLC",
+      "KSM",
+      "ZRX",
+      "IOTA",
+      "SKL"
+    ]
+  }
+]

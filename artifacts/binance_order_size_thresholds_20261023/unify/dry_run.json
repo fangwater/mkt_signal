@@ -1,0 +1,20 @@
+{
+  "at": "2026-10-23T04:31:45.624973+00:00",
+  "execute": false,
+  "retire": {
+    "binance-futures:amount-thresholds-1m": 13,
+    "binance-futures:amount-thresholds-1m:meta": 7,
+    "binance-margin:amount-thresholds-1m": 0,
+    "binance-margin:amount-thresholds-1m:meta": 0
+  },
+  "keep": {
+    "binance-futures:amount-thresholds": 43,
+    "binance-futures:amount-thresholds:meta": 7,
+    "binance-futures:factor-plan": 20,
+    "binance-futures:factor-plan-1m": 13,
+    "binance-margin:amount-thresholds": 43,
+    "binance-margin:amount-thresholds:meta": 7,
+    "binance-margin:factor-plan": 0,
+    "binance-margin:factor-plan-1m": 0
+  }
+}

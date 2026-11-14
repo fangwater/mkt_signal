@@ -491,36 +491,19 @@ pub fn parse_derivatives_json(value: &Value) -> Vec<Derivative> {
 }
 
 pub fn parse_sbe_bbo(raw: &[u8]) -> Option<Bbo> {
-    let header = sbe_header(raw)?;
-    if header.template_id != SBE_TEMPLATE_BBO {
-        return None;
-    }
-    let body = SBE_HEADER_SIZE;
-    if raw.len() < body + header.block_length || header.block_length < SBE_BBO_ROOT_MIN {
-        return None;
-    }
-    let timestamp_us = read_i64_le(raw, body + 9)?;
-    let seq_id = read_i64_le(raw, body + 17)?;
-    let px_exp = read_i8(raw, body + 25)?;
-    let sz_exp = read_i8(raw, body + 26)?;
-    let ask_px_m = read_i64_le(raw, body + 27)?;
-    let ask_sz_m = read_i64_le(raw, body + 35)?;
-    let bid_px_m = read_i64_le(raw, body + 43)?;
-    let bid_sz_m = read_i64_le(raw, body + 51)?;
-    let mut off = body + header.block_length;
-    off = sbe_var_string_skip(raw, off)?;
-    let (symbol, _) = sbe_var_string(raw, off)?;
-    let bid_price = mantissa_to_f64(bid_px_m, px_exp);
-    let ask_price = mantissa_to_f64(ask_px_m, px_exp);
-    let bid_amount = mantissa_to_f64(bid_sz_m, sz_exp);
-    let ask_amount = mantissa_to_f64(ask_sz_m, sz_exp);
-    if bid_price <= 0.0 || ask_price <= 0.0 || bid_amount <= 0.0 || ask_amount <= 0.0 {
-        return None;
-    }
+    owned_sbe_bbo(parse_sbe_bbo_view(raw, false)?)
+}
+
+pub fn parse_spot_sbe_bbo(raw: &[u8]) -> Option<Bbo> {
+    owned_sbe_bbo(parse_sbe_bbo_view(raw, true)?)
+}
+
+fn owned_sbe_bbo(view: crate::sbe::Bbo<'_>) -> Option<Bbo> {
+    let [bid_price, bid_amount, ask_price, ask_amount] = view.prices()?;
     Some(Bbo {
-        symbol: symbol.replace('_', "").to_ascii_uppercase(),
-        timestamp_us,
-        seq_id,
+        symbol: view.symbol.replace('_', "").to_ascii_uppercase(),
+        timestamp_us: view.timestamp_us,
+        seq_id: view.seq_id,
         bid_price,
         bid_amount,
         ask_price,
@@ -528,41 +511,28 @@ pub fn parse_sbe_bbo(raw: &[u8]) -> Option<Bbo> {
     })
 }
 
-pub fn parse_spot_sbe_bbo(raw: &[u8]) -> Option<Bbo> {
+/// Spot and futures have opposite bid/ask field order in schema 1.
+pub fn parse_sbe_bbo_view(raw: &[u8], spot: bool) -> Option<crate::sbe::Bbo<'_>> {
     let header = sbe_header(raw)?;
-    if header.template_id != SBE_TEMPLATE_BBO {
+    if header.template_id != SBE_TEMPLATE_BBO || header.block_length < SBE_BBO_ROOT_MIN {
         return None;
     }
     let body = SBE_HEADER_SIZE;
-    if raw.len() < body + header.block_length || header.block_length < SBE_BBO_ROOT_MIN {
-        return None;
-    }
-    let timestamp_us = read_i64_le(raw, body + 9)?;
-    let seq_id = read_i64_le(raw, body + 17)?;
-    let px_exp = read_i8(raw, body + 25)?;
-    let sz_exp = read_i8(raw, body + 26)?;
-    let bid_px_m = read_i64_le(raw, body + 27)?;
-    let bid_sz_m = read_i64_le(raw, body + 35)?;
-    let ask_px_m = read_i64_le(raw, body + 43)?;
-    let ask_sz_m = read_i64_le(raw, body + 51)?;
-    let mut off = body + header.block_length;
-    off = sbe_var_string_skip(raw, off)?;
-    let (symbol, _) = sbe_var_string(raw, off)?;
-    let bid_price = mantissa_to_f64(bid_px_m, px_exp);
-    let ask_price = mantissa_to_f64(ask_px_m, px_exp);
-    let bid_amount = mantissa_to_f64(bid_sz_m, sz_exp);
-    let ask_amount = mantissa_to_f64(ask_sz_m, sz_exp);
-    if bid_price <= 0.0 || ask_price <= 0.0 || bid_amount <= 0.0 || ask_amount <= 0.0 {
-        return None;
-    }
-    Some(Bbo {
-        symbol: symbol.replace('_', "").to_ascii_uppercase(),
-        timestamp_us,
-        seq_id,
-        bid_price,
-        bid_amount,
-        ask_price,
-        ask_amount,
+    raw.get(body..body + header.block_length)?;
+    let off = sbe_var_string_skip(raw, body + header.block_length)?;
+    let len = *raw.get(off)? as usize;
+    let symbol = std::str::from_utf8(raw.get(off + 1..off + 1 + len)?).ok()?;
+    let (bid, ask) = if spot { (27, 43) } else { (43, 27) };
+    Some(crate::sbe::Bbo {
+        symbol,
+        timestamp_us: read_i64_le(raw, body + 9)?,
+        seq_id: read_i64_le(raw, body + 17)?,
+        price_exponent: read_i8(raw, body + 25)?,
+        size_exponent: read_i8(raw, body + 26)?,
+        bid_price: read_i64_le(raw, body + bid)?,
+        bid_amount: read_i64_le(raw, body + bid + 8)?,
+        ask_price: read_i64_le(raw, body + ask)?,
+        ask_amount: read_i64_le(raw, body + ask + 8)?,
     })
 }
 

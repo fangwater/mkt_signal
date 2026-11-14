@@ -1,0 +1,13 @@
+{
+  "production_branch": "arbmm",
+  "head": "5f3680a9b928c5d451c53e000bff30955cc5d208",
+  "origin_arbmm": "5f3680a9b928c5d451c53e000bff30955cc5d208",
+  "sha256": {
+    "scripts/publish_binance_order_size_thresholds.py": "2ae6508e1804f1ef7d16aea288917a5a5f50bdcd3681cca8bc699e369b02a598",
+    "tests/scripts/test_publish_binance_order_size_thresholds.py": "0b50a311acd20fef16f829b0d69b787bd11c317f321cf678a87399aa88b26fbf",
+    "../preprocess/database/crypto_order_size_202609_20261023/thresholds.csv": "9511e93965a98cf8723323cd3949171a9d9cd9fe8834b68eb1aa9e578074f047"
+  },
+  "remote_script": "/home/ubuntu/tlen_config_shared/scripts/publish_binance_order_size_thresholds.py",
+  "remote_tlen_config_server_sha256": "208ff434261c6335bbb4b1efa83be1696d7f81c3c9eb5cef9e503f522c12fbd7",
+  "remote_backup": "/home/ubuntu/tlen_config_shared/run/order_size_202609_20261023/before.json"
+}

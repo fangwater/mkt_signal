@@ -1,0 +1,22 @@
+{
+  "checked_at_ms": 1794463653233,
+  "spread01_ledger_matches": {
+    "cta-spread01-okx-bn-15min-pos.json": true,
+    "cta-spread01-okx-bn-1min-pos.json": true,
+    "cta-spread01-okx-bn-5min-pos.json": true,
+    "cta-spread01-okx-bn-1h-pos.json": true
+  },
+  "spread01_configuration_matches": {
+    "config/cta_factor_spread/okex-futures_binance-futures_15min.json": true,
+    "config/cta_factor_spread/okex-futures_binance-futures_1h.json": true,
+    "config/cta_factor_spread/okex-futures_binance-futures_1min.json": true,
+    "config/cta_factor_spread/okex-futures_binance-futures_5min.json": true,
+    "config/cta_factor_spread/symbol_groups.json": true,
+    "config/cta_factor_spread.toml": true
+  },
+  "env_changed_fields": [
+    "CTA_HOURLY_HISTORY_DIR"
+  ],
+  "worker_warming": true,
+  "warm_records": 55203
+}

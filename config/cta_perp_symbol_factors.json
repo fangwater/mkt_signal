@@ -1,0 +1,44 @@
+{
+  "AAVEUSDT": {
+    "TD_TI_024": -1,
+    "baseline_141": 1,
+    "baseline_164": 1,
+    "baseline_200": -1
+  },
+  "DASHUSDT": {
+    "TD_TI_024": -1,
+    "baseline_141": 1,
+    "baseline_164": 1,
+    "baseline_200": -1
+  },
+  "DOGEUSDT": {
+    "TD_TI_024": -1,
+    "baseline_200": -1
+  },
+  "ETHUSDT": {
+    "baseline_141": 1
+  },
+  "NEARUSDT": {
+    "TD_TI_024": -1,
+    "baseline_141": 1,
+    "factor_036": -1
+  },
+  "SOLUSDT": {
+    "baseline_141": 1,
+    "baseline_200": -1
+  },
+  "XLMUSDT": {
+    "TD_TI_024": -1,
+    "baseline_141": 1,
+    "baseline_200": -1
+  },
+  "XRPUSDT": {
+    "baseline_141": 1
+  },
+  "ZECUSDT": {
+    "TD_TI_024": -1,
+    "baseline_141": 1,
+    "baseline_164": 1,
+    "baseline_200": -1
+  }
+}

@@ -301,9 +301,10 @@ fn spawn_binance_params(
             parse_binance_json_snapshot(raw)
         };
         let Some(book) = book else {
-            return;
+            return Ok(());
         };
         app.borrow_mut().apply_book(binance_book_to_snapshot(book));
+        Ok(())
     });
     (url, headers, subscribe_msgs, None, label, handler)
 }
@@ -330,11 +331,12 @@ fn spawn_bitget_params(
     let label = format!("bitget-books50-{}", venue.data_pub_slug());
     let handler: FrameHandler = Rc::new(move |_recv_us, raw| {
         let Ok(books) = bitget_codec::parse_sbe_books50(raw) else {
-            return;
+            return Ok(());
         };
         for book in books {
             app.borrow_mut().apply_book(bitget_book_to_snapshot(book));
         }
+        Ok(())
     });
     (
         BITGET_SBE_WS_URL.to_string(),
@@ -384,6 +386,7 @@ fn spawn_gate_params(
         for book in books {
             app.borrow_mut().apply_book(gate_book_to_snapshot(book));
         }
+        Ok(())
     });
     let ping_channel = ping_channel.to_string();
     (

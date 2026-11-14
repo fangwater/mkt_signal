@@ -1,0 +1,269 @@
+{
+  "all_pairs_advanced": true,
+  "pairs": 34,
+  "enabled": false,
+  "max_pos_u": 100,
+  "checks": [
+    {
+      "symbol": "AAVEUSDT",
+      "factor": "baseline_085",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "AAVEUSDT",
+      "factor": "baseline_164",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "AAVEUSDT",
+      "factor": "baseline_200",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "ADAUSDT",
+      "factor": "baseline_085",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "ADAUSDT",
+      "factor": "baseline_164",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "AVAXUSDT",
+      "factor": "baseline_141",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "BTCUSDT",
+      "factor": "baseline_085",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "BTCUSDT",
+      "factor": "baseline_200",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "DASHUSDT",
+      "factor": "TD_MT_029",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "DASHUSDT",
+      "factor": "baseline_085",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "DASHUSDT",
+      "factor": "baseline_141",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "DASHUSDT",
+      "factor": "baseline_164",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "DASHUSDT",
+      "factor": "baseline_200",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "DOGEUSDT",
+      "factor": "baseline_085",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "DOGEUSDT",
+      "factor": "baseline_164",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "DOGEUSDT",
+      "factor": "baseline_200",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "DOTUSDT",
+      "factor": "baseline_141",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "DOTUSDT",
+      "factor": "baseline_164",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "ETHUSDT",
+      "factor": "baseline_085",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "ETHUSDT",
+      "factor": "baseline_200",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "LTCUSDT",
+      "factor": "baseline_141",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "NEARUSDT",
+      "factor": "baseline_085",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "NEARUSDT",
+      "factor": "baseline_141",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "NEARUSDT",
+      "factor": "baseline_164",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "NEARUSDT",
+      "factor": "baseline_200",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "SOLUSDT",
+      "factor": "baseline_141",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "SOLUSDT",
+      "factor": "baseline_164",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "UNIUSDT",
+      "factor": "baseline_164",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "XLMUSDT",
+      "factor": "baseline_164",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "XLMUSDT",
+      "factor": "baseline_200",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "ZECUSDT",
+      "factor": "TD_MT_029",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "ZECUSDT",
+      "factor": "baseline_085",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "ZECUSDT",
+      "factor": "baseline_164",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    },
+    {
+      "symbol": "ZECUSDT",
+      "factor": "baseline_200",
+      "before_ms": 1791962820000,
+      "after_ms": 1791962940000,
+      "ready": true
+    }
+  ],
+  "journal_continuity": {
+    "continuous_minutes": [
+      {
+        "model_ts_ms": 1791962820000,
+        "minute": "07:27",
+        "ready_pairs": 34
+      },
+      {
+        "model_ts_ms": 1791962880000,
+        "minute": "07:28",
+        "ready_pairs": 34
+      },
+      {
+        "model_ts_ms": 1791962940000,
+        "minute": "07:29",
+        "ready_pairs": 34
+      }
+    ],
+    "journal_states": {
+      "observed": 272
+    },
+    "real_publications": 0
+  }
+}

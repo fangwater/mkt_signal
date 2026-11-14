@@ -1,14 +1,23 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use bytes::Bytes;
+use iceoryx2::port::publisher::Publisher;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
+use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::collections::{HashSet, VecDeque};
+use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
+use std::io::{ErrorKind, Write};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::common::min_qty_table::MinQtyTable;
+use crate::pre_trade::account_order_stream_health::{
+    record_binance_decode_failure, record_binance_decode_success,
+};
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_um_manager::BasicUmManager;
 use crate::pre_trade::binance_std_cm_margin_guard::BinanceStdCmMarginGuard;
@@ -18,20 +27,38 @@ use crate::pre_trade::net_position::NetPosition;
 use crate::pre_trade::order_manager::Side;
 use crate::pre_trade::price_table::PriceTable;
 use crate::pre_trade::rebalance_usdt::RebalanceUsdtService;
+use crate::pre_trade::response_reconcile::{
+    clear_deferred_hyperliquid_terminal, take_ready_deferred_hyperliquid_terminal,
+};
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
-use crate::pre_trade::symbol_util::extract_base_asset;
+use crate::pre_trade::symbol_util::{extract_base_asset, is_exposure_exempt_asset};
 use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
 use crate::pre_trade::PersistChannel;
 use account_common::pm_ipc::{PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE};
+use account_monitor_common::hyperliquid_account::HyperliquidAccountMode;
 use mkt_parsers::msg::basic_account_msg::{
     split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
     BasicUmUnrealizedMsg, BinanceBasicOrderMsg, BinanceStdUmWalletSnapshotMsg, GateBasicOrderMsg,
-    OkexOrderMsg,
+    OkexOrderMsg, BASIC_ACCOUNT_EVENT_HEADER_LEN,
 };
 use mkt_parsers::msg::bitget_account_msg::BitgetBasicOrderMsg;
 use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
-use order_common::{ExecutionType, OrderStatus, TradingVenue};
+use mkt_parsers::msg::hyperliquid_account_msg::{
+    hyperliquid_account_identity_hash, HyperliquidBasicFillMsg, HyperliquidBasicOrderMsg,
+    HyperliquidFactIdentity, HyperliquidFactReplayControlMsg, HyperliquidFactReplayPhase,
+    HyperliquidFactReplayRequestMsg, HyperliquidFundingMsg, HyperliquidLedgerMsg,
+    HyperliquidPerpDexStateMsg, HyperliquidSnapshotCompleteMsg, HyperliquidSnapshotPath,
+    HyperliquidSnapshotPhase, HyperliquidSpotBalanceMsg, HyperliquidTwapHistoryMsg,
+    HyperliquidTwapSliceFillMsg, HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN,
+    HYPERLIQUID_FACT_REPLAY_REQUEST_PAYLOAD_LEN, HYPERLIQUID_FACT_REPLAY_REQUEST_SERVICE,
+};
+use mkt_parsers::msg::hyperliquid_native_msg::HyperliquidNativeEventMsg;
+use order_common::{hyperliquid_time_in_force, ExecutionType, Order, OrderStatus, TradingVenue};
+use persist_common::{
+    hyperliquid_account_fact_value_digest, HyperliquidAccountFactAck, UnifiedOrderRecord,
+    HYPERLIQUID_ACCOUNT_FACT_MAX_BYTES, HYPERLIQUID_ACCOUNT_FACT_STABLE_KEY_BYTES,
+};
 use runtime_common::exchange::Exchange;
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::symbol_util::{
@@ -41,6 +68,7 @@ use runtime_common::symbol_util::{
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::cancel_signal::{ArbCancelCtx, ArbCancelReason, MmCancelCtx, MmCancelReason};
 use signal_common::common::{SignalBytes, TradingLeg};
+use signal_common::hyperliquid::HyperliquidEndpoints;
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use trade_signal::ArbMode;
 
@@ -50,17 +78,32 @@ const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 64;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 const BINANCE_DIRECT_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-futures/derivatives";
-const BINANCE_COIN_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-coin-futures/derivatives";
+const BINANCE_PROXY_DERIVATIVES_SERVICE: &str = "dat_pbs_proxy/binance-futures/derivatives";
 const BITGET_COIN_DERIVATIVES_SERVICE: &str = "dat_pbs/bitget-coin-futures/derivatives";
 const OKEX_DERIVATIVES_SERVICE: &str = "dat_pbs/okex-futures/derivatives";
 const BYBIT_DERIVATIVES_SERVICE: &str = "dat_pbs/bybit-futures/derivatives";
 const BITGET_DERIVATIVES_SERVICE: &str = "dat_pbs/bitget-futures/derivatives";
 const GATE_DERIVATIVES_SERVICE: &str = "dat_pbs/gate-futures/derivatives";
+const HYPERLIQUID_DERIVATIVES_SERVICE: &str = "dat_pbs/hyperliquid-futures/derivatives";
 const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 const ARB_STARTUP_NET_EXPOSURE_WARN_USDT: f64 = 500.0;
 const BASIC_STATE_REFRESH_MIN_INTERVAL_US: i64 = 5_000_000;
 const POSITION_MARK_QTY_EPSILON: f64 = 1e-6;
 const SMALL_SYMBOL_NET_EXPOSURE_LOG_SKIP_USDT: f64 = 100.0;
+const HYPERLIQUID_FACT_REQUEST_RETRY: Duration = Duration::from_secs(1);
+const HYPERLIQUID_FACT_PERSIST_RETRY: Duration = Duration::from_secs(1);
+const HYPERLIQUID_FACT_ACK_DRAIN_LIMIT: usize = 64;
+const HYPERLIQUID_FACT_COMMIT_STEP_LIMIT: usize = 256;
+const HYPERLIQUID_FACT_REPLAY_BUFFER_MESSAGE_CAPACITY: usize = 32_768;
+const HYPERLIQUID_FACT_REPLAY_BUFFER_BYTE_CAPACITY: usize = 64 * 1024 * 1024;
+const HYPERLIQUID_FACT_REQUEST_HISTORY_SIZE: usize = 64;
+const HYPERLIQUID_FACT_REQUEST_MAX_PUBLISHERS: usize = 8;
+const HYPERLIQUID_FACT_REQUEST_SUBSCRIBER_BUFFER: usize = 256;
+const HYPERLIQUID_FACT_CURSOR_PATH_ENV: &str = "HYPERLIQUID_FACT_CURSOR_PATH";
+const HYPERLIQUID_FACT_CURSOR_MAGIC: &[u8; 8] = b"HLFACTCR";
+const HYPERLIQUID_FACT_CURSOR_PREFIX_LEN: usize =
+    HYPERLIQUID_FACT_CURSOR_MAGIC.len() + HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN + 8 + 8;
+const HYPERLIQUID_FACT_CURSOR_ENCODED_LEN: usize = HYPERLIQUID_FACT_CURSOR_PREFIX_LEN + 32;
 
 // ==================== Helper Functions ====================
 
@@ -72,6 +115,7 @@ fn is_margin_venue(venue: TradingVenue) -> bool {
             | TradingVenue::GateMargin
             | TradingVenue::BitgetMargin
             | TradingVenue::BybitMargin
+            | TradingVenue::HyperliquidMargin
     )
 }
 
@@ -85,6 +129,7 @@ fn is_futures_venue(venue: TradingVenue) -> bool {
             | TradingVenue::BitgetFutures
             | TradingVenue::BitgetCoinFutures
             | TradingVenue::BybitFutures
+            | TradingVenue::HyperliquidFutures
     )
 }
 
@@ -99,6 +144,7 @@ fn exchange_from_venue(venue: TradingVenue) -> Exchange {
         | TradingVenue::BitgetFutures
         | TradingVenue::BitgetCoinFutures => Exchange::Bitget,
         TradingVenue::BybitMargin | TradingVenue::BybitFutures => Exchange::Bybit,
+        TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => Exchange::Hyperliquid,
         _ => panic!("unsupported venue for pre_trade: {:?}", venue),
     }
 }
@@ -106,6 +152,7 @@ fn exchange_from_venue(venue: TradingVenue) -> Exchange {
 fn scope_for_venue(
     venue: TradingVenue,
     binance_account_mode: Option<BinanceAccountMode>,
+    hyperliquid_account_mode: Option<HyperliquidAccountMode>,
 ) -> BasicAccountScope {
     match venue {
         TradingVenue::BinanceMargin => {
@@ -136,6 +183,12 @@ fn scope_for_venue(
         }
         TradingVenue::BitgetCoinFutures => BasicAccountScope::BitgetUnifiedCoinFutures,
         TradingVenue::BybitMargin | TradingVenue::BybitFutures => BasicAccountScope::BybitUnified,
+        TradingVenue::HyperliquidMargin => hyperliquid_account_mode
+            .map(HyperliquidAccountMode::spot_scope)
+            .unwrap_or(BasicAccountScope::Unknown),
+        TradingVenue::HyperliquidFutures => hyperliquid_account_mode
+            .map(HyperliquidAccountMode::perp_scope)
+            .unwrap_or(BasicAccountScope::Unknown),
         _ => BasicAccountScope::Unknown,
     }
 }
@@ -145,16 +198,19 @@ fn scope_matches_venue(
     source_exchange: Exchange,
     venue: TradingVenue,
     binance_account_mode: Option<BinanceAccountMode>,
+    hyperliquid_account_mode: Option<HyperliquidAccountMode>,
 ) -> bool {
     if incoming_scope == BasicAccountScope::Unknown {
         return exchange_from_venue(venue) == source_exchange;
     }
-    incoming_scope == scope_for_venue(venue, binance_account_mode)
+    incoming_scope == scope_for_venue(venue, binance_account_mode, hyperliquid_account_mode)
 }
 
 fn exchange_scoped_total_equity_scope(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
+    binance_account_mode: Option<BinanceAccountMode>,
+    hyperliquid_account_mode: Option<HyperliquidAccountMode>,
 ) -> Option<BasicAccountScope> {
     let open_exchange = exchange_from_venue(open_venue);
     let hedge_exchange = exchange_from_venue(hedge_venue);
@@ -163,10 +219,32 @@ fn exchange_scoped_total_equity_scope(
     }
 
     match open_exchange {
+        Exchange::Binance => {
+            // A combined perpetual Exec still uses the exchange-valued USD-M
+            // wallet in STANDARD, and the whole portfolio in UNIFIED.
+            if [open_venue, hedge_venue].contains(&TradingVenue::BinanceFutures)
+                && [open_venue, hedge_venue].contains(&TradingVenue::BinanceCoinFutures)
+            {
+                return Some(scope_for_venue(
+                    TradingVenue::BinanceFutures,
+                    binance_account_mode,
+                    None,
+                ));
+            }
+            let open_scope = scope_for_venue(open_venue, binance_account_mode, None);
+            let hedge_scope = scope_for_venue(hedge_venue, binance_account_mode, None);
+            (open_scope == hedge_scope).then_some(open_scope)
+        }
         Exchange::Okex => Some(BasicAccountScope::OkexUnified),
         Exchange::Bybit => Some(BasicAccountScope::BybitUnified),
         Exchange::Bitget => Some(BasicAccountScope::BitgetUnified),
         Exchange::Gate => Some(BasicAccountScope::GateUnified),
+        Exchange::Hyperliquid => {
+            let open_scope = scope_for_venue(open_venue, None, hyperliquid_account_mode);
+            let hedge_scope = scope_for_venue(hedge_venue, None, hyperliquid_account_mode);
+            (open_scope != BasicAccountScope::Unknown && open_scope == hedge_scope)
+                .then_some(open_scope)
+        }
         _ => None,
     }
 }
@@ -180,7 +258,11 @@ fn trade_update_lite_enabled_for_venues(
     open_exchange == hedge_exchange
         && matches!(
             open_exchange,
-            Exchange::Binance | Exchange::Bybit | Exchange::Okex | Exchange::Bitget
+            Exchange::Binance
+                | Exchange::Bybit
+                | Exchange::Okex
+                | Exchange::Bitget
+                | Exchange::Hyperliquid
         )
 }
 
@@ -275,6 +357,10 @@ thread_local! {
     static BASIC_STATE_LAST_REFRESH_US: Cell<i64> = const { Cell::new(0) };
     static PENDING_RISK_CHECKS: RefCell<PendingRiskChecks> = RefCell::new(PendingRiskChecks::default());
     static EXEC_POSITION_SNAPSHOT_READY: Cell<bool> = const { Cell::new(false) };
+    static EXEC_POSITION_SNAPSHOT_VENUES: RefCell<HashSet<TradingVenue>> = RefCell::new(HashSet::new());
+    static EXEC_RUNTIME_MODE: Cell<bool> = const { Cell::new(false) };
+    static HYPERLIQUID_EXEC_SNAPSHOT_VALID_UNTIL_MS: Cell<i64> = const { Cell::new(0) };
+    static HYPERLIQUID_FACT_STREAM_READY: Cell<bool> = const { Cell::new(false) };
 }
 
 /// MonitorChannel 单例访问器（零大小类型）
@@ -315,7 +401,7 @@ impl LegMgr {
 
 struct MonitorStateListeners {
     account_listeners: Vec<BasicAccountListener>,
-    derivatives_listener: DerivativesPriceListener,
+    derivatives_listeners: Vec<DerivativesPriceListener>,
 }
 
 impl MonitorStateListeners {
@@ -334,16 +420,1115 @@ impl MonitorStateListeners {
             raw_remaining = raw_remaining.saturating_sub(listener_raw_received);
             has_message |= listener_has_message;
         }
-        if consumed_tokens < token_limit && raw_remaining > 0 {
-            let (listener_has_message, listener_weight, listener_raw_received) = self
-                .derivatives_listener
-                .drain_pending_limit(token_limit - consumed_tokens, raw_remaining);
+        let listener_count = self.derivatives_listeners.len();
+        for (index, listener) in self.derivatives_listeners.iter_mut().enumerate() {
+            if consumed_tokens >= token_limit || raw_remaining == 0 {
+                break;
+            }
+            let (listener_has_message, listener_weight, listener_raw_received) = listener
+                .drain_pending_limit(
+                    (token_limit - consumed_tokens).div_ceil(listener_count - index),
+                    raw_remaining.div_ceil(listener_count - index),
+                );
             consumed_tokens += listener_weight;
-            let _ = listener_raw_received;
+            raw_remaining = raw_remaining.saturating_sub(listener_raw_received);
             has_message |= listener_has_message;
         }
         (has_message, consumed_tokens)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HyperliquidSnapshotIdentity {
+    monitor_id: u64,
+    generation: u64,
+    batch_id: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct HyperliquidPathSnapshotState {
+    monitor_id: u64,
+    generation: u64,
+    latest_batch_id: u64,
+    active_batch: Option<HyperliquidSnapshotIdentity>,
+    complete_valid_until_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct HyperliquidStreamSnapshotState {
+    paths: [HyperliquidPathSnapshotState; 2],
+}
+
+impl HyperliquidStreamSnapshotState {
+    fn path_index(path: HyperliquidSnapshotPath) -> usize {
+        match path {
+            HyperliquidSnapshotPath::Primary => 0,
+            HyperliquidSnapshotPath::Secondary => 1,
+        }
+    }
+
+    fn apply_control(
+        &mut self,
+        msg: &HyperliquidSnapshotCompleteMsg,
+        now_ms: i64,
+    ) -> Result<HyperliquidSnapshotPhase> {
+        let phase = msg
+            .phase()
+            .ok_or_else(|| anyhow::anyhow!("invalid snapshot phase {}", msg.phase))?;
+        let path = msg
+            .path()
+            .ok_or_else(|| anyhow::anyhow!("invalid snapshot path {}", msg.path))?;
+        if msg.monitor_id == 0 || msg.generation == 0 {
+            anyhow::bail!("snapshot control monitor_id and generation must be nonzero");
+        }
+        if msg.timestamp <= 0 || msg.valid_until <= msg.timestamp {
+            anyhow::bail!(
+                "invalid snapshot freshness window timestamp={} valid_until={}",
+                msg.timestamp,
+                msg.valid_until
+            );
+        }
+        if msg.valid_until <= now_ms {
+            anyhow::bail!(
+                "expired snapshot control valid_until={} now={}",
+                msg.valid_until,
+                now_ms
+            );
+        }
+
+        let path_index = Self::path_index(path);
+        let mut paths = self.paths;
+        {
+            let state = &mut paths[path_index];
+            if state.monitor_id != msg.monitor_id {
+                *state = HyperliquidPathSnapshotState {
+                    monitor_id: msg.monitor_id,
+                    generation: msg.generation,
+                    ..HyperliquidPathSnapshotState::default()
+                };
+            } else if msg.generation < state.generation {
+                anyhow::bail!(
+                    "stale snapshot generation {} < {}",
+                    msg.generation,
+                    state.generation
+                );
+            } else if msg.generation > state.generation {
+                *state = HyperliquidPathSnapshotState {
+                    monitor_id: msg.monitor_id,
+                    generation: msg.generation,
+                    ..HyperliquidPathSnapshotState::default()
+                };
+            }
+        }
+
+        let identity = HyperliquidSnapshotIdentity {
+            monitor_id: msg.monitor_id,
+            generation: msg.generation,
+            batch_id: msg.batch_id,
+        };
+        match phase {
+            HyperliquidSnapshotPhase::Invalidate => {
+                if msg.batch_id != 0 {
+                    anyhow::bail!("snapshot INVALIDATE batch_id must be zero");
+                }
+                let state = &mut paths[path_index];
+                state.active_batch = None;
+                state.complete_valid_until_ms = None;
+            }
+            HyperliquidSnapshotPhase::Begin => {
+                let state = &paths[path_index];
+                if msg.batch_id == 0 || msg.batch_id <= state.latest_batch_id {
+                    anyhow::bail!(
+                        "snapshot BEGIN batch_id={} is not newer than {}",
+                        msg.batch_id,
+                        state.latest_batch_id
+                    );
+                }
+                // Snapshot rows are applied directly to one shared manager. Once a
+                // replacement starts, no lease from either path still describes it.
+                for path_state in &mut paths {
+                    path_state.active_batch = None;
+                    path_state.complete_valid_until_ms = None;
+                }
+                let state = &mut paths[path_index];
+                state.latest_batch_id = msg.batch_id;
+                state.active_batch = Some(identity);
+            }
+            HyperliquidSnapshotPhase::Complete => {
+                let state = &mut paths[path_index];
+                if state.active_batch != Some(identity) {
+                    anyhow::bail!(
+                        "snapshot COMPLETE has no matching BEGIN: batch_id={}",
+                        msg.batch_id
+                    );
+                }
+                state.active_batch = None;
+                state.complete_valid_until_ms = Some(msg.valid_until);
+            }
+        }
+        self.paths = paths;
+        Ok(phase)
+    }
+
+    fn ready_until_ms(&self, now_ms: i64) -> Option<i64> {
+        if self.paths.iter().any(|state| state.active_batch.is_some()) {
+            return None;
+        }
+        self.paths
+            .iter()
+            .filter_map(|state| state.complete_valid_until_ms)
+            .filter(|valid_until| *valid_until > now_ms)
+            .max()
+    }
+
+    fn has_active_batch(&self) -> bool {
+        self.paths.iter().any(|state| state.active_batch.is_some())
+    }
+
+    fn fail_closed(&mut self) {
+        for state in &mut self.paths {
+            state.active_batch = None;
+            state.complete_valid_until_ms = None;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct HyperliquidLiveSnapshotReadiness {
+    monitor_id: u64,
+    spot: HyperliquidStreamSnapshotState,
+    perp: HyperliquidStreamSnapshotState,
+}
+
+fn hyperliquid_snapshot_owns_risk(
+    mode: Option<HyperliquidAccountMode>,
+    venue: TradingVenue,
+) -> bool {
+    mode != Some(HyperliquidAccountMode::PortfolioMargin)
+        || venue == TradingVenue::HyperliquidMargin
+}
+
+fn decode_hyperliquid_portfolio_risk(data: &[u8]) -> Result<BasicAccountRiskMsg> {
+    let msg = BasicAccountRiskMsg::from_bytes(data)?;
+    if msg.timestamp < 0 || !msg.margin_ratio.is_finite() || msg.margin_ratio < 0.0 {
+        anyhow::bail!("invalid Hyperliquid portfolio safe margin ratio or timestamp");
+    }
+    Ok(msg)
+}
+
+impl HyperliquidLiveSnapshotReadiness {
+    fn stream_mut(&mut self, venue: TradingVenue) -> Option<&mut HyperliquidStreamSnapshotState> {
+        match venue {
+            TradingVenue::HyperliquidMargin => Some(&mut self.spot),
+            TradingVenue::HyperliquidFutures => Some(&mut self.perp),
+            _ => None,
+        }
+    }
+
+    fn apply_control(
+        &mut self,
+        venue: TradingVenue,
+        msg: &HyperliquidSnapshotCompleteMsg,
+        now_ms: i64,
+    ) -> Result<HyperliquidSnapshotPhase> {
+        if msg.monitor_id == 0 {
+            anyhow::bail!("snapshot control monitor_id must be nonzero");
+        }
+        if self.monitor_id != msg.monitor_id {
+            *self = Self {
+                monitor_id: msg.monitor_id,
+                ..Self::default()
+            };
+        }
+        self.stream_mut(venue)
+            .ok_or_else(|| anyhow::anyhow!("invalid Hyperliquid snapshot venue {venue:?}"))?
+            .apply_control(msg, now_ms)
+    }
+
+    fn exec_ready_until_ms(
+        &self,
+        account_mode: Option<HyperliquidAccountMode>,
+        exec_venue: TradingVenue,
+        now_ms: i64,
+        risk_present: bool,
+    ) -> Option<i64> {
+        match account_mode {
+            Some(HyperliquidAccountMode::Standard) => match exec_venue {
+                TradingVenue::HyperliquidMargin => self.spot.ready_until_ms(now_ms),
+                TradingVenue::HyperliquidFutures if risk_present => {
+                    self.perp.ready_until_ms(now_ms)
+                }
+                _ => None,
+            },
+            Some(HyperliquidAccountMode::Unified | HyperliquidAccountMode::PortfolioMargin)
+                if risk_present =>
+            {
+                Some(
+                    self.spot
+                        .ready_until_ms(now_ms)?
+                        .min(self.perp.ready_until_ms(now_ms)?),
+                )
+            }
+            Some(HyperliquidAccountMode::Unified | HyperliquidAccountMode::PortfolioMargin)
+            | None => None,
+        }
+    }
+
+    fn arb_ready_until_ms(
+        &self,
+        account_mode: Option<HyperliquidAccountMode>,
+        venue: TradingVenue,
+        now_ms: i64,
+        risk_present: bool,
+    ) -> Option<i64> {
+        match account_mode {
+            Some(HyperliquidAccountMode::Standard) if venue == TradingVenue::HyperliquidMargin => {
+                self.spot.ready_until_ms(now_ms)
+            }
+            Some(HyperliquidAccountMode::Standard)
+                if venue == TradingVenue::HyperliquidFutures && risk_present =>
+            {
+                self.perp.ready_until_ms(now_ms)
+            }
+            Some(HyperliquidAccountMode::Unified | HyperliquidAccountMode::PortfolioMargin)
+                if risk_present =>
+            {
+                Some(
+                    self.spot
+                        .ready_until_ms(now_ms)?
+                        .min(self.perp.ready_until_ms(now_ms)?),
+                )
+            }
+            _ => None,
+        }
+    }
+
+    fn is_snapshot_row(
+        &self,
+        event_type: BasicAccountEventType,
+        account_scope: BasicAccountScope,
+        account_mode: Option<HyperliquidAccountMode>,
+    ) -> bool {
+        let Some(account_mode) = account_mode else {
+            return false;
+        };
+        match event_type {
+            BasicAccountEventType::BalanceUpdate
+            | BasicAccountEventType::BorrowInterest
+            | BasicAccountEventType::HyperliquidSpotBalance => {
+                account_scope == account_mode.spot_scope() && self.spot.has_active_batch()
+            }
+            BasicAccountEventType::PositionUpdate
+            | BasicAccountEventType::UnrealizedPnlUpdate
+            | BasicAccountEventType::HyperliquidPerpDexState => {
+                account_scope == account_mode.perp_scope() && self.perp.has_active_batch()
+            }
+            BasicAccountEventType::AccountRisk => {
+                account_scope == account_mode.perp_scope()
+                    && (self.spot.has_active_batch()
+                        || (account_mode != HyperliquidAccountMode::PortfolioMargin
+                            && self.perp.has_active_batch()))
+            }
+            _ => false,
+        }
+    }
+
+    fn validate_perp_dex_state_row(&mut self, data: &[u8]) -> Result<()> {
+        match HyperliquidPerpDexStateMsg::from_bytes(data) {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                self.perp.fail_closed();
+                Err(err)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct HyperliquidFactCursor {
+    monitor_id: u64,
+    last_fact_seq: u64,
+}
+
+#[derive(Debug)]
+struct HyperliquidFactCursorStore {
+    path: PathBuf,
+    account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+}
+
+impl HyperliquidFactCursorStore {
+    fn from_env(account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN]) -> Self {
+        let path = std::env::var_os(HYPERLIQUID_FACT_CURSOR_PATH_ENV)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from("data").join(format!(
+                    "hyperliquid_fact_cursor_{}.bin",
+                    hex::encode(account_hash)
+                ))
+            });
+        Self { path, account_hash }
+    }
+
+    #[cfg(test)]
+    fn at_path(path: PathBuf, account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN]) -> Self {
+        Self { path, account_hash }
+    }
+
+    fn load(&self) -> Result<HyperliquidFactCursor> {
+        let bytes = match fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                return Ok(HyperliquidFactCursor::default())
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("read Hyperliquid fact cursor {}", self.path.display())
+                })
+            }
+        };
+        decode_hyperliquid_fact_cursor(&bytes, self.account_hash)
+            .with_context(|| format!("decode Hyperliquid fact cursor {}", self.path.display()))
+    }
+
+    fn persist(&self, cursor: HyperliquidFactCursor) -> Result<()> {
+        if cursor.monitor_id == 0 && cursor.last_fact_seq != 0 {
+            anyhow::bail!(
+                "refuse to persist Hyperliquid fact cursor with zero monitor_id and nonzero seq"
+            );
+        }
+        let parent = self
+            .path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "create Hyperliquid fact cursor directory {}",
+                parent.display()
+            )
+        })?;
+
+        let file_name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("Hyperliquid fact cursor path has no valid UTF-8 file name")?;
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temporary = parent.join(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
+        let encoded = encode_hyperliquid_fact_cursor(self.account_hash, cursor);
+        let write_result = (|| -> Result<()> {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)
+                .with_context(|| {
+                    format!(
+                        "create temporary Hyperliquid fact cursor {}",
+                        temporary.display()
+                    )
+                })?;
+            file.write_all(&encoded).with_context(|| {
+                format!(
+                    "write temporary Hyperliquid fact cursor {}",
+                    temporary.display()
+                )
+            })?;
+            file.sync_all().with_context(|| {
+                format!(
+                    "sync temporary Hyperliquid fact cursor {}",
+                    temporary.display()
+                )
+            })?;
+            Ok(())
+        })();
+        if let Err(err) = write_result {
+            let _ = fs::remove_file(&temporary);
+            return Err(err);
+        }
+        if let Err(err) = fs::rename(&temporary, &self.path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(err).with_context(|| {
+                format!(
+                    "atomically replace Hyperliquid fact cursor {}",
+                    self.path.display()
+                )
+            });
+        }
+        File::open(parent)
+            .with_context(|| format!("open fact cursor directory {}", parent.display()))?
+            .sync_all()
+            .with_context(|| format!("sync fact cursor directory {}", parent.display()))?;
+        Ok(())
+    }
+
+    fn clear(&self) -> Result<()> {
+        self.persist(HyperliquidFactCursor::default())
+    }
+}
+
+fn encode_hyperliquid_fact_cursor(
+    account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+    cursor: HyperliquidFactCursor,
+) -> [u8; HYPERLIQUID_FACT_CURSOR_ENCODED_LEN] {
+    let mut encoded = [0_u8; HYPERLIQUID_FACT_CURSOR_ENCODED_LEN];
+    encoded[..HYPERLIQUID_FACT_CURSOR_MAGIC.len()].copy_from_slice(HYPERLIQUID_FACT_CURSOR_MAGIC);
+    let hash_start = HYPERLIQUID_FACT_CURSOR_MAGIC.len();
+    let monitor_start = hash_start + HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN;
+    let seq_start = monitor_start + 8;
+    encoded[hash_start..monitor_start].copy_from_slice(&account_hash);
+    encoded[monitor_start..seq_start].copy_from_slice(&cursor.monitor_id.to_le_bytes());
+    encoded[seq_start..HYPERLIQUID_FACT_CURSOR_PREFIX_LEN]
+        .copy_from_slice(&cursor.last_fact_seq.to_le_bytes());
+    let checksum = Sha256::digest(&encoded[..HYPERLIQUID_FACT_CURSOR_PREFIX_LEN]);
+    encoded[HYPERLIQUID_FACT_CURSOR_PREFIX_LEN..].copy_from_slice(&checksum);
+    encoded
+}
+
+fn decode_hyperliquid_fact_cursor(
+    bytes: &[u8],
+    expected_account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+) -> Result<HyperliquidFactCursor> {
+    if bytes.len() != HYPERLIQUID_FACT_CURSOR_ENCODED_LEN {
+        anyhow::bail!(
+            "invalid cursor length: expected={} actual={}",
+            HYPERLIQUID_FACT_CURSOR_ENCODED_LEN,
+            bytes.len()
+        );
+    }
+    if &bytes[..HYPERLIQUID_FACT_CURSOR_MAGIC.len()] != HYPERLIQUID_FACT_CURSOR_MAGIC {
+        anyhow::bail!("invalid Hyperliquid fact cursor magic");
+    }
+    let checksum = Sha256::digest(&bytes[..HYPERLIQUID_FACT_CURSOR_PREFIX_LEN]);
+    if bytes[HYPERLIQUID_FACT_CURSOR_PREFIX_LEN..] != checksum[..] {
+        anyhow::bail!("Hyperliquid fact cursor checksum mismatch");
+    }
+    let hash_start = HYPERLIQUID_FACT_CURSOR_MAGIC.len();
+    let monitor_start = hash_start + HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN;
+    let seq_start = monitor_start + 8;
+    let mut account_hash = [0_u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN];
+    account_hash.copy_from_slice(&bytes[hash_start..monitor_start]);
+    if account_hash != expected_account_hash {
+        anyhow::bail!("Hyperliquid fact cursor account/network identity mismatch");
+    }
+    let monitor_id = u64::from_le_bytes(
+        bytes[monitor_start..seq_start]
+            .try_into()
+            .expect("validated fixed cursor monitor range"),
+    );
+    let last_fact_seq = u64::from_le_bytes(
+        bytes[seq_start..HYPERLIQUID_FACT_CURSOR_PREFIX_LEN]
+            .try_into()
+            .expect("validated fixed cursor sequence range"),
+    );
+    if monitor_id == 0 && last_fact_seq != 0 {
+        anyhow::bail!("invalid Hyperliquid fact cursor with zero monitor_id and nonzero seq");
+    }
+    Ok(HyperliquidFactCursor {
+        monitor_id,
+        last_fact_seq,
+    })
+}
+
+#[derive(Debug)]
+enum HyperliquidFactReplayState {
+    Idle,
+    Awaiting {
+        request_id: u64,
+    },
+    Replaying {
+        request_id: u64,
+        monitor_id: u64,
+        first_seq: u64,
+        last_seq: u64,
+        head_seq: u64,
+        next_seq: u64,
+        buffered_bytes: usize,
+        events: Vec<Bytes>,
+    },
+    Committing {
+        cursor: HyperliquidFactCursor,
+        caught_up: bool,
+    },
+    Ready,
+    Gap,
+}
+
+#[derive(Debug)]
+struct PendingHyperliquidFactBatch {
+    events: VecDeque<Bytes>,
+    caught_up: bool,
+    recovery_required: bool,
+    next_publish_at: Instant,
+}
+
+impl PendingHyperliquidFactBatch {
+    fn new(events: Vec<Bytes>, caught_up: bool) -> Self {
+        Self {
+            events: events.into(),
+            caught_up,
+            recovery_required: false,
+            next_publish_at: Instant::now(),
+        }
+    }
+
+    fn require_recovery(&mut self) -> bool {
+        let newly_required = !self.recovery_required;
+        self.recovery_required = true;
+        newly_required
+    }
+}
+
+#[derive(Debug)]
+struct HyperliquidFactReplayProtocol {
+    account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+    consumer_id: u64,
+    next_request_id: u64,
+    monitor_id: u64,
+    last_fact_seq: u64,
+    state: HyperliquidFactReplayState,
+}
+
+#[derive(Debug)]
+enum HyperliquidFactDisposition {
+    Apply,
+    Drop,
+    Recover(&'static str),
+    FailClosed(&'static str),
+}
+
+#[derive(Debug)]
+enum HyperliquidFactControlDisposition {
+    Ignore,
+    Waiting,
+    Commit { events: Vec<Bytes>, caught_up: bool },
+    ResetProducerEpoch,
+    Recover(&'static str),
+    FailClosed(&'static str),
+}
+
+struct HyperliquidFactReplayRequester {
+    publisher: Publisher<ipc::Service, [u8; HYPERLIQUID_FACT_REPLAY_REQUEST_PAYLOAD_LEN], ()>,
+}
+
+struct HyperliquidFactReplayConsumer {
+    protocol: HyperliquidFactReplayProtocol,
+    requester: HyperliquidFactReplayRequester,
+    cursor_store: HyperliquidFactCursorStore,
+    next_request_at: Instant,
+}
+
+impl HyperliquidFactReplayProtocol {
+    #[cfg(test)]
+    fn new(account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN], consumer_id: u64) -> Self {
+        Self::new_with_cursor(account_hash, consumer_id, HyperliquidFactCursor::default())
+    }
+
+    fn new_with_cursor(
+        account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+        consumer_id: u64,
+        cursor: HyperliquidFactCursor,
+    ) -> Self {
+        Self {
+            account_hash,
+            consumer_id,
+            next_request_id: 1,
+            monitor_id: cursor.monitor_id,
+            last_fact_seq: cursor.last_fact_seq,
+            state: HyperliquidFactReplayState::Idle,
+        }
+    }
+
+    fn begin_request(&mut self) -> HyperliquidFactReplayRequestMsg {
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.checked_add(1).unwrap_or(1);
+        self.state = HyperliquidFactReplayState::Awaiting { request_id };
+        HyperliquidFactReplayRequestMsg {
+            account_hash: self.account_hash,
+            consumer_id: self.consumer_id,
+            request_id,
+            last_monitor_id: self.monitor_id,
+            last_fact_seq: self.last_fact_seq,
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        matches!(self.state, HyperliquidFactReplayState::Ready)
+    }
+
+    fn is_gap(&self) -> bool {
+        matches!(self.state, HyperliquidFactReplayState::Gap)
+    }
+
+    fn is_committing(&self) -> bool {
+        matches!(self.state, HyperliquidFactReplayState::Committing { .. })
+    }
+
+    fn active_request_id(&self) -> Option<u64> {
+        match self.state {
+            HyperliquidFactReplayState::Awaiting { request_id }
+            | HyperliquidFactReplayState::Replaying { request_id, .. } => Some(request_id),
+            _ => None,
+        }
+    }
+
+    fn observe_fact(
+        &mut self,
+        identity: HyperliquidFactIdentity,
+        payload: &[u8],
+    ) -> HyperliquidFactDisposition {
+        if identity.account_hash != self.account_hash {
+            self.state = HyperliquidFactReplayState::Gap;
+            return HyperliquidFactDisposition::FailClosed("account identity mismatch");
+        }
+        if identity.monitor_id == 0 || identity.fact_seq == 0 {
+            self.state = HyperliquidFactReplayState::Gap;
+            return HyperliquidFactDisposition::FailClosed("zero factual identity");
+        }
+
+        match &mut self.state {
+            HyperliquidFactReplayState::Ready => {
+                if identity.monitor_id != self.monitor_id {
+                    return HyperliquidFactDisposition::Recover("producer epoch changed");
+                }
+                let expected = match self.last_fact_seq.checked_add(1) {
+                    Some(expected) => expected,
+                    None => {
+                        self.state = HyperliquidFactReplayState::Gap;
+                        return HyperliquidFactDisposition::FailClosed("factual cursor exhausted");
+                    }
+                };
+                if identity.fact_seq == expected {
+                    self.state = HyperliquidFactReplayState::Committing {
+                        cursor: HyperliquidFactCursor {
+                            monitor_id: identity.monitor_id,
+                            last_fact_seq: identity.fact_seq,
+                        },
+                        caught_up: true,
+                    };
+                    HyperliquidFactDisposition::Apply
+                } else if identity.fact_seq <= self.last_fact_seq {
+                    HyperliquidFactDisposition::Drop
+                } else {
+                    HyperliquidFactDisposition::Recover("live factual sequence gap")
+                }
+            }
+            HyperliquidFactReplayState::Replaying {
+                monitor_id,
+                first_seq,
+                last_seq,
+                next_seq,
+                buffered_bytes,
+                events,
+                ..
+            } => {
+                if identity.monitor_id != *monitor_id {
+                    return HyperliquidFactDisposition::Recover("replay producer epoch changed");
+                }
+                if identity.fact_seq < *first_seq || identity.fact_seq < *next_seq {
+                    return HyperliquidFactDisposition::Drop;
+                }
+                if identity.fact_seq != *next_seq || identity.fact_seq > *last_seq {
+                    return HyperliquidFactDisposition::Recover("non-contiguous replay fact");
+                }
+                let next_bytes = match buffered_bytes.checked_add(payload.len()) {
+                    Some(value) => value,
+                    None => {
+                        self.state = HyperliquidFactReplayState::Gap;
+                        return HyperliquidFactDisposition::FailClosed(
+                            "replay buffer byte count overflow",
+                        );
+                    }
+                };
+                if events.len() >= HYPERLIQUID_FACT_REPLAY_BUFFER_MESSAGE_CAPACITY
+                    || next_bytes > HYPERLIQUID_FACT_REPLAY_BUFFER_BYTE_CAPACITY
+                {
+                    self.state = HyperliquidFactReplayState::Gap;
+                    return HyperliquidFactDisposition::FailClosed(
+                        "replay exceeds consumer buffer bounds",
+                    );
+                }
+                events.push(Bytes::copy_from_slice(payload));
+                *buffered_bytes = next_bytes;
+                *next_seq = match next_seq.checked_add(1) {
+                    Some(value) => value,
+                    None => {
+                        self.state = HyperliquidFactReplayState::Gap;
+                        return HyperliquidFactDisposition::FailClosed("replay sequence exhausted");
+                    }
+                };
+                HyperliquidFactDisposition::Drop
+            }
+            HyperliquidFactReplayState::Idle
+            | HyperliquidFactReplayState::Awaiting { .. }
+            | HyperliquidFactReplayState::Committing { .. }
+            | HyperliquidFactReplayState::Gap => HyperliquidFactDisposition::Drop,
+        }
+    }
+
+    fn observe_control(
+        &mut self,
+        control: HyperliquidFactReplayControlMsg,
+    ) -> HyperliquidFactControlDisposition {
+        if control.consumer_id != self.consumer_id {
+            return HyperliquidFactControlDisposition::Ignore;
+        }
+        if self.active_request_id() != Some(control.request_id) {
+            return HyperliquidFactControlDisposition::Ignore;
+        }
+        if control.account_hash != self.account_hash {
+            self.state = HyperliquidFactReplayState::Gap;
+            return HyperliquidFactControlDisposition::FailClosed(
+                "replay control account identity mismatch",
+            );
+        }
+        if control.monitor_id == 0 {
+            self.state = HyperliquidFactReplayState::Gap;
+            return HyperliquidFactControlDisposition::FailClosed(
+                "replay control has zero producer epoch",
+            );
+        }
+        let Some(phase) = control.phase() else {
+            self.state = HyperliquidFactReplayState::Gap;
+            return HyperliquidFactControlDisposition::FailClosed("invalid replay control phase");
+        };
+        match phase {
+            HyperliquidFactReplayPhase::Gap => {
+                if self.monitor_id != 0 && self.monitor_id != control.monitor_id {
+                    self.state = HyperliquidFactReplayState::Committing {
+                        cursor: HyperliquidFactCursor::default(),
+                        caught_up: false,
+                    };
+                    return HyperliquidFactControlDisposition::ResetProducerEpoch;
+                }
+                self.state = HyperliquidFactReplayState::Gap;
+                HyperliquidFactControlDisposition::FailClosed(
+                    "producer replay ring cannot cover requested cursor",
+                )
+            }
+            HyperliquidFactReplayPhase::Begin => {
+                let expected_first = if self.monitor_id == control.monitor_id {
+                    match self.last_fact_seq.checked_add(1) {
+                        Some(value) => value,
+                        None => {
+                            self.state = HyperliquidFactReplayState::Gap;
+                            return HyperliquidFactControlDisposition::FailClosed(
+                                "committed factual cursor exhausted",
+                            );
+                        }
+                    }
+                } else if self.monitor_id == 0 && self.last_fact_seq == 0 {
+                    1
+                } else {
+                    self.state = HyperliquidFactReplayState::Gap;
+                    return HyperliquidFactControlDisposition::FailClosed(
+                        "producer epoch changed after a committed factual cursor",
+                    );
+                };
+                if control.first_seq != expected_first
+                    || control.first_seq > control.last_seq.saturating_add(1)
+                    || control.last_seq > control.head_seq
+                {
+                    self.state = HyperliquidFactReplayState::Gap;
+                    return HyperliquidFactControlDisposition::FailClosed(
+                        "producer announced an invalid replay range",
+                    );
+                }
+                self.state = HyperliquidFactReplayState::Replaying {
+                    request_id: control.request_id,
+                    monitor_id: control.monitor_id,
+                    first_seq: control.first_seq,
+                    last_seq: control.last_seq,
+                    head_seq: control.head_seq,
+                    next_seq: control.first_seq,
+                    buffered_bytes: 0,
+                    events: Vec::new(),
+                };
+                HyperliquidFactControlDisposition::Waiting
+            }
+            HyperliquidFactReplayPhase::Complete => {
+                let HyperliquidFactReplayState::Replaying {
+                    request_id,
+                    monitor_id,
+                    first_seq,
+                    last_seq,
+                    head_seq,
+                    next_seq,
+                    events,
+                    ..
+                } = &mut self.state
+                else {
+                    return HyperliquidFactControlDisposition::Recover(
+                        "replay COMPLETE without matching BEGIN",
+                    );
+                };
+                if *request_id != control.request_id
+                    || *monitor_id != control.monitor_id
+                    || *first_seq != control.first_seq
+                    || *last_seq != control.last_seq
+                    || *head_seq != control.head_seq
+                    || *next_seq != control.last_seq.saturating_add(1)
+                {
+                    return HyperliquidFactControlDisposition::Recover(
+                        "replay COMPLETE does not match the validated range",
+                    );
+                }
+                let committed_events = std::mem::take(events);
+                self.state = HyperliquidFactReplayState::Committing {
+                    cursor: HyperliquidFactCursor {
+                        monitor_id: control.monitor_id,
+                        last_fact_seq: control.last_seq,
+                    },
+                    caught_up: control.last_seq == control.head_seq,
+                };
+                HyperliquidFactControlDisposition::Commit {
+                    events: committed_events,
+                    caught_up: control.last_seq == control.head_seq,
+                }
+            }
+        }
+    }
+
+    fn pending_commit(&self) -> Option<(HyperliquidFactCursor, bool)> {
+        match self.state {
+            HyperliquidFactReplayState::Committing { cursor, caught_up } => {
+                Some((cursor, caught_up))
+            }
+            _ => None,
+        }
+    }
+
+    fn complete_commit(&mut self) -> bool {
+        let Some((cursor, caught_up)) = self.pending_commit() else {
+            return false;
+        };
+        self.monitor_id = cursor.monitor_id;
+        self.last_fact_seq = cursor.last_fact_seq;
+        self.state = if caught_up {
+            HyperliquidFactReplayState::Ready
+        } else {
+            HyperliquidFactReplayState::Idle
+        };
+        true
+    }
+
+    fn reset_producer_epoch(&mut self) -> bool {
+        let Some((cursor, _)) = self.pending_commit() else {
+            return false;
+        };
+        if cursor != HyperliquidFactCursor::default() {
+            return false;
+        }
+        self.monitor_id = 0;
+        self.last_fact_seq = 0;
+        self.state = HyperliquidFactReplayState::Idle;
+        true
+    }
+
+    fn fail_closed(&mut self) {
+        self.state = HyperliquidFactReplayState::Gap;
+    }
+}
+
+impl HyperliquidFactReplayRequester {
+    fn new() -> Result<Self> {
+        let service_name = build_service_name(HYPERLIQUID_FACT_REPLAY_REQUEST_SERVICE);
+        let node = NodeBuilder::new()
+            .name(&NodeName::new("pre_trade_hyperliquid_fact_requester")?)
+            .create::<ipc::Service>()?;
+        let service = node
+            .service_builder(&ServiceName::new(&service_name)?)
+            .publish_subscribe::<[u8; HYPERLIQUID_FACT_REPLAY_REQUEST_PAYLOAD_LEN]>()
+            .max_publishers(HYPERLIQUID_FACT_REQUEST_MAX_PUBLISHERS)
+            .max_subscribers(1)
+            .history_size(HYPERLIQUID_FACT_REQUEST_HISTORY_SIZE)
+            .subscriber_max_buffer_size(HYPERLIQUID_FACT_REQUEST_SUBSCRIBER_BUFFER)
+            .open_or_create()?;
+        Ok(Self {
+            publisher: service.publisher_builder().create()?,
+        })
+    }
+
+    fn send(&self, request: &HyperliquidFactReplayRequestMsg) -> bool {
+        let sample = match self.publisher.loan_uninit() {
+            Ok(sample) => sample,
+            Err(err) => {
+                warn!("loan Hyperliquid fact replay request failed: {err}");
+                return false;
+            }
+        };
+        let sample = sample.write_payload(request.to_ipc_payload());
+        if let Err(err) = sample.send() {
+            warn!("publish Hyperliquid fact replay request failed: {err}");
+            return false;
+        }
+        true
+    }
+}
+
+impl HyperliquidFactReplayConsumer {
+    fn new(account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN]) -> Result<Self> {
+        let cursor_store = HyperliquidFactCursorStore::from_env(account_hash);
+        let cursor = cursor_store.load()?;
+        if cursor.monitor_id != 0 {
+            info!(
+                "loaded Hyperliquid factual delivery cursor: monitor_id={} last_fact_seq={} path={}",
+                cursor.monitor_id,
+                cursor.last_fact_seq,
+                cursor_store.path.display()
+            );
+        }
+        Ok(Self {
+            protocol: HyperliquidFactReplayProtocol::new_with_cursor(
+                account_hash,
+                fact_consumer_instance_id(),
+                cursor,
+            ),
+            requester: HyperliquidFactReplayRequester::new()?,
+            cursor_store,
+            next_request_at: Instant::now(),
+        })
+    }
+
+    fn commit_applied(&mut self) -> Result<bool> {
+        let (cursor, caught_up) = self
+            .protocol
+            .pending_commit()
+            .context("Hyperliquid fact commit is not prepared")?;
+        self.cursor_store.persist(cursor)?;
+        if !self.protocol.complete_commit() {
+            anyhow::bail!("Hyperliquid fact protocol rejected a persisted commit");
+        }
+        Ok(caught_up)
+    }
+
+    fn clear_cursor_for_new_epoch(&mut self) -> Result<()> {
+        self.cursor_store.clear()?;
+        if !self.protocol.reset_producer_epoch() {
+            anyhow::bail!("Hyperliquid fact protocol rejected producer epoch reset");
+        }
+        Ok(())
+    }
+
+    fn restart_handshake(&mut self, reason: &'static str) {
+        let request = self.protocol.begin_request();
+        self.next_request_at = Instant::now() + HYPERLIQUID_FACT_REQUEST_RETRY;
+        let sent = self.requester.send(&request);
+        warn!(
+            "Hyperliquid factual readiness revoked; replay requested: reason={} consumer_id={} request_id={} last_monitor_id={} last_fact_seq={} request_sent={}",
+            reason,
+            request.consumer_id,
+            request.request_id,
+            request.last_monitor_id,
+            request.last_fact_seq,
+            sent
+        );
+    }
+
+    fn drive(&mut self, now: Instant) {
+        if self.protocol.is_ready()
+            || self.protocol.is_gap()
+            || self.protocol.is_committing()
+            || now < self.next_request_at
+        {
+            return;
+        }
+        let request = self.protocol.begin_request();
+        self.next_request_at = now + HYPERLIQUID_FACT_REQUEST_RETRY;
+        let _ = self.requester.send(&request);
+    }
+}
+
+fn fact_consumer_instance_id() -> u64 {
+    let now = get_timestamp_us().unsigned_abs();
+    (now ^ u64::from(std::process::id()).rotate_left(32)).max(1)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HyperliquidAuditFactMetadata {
+    identity: HyperliquidFactIdentity,
+    stable_key: [u8; HYPERLIQUID_ACCOUNT_FACT_STABLE_KEY_BYTES],
+    used_len: usize,
+}
+
+fn hyperliquid_audit_fact_metadata(payload: &[u8]) -> Result<Option<HyperliquidAuditFactMetadata>> {
+    let (event_type, _, body) =
+        split_basic_account_event(payload).context("invalid Hyperliquid audit fact envelope")?;
+    let (identity, venue_key) = match event_type {
+        BasicAccountEventType::HyperliquidNativeEvent => {
+            let msg = HyperliquidNativeEventMsg::from_bytes(body)?;
+            (msg.identity, msg.stable_venue_key())
+        }
+        BasicAccountEventType::OrderUpdate => {
+            let msg = HyperliquidBasicOrderMsg::from_bytes(body)
+                .context("decode Hyperliquid order persistence request")?;
+            (msg.fact_identity(), msg.stable_venue_key())
+        }
+        BasicAccountEventType::HyperliquidFill => {
+            let msg = HyperliquidBasicFillMsg::from_bytes(body)
+                .context("decode Hyperliquid fill persistence request")?;
+            (msg.fact_identity(), msg.stable_venue_key())
+        }
+        BasicAccountEventType::HyperliquidFunding => {
+            let msg = HyperliquidFundingMsg::from_bytes(body)
+                .context("decode Hyperliquid funding persistence request")?;
+            (msg.fact_identity(), msg.stable_venue_key())
+        }
+        BasicAccountEventType::HyperliquidLedger => {
+            let msg = HyperliquidLedgerMsg::from_bytes(body)
+                .context("decode Hyperliquid ledger persistence request")?;
+            (msg.fact_identity(), msg.stable_venue_key())
+        }
+        BasicAccountEventType::HyperliquidTwapSliceFill => {
+            let msg = HyperliquidTwapSliceFillMsg::from_bytes(body)
+                .context("decode Hyperliquid TWAP slice persistence request")?;
+            (msg.fact_identity(), msg.stable_venue_key())
+        }
+        BasicAccountEventType::HyperliquidTwapHistory => {
+            let msg = HyperliquidTwapHistoryMsg::from_bytes(body)
+                .context("decode Hyperliquid TWAP history persistence request")?;
+            (msg.fact_identity(), msg.stable_venue_key())
+        }
+        _ => return Ok(None),
+    };
+    let mut stable_key = [0_u8; HYPERLIQUID_ACCOUNT_FACT_STABLE_KEY_BYTES];
+    stable_key[..4].copy_from_slice(&(event_type as u32).to_be_bytes());
+    stable_key[4..].copy_from_slice(&venue_key);
+    Ok(Some(HyperliquidAuditFactMetadata {
+        identity,
+        stable_key,
+        used_len: BASIC_ACCOUNT_EVENT_HEADER_LEN + body.len(),
+    }))
+}
+
+fn hyperliquid_fact_ack_matches_payload(
+    ack: &HyperliquidAccountFactAck,
+    payload: &[u8],
+) -> Result<bool> {
+    let Some(metadata) = hyperliquid_audit_fact_metadata(payload)? else {
+        return Ok(false);
+    };
+    let exact_value = &payload[..metadata.used_len];
+    Ok(ack.account_hash == metadata.identity.account_hash
+        && ack.monitor_id == metadata.identity.monitor_id
+        && ack.fact_seq == metadata.identity.fact_seq
+        && ack.stable_key == metadata.stable_key
+        && ack.value_digest
+            == hyperliquid_account_fact_value_digest(&metadata.stable_key, exact_value))
+}
+
+fn account_service_requires_non_overflow(
+    exchange: Exchange,
+    backend: runtime_common::execution_backend::ExecBackend,
+) -> bool {
+    exchange == Exchange::Hyperliquid
+        || backend == runtime_common::execution_backend::ExecBackend::Ltp
+}
+
+fn is_incompatible_overflow_behavior(error: &impl std::fmt::Debug) -> bool {
+    format!("{error:?}").contains("IncompatibleOverflowBehavior")
 }
 
 fn monitor_fast_poll_token_limit(message_limit: usize) -> usize {
@@ -367,9 +1552,15 @@ struct BasicAccountListener {
     hedge_leg: LegMgr,
     usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>>,
     binance_account_mode: Option<BinanceAccountMode>,
+    hyperliquid_account_mode: Option<HyperliquidAccountMode>,
+    hyperliquid_snapshot_readiness: HyperliquidLiveSnapshotReadiness,
+    hyperliquid_snapshot_risk_present: bool,
+    hyperliquid_fact_replay: Option<HyperliquidFactReplayConsumer>,
+    hyperliquid_fact_commit: Option<PendingHyperliquidFactBatch>,
     strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
     dedup: DedupCache,
     require_existing_service: bool,
+    require_non_overflow: bool,
     node: Node<ipc::Service>,
     subscriber: Option<Subscriber<ipc::Service, [u8; ACCOUNT_PAYLOAD], ()>>,
     next_open_attempt_at: Instant,
@@ -386,14 +1577,29 @@ impl BasicAccountListener {
         hedge_leg: LegMgr,
         usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>>,
         binance_account_mode: Option<BinanceAccountMode>,
+        hyperliquid_account_mode: Option<HyperliquidAccountMode>,
         strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
     ) -> Result<Self> {
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
-        let require_existing_service = exchange == Exchange::Gate
+        let backend = runtime_common::execution_backend::ExecBackend::for_exchange(exchange)?;
+        let require_non_overflow = account_service_requires_non_overflow(exchange, backend);
+        let require_existing_service = backend
+            == runtime_common::execution_backend::ExecBackend::Ltp
+            || exchange == Exchange::Gate
+            || exchange == Exchange::Hyperliquid
             || (exchange == Exchange::Binance
                 && binance_account_mode == Some(BinanceAccountMode::Standard));
+        let hyperliquid_fact_replay = if exchange == Exchange::Hyperliquid {
+            let address = std::env::var("HYPERLIQUID_ACCOUNT_ADDRESS")
+                .map_err(|_| anyhow::anyhow!("HYPERLIQUID_ACCOUNT_ADDRESS is required"))?;
+            let endpoints = HyperliquidEndpoints::from_env()?;
+            let account_hash = hyperliquid_account_identity_hash(&address, endpoints.testnet)?;
+            Some(HyperliquidFactReplayConsumer::new(account_hash)?)
+        } else {
+            None
+        };
         Ok(Self {
             service_name,
             exchange,
@@ -403,13 +1609,263 @@ impl BasicAccountListener {
             hedge_leg,
             usdt_mgrs,
             binance_account_mode,
+            hyperliquid_account_mode,
+            hyperliquid_snapshot_readiness: HyperliquidLiveSnapshotReadiness::default(),
+            hyperliquid_snapshot_risk_present: false,
+            hyperliquid_fact_replay,
+            hyperliquid_fact_commit: None,
             strategy_mgr,
             dedup: DedupCache::new(8192),
             require_existing_service,
+            require_non_overflow,
             node,
             subscriber: None,
             next_open_attempt_at: Instant::now(),
         })
+    }
+
+    fn refresh_hyperliquid_readiness(&mut self) {
+        if self.exchange != Exchange::Hyperliquid {
+            return;
+        }
+        let factual_monitor_id = self
+            .hyperliquid_fact_replay
+            .as_ref()
+            .filter(|consumer| consumer.protocol.is_ready())
+            .map(|consumer| consumer.protocol.monitor_id);
+        let factual_ready = factual_monitor_id.is_some();
+        let snapshot_epoch_matches = factual_monitor_id
+            .is_some_and(|monitor_id| self.hyperliquid_snapshot_readiness.monitor_id == monitor_id);
+        HYPERLIQUID_FACT_STREAM_READY.with(|ready| ready.set(factual_ready));
+        let now_ms = get_timestamp_us() / 1_000;
+        for venue in [
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ] {
+            if venue != self.open_venue && venue != self.hedge_venue {
+                continue;
+            }
+            let valid_until = snapshot_epoch_matches
+                .then(|| {
+                    self.hyperliquid_snapshot_readiness.arb_ready_until_ms(
+                        self.hyperliquid_account_mode,
+                        venue,
+                        now_ms,
+                        self.hyperliquid_snapshot_risk_present,
+                    )
+                })
+                .flatten();
+            MonitorChannel::instance().set_hyperliquid_arb_snapshot_readiness(venue, valid_until);
+        }
+        if self.open_venue == self.hedge_venue {
+            let valid_until = snapshot_epoch_matches
+                .then(|| {
+                    self.hyperliquid_snapshot_readiness.exec_ready_until_ms(
+                        self.hyperliquid_account_mode,
+                        self.open_venue,
+                        now_ms,
+                        self.hyperliquid_snapshot_risk_present,
+                    )
+                })
+                .flatten();
+            MonitorChannel::instance().set_hyperliquid_exec_snapshot_readiness(
+                valid_until,
+                "hyperliquid_snapshot_and_fact_replay",
+            );
+        }
+    }
+
+    fn restart_hyperliquid_fact_handshake(&mut self, reason: &'static str) {
+        if let Some(pending) = self.hyperliquid_fact_commit.as_mut() {
+            if pending.require_recovery() {
+                warn!(
+                    "defer Hyperliquid factual replay until the durable in-flight fact commits: reason={reason}"
+                );
+            }
+            self.refresh_hyperliquid_readiness();
+            return;
+        }
+        if let Some(consumer) = self.hyperliquid_fact_replay.as_mut() {
+            if consumer.protocol.is_gap() {
+                error!(
+                    "Hyperliquid factual replay GAP is latched until pre_trade restart; refusing handshake retry: reason={reason}"
+                );
+                self.refresh_hyperliquid_readiness();
+                return;
+            }
+            consumer.restart_handshake(reason);
+        }
+        self.refresh_hyperliquid_readiness();
+    }
+
+    fn drive_hyperliquid_fact_handshake(&mut self) {
+        self.drive_hyperliquid_fact_commit();
+        if self.hyperliquid_fact_commit.is_some() {
+            return;
+        }
+        if let Some(consumer) = self.hyperliquid_fact_replay.as_mut() {
+            consumer.drive(Instant::now());
+        }
+    }
+
+    fn begin_hyperliquid_fact_commit(&mut self, events: Vec<Bytes>, caught_up: bool) {
+        if self.hyperliquid_fact_commit.is_some()
+            || !self
+                .hyperliquid_fact_replay
+                .as_ref()
+                .is_some_and(|consumer| consumer.protocol.pending_commit().is_some())
+        {
+            self.fail_hyperliquid_fact_commit(
+                "attempted to overlap Hyperliquid durable fact transactions",
+            );
+            return;
+        }
+        self.hyperliquid_fact_commit = Some(PendingHyperliquidFactBatch::new(events, caught_up));
+        self.refresh_hyperliquid_readiness();
+        self.drive_hyperliquid_fact_commit();
+    }
+
+    fn fail_hyperliquid_fact_commit(&mut self, reason: &str) {
+        error!("Hyperliquid durable fact transaction failed closed: {reason}");
+        self.hyperliquid_fact_commit = None;
+        if let Some(consumer) = self.hyperliquid_fact_replay.as_mut() {
+            consumer.protocol.fail_closed();
+        }
+        self.refresh_hyperliquid_readiness();
+    }
+
+    fn drive_hyperliquid_fact_commit(&mut self) {
+        if self.hyperliquid_fact_commit.is_none() {
+            return;
+        }
+
+        let (mut acks, ack_receive_error) = PersistChannel::with(|channel| {
+            let mut acks = Vec::new();
+            let mut receive_error = None;
+            for _ in 0..HYPERLIQUID_FACT_ACK_DRAIN_LIMIT {
+                match channel.receive_hyperliquid_account_fact_ack() {
+                    Ok(Some(ack)) => acks.push(ack),
+                    Ok(None) => break,
+                    Err(err) => {
+                        receive_error = Some(err);
+                        break;
+                    }
+                }
+            }
+            (acks, receive_error)
+        });
+        if let Some(err) = ack_receive_error {
+            debug!("Hyperliquid fact ACK receive unavailable; retained request will retry: {err}");
+        }
+
+        let now = Instant::now();
+        for _ in 0..HYPERLIQUID_FACT_COMMIT_STEP_LIMIT {
+            let Some(payload) = self
+                .hyperliquid_fact_commit
+                .as_ref()
+                .and_then(|pending| pending.events.front().cloned())
+            else {
+                let pending = self
+                    .hyperliquid_fact_commit
+                    .take()
+                    .expect("checked Hyperliquid fact commit");
+                let commit_result = self
+                    .hyperliquid_fact_replay
+                    .as_mut()
+                    .context("Hyperliquid factual replay consumer is missing")
+                    .and_then(HyperliquidFactReplayConsumer::commit_applied);
+                match commit_result {
+                    Ok(committed_caught_up) if committed_caught_up == pending.caught_up => {
+                        let recovery_required = pending.recovery_required || !pending.caught_up;
+                        if recovery_required {
+                            self.restart_hyperliquid_fact_handshake(
+                                "facts arrived while durable persistence was in flight",
+                            );
+                        } else if let Some(consumer) = self.hyperliquid_fact_replay.as_ref() {
+                            info!(
+                                "Hyperliquid factual commit durable: monitor_id={} last_fact_seq={}",
+                                consumer.protocol.monitor_id, consumer.protocol.last_fact_seq
+                            );
+                        }
+                        self.refresh_hyperliquid_readiness();
+                    }
+                    Ok(_) => self.fail_hyperliquid_fact_commit(
+                        "durable cursor caught-up state did not match the prepared transaction",
+                    ),
+                    Err(err) => self.fail_hyperliquid_fact_commit(&format!(
+                        "persist cursor after durable fact ACK failed: {err:#}"
+                    )),
+                }
+                return;
+            };
+
+            let metadata = match hyperliquid_audit_fact_metadata(&payload) {
+                Ok(metadata) => metadata,
+                Err(err) => {
+                    self.fail_hyperliquid_fact_commit(&format!(
+                        "decode retained persistence request failed: {err:#}"
+                    ));
+                    return;
+                }
+            };
+            let Some(metadata) = metadata else {
+                if let Err(err) = self.apply_replayed_hyperliquid_fact(&payload) {
+                    self.fail_hyperliquid_fact_commit(&format!(
+                        "apply validated non-audit replay fact failed: {err:#}"
+                    ));
+                    return;
+                }
+                self.hyperliquid_fact_commit
+                    .as_mut()
+                    .expect("pending batch remains while applying front")
+                    .events
+                    .pop_front();
+                continue;
+            };
+            if metadata.used_len > HYPERLIQUID_ACCOUNT_FACT_MAX_BYTES {
+                self.fail_hyperliquid_fact_commit(
+                    "retained Hyperliquid fact exceeds persistence envelope",
+                );
+                return;
+            }
+            let exact_payload = &payload[..metadata.used_len];
+            let matching_ack = acks.iter().position(|ack| {
+                hyperliquid_fact_ack_matches_payload(ack, exact_payload).unwrap_or(false)
+            });
+            if let Some(index) = matching_ack {
+                acks.swap_remove(index);
+                if let Err(err) = self.apply_replayed_hyperliquid_fact(exact_payload) {
+                    self.fail_hyperliquid_fact_commit(&format!(
+                        "apply durable Hyperliquid fact after ACK failed: {err:#}"
+                    ));
+                    return;
+                }
+                let pending = self
+                    .hyperliquid_fact_commit
+                    .as_mut()
+                    .expect("pending batch remains after durable apply");
+                pending.events.pop_front();
+                pending.next_publish_at = now;
+                continue;
+            }
+
+            let pending = self
+                .hyperliquid_fact_commit
+                .as_mut()
+                .expect("pending batch remains before persistence request");
+            if now >= pending.next_publish_at {
+                if let Err(err) = PersistChannel::with(|channel| {
+                    channel.try_publish_hyperliquid_account_fact(exact_payload)
+                }) {
+                    warn!(
+                        "publish retained Hyperliquid fact failed; will retry without cursor advance: monitor_id={} fact_seq={} err={}",
+                        metadata.identity.monitor_id, metadata.identity.fact_seq, err
+                    );
+                }
+                pending.next_publish_at = now + HYPERLIQUID_FACT_PERSIST_RETRY;
+            }
+            return;
+        }
     }
 
     fn ensure_subscriber(&mut self) -> bool {
@@ -433,23 +1889,36 @@ impl BasicAccountListener {
             }
         };
         let service_builder = || {
-            self.node
+            let builder = self
+                .node
                 .service_builder(&service_name_obj)
                 .publish_subscribe::<[u8; ACCOUNT_PAYLOAD]>()
                 .max_publishers(1)
                 .max_subscribers(PM_MAX_SUBSCRIBERS)
                 .history_size(PM_HISTORY_SIZE)
-                .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
+                .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE);
+            if self.require_non_overflow {
+                builder.enable_safe_overflow(false)
+            } else {
+                builder
+            }
         };
 
         let service = if self.require_existing_service {
             match service_builder().open() {
                 Ok(service) => service,
                 Err(err) => {
-                    warn!(
-                        "waiting for account_monitor service: service={} exchange={:?} err={:?}",
-                        self.service_name, self.exchange, err
-                    );
+                    if self.require_non_overflow && is_incompatible_overflow_behavior(&err) {
+                        error!(
+                            "account_monitor service requires safe_overflow=false: service={} exchange={:?} err={:?}",
+                            self.service_name, self.exchange, err
+                        );
+                    } else {
+                        warn!(
+                            "waiting for account_monitor service: service={} exchange={:?} err={:?}",
+                            self.service_name, self.exchange, err
+                        );
+                    }
                     self.next_open_attempt_at = Instant::now() + Duration::from_secs(1);
                     return false;
                 }
@@ -465,10 +1934,18 @@ impl BasicAccountListener {
                     match service_builder().open_or_create() {
                         Ok(service) => service,
                         Err(err) => {
-                            warn!(
-                                "创建账户 IceOryx service 失败: service={} err={:?}",
-                                self.service_name, err
-                            );
+                            if self.require_non_overflow && is_incompatible_overflow_behavior(&err)
+                            {
+                                error!(
+                                    "account_monitor service requires safe_overflow=false: service={} err={:?}",
+                                    self.service_name, err
+                                );
+                            } else {
+                                warn!(
+                                    "创建账户 IceOryx service 失败: service={} err={:?}",
+                                    self.service_name, err
+                                );
+                            }
                             self.next_open_attempt_at = Instant::now() + Duration::from_secs(1);
                             return false;
                         }
@@ -484,6 +1961,9 @@ impl BasicAccountListener {
                     self.service_name, self.exchange
                 );
                 self.subscriber = Some(subscriber);
+                if self.exchange == Exchange::Hyperliquid {
+                    self.restart_hyperliquid_fact_handshake("account IPC subscriber attached");
+                }
                 true
             }
             Err(err) => {
@@ -502,9 +1982,11 @@ impl BasicAccountListener {
         max_weight: usize,
         max_raw_messages: usize,
     ) -> (bool, usize, usize) {
+        self.drive_hyperliquid_fact_commit();
         if !self.ensure_subscriber() {
             return (false, 0, 0);
         }
+        self.drive_hyperliquid_fact_handshake();
         let mut has_message = false;
         let mut consumed_weight = 0usize;
         let mut received = 0usize;
@@ -526,31 +2008,459 @@ impl BasicAccountListener {
                     warn!("account stream receive error: {err}");
                     self.subscriber = None;
                     self.next_open_attempt_at = Instant::now() + Duration::from_millis(200);
+                    if self.exchange == Exchange::Hyperliquid {
+                        self.restart_hyperliquid_fact_handshake(
+                            "account IPC subscriber receive failed",
+                        );
+                    }
                     break;
                 }
             }
         }
+        self.drive_hyperliquid_fact_commit();
         (has_message, consumed_weight, received)
     }
 
+    fn clear_hyperliquid_snapshot_scope(
+        &mut self,
+        account_scope: BasicAccountScope,
+        venue: TradingVenue,
+    ) {
+        if hyperliquid_snapshot_owns_risk(self.hyperliquid_account_mode, venue) {
+            self.hyperliquid_snapshot_risk_present = false;
+        }
+        if scope_matches_venue(
+            account_scope,
+            self.exchange,
+            venue,
+            self.binance_account_mode,
+            self.hyperliquid_account_mode,
+        ) {
+            match venue {
+                TradingVenue::HyperliquidMargin => {
+                    if self.open_venue == venue {
+                        if let LegMgr::Margin { bal } = &self.open_leg {
+                            bal.borrow_mut().clear();
+                        }
+                    }
+                    if self.hedge_venue == venue && self.hedge_venue != self.open_venue {
+                        if let LegMgr::Margin { bal } = &self.hedge_leg {
+                            bal.borrow_mut().clear();
+                        }
+                    }
+                    if let Some(settlement) = self.usdt_mgrs.get(&account_scope) {
+                        settlement.borrow_mut().clear();
+                    }
+                }
+                TradingVenue::HyperliquidFutures => {
+                    if self.open_venue == venue {
+                        if let LegMgr::Futures { um, .. } = &self.open_leg {
+                            um.borrow_mut().clear();
+                        }
+                    }
+                    if self.hedge_venue == venue && self.hedge_venue != self.open_venue {
+                        if let LegMgr::Futures { um, .. } = &self.hedge_leg {
+                            um.borrow_mut().clear();
+                        }
+                    }
+                    if account_scope == BasicAccountScope::HyperliquidStdPerp {
+                        if let Some(settlement) = self.usdt_mgrs.get(&account_scope) {
+                            settlement.borrow_mut().clear();
+                        }
+                    }
+                }
+                _ => {}
+            }
+            // PM risk is owned exclusively by the spot snapshot. A position
+            // refresh must not erase a still-current portfolio ratio.
+            if hyperliquid_snapshot_owns_risk(self.hyperliquid_account_mode, venue) {
+                MonitorChannel::with_inner_mut(|inner| {
+                    inner.latest_account_risk.remove(&account_scope);
+                });
+            }
+            MonitorChannel::mark_basic_state_dirty();
+        }
+    }
+
     fn process_payload(&mut self, payload: &[u8]) -> usize {
+        self.process_payload_inner(payload, false)
+    }
+
+    fn apply_replayed_hyperliquid_fact(&mut self, payload: &[u8]) -> Result<usize> {
+        let (msg_type, _, data) = split_basic_account_event(payload)
+            .context("replayed Hyperliquid fact has an invalid account envelope")?;
+        let identity = match msg_type {
+            BasicAccountEventType::HyperliquidNativeEvent => {
+                HyperliquidNativeEventMsg::from_bytes(data)?.identity
+            }
+            BasicAccountEventType::OrderUpdate => HyperliquidBasicOrderMsg::from_bytes(data)
+                .context("decode replayed Hyperliquid order fact")?
+                .fact_identity(),
+            BasicAccountEventType::HyperliquidFill => HyperliquidBasicFillMsg::from_bytes(data)
+                .context("decode replayed Hyperliquid fill fact")?
+                .fact_identity(),
+            BasicAccountEventType::HyperliquidFunding => HyperliquidFundingMsg::from_bytes(data)
+                .context("decode replayed Hyperliquid funding fact")?
+                .fact_identity(),
+            BasicAccountEventType::HyperliquidLedger => HyperliquidLedgerMsg::from_bytes(data)
+                .context("decode replayed Hyperliquid ledger fact")?
+                .fact_identity(),
+            BasicAccountEventType::HyperliquidTwapSliceFill => {
+                HyperliquidTwapSliceFillMsg::from_bytes(data)
+                    .context("decode replayed Hyperliquid TWAP slice fact")?
+                    .fact_identity()
+            }
+            BasicAccountEventType::HyperliquidTwapHistory => {
+                HyperliquidTwapHistoryMsg::from_bytes(data)
+                    .context("decode replayed Hyperliquid TWAP history fact")?
+                    .fact_identity()
+            }
+            _ => anyhow::bail!("replay transaction contains non-factual event {msg_type:?}"),
+        };
+        let expected_account_hash = self
+            .hyperliquid_fact_replay
+            .as_ref()
+            .map(|consumer| consumer.protocol.account_hash)
+            .context("Hyperliquid factual replay consumer is missing")?;
+        if identity.account_hash != expected_account_hash {
+            anyhow::bail!("replayed fact account/network identity changed before apply");
+        }
+        Ok(self.process_payload_inner(payload, true))
+    }
+
+    fn process_payload_inner(&mut self, payload: &[u8], factual_prevalidated: bool) -> usize {
         let Some((msg_type, account_scope, data)) = split_basic_account_event(payload) else {
             return MONITOR_FAST_POLL_LOW_WEIGHT;
         };
+        let exact_payload = &payload[..BASIC_ACCOUNT_EVENT_HEADER_LEN + data.len()];
+        if self.exchange == Exchange::Hyperliquid && !factual_prevalidated {
+            let fact_identity = match msg_type {
+                BasicAccountEventType::HyperliquidNativeEvent => {
+                    match HyperliquidNativeEventMsg::from_bytes(data) {
+                        Ok(msg) => Some(msg.identity),
+                        Err(err) => {
+                            error!(
+                                "invalid Hyperliquid native fact; readiness failed closed: {err:#}"
+                            );
+                            if let Some(consumer) = self.hyperliquid_fact_replay.as_mut() {
+                                consumer.protocol.fail_closed();
+                            }
+                            self.refresh_hyperliquid_readiness();
+                            return MONITOR_FAST_POLL_LOW_WEIGHT;
+                        }
+                    }
+                }
+                BasicAccountEventType::OrderUpdate => {
+                    match HyperliquidBasicOrderMsg::from_bytes(data) {
+                        Ok(msg) => Some(msg.fact_identity()),
+                        Err(err) => {
+                            error!(
+                                "invalid sequenced Hyperliquid order fact; readiness failed closed: {err:#}"
+                            );
+                            if let Some(consumer) = self.hyperliquid_fact_replay.as_mut() {
+                                consumer.protocol.fail_closed();
+                            }
+                            self.refresh_hyperliquid_readiness();
+                            return MONITOR_FAST_POLL_LOW_WEIGHT;
+                        }
+                    }
+                }
+                BasicAccountEventType::HyperliquidFill => {
+                    match HyperliquidBasicFillMsg::from_bytes(data) {
+                        Ok(msg) => Some(msg.fact_identity()),
+                        Err(err) => {
+                            error!(
+                                "invalid sequenced Hyperliquid fill fact; readiness failed closed: {err:#}"
+                            );
+                            if let Some(consumer) = self.hyperliquid_fact_replay.as_mut() {
+                                consumer.protocol.fail_closed();
+                            }
+                            self.refresh_hyperliquid_readiness();
+                            return MONITOR_FAST_POLL_LOW_WEIGHT;
+                        }
+                    }
+                }
+                BasicAccountEventType::HyperliquidFunding => {
+                    match HyperliquidFundingMsg::from_bytes(data) {
+                        Ok(msg) => Some(msg.fact_identity()),
+                        Err(err) => {
+                            error!(
+                                "invalid sequenced Hyperliquid funding fact; readiness failed closed: {err:#}"
+                            );
+                            if let Some(consumer) = self.hyperliquid_fact_replay.as_mut() {
+                                consumer.protocol.fail_closed();
+                            }
+                            self.refresh_hyperliquid_readiness();
+                            return MONITOR_FAST_POLL_LOW_WEIGHT;
+                        }
+                    }
+                }
+                BasicAccountEventType::HyperliquidLedger => {
+                    match HyperliquidLedgerMsg::from_bytes(data) {
+                        Ok(msg) => Some(msg.fact_identity()),
+                        Err(err) => {
+                            error!(
+                                "invalid sequenced Hyperliquid ledger fact; readiness failed closed: {err:#}"
+                            );
+                            if let Some(consumer) = self.hyperliquid_fact_replay.as_mut() {
+                                consumer.protocol.fail_closed();
+                            }
+                            self.refresh_hyperliquid_readiness();
+                            return MONITOR_FAST_POLL_LOW_WEIGHT;
+                        }
+                    }
+                }
+                BasicAccountEventType::HyperliquidTwapSliceFill => {
+                    match HyperliquidTwapSliceFillMsg::from_bytes(data) {
+                        Ok(msg) => Some(msg.fact_identity()),
+                        Err(err) => {
+                            error!(
+                                "invalid sequenced Hyperliquid TWAP slice fact; readiness failed closed: {err:#}"
+                            );
+                            if let Some(consumer) = self.hyperliquid_fact_replay.as_mut() {
+                                consumer.protocol.fail_closed();
+                            }
+                            self.refresh_hyperliquid_readiness();
+                            return MONITOR_FAST_POLL_LOW_WEIGHT;
+                        }
+                    }
+                }
+                BasicAccountEventType::HyperliquidTwapHistory => {
+                    match HyperliquidTwapHistoryMsg::from_bytes(data) {
+                        Ok(msg) => Some(msg.fact_identity()),
+                        Err(err) => {
+                            error!(
+                                "invalid sequenced Hyperliquid TWAP history fact; readiness failed closed: {err:#}"
+                            );
+                            if let Some(consumer) = self.hyperliquid_fact_replay.as_mut() {
+                                consumer.protocol.fail_closed();
+                            }
+                            self.refresh_hyperliquid_readiness();
+                            return MONITOR_FAST_POLL_LOW_WEIGHT;
+                        }
+                    }
+                }
+                _ => None,
+            };
+            if let Some(identity) = fact_identity {
+                let expected_account_hash = self
+                    .hyperliquid_fact_replay
+                    .as_ref()
+                    .map(|consumer| consumer.protocol.account_hash)
+                    .unwrap_or_default();
+                if self.hyperliquid_fact_commit.is_some() {
+                    if identity.account_hash != expected_account_hash {
+                        self.fail_hyperliquid_fact_commit(
+                            "fact account identity changed while persistence ACK was pending",
+                        );
+                    } else if self
+                        .hyperliquid_fact_commit
+                        .as_mut()
+                        .expect("checked pending Hyperliquid fact commit")
+                        .require_recovery()
+                    {
+                        warn!(
+                            "defer sequenced Hyperliquid fact while persistence ACK is pending; replay from committed cursor will recover monitor_id={} fact_seq={}",
+                            identity.monitor_id, identity.fact_seq
+                        );
+                    }
+                    return MONITOR_FAST_POLL_LOW_WEIGHT;
+                }
+                let disposition = self
+                    .hyperliquid_fact_replay
+                    .as_mut()
+                    .map(|consumer| consumer.protocol.observe_fact(identity, exact_payload))
+                    .unwrap_or(HyperliquidFactDisposition::FailClosed(
+                        "factual replay consumer is missing",
+                    ));
+                match disposition {
+                    HyperliquidFactDisposition::Apply => {
+                        self.begin_hyperliquid_fact_commit(
+                            vec![Bytes::copy_from_slice(exact_payload)],
+                            true,
+                        );
+                        return MONITOR_FAST_POLL_LOW_WEIGHT;
+                    }
+                    HyperliquidFactDisposition::Drop => return MONITOR_FAST_POLL_LOW_WEIGHT,
+                    HyperliquidFactDisposition::Recover(reason) => {
+                        self.restart_hyperliquid_fact_handshake(reason);
+                        return MONITOR_FAST_POLL_LOW_WEIGHT;
+                    }
+                    HyperliquidFactDisposition::FailClosed(reason) => {
+                        error!("Hyperliquid factual stream failed closed: {reason}");
+                        self.refresh_hyperliquid_readiness();
+                        return MONITOR_FAST_POLL_LOW_WEIGHT;
+                    }
+                }
+            }
 
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        payload.hash(&mut hasher);
-        let key = hasher.finish();
-        if !self.dedup.insert_check(key) {
-            return MONITOR_FAST_POLL_LOW_WEIGHT;
+            if msg_type == BasicAccountEventType::HyperliquidFactReplayControl {
+                let control = match HyperliquidFactReplayControlMsg::from_bytes(data) {
+                    Ok(control) => control,
+                    Err(err) => {
+                        error!(
+                            "invalid Hyperliquid factual replay control; readiness failed closed: {err:#}"
+                        );
+                        if let Some(consumer) = self.hyperliquid_fact_replay.as_mut() {
+                            consumer.protocol.fail_closed();
+                        }
+                        self.refresh_hyperliquid_readiness();
+                        return MONITOR_FAST_POLL_LOW_WEIGHT;
+                    }
+                };
+                let disposition = self
+                    .hyperliquid_fact_replay
+                    .as_mut()
+                    .map(|consumer| consumer.protocol.observe_control(control))
+                    .unwrap_or(HyperliquidFactControlDisposition::FailClosed(
+                        "factual replay consumer is missing",
+                    ));
+                match disposition {
+                    HyperliquidFactControlDisposition::Ignore
+                    | HyperliquidFactControlDisposition::Waiting => {}
+                    HyperliquidFactControlDisposition::Commit { events, caught_up } => {
+                        self.begin_hyperliquid_fact_commit(events, caught_up);
+                        return MONITOR_FAST_POLL_LOW_WEIGHT;
+                    }
+                    HyperliquidFactControlDisposition::ResetProducerEpoch => {
+                        let reset_result = self
+                            .hyperliquid_fact_replay
+                            .as_mut()
+                            .context("Hyperliquid factual replay consumer is missing")
+                            .and_then(HyperliquidFactReplayConsumer::clear_cursor_for_new_epoch);
+                        match reset_result {
+                            Ok(()) => {
+                                warn!(
+                                    "Hyperliquid producer epoch changed; cleared the durable delivery cursor and requesting a complete replay from seq=1: old request now answered by monitor_id={}",
+                                    control.monitor_id
+                                );
+                                self.restart_hyperliquid_fact_handshake(
+                                    "producer epoch reset after explicit GAP",
+                                );
+                            }
+                            Err(err) => {
+                                error!(
+                                    "failed to clear stale Hyperliquid factual cursor; readiness failed closed: {err:#}"
+                                );
+                                if let Some(consumer) = self.hyperliquid_fact_replay.as_mut() {
+                                    consumer.protocol.fail_closed();
+                                }
+                                self.refresh_hyperliquid_readiness();
+                            }
+                        }
+                        return MONITOR_FAST_POLL_LOW_WEIGHT;
+                    }
+                    HyperliquidFactControlDisposition::Recover(reason) => {
+                        self.restart_hyperliquid_fact_handshake(reason);
+                        return MONITOR_FAST_POLL_LOW_WEIGHT;
+                    }
+                    HyperliquidFactControlDisposition::FailClosed(reason) => {
+                        error!(
+                            "Hyperliquid factual replay failed closed: reason={} monitor_id={} range={}..={}",
+                            reason, control.monitor_id, control.first_seq, control.last_seq
+                        );
+                    }
+                }
+                self.refresh_hyperliquid_readiness();
+                return MONITOR_FAST_POLL_LOW_WEIGHT;
+            }
         }
 
-        match msg_type {
+        let is_hyperliquid_snapshot_row = self.exchange == Exchange::Hyperliquid
+            && self.hyperliquid_snapshot_readiness.is_snapshot_row(
+                msg_type,
+                account_scope,
+                self.hyperliquid_account_mode,
+            );
+        let is_hyperliquid_state_event = self.exchange == Exchange::Hyperliquid
+            && matches!(
+                msg_type,
+                BasicAccountEventType::BalanceUpdate
+                    | BasicAccountEventType::BorrowInterest
+                    | BasicAccountEventType::HyperliquidSpotBalance
+                    | BasicAccountEventType::HyperliquidPerpDexState
+                    | BasicAccountEventType::PositionUpdate
+                    | BasicAccountEventType::UnrealizedPnlUpdate
+                    | BasicAccountEventType::AccountRisk
+            );
+        let is_hyperliquid_fact = self.exchange == Exchange::Hyperliquid
+            && matches!(
+                msg_type,
+                BasicAccountEventType::OrderUpdate
+                    | BasicAccountEventType::HyperliquidFill
+                    | BasicAccountEventType::HyperliquidFunding
+                    | BasicAccountEventType::HyperliquidLedger
+                    | BasicAccountEventType::HyperliquidTwapSliceFill
+                    | BasicAccountEventType::HyperliquidTwapHistory
+                    | BasicAccountEventType::HyperliquidNativeEvent
+            );
+        if is_hyperliquid_state_event && !is_hyperliquid_snapshot_row {
+            warn!(
+                "drop Hyperliquid account-state row outside an active snapshot transaction: event={msg_type:?} scope={}",
+                account_scope.as_str()
+            );
+            return MONITOR_FAST_POLL_LOW_WEIGHT;
+        }
+        if !is_hyperliquid_snapshot_row && !is_hyperliquid_fact {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            payload.hash(&mut hasher);
+            let key = hasher.finish();
+            if !self.dedup.insert_check(key) {
+                return MONITOR_FAST_POLL_LOW_WEIGHT;
+            }
+        }
+
+        let weight = match msg_type {
+            BasicAccountEventType::ExternalFuturesFill => {
+                if let Ok(fill) =
+                    mkt_parsers::msg::external_futures_fill::ExternalFuturesFill::from_bytes(data)
+                {
+                    use order_common::TradeUpdate;
+                    let venue = fill.trading_venue();
+                    if (venue == self.open_venue || venue == self.hedge_venue)
+                        && scope_matches_venue(
+                            account_scope,
+                            self.exchange,
+                            venue,
+                            self.binance_account_mode,
+                            self.hyperliquid_account_mode,
+                        )
+                    {
+                        let record = build_uta_external_uniform_order(&fill);
+                        PersistChannel::with(|channel| {
+                            channel.publish_trade_update_unmatched(&fill);
+                            if let Some(record) = &record {
+                                channel.publish_uniform_order(record);
+                            }
+                        });
+                        if record.is_some() {
+                            MonitorChannel::instance().bump_trade_update_seq();
+                            if fill.reason.as_deref() == Some("adl")
+                                && venue == self.hedge_venue
+                                && adl_spot_repair_enabled(
+                                    self.open_venue,
+                                    self.hedge_venue,
+                                    MonitorChannel::instance().arb_mode(),
+                                    EXEC_RUNTIME_MODE.with(Cell::get),
+                                )
+                            {
+                                dispatch_adl_spot_repair(&self.strategy_mgr, &fill, None);
+                            }
+                        }
+                    }
+                }
+                MONITOR_FAST_POLL_NORMAL_WEIGHT
+            }
+
             BasicAccountEventType::BalanceUpdate => {
                 let mut weight = MONITOR_FAST_POLL_LOW_WEIGHT;
                 if let Ok(msg) = BasicBalanceMsg::from_bytes(data) {
-                    if msg.symbol.eq_ignore_ascii_case("USDT") {
-                        if let Some(mgr) = self.usdt_mgrs.get(&account_scope) {
+                    if let Some(mgr) = self.usdt_mgrs.get(&account_scope) {
+                        let is_settlement_asset = {
+                            let mgr = mgr.borrow();
+                            msg.symbol.eq_ignore_ascii_case(mgr.settlement_asset())
+                        };
+                        if is_settlement_asset {
                             mgr.borrow_mut().apply_balance(&msg);
                         }
                     }
@@ -559,6 +2469,7 @@ impl BasicAccountListener {
                         self.exchange,
                         self.open_venue,
                         self.binance_account_mode,
+                        self.hyperliquid_account_mode,
                     ) {
                         if let LegMgr::Margin { bal, .. } = &self.open_leg {
                             bal.borrow_mut().apply_balance(&msg);
@@ -579,6 +2490,7 @@ impl BasicAccountListener {
                         self.exchange,
                         self.hedge_venue,
                         self.binance_account_mode,
+                        self.hyperliquid_account_mode,
                     ) {
                         if let LegMgr::Margin { bal, .. } = &self.hedge_leg {
                             bal.borrow_mut().apply_balance(&msg);
@@ -618,6 +2530,7 @@ impl BasicAccountListener {
                         self.exchange,
                         self.open_venue,
                         self.binance_account_mode,
+                        self.hyperliquid_account_mode,
                     ) {
                         if let LegMgr::Futures { um, .. } = &self.open_leg {
                             um.borrow_mut().apply_position(&msg);
@@ -632,6 +2545,7 @@ impl BasicAccountListener {
                         self.exchange,
                         self.hedge_venue,
                         self.binance_account_mode,
+                        self.hyperliquid_account_mode,
                     ) {
                         if let LegMgr::Futures { um, .. } = &self.hedge_leg {
                             um.borrow_mut().apply_position(&msg);
@@ -647,7 +2561,7 @@ impl BasicAccountListener {
                         let e_ts = msg.timestamp.max(0).saturating_mul(1000);
                         if self.open_venue == self.hedge_venue {
                             MonitorChannel::queue_mm_position_risk_check(&symbol, e_ts);
-                        } else {
+                        } else if !EXEC_RUNTIME_MODE.with(Cell::get) {
                             MonitorChannel::queue_arb_position_risk_check(&symbol, e_ts);
                         }
                     }
@@ -662,6 +2576,7 @@ impl BasicAccountListener {
                         self.exchange,
                         self.open_venue,
                         self.binance_account_mode,
+                        self.hyperliquid_account_mode,
                     ) {
                         if let LegMgr::Futures { um, .. } = &self.open_leg {
                             um.borrow_mut().apply_unrealized_pnl(&msg);
@@ -672,6 +2587,7 @@ impl BasicAccountListener {
                         self.exchange,
                         self.hedge_venue,
                         self.binance_account_mode,
+                        self.hyperliquid_account_mode,
                     ) {
                         if let LegMgr::Futures { um, .. } = &self.hedge_leg {
                             um.borrow_mut().apply_unrealized_pnl(&msg);
@@ -684,8 +2600,12 @@ impl BasicAccountListener {
             BasicAccountEventType::BorrowInterest => {
                 let mut weight = MONITOR_FAST_POLL_LOW_WEIGHT;
                 if let Ok(msg) = BasicBorrowInterestMsg::from_bytes(data) {
-                    if msg.symbol.eq_ignore_ascii_case("USDT") {
-                        if let Some(mgr) = self.usdt_mgrs.get(&account_scope) {
+                    if let Some(mgr) = self.usdt_mgrs.get(&account_scope) {
+                        let is_settlement_asset = {
+                            let mgr = mgr.borrow();
+                            msg.symbol.eq_ignore_ascii_case(mgr.settlement_asset())
+                        };
+                        if is_settlement_asset {
                             mgr.borrow_mut().apply_borrow_interest(&msg);
                         }
                     }
@@ -694,6 +2614,7 @@ impl BasicAccountListener {
                         self.exchange,
                         self.open_venue,
                         self.binance_account_mode,
+                        self.hyperliquid_account_mode,
                     ) {
                         if let LegMgr::Margin { bal, .. } = &self.open_leg {
                             bal.borrow_mut().apply_borrow_interest(&msg);
@@ -714,6 +2635,7 @@ impl BasicAccountListener {
                         self.exchange,
                         self.hedge_venue,
                         self.binance_account_mode,
+                        self.hyperliquid_account_mode,
                     ) {
                         if let LegMgr::Margin { bal, .. } = &self.hedge_leg {
                             bal.borrow_mut().apply_borrow_interest(&msg);
@@ -734,11 +2656,19 @@ impl BasicAccountListener {
                             dispatch_order_update_generic(&self.strategy_mgr, &msg);
                         }
                     }
-                    Exchange::Binance => {
-                        if let Ok(msg) = BinanceBasicOrderMsg::from_bytes(data) {
-                            dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                    Exchange::Binance => match BinanceBasicOrderMsg::from_bytes(data) {
+                        Ok(msg) => {
+                            record_binance_decode_success();
+                            if msg.external_order_label().is_some() {
+                                dispatch_binance_external_order_update(&msg);
+                            } else {
+                                dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                            }
                         }
-                    }
+                        Err(err) => {
+                            record_binance_decode_failure(account_scope, data.len(), &err);
+                        }
+                    },
                     Exchange::Gate => {
                         if let Ok(msg) = GateBasicOrderMsg::from_bytes(data) {
                             dispatch_order_update_generic(&self.strategy_mgr, &msg);
@@ -751,6 +2681,22 @@ impl BasicAccountListener {
                     }
                     Exchange::Bybit => {
                         if let Ok(msg) = BybitBasicOrderMsg::from_bytes(data) {
+                            dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                        }
+                    }
+                    Exchange::Hyperliquid => {
+                        if let Ok(mut msg) = HyperliquidBasicOrderMsg::from_bytes(data) {
+                            let local_order =
+                                MonitorChannel::try_order_manager().and_then(|order_manager| {
+                                    order_manager.borrow().get(msg.client_order_id)
+                                });
+                            override_hyperliquid_order_intent_from_local(
+                                &mut msg,
+                                local_order.as_ref(),
+                            );
+                            if order_common::OrderUpdate::status(&msg).is_finished() {
+                                clear_deferred_hyperliquid_terminal(msg.client_order_id);
+                            }
                             dispatch_order_update_generic(&self.strategy_mgr, &msg);
                         }
                     }
@@ -767,9 +2713,213 @@ impl BasicAccountListener {
                 }
                 MONITOR_FAST_POLL_NORMAL_WEIGHT
             }
-            BasicAccountEventType::AccountRisk => match BasicAccountRiskMsg::from_bytes(data) {
+            BasicAccountEventType::HyperliquidFill => {
+                match HyperliquidBasicFillMsg::from_bytes(data) {
+                    Ok(msg) => {
+                        let matched = if msg.client_order_id > 0 {
+                            dispatch_trade_update_generic(&self.strategy_mgr, &msg)
+                        } else {
+                            MonitorChannel::instance().bump_trade_update_seq();
+                            false
+                        };
+                        if !matched {
+                            let forced_close = build_hyperliquid_external_uniform_order(&msg);
+                            PersistChannel::with(|channel| {
+                                channel.publish_trade_update_unmatched(&msg);
+                                if let Some(record) = &forced_close {
+                                    channel.publish_uniform_order(record);
+                                }
+                            });
+                            if forced_close.is_some() {
+                                warn!(
+                                    "Hyperliquid exchange liquidation fill persisted: method={} venue={:?} symbol={} oid={} tid={} tx_hash={} price={:.8} qty={:.8}",
+                                    msg.liquidation_method,
+                                    order_common::TradeUpdate::trading_venue(&msg),
+                                    msg.symbol,
+                                    msg.order_id,
+                                    msg.venue_trade_id,
+                                    msg.transaction_hash,
+                                    msg.price,
+                                    msg.last_filled_quantity,
+                                );
+                            } else {
+                                warn!(
+                                    "Hyperliquid factual fill persisted unmatched: venue={:?} symbol={} oid={} client_order_id={} tid={} tx_hash={} price={:.8} qty={:.8}",
+                                    order_common::TradeUpdate::trading_venue(&msg),
+                                    msg.symbol,
+                                    msg.order_id,
+                                    msg.client_order_id,
+                                    msg.venue_trade_id,
+                                    msg.transaction_hash,
+                                    msg.price,
+                                    msg.last_filled_quantity,
+                                );
+                            }
+                        }
+                    }
+                    Err(err) => warn!("Hyperliquid fill decode failed: {err:#}"),
+                }
+                MONITOR_FAST_POLL_NORMAL_WEIGHT
+            }
+            BasicAccountEventType::HyperliquidFunding => {
+                if let Err(err) = HyperliquidFundingMsg::from_bytes(data) {
+                    warn!("Hyperliquid funding fact decode failed after sequencing: {err:#}");
+                }
+                MONITOR_FAST_POLL_LOW_WEIGHT
+            }
+            BasicAccountEventType::HyperliquidLedger => {
+                if let Err(err) = HyperliquidLedgerMsg::from_bytes(data) {
+                    warn!("Hyperliquid ledger fact decode failed after sequencing: {err:#}");
+                }
+                MONITOR_FAST_POLL_LOW_WEIGHT
+            }
+            BasicAccountEventType::HyperliquidTwapSliceFill => {
+                if let Err(err) = HyperliquidTwapSliceFillMsg::from_bytes(data) {
+                    warn!(
+                        "Hyperliquid TWAP slice association decode failed after sequencing: {err:#}"
+                    );
+                }
+                MONITOR_FAST_POLL_LOW_WEIGHT
+            }
+            BasicAccountEventType::HyperliquidTwapHistory => {
+                if let Err(err) = HyperliquidTwapHistoryMsg::from_bytes(data) {
+                    warn!("Hyperliquid TWAP history decode failed after sequencing: {err:#}");
+                }
+                MONITOR_FAST_POLL_LOW_WEIGHT
+            }
+            BasicAccountEventType::HyperliquidNativeEvent => {
+                // Durable account evidence only. Canonical order/fill/state
+                // channels own strategy lifecycle, balances, and positions.
+                MONITOR_FAST_POLL_LOW_WEIGHT
+            }
+            BasicAccountEventType::HyperliquidSpotBalance => {
+                if let Err(err) = HyperliquidSpotBalanceMsg::from_bytes(data) {
+                    warn!("Hyperliquid spot balance row decode failed: {err:#}");
+                }
+                MONITOR_FAST_POLL_LOW_WEIGHT
+            }
+            BasicAccountEventType::HyperliquidPerpDexState => {
+                if let Err(err) = self
+                    .hyperliquid_snapshot_readiness
+                    .validate_perp_dex_state_row(data)
+                {
+                    error!(
+                        "invalid Hyperliquid perpetual DEX state row; snapshot batch failed closed: {err:#}"
+                    );
+                    self.hyperliquid_snapshot_risk_present = false;
+                    self.refresh_hyperliquid_readiness();
+                }
+                MONITOR_FAST_POLL_LOW_WEIGHT
+            }
+            BasicAccountEventType::HyperliquidSnapshotComplete => {
+                match HyperliquidSnapshotCompleteMsg::from_bytes(data) {
+                    Ok(msg) => {
+                        let expected_account_hash = self
+                            .hyperliquid_fact_replay
+                            .as_ref()
+                            .map(|consumer| consumer.protocol.account_hash);
+                        if expected_account_hash != Some(msg.account_hash) {
+                            error!(
+                                "drop Hyperliquid snapshot control with mismatched account identity; readiness failed closed"
+                            );
+                            if let Some(consumer) = self.hyperliquid_fact_replay.as_mut() {
+                                consumer.protocol.fail_closed();
+                            }
+                            self.hyperliquid_snapshot_readiness =
+                                HyperliquidLiveSnapshotReadiness::default();
+                            self.hyperliquid_snapshot_risk_present = false;
+                            self.refresh_hyperliquid_readiness();
+                            return MONITOR_FAST_POLL_LOW_WEIGHT;
+                        }
+                        let producer_epoch_changed = self
+                            .hyperliquid_fact_replay
+                            .as_ref()
+                            .is_some_and(|consumer| {
+                                consumer.protocol.is_ready()
+                                    && consumer.protocol.monitor_id != msg.monitor_id
+                            });
+                        if producer_epoch_changed {
+                            self.restart_hyperliquid_fact_handshake(
+                                "snapshot producer epoch changed",
+                            );
+                        }
+                        let venue = TradingVenue::from_u8(msg.venue);
+                        if let Some(
+                            venue @ (TradingVenue::HyperliquidMargin
+                            | TradingVenue::HyperliquidFutures),
+                        ) = venue
+                        {
+                            if scope_matches_venue(
+                                account_scope,
+                                self.exchange,
+                                venue,
+                                self.binance_account_mode,
+                                self.hyperliquid_account_mode,
+                            ) {
+                                let now_ms = get_timestamp_us() / 1_000;
+                                if self.hyperliquid_snapshot_readiness.monitor_id != msg.monitor_id
+                                {
+                                    self.hyperliquid_snapshot_risk_present = false;
+                                }
+                                let control_result = self
+                                    .hyperliquid_snapshot_readiness
+                                    .apply_control(venue, &msg, now_ms);
+                                match control_result {
+                                    Ok(HyperliquidSnapshotPhase::Begin) => {
+                                        self.clear_hyperliquid_snapshot_scope(account_scope, venue);
+                                    }
+                                    Ok(HyperliquidSnapshotPhase::Invalidate) => {}
+                                    Ok(HyperliquidSnapshotPhase::Complete) => {}
+                                    Err(err) => {
+                                        warn!(
+                                            "drop invalid Hyperliquid snapshot control: venue={venue:?} scope={} err={err:#}",
+                                            account_scope.as_str()
+                                        );
+                                        return MONITOR_FAST_POLL_LOW_WEIGHT;
+                                    }
+                                }
+
+                                self.refresh_hyperliquid_readiness();
+                            } else {
+                                warn!(
+                                    "drop Hyperliquid snapshot marker with mismatched scope: venue={venue:?} scope={}",
+                                    account_scope.as_str()
+                                );
+                            }
+                        } else {
+                            warn!(
+                                "drop Hyperliquid snapshot marker with invalid venue={}",
+                                msg.venue
+                            );
+                        }
+                    }
+                    Err(err) => warn!("Hyperliquid snapshot marker decode failed: {err:#}"),
+                }
+                MONITOR_FAST_POLL_LOW_WEIGHT
+            }
+            BasicAccountEventType::AccountRisk => match if self.exchange == Exchange::Hyperliquid
+                && account_scope == BasicAccountScope::HyperliquidPortfolioMargin
+            {
+                decode_hyperliquid_portfolio_risk(data)
+            } else {
+                BasicAccountRiskMsg::from_bytes(data)
+            } {
                 Ok(msg) => {
+                    if self.exchange == Exchange::Hyperliquid
+                        && matches!(
+                            account_scope,
+                            BasicAccountScope::HyperliquidStdPerp
+                                | BasicAccountScope::HyperliquidUnified
+                                | BasicAccountScope::HyperliquidPortfolioMargin
+                        )
+                    {
+                        self.hyperliquid_snapshot_risk_present = true;
+                    }
                     crate::pre_trade::account_open_block::apply_bitget_unified_account_risk(&msg);
+                    crate::pre_trade::account_open_block::apply_gate_unified_account_risk(
+                        account_scope,
+                        &msg,
+                    );
                     crate::pre_trade::account_open_block::apply_bybit_unified_account_risk(&msg);
                     crate::pre_trade::unimmr_open_lock::UnimmrOpenLock::apply_account_risk(
                         account_scope,
@@ -788,6 +2938,13 @@ impl BasicAccountListener {
                         "AccountRisk decode failed: scope={} err={err:#}",
                         account_scope.as_str()
                     );
+                    if self.exchange == Exchange::Hyperliquid
+                        && account_scope == BasicAccountScope::HyperliquidPortfolioMargin
+                    {
+                        self.hyperliquid_snapshot_readiness.spot.fail_closed();
+                        self.hyperliquid_snapshot_risk_present = false;
+                        self.refresh_hyperliquid_readiness();
+                    }
                     MONITOR_FAST_POLL_LOW_WEIGHT
                 }
             },
@@ -809,8 +2966,11 @@ impl BasicAccountListener {
                 }
                 MONITOR_FAST_POLL_LOW_WEIGHT
             }
-            BasicAccountEventType::Error => MONITOR_FAST_POLL_LOW_WEIGHT,
-        }
+            BasicAccountEventType::HyperliquidFactReplayControl
+            | BasicAccountEventType::RapidXFinancial
+            | BasicAccountEventType::Error => MONITOR_FAST_POLL_LOW_WEIGHT,
+        };
+        weight
     }
 }
 
@@ -1032,6 +3192,7 @@ struct MonitorChannelInner {
     hedge_venue: TradingVenue,
     arb_mode: ArbMode,
     binance_account_mode: Option<BinanceAccountMode>,
+    hyperliquid_account_mode: Option<HyperliquidAccountMode>,
     open_leg: LegMgr,
     hedge_leg: LegMgr,
     /// USDT 单独维护：account_scope -> manager（Binance standard 下 margin/futures 分离）
@@ -1048,6 +3209,7 @@ struct MonitorChannelInner {
     order_manager: Rc<RefCell<OrderManager>>,
     /// 本地 ArbClose 可平库存账本。启动/首次访问用账户快照 seed，运行中只相信本地订单回报。
     close_inventory: Rc<RefCell<CloseInventoryLedger>>,
+    hedge_execution_blocks: RefCell<HashMap<String, &'static str>>,
     /// Monotonic counter incremented when a TradeUpdate is received.
     trade_update_seq: u64,
     /// 各账户 scope 最新一份风险快照，由 account_monitor 端 AccountRisk 消息驱动。
@@ -1075,6 +3237,8 @@ struct ArbStartupNetGate {
     hedge_ready: bool,
     open_ts_us: i64,
     hedge_ts_us: i64,
+    open_valid_until_ms: Option<i64>,
+    hedge_valid_until_ms: Option<i64>,
     dropped_signals: u64,
 }
 
@@ -1086,20 +3250,41 @@ impl ArbStartupNetGate {
             hedge_ready: !enabled,
             open_ts_us: 0,
             hedge_ts_us: 0,
+            open_valid_until_ms: None,
+            hedge_valid_until_ms: None,
             dropped_signals: 0,
         }
     }
 
     fn ready(&self) -> bool {
-        !self.enabled || (self.open_ready && self.hedge_ready)
+        if !self.enabled {
+            return true;
+        }
+        let now_ms = get_timestamp_us() / 1_000;
+        let open_fresh = self
+            .open_valid_until_ms
+            .is_none_or(|deadline| deadline > now_ms);
+        let hedge_fresh = self
+            .hedge_valid_until_ms
+            .is_none_or(|deadline| deadline > now_ms);
+        self.open_ready && open_fresh && self.hedge_ready && hedge_fresh
     }
 
     fn status(&self) -> ArbStartupNetGateStatus {
+        let now_ms = get_timestamp_us() / 1_000;
+        let open_ready = self.open_ready
+            && self
+                .open_valid_until_ms
+                .is_none_or(|deadline| deadline > now_ms);
+        let hedge_ready = self.hedge_ready
+            && self
+                .hedge_valid_until_ms
+                .is_none_or(|deadline| deadline > now_ms);
         ArbStartupNetGateStatus {
             enabled: self.enabled,
-            ready: self.ready(),
-            open_ready: self.open_ready,
-            hedge_ready: self.hedge_ready,
+            ready: !self.enabled || (open_ready && hedge_ready),
+            open_ready,
+            hedge_ready,
             open_ts_us: self.open_ts_us,
             hedge_ts_us: self.hedge_ts_us,
             dropped_signals: self.dropped_signals,
@@ -1117,7 +3302,7 @@ struct BasicState {
     usdt_equity_by_scope: HashMap<BasicAccountScope, f64>,
     // account scope -> futures UPL that should be included in eq.
     um_unrealized_equity_by_scope: HashMap<BasicAccountScope, f64>,
-    // AccountRisk actual equity overrides local mark-to-market eq for same-exchange unified paths.
+    // AccountRisk actual equity overrides local mark-to-market eq for one shared account scope.
     account_risk_equity_override: Option<(BasicAccountScope, f64)>,
     // asset -> net exposure valued in USDT at cache-refresh time.
     exposure_usdt_by_asset: HashMap<String, f64>,
@@ -1147,7 +3332,7 @@ fn missing_position_mark_assets(
     let mut missing = exposures
         .iter()
         .filter_map(|(asset, (open_qty, hedge_qty))| {
-            if asset.eq_ignore_ascii_case("USDT")
+            if is_exposure_exempt_asset(asset)
                 || open_qty.abs() + hedge_qty.abs() <= POSITION_MARK_QTY_EPSILON
             {
                 return None;
@@ -1162,6 +3347,81 @@ fn missing_position_mark_assets(
     missing
 }
 
+fn gate_missing_mark_symbols(
+    exposures: &HashMap<String, (f64, f64)>,
+    prices: &PriceTable,
+    open_venue: TradingVenue,
+    rules: Option<&VenueMinQtyTable>,
+) -> Vec<String> {
+    let mapper = create_symbol_mapper(Exchange::Gate);
+    let mut symbols = exposures
+        .iter()
+        .filter_map(|(asset, &(open, hedge))| {
+            if is_exposure_exempt_asset(asset)
+                || open.abs() + hedge.abs() <= POSITION_MARK_QTY_EPSILON
+            {
+                return None;
+            }
+            let symbol = mapper.asset_to_price_symbol(asset);
+            if super::gate_mark_price_supplement::has_mark(prices, &symbol) {
+                return None;
+            }
+            let futures_qty = if open_venue == TradingVenue::GateFutures {
+                open
+            } else {
+                hedge
+            };
+            (futures_qty.abs() > POSITION_MARK_QTY_EPSILON
+                || rules.is_some_and(|table| table.contains_symbol(&symbol)))
+            .then_some(symbol)
+        })
+        .collect::<Vec<_>>();
+    symbols.sort_unstable();
+    symbols
+}
+
+fn gate_spot_only_quantity(
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+    (open_qty, hedge_qty): (f64, f64),
+) -> Option<f64> {
+    let (spot_qty, futures_qty) = match (open_venue, hedge_venue) {
+        (TradingVenue::GateMargin, TradingVenue::GateFutures) => (open_qty, hedge_qty),
+        (TradingVenue::GateFutures, TradingVenue::GateMargin) => (hedge_qty, open_qty),
+        _ => return None,
+    };
+    (spot_qty.is_finite()
+        && futures_qty.is_finite()
+        && spot_qty.abs() > POSITION_MARK_QTY_EPSILON
+        && futures_qty.abs() <= POSITION_MARK_QTY_EPSILON)
+        .then_some(spot_qty.abs())
+}
+
+fn concentration_positions_with_spot_quotes(
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+    exposures: &HashMap<String, (f64, f64)>,
+    marks: &HashMap<String, f64>,
+    positions: &HashMap<String, f64>,
+    spot_quotes: &HashMap<String, f64>,
+) -> (HashMap<String, f64>, Vec<String>) {
+    let mut priced = positions.clone();
+    let mut unknown = Vec::new();
+    for asset in missing_position_mark_assets(exposures, marks) {
+        let valuation = gate_spot_only_quantity(open_venue, hedge_venue, exposures[&asset])
+            .zip(spot_quotes.get(&asset).copied())
+            .filter(|(_, price)| price.is_finite() && *price > 0.0)
+            .map(|(qty, price)| qty * price)
+            .filter(|value| value.is_finite() && *value > 0.0);
+        if let Some(value) = valuation {
+            priced.insert(asset, value);
+        } else {
+            unknown.push(asset);
+        }
+    }
+    (priced, unknown)
+}
+
 fn top_two_gross_position_symbols(positions_by_asset: &HashMap<String, f64>) -> Vec<String> {
     const POSITION_EPSILON_USDT: f64 = 1e-6;
     const LIMIT: usize = 2;
@@ -1172,7 +3432,7 @@ fn top_two_gross_position_symbols(positions_by_asset: &HashMap<String, f64>) -> 
             continue;
         }
         let asset = asset.trim().to_ascii_uppercase();
-        if asset.is_empty() || asset == "USDT" {
+        if asset.is_empty() || is_exposure_exempt_asset(&asset) {
             continue;
         }
         let symbol = if asset.ends_with("USDT") {
@@ -1517,7 +3777,7 @@ impl MonitorChannel {
 
     fn queue_arb_margin_net_risk_check(asset: &str, e_ts: i64) -> bool {
         let asset = asset.trim().to_uppercase();
-        if asset.is_empty() || asset == "USDT" {
+        if asset.is_empty() || is_exposure_exempt_asset(&asset) {
             return false;
         }
         PENDING_RISK_CHECKS.with(|pending| {
@@ -1613,6 +3873,7 @@ impl MonitorChannel {
         if venue == inner.open_venue && !inner.arb_startup_net_gate.open_ready {
             inner.arb_startup_net_gate.open_ready = true;
             inner.arb_startup_net_gate.open_ts_us = now;
+            inner.arb_startup_net_gate.open_valid_until_ms = None;
             changed = true;
             info!(
                 "Arb startup net gate: open leg net initialized venue={:?} source={}",
@@ -1622,6 +3883,7 @@ impl MonitorChannel {
         if venue == inner.hedge_venue && !inner.arb_startup_net_gate.hedge_ready {
             inner.arb_startup_net_gate.hedge_ready = true;
             inner.arb_startup_net_gate.hedge_ts_us = now;
+            inner.arb_startup_net_gate.hedge_valid_until_ms = None;
             changed = true;
             info!(
                 "Arb startup net gate: hedge leg net initialized venue={:?} source={}",
@@ -1643,8 +3905,55 @@ impl MonitorChannel {
     }
 
     pub fn mark_arb_startup_net_seen_for_venue(&self, venue: TradingVenue, source: &'static str) {
+        if matches!(
+            venue,
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
+        ) {
+            return;
+        }
         Self::with_inner_mut(|inner| {
             Self::mark_arb_startup_net_seen_for_venue_inner(inner, venue, source);
+        });
+    }
+
+    fn set_hyperliquid_arb_snapshot_readiness(
+        &self,
+        venue: TradingVenue,
+        valid_until_ms: Option<i64>,
+    ) {
+        Self::with_inner_mut(|inner| {
+            if exchange_from_venue(venue) != Exchange::Hyperliquid {
+                return;
+            }
+            let was_ready = inner.arb_startup_net_gate.ready();
+            let factual_ready = HYPERLIQUID_FACT_STREAM_READY.with(Cell::get);
+            let ready = factual_ready && valid_until_ms.is_some();
+            let valid_until_ms = ready.then_some(valid_until_ms).flatten();
+            let now_us = get_timestamp_us();
+            if venue == inner.open_venue {
+                inner.arb_startup_net_gate.open_ready = ready;
+                inner.arb_startup_net_gate.open_valid_until_ms = valid_until_ms;
+                if ready {
+                    inner.arb_startup_net_gate.open_ts_us = now_us;
+                }
+            }
+            if venue == inner.hedge_venue {
+                inner.arb_startup_net_gate.hedge_ready = ready;
+                inner.arb_startup_net_gate.hedge_valid_until_ms = valid_until_ms;
+                if ready {
+                    inner.arb_startup_net_gate.hedge_ts_us = now_us;
+                }
+            }
+            let is_ready = inner.arb_startup_net_gate.ready();
+            if !was_ready && is_ready {
+                Self::queue_arb_startup_net_check(now_us);
+                info!(
+                    "Hyperliquid arb account snapshot gate released: venue={venue:?} valid_until_ms={:?}",
+                    valid_until_ms
+                );
+            } else if was_ready && !is_ready {
+                warn!("Hyperliquid arb account snapshot gate revoked: venue={venue:?}");
+            }
         });
     }
 
@@ -1679,7 +3988,7 @@ impl MonitorChannel {
             .exposures
             .into_iter()
             .filter_map(|(asset, (open_qty, hedge_qty))| {
-                if asset.eq_ignore_ascii_case("USDT") {
+                if is_exposure_exempt_asset(&asset) {
                     return None;
                 }
                 let net_qty = open_qty + hedge_qty;
@@ -1753,6 +4062,164 @@ impl MonitorChannel {
 
     pub fn trade_update_seq(&self) -> u64 {
         Self::with_inner(|inner| inner.trade_update_seq)
+    }
+
+    pub(crate) fn reserve_paired_close_exposure(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+        side: Side,
+        base_qty: f64,
+        client_order_id: i64,
+    ) -> Result<f64, String> {
+        Self::with_inner(|inner| {
+            if venue != inner.open_venue {
+                return Err("paired-close first leg does not match the deployment".into());
+            }
+            let asset = extract_base_asset_key(symbol).ok_or("invalid paired-close symbol")?;
+            let params = PreTradeParamsLoader::instance();
+            Self::with_basic_state_cached(|state| {
+                // A lowered max_pos_u must not make even one normal close child impossible.
+                // Unfinished closes share this budget until their factual hedge fills arrive.
+                let child_u = params.arb_amount_u_for_symbol(symbol);
+                let symbol_ratio = params.max_symbol_exposure_ratio();
+                let total_ratio = params.max_total_exposure_ratio();
+                let symbol_limit = if symbol_ratio > 0.0 {
+                    (params.max_pos_u_for_symbol(inner.open_venue, symbol) * symbol_ratio)
+                        .max(child_u)
+                } else {
+                    f64::INFINITY
+                };
+                let total_limit = if total_ratio > 0.0 {
+                    if !state.total_equity_usdt.is_finite() || state.total_equity_usdt <= 0.0 {
+                        return Err("invalid equity for paired-close exposure budget".into());
+                    }
+                    (state.total_equity_usdt * total_ratio).max(child_u)
+                } else {
+                    f64::INFINITY
+                };
+                let (open_position, hedge_position) = state
+                    .exposures
+                    .get(asset.as_ref())
+                    .copied()
+                    .unwrap_or_default();
+                inner.close_inventory.borrow_mut().exposure.reserve(
+                    super::close_exposure::CloseExposureRequest {
+                        id: client_order_id,
+                        asset: asset.as_ref(),
+                        open_venue: venue,
+                        hedge_venue: inner.hedge_venue,
+                        side,
+                        qty: base_qty,
+                        open_position,
+                        hedge_position,
+                        symbol_limit_usdt: symbol_limit,
+                        total_limit_usdt: total_limit,
+                    },
+                    |asset| state.mark_usdt_by_asset.get(asset).copied(),
+                )
+            })
+        })
+    }
+
+    pub(crate) fn is_paired_close(&self, id: i64) -> bool {
+        Self::try_with_inner(|inner| inner.close_inventory.borrow().exposure.contains(id))
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn check_paired_close_first(
+        &self,
+        id: i64,
+        venue: TradingVenue,
+        side: Side,
+        qty: f64,
+    ) -> bool {
+        Self::try_with_inner(|inner| {
+            inner
+                .close_inventory
+                .borrow()
+                .exposure
+                .matches_first(id, venue, side, qty)
+        })
+        .unwrap_or(false)
+    }
+
+    pub(crate) fn unrecorded_paired_close_first_fill(
+        &self,
+        id: i64,
+        cumulative: f64,
+    ) -> Option<f64> {
+        Self::try_with_inner(|inner| {
+            inner
+                .close_inventory
+                .borrow()
+                .exposure
+                .unrecorded_first_fill(id, cumulative)
+        })
+        .flatten()
+    }
+
+    pub(crate) fn record_paired_close_first_fill(&self, id: i64, qty: f64) -> bool {
+        Self::try_with_inner(|inner| {
+            let mut ledger = inner.close_inventory.borrow_mut();
+            let paired = ledger.exposure.contains(id);
+            ledger.exposure.first_fill(id, qty);
+            paired
+        })
+        .unwrap_or(false)
+    }
+
+    pub(crate) fn finish_paired_close_first(&self, id: i64) {
+        Self::try_with_inner(|inner| inner.close_inventory.borrow_mut().exposure.finish_first(id));
+    }
+
+    pub(crate) fn record_paired_close_hedge_fill(&self, id: i64, qty: f64) {
+        Self::try_with_inner(|inner| {
+            inner
+                .close_inventory
+                .borrow_mut()
+                .exposure
+                .hedge_fill(id, qty)
+        });
+    }
+
+    pub(crate) fn net_unsubmitted_paired_close_hedge(&self, id: i64, qty: f64) -> f64 {
+        Self::try_with_inner(|inner| {
+            inner
+                .close_inventory
+                .borrow_mut()
+                .exposure
+                .net_unsubmitted_hedge(id, qty)
+        })
+        .unwrap_or(0.0)
+    }
+
+    pub(crate) fn check_paired_close_hedge(
+        &self,
+        id: i64,
+        symbol: &str,
+        venue: TradingVenue,
+        side: Side,
+        base_qty: f64,
+    ) -> Result<(), String> {
+        Self::with_inner(|inner| {
+            let position = Self::get_position_qty_inner(inner, symbol, venue);
+            let asset =
+                extract_base_asset_key(symbol).ok_or("invalid paired-close hedge symbol")?;
+            if !inner
+                .close_inventory
+                .borrow()
+                .exposure
+                .matches_asset(id, asset.as_ref())
+            {
+                return Err("paired-close hedge symbol does not match its factual fill".into());
+            }
+            inner
+                .close_inventory
+                .borrow()
+                .exposure
+                .check_hedge(id, venue, side, base_qty, position)
+        })
     }
 
     pub fn reserve_close_inventory(
@@ -1941,6 +4408,21 @@ impl MonitorChannel {
         });
     }
 
+    pub fn finalize_close_inventory_order(
+        &self,
+        client_order_id: i64,
+        cumulative_filled_base_qty: f64,
+        reason: &str,
+    ) {
+        Self::with_inner(|inner| {
+            inner.close_inventory.borrow_mut().finalize_close_order(
+                client_order_id,
+                cumulative_filled_base_qty,
+                reason,
+            );
+        });
+    }
+
     pub fn release_close_inventory_unfilled(&self, client_order_id: i64, reason: &str) {
         Self::with_inner(|inner| {
             inner
@@ -2016,6 +4498,18 @@ impl MonitorChannel {
 
     pub fn try_price_table(&self) -> Option<Rc<RefCell<PriceTable>>> {
         Self::try_with_inner(|inner| inner.price_table.clone())
+    }
+
+    /// Use the same contract mark as the physical inverse-position snapshot.
+    pub fn inverse_position_mark_price(&self, venue: TradingVenue, symbol: &str) -> Option<f64> {
+        Self::try_with_inner(|inner| {
+            inner
+                .price_table
+                .borrow()
+                .mark_price(&min_qty_symbol_key(venue, symbol))
+                .filter(|price| price.is_finite() && *price > 0.0)
+        })
+        .flatten()
     }
 
     pub fn mark_price_for_symbol(&self, symbol: &str) -> Option<f64> {
@@ -2302,7 +4796,7 @@ impl MonitorChannel {
 
     fn handle_arb_open_margin_net_risk_after_update(&self, asset: &str, e_ts: i64) {
         let asset_upper = asset.trim().to_uppercase();
-        if asset_upper.is_empty() || asset_upper == "USDT" {
+        if asset_upper.is_empty() || is_exposure_exempt_asset(&asset_upper) {
             return;
         }
         if self.open_venue() == self.hedge_venue() {
@@ -2357,7 +4851,7 @@ impl MonitorChannel {
         if open_venue == TradingVenue::BinanceCoinFutures
             || hedge_venue == TradingVenue::BinanceCoinFutures
         {
-            return BINANCE_COIN_DERIVATIVES_SERVICE;
+            return BINANCE_DIRECT_DERIVATIVES_SERVICE;
         }
         if open_venue == TradingVenue::BitgetCoinFutures
             || hedge_venue == TradingVenue::BitgetCoinFutures
@@ -2369,7 +4863,16 @@ impl MonitorChannel {
             Exchange::Bybit => BYBIT_DERIVATIVES_SERVICE,
             Exchange::Bitget => BITGET_DERIVATIVES_SERVICE,
             Exchange::Gate => GATE_DERIVATIVES_SERVICE,
+            Exchange::Hyperliquid => HYPERLIQUID_DERIVATIVES_SERVICE,
             _ => BINANCE_DIRECT_DERIVATIVES_SERVICE,
+        }
+    }
+
+    fn mark_price_service_with_proxy(direct_service: &'static str, enabled: bool) -> &'static str {
+        if direct_service == BINANCE_DIRECT_DERIVATIVES_SERVICE && enabled {
+            BINANCE_PROXY_DERIVATIVES_SERVICE
+        } else {
+            direct_service
         }
     }
 
@@ -2396,7 +4899,7 @@ impl MonitorChannel {
             } else {
                 Some(BinanceAccountMode::Unified)
             };
-            let scope = scope_for_venue(venue, binance_mode);
+            let scope = scope_for_venue(venue, binance_mode, inner.hyperliquid_account_mode);
             inner
                 .usdt_mgrs
                 .get(&scope)
@@ -2411,7 +4914,7 @@ impl MonitorChannel {
             } else {
                 Some(BinanceAccountMode::Unified)
             };
-            scope_for_venue(venue, binance_mode)
+            scope_for_venue(venue, binance_mode, inner.hyperliquid_account_mode)
         })
     }
 
@@ -2471,7 +4974,7 @@ impl MonitorChannel {
             )
         })?;
         let base_asset_upper = base_asset.to_uppercase();
-        if base_asset_upper == "USDT" {
+        if is_exposure_exempt_asset(&base_asset_upper) {
             return Ok(None);
         }
         if venue != inner.open_venue && venue != inner.hedge_venue {
@@ -2491,7 +4994,7 @@ impl MonitorChannel {
         let mut current_asset_usdt = 0.0;
 
         for (asset, (open_qty, hedge_qty)) in &state.exposures {
-            if asset == "USDT" {
+            if is_exposure_exempt_asset(asset) {
                 continue;
             }
             let mark = state.mark_usdt_by_asset.get(asset).copied().unwrap_or(0.0);
@@ -2613,6 +5116,14 @@ impl MonitorChannel {
         venue: TradingVenue,
         signed_base_qty: f64,
     ) -> Result<(), String> {
+        if EXEC_RUNTIME_MODE.with(Cell::get)
+            && PreTradeParamsLoader::instance().exec_max_position_imbalance_ratio() > 0.0
+            && !self.exec_position_snapshot_ready()
+        {
+            return Err(
+                "Exec account position snapshots are not complete for all markets".to_string(),
+            );
+        }
         let Some(projection) =
             self.exec_position_imbalance_projection(symbol, venue, signed_base_qty)?
         else {
@@ -2665,6 +5176,92 @@ impl MonitorChannel {
         Self::with_inner(|_inner| {
             let state = Self::basic_state_cached();
             missing_position_mark_assets(&state.exposures, &state.mark_usdt_by_asset)
+        })
+    }
+
+    /// Gate spot-only holdings that have no derivatives mark. The public quote
+    /// poller reads this list without introducing REST work into risk checks.
+    pub(crate) fn gate_spot_valuation_assets(&self) -> Vec<String> {
+        Self::with_inner(|inner| {
+            Self::with_basic_state_cached(|state| {
+                missing_position_mark_assets(&state.exposures, &state.mark_usdt_by_asset)
+                    .into_iter()
+                    .filter(|asset| {
+                        gate_spot_only_quantity(
+                            inner.open_venue,
+                            inner.hedge_venue,
+                            state.exposures[asset],
+                        )
+                        .is_some()
+                    })
+                    .collect()
+            })
+        })
+    }
+
+    /// Missing Gate futures marks needed by factual holdings, including paired
+    /// positions whose net is zero. Unknown spot-only assets use spot valuation.
+    pub(crate) fn gate_mark_price_rest_symbols(&self) -> Vec<String> {
+        Self::with_inner(|inner| {
+            if !super::gate_mark_price_supplement::enabled(
+                inner.open_venue,
+                inner.hedge_venue,
+                inner.arb_mode,
+            ) {
+                return Vec::new();
+            }
+            Self::with_basic_state_cached(|state| {
+                gate_missing_mark_symbols(
+                    &state.exposures,
+                    &inner.price_table.borrow(),
+                    inner.open_venue,
+                    inner
+                        .venue_min_qty_tables
+                        .get(&TradingVenue::GateFutures)
+                        .map(Rc::as_ref),
+                )
+            })
+        })
+    }
+
+    pub(crate) fn seed_gate_mark_price_if_missing(&self, symbol: &str, mark: f64) -> bool {
+        // Recheck both the holding and the stream after the asynchronous GET.
+        if !self
+            .gate_mark_price_rest_symbols()
+            .iter()
+            .any(|s| s == symbol)
+        {
+            return false;
+        }
+        let applied = super::gate_mark_price_supplement::seed_missing_mark(
+            &mut self.price_table().borrow_mut(),
+            symbol,
+            mark,
+            get_timestamp_us(),
+        );
+        if applied {
+            Self::mark_basic_state_price_dirty();
+        }
+        applied
+    }
+
+    /// Concentration-only valuation. A spot quote can supplement a spot-only
+    /// holding, but cannot replace a futures mark or become an execution quote.
+    pub(crate) fn concentration_position_usdt_snapshot(
+        &self,
+        spot_quotes: &HashMap<String, f64>,
+    ) -> (HashMap<String, f64>, Vec<String>) {
+        Self::with_inner(|inner| {
+            Self::with_basic_state_cached(|state| {
+                concentration_positions_with_spot_quotes(
+                    inner.open_venue,
+                    inner.hedge_venue,
+                    &state.exposures,
+                    &state.mark_usdt_by_asset,
+                    &state.position_usdt_by_asset,
+                    spot_quotes,
+                )
+            })
         })
     }
 
@@ -2722,8 +5319,17 @@ impl MonitorChannel {
         } else {
             return 0.0;
         };
-        if asset.eq_ignore_ascii_case("USDT") {
-            let scope = scope_for_venue(venue, inner.binance_account_mode);
+        let settlement_asset = if exchange_from_venue(venue) == Exchange::Hyperliquid {
+            "USDC"
+        } else {
+            "USDT"
+        };
+        if asset.eq_ignore_ascii_case(settlement_asset) {
+            let scope = scope_for_venue(
+                venue,
+                inner.binance_account_mode,
+                inner.hyperliquid_account_mode,
+            );
             return inner
                 .usdt_mgrs
                 .get(&scope)
@@ -2747,6 +5353,8 @@ impl MonitorChannel {
         hedge_venue: TradingVenue,
         arb_mode: ArbMode,
         binance_account_mode: Option<BinanceAccountMode>,
+        hyperliquid_account_mode: Option<HyperliquidAccountMode>,
+        refresh_order_rules_from_venue: bool,
     ) -> Result<()> {
         // 仅支持当前已接入 pre_trade 的交易所
         for v in [open_venue, hedge_venue] {
@@ -2764,6 +5372,8 @@ impl MonitorChannel {
                     | TradingVenue::BitgetCoinFutures
                     | TradingVenue::GateMargin
                     | TradingVenue::GateFutures
+                    | TradingVenue::HyperliquidMargin
+                    | TradingVenue::HyperliquidFutures
             ) {
                 panic!("pre_trade does not support venue {:?}", v);
             }
@@ -2777,11 +5387,11 @@ impl MonitorChannel {
             HashMap::new();
         for (scope, ex) in [
             (
-                scope_for_venue(open_venue, binance_account_mode),
+                scope_for_venue(open_venue, binance_account_mode, hyperliquid_account_mode),
                 open_exchange,
             ),
             (
-                scope_for_venue(hedge_venue, binance_account_mode),
+                scope_for_venue(hedge_venue, binance_account_mode, hyperliquid_account_mode),
                 hedge_exchange,
             ),
         ] {
@@ -2797,11 +5407,13 @@ impl MonitorChannel {
             }
         } else if is_futures_venue(open_venue) {
             let mut min_qty_table = MinQtyTable::new(open_exchange);
-            if let Err(err) = min_qty_table.refresh().await {
-                warn!(
-                    "failed to refresh min_qty_table for {:?}: {err:#}",
-                    open_exchange
-                );
+            if refresh_order_rules_from_venue {
+                if let Err(err) = min_qty_table.refresh().await {
+                    warn!(
+                        "failed to refresh min_qty_table for {:?}: {err:#}",
+                        open_exchange
+                    );
+                }
             }
             LegMgr::Futures {
                 exchange: open_exchange,
@@ -2819,11 +5431,13 @@ impl MonitorChannel {
             }
         } else if is_futures_venue(hedge_venue) {
             let mut min_qty_table = MinQtyTable::new(hedge_exchange);
-            if let Err(err) = min_qty_table.refresh().await {
-                warn!(
-                    "failed to refresh min_qty_table for {:?}: {err:#}",
-                    hedge_exchange
-                );
+            if refresh_order_rules_from_venue {
+                if let Err(err) = min_qty_table.refresh().await {
+                    warn!(
+                        "failed to refresh min_qty_table for {:?}: {err:#}",
+                        hedge_exchange
+                    );
+                }
             }
             LegMgr::Futures {
                 exchange: hedge_exchange,
@@ -2844,8 +5458,10 @@ impl MonitorChannel {
                 continue;
             }
             let mut table = VenueMinQtyTable::new(venue);
-            if let Err(err) = table.refresh().await {
-                warn!("failed to refresh filters for venue {:?}: {err:#}", venue);
+            if refresh_order_rules_from_venue {
+                if let Err(err) = table.refresh().await {
+                    warn!("failed to refresh filters for venue {:?}: {err:#}", venue);
+                }
             }
             venue_min_qty_tables.insert(venue, Rc::new(table));
         }
@@ -2856,7 +5472,10 @@ impl MonitorChannel {
         exchanges.insert(hedge_exchange);
         let mut account_listeners = Vec::with_capacity(exchanges.len());
         for ex in exchanges {
-            let service_name = build_service_name(&format!("account_pubs/{}_pm", ex.as_str()));
+            let service_name = build_service_name(&format!(
+                "account_pubs/{}_pm",
+                runtime_common::execution_backend::account_stream_slug(ex)?
+            ));
             let node_name = format!("pre_trade_account_pubs_{}_pm", ex.as_str());
             account_listeners.push(BasicAccountListener::new(
                 service_name,
@@ -2868,6 +5487,7 @@ impl MonitorChannel {
                 hedge_leg.clone(),
                 usdt_mgrs.clone(),
                 binance_account_mode,
+                hyperliquid_account_mode,
                 strategy_mgr.clone(),
             )?);
         }
@@ -2876,12 +5496,22 @@ impl MonitorChannel {
         //
         // 约定：默认使用 Binance Futures 的衍生品指标；当 open/hedge 两腿属于同一交易所时，
         // 切换到对应 venue 的 mark/index price。所有交易所均直连 dat_pbs。
-        let node_name = DEFAULT_NODE_PRE_TRADE_DERIVATIVES.to_string();
-        let service_name =
-            Self::derivatives_service_for_mark_price_source(open_venue, hedge_venue, arb_mode)
-                .to_string();
-        let derivatives_listener =
-            DerivativesPriceListener::new(price_table.clone(), node_name, service_name)?;
+        let direct_services = [Self::derivatives_service_for_mark_price_source(
+            open_venue,
+            hedge_venue,
+            arb_mode,
+        )];
+        let proxy_enabled = std::env::var("BINANCE_FUTURES_IPC_PROXY").as_deref() == Ok("1");
+        let mut derivatives_listeners = Vec::new();
+        for (index, direct_service) in direct_services.into_iter().enumerate() {
+            let service_name =
+                Self::mark_price_service_with_proxy(direct_service, proxy_enabled).to_string();
+            derivatives_listeners.push(DerivativesPriceListener::new(
+                price_table.clone(),
+                format!("{DEFAULT_NODE_PRE_TRADE_DERIVATIVES}_{index}"),
+                service_name,
+            )?);
+        }
 
         // 创建内部实例并保存到 thread-local
         let inner = MonitorChannelInner {
@@ -2889,6 +5519,7 @@ impl MonitorChannel {
             hedge_venue,
             arb_mode,
             binance_account_mode,
+            hyperliquid_account_mode,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -2898,14 +5529,21 @@ impl MonitorChannel {
             orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
             order_manager: Rc::new(RefCell::new(OrderManager::new(binance_account_mode))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
-            arb_startup_net_gate: ArbStartupNetGate::new(open_venue != hedge_venue),
+            arb_startup_net_gate: ArbStartupNetGate::new(
+                open_venue != hedge_venue && refresh_order_rules_from_venue,
+            ),
         };
 
         Self::clear_basic_state_runtime_cache();
         EXEC_POSITION_SNAPSHOT_READY.with(|ready| ready.set(false));
+        EXEC_POSITION_SNAPSHOT_VENUES.with(|venues| venues.borrow_mut().clear());
+        EXEC_RUNTIME_MODE.with(|exec| exec.set(!refresh_order_rules_from_venue));
+        HYPERLIQUID_EXEC_SNAPSHOT_VALID_UNTIL_MS.with(|deadline| deadline.set(0));
+        HYPERLIQUID_FACT_STREAM_READY.with(|ready| ready.set(false));
         MONITOR_CHANNEL.with(|mc| {
             *mc.borrow_mut() = Some(inner);
         });
@@ -2913,11 +5551,88 @@ impl MonitorChannel {
         MONITOR_STATE_LISTENERS.with(|listeners| {
             *listeners.borrow_mut() = Some(MonitorStateListeners {
                 account_listeners,
-                derivatives_listener,
+                derivatives_listeners,
             });
         });
 
+        if refresh_order_rules_from_venue
+            && super::gate_mark_price_supplement::enabled(open_venue, hedge_venue, arb_mode)
+        {
+            super::gate_mark_price_supplement::start_poll(&Self::instance().price_table());
+        }
+
         Ok(())
+    }
+
+    pub fn replace_manager_order_rules(
+        venue: TradingVenue,
+        market_type: signal_common::min_qty_table::MarketType,
+        filters: HashMap<String, signal_common::min_qty_table::MinQtyEntry>,
+        contract_multipliers: HashMap<String, f64>,
+        tradable_symbols: std::collections::HashSet<String>,
+    ) -> Result<(), String> {
+        let legacy_market_type = match market_type {
+            signal_common::min_qty_table::MarketType::Spot => {
+                crate::common::min_qty_table::MarketType::Spot
+            }
+            signal_common::min_qty_table::MarketType::Futures => {
+                crate::common::min_qty_table::MarketType::Futures
+            }
+            signal_common::min_qty_table::MarketType::CoinFutures => {
+                crate::common::min_qty_table::MarketType::Futures
+            }
+            signal_common::min_qty_table::MarketType::Margin => {
+                crate::common::min_qty_table::MarketType::Margin
+            }
+        };
+        let legacy_filters = filters
+            .iter()
+            .map(|(symbol, entry)| {
+                (
+                    symbol.clone(),
+                    crate::common::min_qty_table::MinQtyEntry {
+                        symbol: entry.symbol.clone(),
+                        base_asset: entry.base_asset.clone(),
+                        quote_asset: entry.quote_asset.clone(),
+                        min_qty: entry.min_qty,
+                        step_size: entry.step_size,
+                        price_tick: entry.price_tick,
+                        min_notional: entry.min_notional,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        Self::with_inner_mut(|inner| {
+            let table = inner
+                .venue_min_qty_tables
+                .get_mut(&venue)
+                .ok_or_else(|| format!("missing venue order-rules table: {venue:?}"))?;
+            Rc::get_mut(table)
+                .ok_or_else(|| format!("venue order-rules table is shared: {venue:?}"))?
+                .replace_snapshot(
+                    filters.clone(),
+                    contract_multipliers.clone(),
+                    tradable_symbols,
+                );
+
+            for (leg_venue, leg) in [
+                (inner.open_venue, &inner.open_leg),
+                (inner.hedge_venue, &inner.hedge_leg),
+            ] {
+                if leg_venue != venue {
+                    continue;
+                }
+                let LegMgr::Futures { min_qty_table, .. } = leg else {
+                    continue;
+                };
+                min_qty_table.borrow_mut().replace_market_snapshot(
+                    legacy_market_type,
+                    legacy_filters.clone(),
+                    contract_multipliers.clone(),
+                );
+            }
+            Ok(())
+        })
     }
 
     /// 将订单数量（按 venue 语义）转换为 base qty（标的数量）
@@ -3092,7 +5807,7 @@ impl MonitorChannel {
             leg_idx: usize,
         ) {
             let mut add_exposure = |asset: String, qty: f64| {
-                if qty.abs() <= 1e-12 {
+                if qty.abs() <= 1e-12 || is_exposure_exempt_asset(&asset) {
                     return;
                 }
                 let entry = exposures
@@ -3186,7 +5901,7 @@ impl MonitorChannel {
             }
             if let LegMgr::Margin { bal, .. } = leg {
                 let mgr = bal.borrow();
-                let scope = scope_for_venue(*venue, binance_mode);
+                let scope = scope_for_venue(*venue, binance_mode, inner.hyperliquid_account_mode);
                 let scope_balances = margin_balances_by_scope.entry(scope).or_default();
                 for bal in mgr.balances_iter() {
                     let net = bal.net();
@@ -3252,14 +5967,15 @@ impl MonitorChannel {
                 };
                 total_um_unrealized_usdt += upl;
                 if !matches!(*exchange, Exchange::Gate | Exchange::Okex) {
-                    let scope = scope_for_venue(*venue, binance_mode);
+                    let scope =
+                        scope_for_venue(*venue, binance_mode, inner.hyperliquid_account_mode);
                     *um_unrealized_equity_by_scope.entry(scope).or_insert(0.0) += upl;
                 }
             }
         }
 
-        // 同交易所 unified intra 场景优先使用交易所账户级总权益，避免本地估值遗漏
-        // unified 账户中的合约、期权或折算细节。跨交易所组合仍保留各 scope 的本地路径。
+        // 同一账户 scope 优先使用交易所账户级总权益，避免本地估值遗漏
+        // 多资产抵押、合约、期权或折算细节。跨 scope 组合仍保留各 scope 的本地路径。
         let account_risk_equity_override = Self::account_risk_equity_override_for_inner(inner);
 
         let price_update = Self::compute_basic_state_price_update_from_parts(
@@ -3291,7 +6007,12 @@ impl MonitorChannel {
     fn account_risk_equity_override_for_inner(
         inner: &MonitorChannelInner,
     ) -> Option<(BasicAccountScope, f64)> {
-        let scope = exchange_scoped_total_equity_scope(inner.open_venue, inner.hedge_venue)?;
+        let scope = exchange_scoped_total_equity_scope(
+            inner.open_venue,
+            inner.hedge_venue,
+            inner.binance_account_mode,
+            inner.hyperliquid_account_mode,
+        )?;
         let risk = inner.latest_account_risk.get(&scope)?;
         (risk.actual_equity_usd.is_finite() && risk.actual_equity_usd.abs() > f64::EPSILON)
             .then_some((scope, risk.actual_equity_usd))
@@ -3323,7 +6044,7 @@ impl MonitorChannel {
         price_mapper: &dyn crate::pre_trade::symbol_mapper::SymbolMapper,
         price_table: &PriceTable,
     ) -> bool {
-        if asset.eq_ignore_ascii_case("USDT") || active_assets.contains(asset) {
+        if is_exposure_exempt_asset(asset) || active_assets.contains(asset) {
             return true;
         }
         let mark = Self::mark_price_for_asset(price_mapper, price_table, asset);
@@ -3389,7 +6110,7 @@ impl MonitorChannel {
         price_table: &PriceTable,
         asset: &str,
     ) -> f64 {
-        if asset.eq_ignore_ascii_case("USDT") {
+        if asset.eq_ignore_ascii_case("USDT") || asset.eq_ignore_ascii_case("USDC") {
             1.0
         } else {
             let symbol = price_mapper.asset_to_price_symbol(asset);
@@ -3431,6 +6152,10 @@ impl MonitorChannel {
             *scope_equity_usdt.entry(*scope).or_insert(0.0) += *upl;
         }
         if let Some((scope, actual_equity_usd)) = account_risk_equity_override {
+            if scope == BasicAccountScope::BinanceUnified {
+                // Portfolio equity already includes COIN-M unrealized PnL.
+                scope_equity_usdt.remove(&BasicAccountScope::BinanceUnifiedCm);
+            }
             scope_equity_usdt.insert(scope, actual_equity_usd);
         }
 
@@ -3450,7 +6175,7 @@ impl MonitorChannel {
         let mut abs_total_exposure_usdt = 0.0;
         let mut position_usdt_by_asset = HashMap::new();
         for (asset, (open_qty, hedge_qty)) in exposures {
-            if asset == "USDT" {
+            if is_exposure_exempt_asset(asset) {
                 continue;
             }
             let mark = Self::mark_price_for_asset(&*price_mapper, price_table, asset);
@@ -3795,9 +6520,20 @@ impl MonitorChannel {
                     table.as_ref(),
                     false,
                 ),
-                TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => {
-                    Err("尚未实现 Hyperliquid 的订单对齐".to_string())
-                }
+                TradingVenue::HyperliquidMargin => Self::align_order_with_table(
+                    &symbol_key,
+                    raw_qty,
+                    raw_price,
+                    table.as_ref(),
+                    true,
+                ),
+                TradingVenue::HyperliquidFutures => Self::align_order_with_table(
+                    &symbol_key,
+                    raw_qty,
+                    raw_price,
+                    table.as_ref(),
+                    true,
+                ),
                 TradingVenue::AsterMargin | TradingVenue::AsterFutures => {
                     Err("尚未实现 Aster 的订单对齐".to_string())
                 }
@@ -4024,11 +6760,8 @@ impl MonitorChannel {
             return None;
         }
         Self::with_basic_state_cached(|state| {
-            if base_asset.eq_ignore_ascii_case("USDT") {
-                state
-                    .exposures
-                    .get(base_asset.as_ref())
-                    .map(|(open_qty, hedge_qty)| (open_qty + hedge_qty).abs())
+            if is_exposure_exempt_asset(base_asset.as_ref()) {
+                Some(0.0)
             } else {
                 state
                     .exposure_usdt_by_asset
@@ -4153,16 +6886,15 @@ impl MonitorChannel {
         max_pos_u: f64,
         state: &BasicState,
     ) -> Result<(), String> {
+        if is_exposure_exempt_asset(base_asset) {
+            return Ok(());
+        }
         let net_exposure = state
             .exposures
             .get(base_asset_upper)
             .map(|(open, hedge)| open + hedge)
             .unwrap_or(0.0);
-        let exposure_usdt = if base_asset.eq_ignore_ascii_case("USDT") {
-            Some(net_exposure)
-        } else {
-            state.exposure_usdt_by_asset.get(base_asset_upper).copied()
-        };
+        let exposure_usdt = state.exposure_usdt_by_asset.get(base_asset_upper).copied();
 
         let Some(exposure_usdt) = exposure_usdt else {
             let ratio = net_exposure.abs() / max_pos_u;
@@ -4227,6 +6959,19 @@ impl MonitorChannel {
         Ok(())
     }
 
+    fn active_order_base_qty(inner: &MonitorChannelInner, order: &Order) -> Result<f64, String> {
+        let remaining = order.quantity - order.cumulative_filled_quantity;
+        let multiplier = if order.venue.is_inverse_futures() {
+            Self::qty_multiplier_for_venue_inner(inner, order.venue, &order.symbol)?
+        } else {
+            order.qty_multiplier
+        };
+        if !remaining.is_finite() || !multiplier.is_finite() || multiplier <= 0.0 {
+            return Err("invalid active Arb order quantity".into());
+        }
+        Ok(remaining.max(0.0) * multiplier)
+    }
+
     fn arb_hedge_exposure_projection_inner(
         inner: &MonitorChannelInner,
         state: &BasicState,
@@ -4243,38 +6988,73 @@ impl MonitorChannel {
                 symbol
             )
         })?;
-        let mark = if base_asset.eq_ignore_ascii_case("USDT") {
-            1.0
-        } else {
-            let price = state
-                .mark_usdt_by_asset
-                .get(base_asset.as_ref())
-                .copied()
-                .unwrap_or(0.0);
-            if price <= 0.0 {
-                return Err(format!(
-                    "symbol={} 缺少 USDT 标记价格，无法校验 ArbHedge 敞口",
-                    symbol
-                ));
-            }
-            price
-        };
+        if is_exposure_exempt_asset(base_asset.as_ref()) {
+            return Ok(ArbHedgeExposureProjection {
+                symbol_current_exposure_usdt: 0.0,
+                symbol_next_exposure_usdt: 0.0,
+                symbol_limit_usdt: f64::INFINITY,
+                total_current_exposure_usdt: state.abs_total_exposure_usdt,
+                total_next_exposure_usdt: state.abs_total_exposure_usdt,
+                total_limit_usdt: f64::INFINITY,
+            });
+        }
+        let mark = state
+            .mark_usdt_by_asset
+            .get(base_asset.as_ref())
+            .copied()
+            .unwrap_or(0.0);
+        if mark <= 0.0 {
+            return Err(format!(
+                "symbol={} 缺少 USDT 标记价格，无法校验 ArbHedge 敞口",
+                symbol
+            ));
+        }
         let (open_qty, hedge_qty) = state
             .exposures
             .get(base_asset.as_ref())
             .copied()
             .unwrap_or((0.0, 0.0));
         let current_net_qty = open_qty + hedge_qty;
-        let next_net_qty = if hedge_venue == inner.open_venue || hedge_venue == inner.hedge_venue {
-            current_net_qty + hedge_signed_base_qty
-        } else {
+        if !hedge_signed_base_qty.is_finite() || hedge_signed_base_qty == 0.0 {
+            return Err("invalid Arb exposure projection quantity".into());
+        }
+        if hedge_venue != inner.open_venue && hedge_venue != inner.hedge_venue {
             return Err(format!(
                 "ArbHedge venue {:?} 不匹配 open={:?} hedge={:?}",
                 hedge_venue, inner.open_venue, inner.hedge_venue
             ));
-        };
-        let symbol_current_exposure_usdt = current_net_qty.abs() * mark;
-        let symbol_next_exposure_usdt = next_net_qty.abs() * mark;
+        }
+        // Opposite resting orders cannot offset each other's risk: either side can fill alone.
+        // Include Commit orders too, so an acknowledgement timeout does not free the budget.
+        let mut pending: HashMap<String, (f64, f64)> = HashMap::new();
+        for order in inner.order_manager.borrow().active_orders() {
+            if order.venue != inner.open_venue && order.venue != inner.hedge_venue {
+                continue;
+            }
+            let asset =
+                extract_base_asset_key(&order.symbol).ok_or("invalid active Arb order symbol")?;
+            if is_exposure_exempt_asset(asset.as_ref()) {
+                continue;
+            }
+            let quantity = Self::active_order_base_qty(inner, order)?;
+            let entry = pending.entry(asset.into_owned()).or_default();
+            if order.side == Side::Buy {
+                entry.0 += quantity;
+            } else {
+                entry.1 += quantity;
+            }
+        }
+        let (buys, sells) = pending
+            .get(base_asset.as_ref())
+            .copied()
+            .unwrap_or_default();
+        let worst = |net: f64, buy: f64, sell: f64| (net + buy).abs().max((net - sell).abs());
+        let symbol_current_exposure_usdt = worst(current_net_qty, buys, sells) * mark;
+        let symbol_next_exposure_usdt = worst(
+            current_net_qty,
+            buys + hedge_signed_base_qty.max(0.0),
+            sells + (-hedge_signed_base_qty).max(0.0),
+        ) * mark;
         let max_pos_u = loader.max_pos_u_for_symbol(inner.open_venue, symbol);
         if max_pos_u <= f64::EPSILON && symbol_limit_ratio > 0.0 {
             return Err("max_pos_u 配置无效，无法校验 ArbHedge 单币敞口".to_string());
@@ -4285,7 +7065,18 @@ impl MonitorChannel {
             f64::INFINITY
         };
 
-        let total_current_exposure_usdt = state.abs_total_exposure_usdt;
+        let mut total_current_exposure_usdt = state.abs_total_exposure_usdt;
+        for (asset, (buys, sells)) in pending {
+            let (open, hedge) = state.exposures.get(&asset).copied().unwrap_or_default();
+            let asset_mark = state
+                .mark_usdt_by_asset
+                .get(&asset)
+                .copied()
+                .filter(|p| p.is_finite() && *p > 0.0)
+                .ok_or_else(|| format!("missing active Arb order mark: {asset}"))?;
+            let net = open + hedge;
+            total_current_exposure_usdt += (worst(net, buys, sells) - net.abs()) * asset_mark;
+        }
         let total_next_exposure_usdt = (total_current_exposure_usdt - symbol_current_exposure_usdt
             + symbol_next_exposure_usdt)
             .max(0.0);
@@ -4311,13 +7102,109 @@ impl MonitorChannel {
         })
     }
 
-    /// ArbHedge 报单只做敞口风控：如果本单降低敞口则放行；否则当前敞口必须仍在阈值内。
-    pub fn check_arb_hedge_exposure_risk(
+    pub(crate) fn set_arb_hedge_execution_block(&self, symbol: &str, reason: Option<&'static str>) {
+        Self::try_with_inner(|inner| {
+            if inner.arb_mode != ArbMode::FundingArb {
+                return;
+            }
+            let mut blocks = inner.hedge_execution_blocks.borrow_mut();
+            if let Some(reason) = reason {
+                if blocks.insert(symbol.to_owned(), reason) != Some(reason) {
+                    warn!("FR hedge execution blocked: symbol={} reason={}; block expanding orders until this exception is resolved", symbol, reason);
+                }
+            } else if blocks.remove(symbol).is_some() {
+                info!("FR hedge execution restored: symbol={}", symbol);
+            }
+        });
+    }
+
+    /// Used both before new opening orders and to cancel expanding resting opens.
+    /// Direction follows the current factual account net, never a queued plan.
+    pub(crate) fn check_arb_hedge_execution_risk(
+        &self,
+        symbol: &str,
+        signed_base_qty: f64,
+    ) -> Result<(), String> {
+        Self::with_inner(|inner| {
+            if !inner.hedge_execution_blocks.borrow().contains_key(symbol) {
+                return Ok(());
+            }
+            let asset = extract_base_asset_key(symbol).ok_or("invalid blocked hedge symbol")?;
+            Self::with_basic_state_cached(|state| {
+                let (open, hedge) = state
+                    .exposures
+                    .get(asset.as_ref())
+                    .copied()
+                    .unwrap_or_default();
+                let net = open + hedge;
+                if !net.is_finite()
+                    || !signed_base_qty.is_finite()
+                    || (net + signed_base_qty).abs() > net.abs() + 1e-9
+                {
+                    return Err(format!("symbol={symbol} hedge execution blocked: order expands actual net exposure current_qty={net:.8} order_qty={signed_base_qty:.8}"));
+                }
+                Ok(())
+            })
+        })
+    }
+
+    /// Available factual inventory for a reducing order. Unknown submissions
+    /// retain their own reservation; unrelated work never locks this inventory.
+    pub(crate) fn available_reducing_base_qty(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+        side: Side,
+    ) -> Result<f64, String> {
+        Self::with_inner(|inner| {
+            if venue != inner.open_venue && venue != inner.hedge_venue {
+                return Err("reducing venue does not belong to deployment".into());
+            }
+            let position = Self::get_position_qty_inner(inner, symbol, venue);
+            if !position.is_finite() {
+                return Err("invalid reducing position".into());
+            }
+            let sign = if side == Side::Buy { 1.0 } else { -1.0 };
+            if position * sign >= 0.0 {
+                return Ok(0.0);
+            }
+            let normalized = normalize_symbol_for_internal(symbol);
+            let mut reserved = 0.0;
+            for order in inner.order_manager.borrow().active_orders() {
+                if order.venue == venue
+                    && order.side == side
+                    && normalize_symbol_for_internal(&order.symbol) == normalized
+                {
+                    reserved += Self::active_order_base_qty(inner, order)?;
+                }
+            }
+            Ok((position.abs() - reserved).max(0.0))
+        })
+    }
+
+    pub(crate) fn check_reducing_order(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+        side: Side,
+        base_qty: f64,
+    ) -> Result<(), String> {
+        let available = self.available_reducing_base_qty(symbol, venue, side)?;
+        if !base_qty.is_finite() || base_qty <= 0.0 || base_qty > available + 1e-9 {
+            return Err(format!("reducing order exceeds available position: symbol={symbol} requested={base_qty} available={available}"));
+        }
+        Ok(())
+    }
+
+    /// Arb opening/hedge exposure includes the worst fill of all active orders.
+    /// Risk may converge above a limit; additional expansion must fit after execution.
+    pub fn check_arb_order_exposure_risk(
         &self,
         symbol: &str,
         hedge_venue: TradingVenue,
         hedge_signed_base_qty: f64,
     ) -> Result<(), String> {
+        self.check_arb_hedge_execution_risk(symbol, hedge_signed_base_qty)?;
         Self::with_inner(|inner| {
             Self::with_basic_state_cached(|state| {
                 let projection = Self::arb_hedge_exposure_projection_inner(
@@ -4328,12 +7215,18 @@ impl MonitorChannel {
                     hedge_signed_base_qty,
                 )?;
                 let eps = 1e-6_f64;
+                if inner.hedge_execution_blocks.borrow().contains_key(symbol)
+                    && projection.symbol_next_exposure_usdt
+                        > projection.symbol_current_exposure_usdt + eps
+                {
+                    return Err(format!("symbol={symbol} hedge execution blocked: order expands worst-case exposure including active orders"));
+                }
                 if projection.symbol_next_exposure_usdt
                     > projection.symbol_current_exposure_usdt + eps
-                    && projection.symbol_current_exposure_usdt > projection.symbol_limit_usdt + eps
+                    && projection.symbol_next_exposure_usdt > projection.symbol_limit_usdt + eps
                 {
                     return Err(format!(
-                        "symbol={} ArbHedge 单币敞口扩大且当前已超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT",
+                        "symbol={} Arb 单币敞口扩大后超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT",
                         symbol,
                         projection.symbol_current_exposure_usdt,
                         projection.symbol_next_exposure_usdt,
@@ -4342,10 +7235,10 @@ impl MonitorChannel {
                 }
                 if projection.total_next_exposure_usdt
                     > projection.total_current_exposure_usdt + eps
-                    && projection.total_current_exposure_usdt > projection.total_limit_usdt + eps
+                    && projection.total_next_exposure_usdt > projection.total_limit_usdt + eps
                 {
                     return Err(format!(
-                        "symbol={} ArbHedge 总敞口扩大且当前已超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT",
+                        "symbol={} Arb 总敞口扩大后超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT",
                         symbol,
                         projection.total_current_exposure_usdt,
                         projection.total_next_exposure_usdt,
@@ -4616,7 +7509,10 @@ impl MonitorChannel {
         Self::with_inner(|inner| Self::get_position_qty_inner(inner, symbol, venue))
     }
 
-    pub fn mark_exec_position_snapshot_ready(&self, source: &'static str) {
+    pub fn mark_exec_position_snapshot_ready(&self, venue: TradingVenue, source: &'static str) {
+        EXEC_POSITION_SNAPSHOT_VENUES.with(|venues| {
+            venues.borrow_mut().insert(venue);
+        });
         let changed = EXEC_POSITION_SNAPSHOT_READY.with(|ready| {
             let changed = !ready.get();
             ready.set(true);
@@ -4627,8 +7523,75 @@ impl MonitorChannel {
         }
     }
 
+    fn set_hyperliquid_exec_snapshot_readiness(
+        &self,
+        valid_until_ms: Option<i64>,
+        source: &'static str,
+    ) {
+        let factual_ready = HYPERLIQUID_FACT_STREAM_READY.with(Cell::get);
+        let deadline = if factual_ready {
+            valid_until_ms.unwrap_or(0)
+        } else {
+            0
+        };
+        HYPERLIQUID_EXEC_SNAPSHOT_VALID_UNTIL_MS.with(|value| value.set(deadline));
+        if deadline > get_timestamp_us() / 1_000 {
+            self.mark_exec_position_snapshot_ready(self.open_venue(), source);
+        } else {
+            let changed = EXEC_POSITION_SNAPSHOT_READY.with(|ready| {
+                let changed = ready.get();
+                ready.set(false);
+                changed
+            });
+            if changed {
+                warn!("exec position snapshot readiness revoked: source={source}");
+            }
+        }
+    }
+
     pub fn exec_position_snapshot_ready(&self) -> bool {
-        EXEC_POSITION_SNAPSHOT_READY.with(Cell::get)
+        let ready = EXEC_POSITION_SNAPSHOT_READY.with(Cell::get);
+        if !ready {
+            return false;
+        }
+        if EXEC_RUNTIME_MODE.with(Cell::get) {
+            let all_ready = Self::with_inner(|inner| {
+                EXEC_POSITION_SNAPSHOT_VENUES.with(|venues| {
+                    let venues = venues.borrow();
+                    venues.contains(&inner.open_venue) && venues.contains(&inner.hedge_venue)
+                })
+            });
+            if !all_ready {
+                return false;
+            }
+        }
+        let hyperliquid_exec = Self::try_with_inner(|inner| {
+            exchange_from_venue(inner.open_venue) == Exchange::Hyperliquid
+                && inner.open_venue == inner.hedge_venue
+        })
+        .unwrap_or(false);
+        if !hyperliquid_exec {
+            return true;
+        }
+        if !HYPERLIQUID_FACT_STREAM_READY.with(Cell::get) {
+            EXEC_POSITION_SNAPSHOT_READY.with(|ready| ready.set(false));
+            return false;
+        }
+        let valid_until = HYPERLIQUID_EXEC_SNAPSHOT_VALID_UNTIL_MS.with(Cell::get);
+        if valid_until > get_timestamp_us() / 1_000 {
+            true
+        } else {
+            EXEC_POSITION_SNAPSHOT_READY.with(|ready| ready.set(false));
+            false
+        }
+    }
+
+    pub fn exec_position_snapshot_ready_for_venue(&self, venue: TradingVenue) -> bool {
+        if EXEC_RUNTIME_MODE.with(Cell::get) {
+            EXEC_POSITION_SNAPSHOT_VENUES.with(|venues| venues.borrow().contains(&venue))
+        } else {
+            self.exec_position_snapshot_ready()
+        }
     }
 
     pub fn refresh_exec_risk_state(&self) {
@@ -4714,6 +7677,7 @@ where
 fn is_internal_symbol_key(symbol: &str) -> bool {
     !symbol.is_empty()
         && !symbol.ends_with("SWAP")
+        && !symbol.ends_with("USDPERP")
         && symbol
             .bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
@@ -4807,6 +7771,10 @@ where
     fn client_order_id_str(&self) -> Option<&str> {
         OrderUpdate::client_order_id_str(self.inner)
     }
+
+    fn amendment_succeeded(&self) -> Option<bool> {
+        OrderUpdate::amendment_succeeded(self.inner)
+    }
 }
 
 impl<T> TradeUpdate for NormalizedUpdate<'_, T>
@@ -4845,6 +7813,10 @@ where
         TradeUpdate::is_maker(self.inner)
     }
 
+    fn factual_is_maker(&self) -> Option<bool> {
+        TradeUpdate::factual_is_maker(self.inner)
+    }
+
     fn trading_venue(&self) -> TradingVenue {
         TradeUpdate::trading_venue(self.inner)
     }
@@ -4861,7 +7833,8 @@ where
 fn dispatch_trade_update_lite_generic<T>(
     strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
     trade: &T,
-) where
+) -> bool
+where
     T: TradeUpdateLite,
 {
     MonitorChannel::instance().bump_trade_update_seq();
@@ -4879,6 +7852,216 @@ fn dispatch_trade_update_lite_generic<T>(
             trade.trade_id()
         );
     }
+    matched
+}
+
+fn dispatch_trade_update_generic<T>(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    trade: &T,
+) -> bool
+where
+    T: TradeUpdate,
+{
+    MonitorChannel::instance().bump_trade_update_seq();
+
+    let order_id = trade.client_order_id();
+    let strategy_id = (order_id >> 32) as i32;
+    let matched = dispatch_trade_update_to_strategy(strategy_mgr, strategy_id, trade)
+        || dispatch_trade_update_fallback_scan(strategy_mgr, trade);
+    if matched {
+        dispatch_ready_deferred_hyperliquid_terminal(strategy_mgr, order_id);
+        return true;
+    }
+
+    let adopted_by_orphan = MonitorChannel::instance()
+        .orphan_strategy_mgr()
+        .borrow_mut()
+        .apply_trade_update(trade);
+    if !adopted_by_orphan {
+        debug!(
+            "trade update unmatched: sym={} cli_id={}",
+            trade.symbol(),
+            trade.client_order_id()
+        );
+    }
+    if adopted_by_orphan {
+        dispatch_ready_deferred_hyperliquid_terminal(strategy_mgr, order_id);
+    }
+    adopted_by_orphan
+}
+
+fn dispatch_ready_deferred_hyperliquid_terminal(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    client_order_id: i64,
+) {
+    if let Some(update) = take_ready_deferred_hyperliquid_terminal(client_order_id) {
+        dispatch_lifecycle_order_update_generic(strategy_mgr, &update);
+    }
+}
+
+fn dispatch_lifecycle_order_update_generic<T>(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    update: &T,
+) where
+    T: OrderUpdate,
+{
+    let order_id = update.client_order_id();
+    let strategy_id = (order_id >> 32) as i32;
+    let matched = dispatch_lifecycle_order_update_to_strategy(strategy_mgr, strategy_id, update)
+        || dispatch_lifecycle_order_update_fallback_scan(strategy_mgr, update);
+
+    if matched {
+        return;
+    }
+
+    let adopted_by_orphan = MonitorChannel::instance()
+        .orphan_strategy_mgr()
+        .borrow_mut()
+        .apply_order_update(update);
+    if !adopted_by_orphan {
+        PersistChannel::with(|channel| channel.publish_order_update_unmatched(update));
+    }
+    debug!(
+        "lifecycle order update unmatched: sym={} cli_id={} ord_id={} x={:?} X={:?} orphan_adopted={}",
+        update.symbol(),
+        update.client_order_id(),
+        update.order_id(),
+        update.execution_type(),
+        update.status(),
+        adopted_by_orphan
+    );
+}
+
+fn override_hyperliquid_order_intent_from_local(
+    update: &mut HyperliquidBasicOrderMsg,
+    local_order: Option<&Order>,
+) -> bool {
+    if update.client_order_id <= 0 {
+        return false;
+    }
+    let Some(local_order) = local_order else {
+        return false;
+    };
+    if local_order.client_order_id != update.client_order_id {
+        warn!(
+            "skip Hyperliquid order-intent override for client id mismatch: update={} local={}",
+            update.client_order_id, local_order.client_order_id
+        );
+        return false;
+    }
+    if TradingVenue::from_u8(update.venue) != Some(local_order.venue) {
+        warn!(
+            "skip Hyperliquid order-intent override for venue mismatch: client_order_id={} update_venue={} local_venue={:?}",
+            update.client_order_id, update.venue, local_order.venue
+        );
+        return false;
+    }
+    let Some(time_in_force) = hyperliquid_time_in_force(local_order.venue, local_order.order_type)
+    else {
+        warn!(
+            "skip Hyperliquid order-intent override for unsupported local type: client_order_id={} order_type={:?}",
+            update.client_order_id, local_order.order_type
+        );
+        return false;
+    };
+    update.order_type = local_order.order_type.to_u8();
+    update.time_in_force = time_in_force.to_u8();
+    true
+}
+
+fn dispatch_lifecycle_order_update_to_strategy<T>(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    strategy_id: i32,
+    update: &T,
+) -> bool
+where
+    T: OrderUpdate,
+{
+    let order_id = update.client_order_id();
+    let strategy_opt = {
+        let mut mgr = strategy_mgr.borrow_mut();
+        if mgr.contains(strategy_id) {
+            mgr.take(strategy_id)
+        } else {
+            None
+        }
+    };
+
+    let Some(mut strategy) = strategy_opt else {
+        return false;
+    };
+    let matched = strategy.is_strategy_order(order_id);
+    if matched {
+        strategy.apply_order_update(update);
+    }
+    if strategy.is_active() {
+        strategy_mgr.borrow_mut().insert(strategy);
+    }
+    matched
+}
+
+fn dispatch_lifecycle_order_update_fallback_scan<T>(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    update: &T,
+) -> bool
+where
+    T: OrderUpdate,
+{
+    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
+    for strategy_id in strategy_ids {
+        if dispatch_lifecycle_order_update_to_strategy(strategy_mgr, strategy_id, update) {
+            return true;
+        }
+    }
+    false
+}
+
+fn dispatch_trade_update_to_strategy<T>(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    strategy_id: i32,
+    trade: &T,
+) -> bool
+where
+    T: TradeUpdate,
+{
+    let order_id = trade.client_order_id();
+    let strategy_opt = {
+        let mut mgr = strategy_mgr.borrow_mut();
+        if mgr.contains(strategy_id) {
+            mgr.take(strategy_id)
+        } else {
+            None
+        }
+    };
+
+    let Some(mut strategy) = strategy_opt else {
+        return false;
+    };
+
+    let matched = strategy.is_strategy_order(order_id);
+    if matched {
+        strategy.apply_trade_update(trade);
+    }
+    if strategy.is_active() {
+        strategy_mgr.borrow_mut().insert(strategy);
+    }
+    matched
+}
+
+fn dispatch_trade_update_fallback_scan<T>(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    trade: &T,
+) -> bool
+where
+    T: TradeUpdate,
+{
+    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
+    for strategy_id in strategy_ids {
+        if dispatch_trade_update_to_strategy(strategy_mgr, strategy_id, trade) {
+            return true;
+        }
+    }
+    false
 }
 
 fn dispatch_trade_update_lite_to_strategy<T>(
@@ -4979,6 +8162,325 @@ fn dispatch_order_update_generic<T>(
     }
 }
 
+fn dispatch_binance_external_order_update(update: &BinanceBasicOrderMsg) {
+    use order_common::{OrderUpdate, TradeUpdate};
+
+    let Some(reason) = update.external_order_label() else {
+        return;
+    };
+    let execution_type = OrderUpdate::execution_type(update);
+    let venue = OrderUpdate::trading_venue(update);
+    let price = if update.last_executed_price.is_finite() && update.last_executed_price > 0.0 {
+        update.last_executed_price
+    } else {
+        update.average_price
+    };
+
+    if let Some(record) = build_binance_external_uniform_order(update) {
+        MonitorChannel::instance().bump_trade_update_seq();
+        PersistChannel::with(|channel| {
+            channel.publish_trade_update_unmatched(update);
+            channel.publish_uniform_order(&record);
+        });
+        warn!(
+            "Binance exchange forced-close fill persisted: reason={} venue={:?} symbol={} order_id={} trade_id={} side={} price={:.8} qty={:.8}",
+            reason,
+            venue,
+            update.symbol,
+            update.order_id,
+            update.trade_id,
+            TradeUpdate::side(update).as_str(),
+            price,
+            update.last_executed_quantity
+        );
+        let monitor = MonitorChannel::instance();
+        if reason == "adl"
+            && venue == monitor.hedge_venue()
+            && adl_spot_repair_enabled(
+                monitor.open_venue(),
+                monitor.hedge_venue(),
+                monitor.arb_mode(),
+                EXEC_RUNTIME_MODE.with(Cell::get),
+            )
+        {
+            if let Some(fill) = binance_adl_repair_fill(update) {
+                dispatch_adl_spot_repair(
+                    &monitor.strategy_mgr(),
+                    &fill,
+                    Some(update.cumulative_filled_quantity),
+                );
+            }
+        }
+    } else {
+        PersistChannel::with(|channel| channel.publish_order_update_unmatched(update));
+        debug!(
+            "Binance exchange forced-close non-fill persisted as unmatched order: reason={} venue={:?} symbol={} order_id={} x={:?} X={:?}",
+            reason,
+            venue,
+            update.symbol,
+            update.order_id,
+            execution_type,
+            OrderUpdate::status(update)
+        );
+    }
+}
+
+fn adl_spot_repair_enabled(
+    spot: TradingVenue,
+    futures: TradingVenue,
+    mode: trade_signal::ArbMode,
+    is_exec: bool,
+) -> bool {
+    !is_exec
+        && mode == trade_signal::ArbMode::FundingArb
+        && crate::strategy::arb_hedge_strategy::ArbHedgeStrategy::adl_spot_venue(futures)
+            == Some(spot)
+}
+
+fn binance_adl_repair_fill(
+    update: &BinanceBasicOrderMsg,
+) -> Option<mkt_parsers::msg::external_futures_fill::ExternalFuturesFill> {
+    use order_common::{OrderUpdate, TradeUpdate};
+    if update.external_order_label() != Some("adl")
+        || OrderUpdate::trading_venue(update) != TradingVenue::BinanceFutures
+        || OrderUpdate::execution_type(update) != ExecutionType::Trade
+        || update.order_id <= 0
+        || !update.cumulative_filled_quantity.is_finite()
+        || update.cumulative_filled_quantity <= 0.0
+    {
+        return None;
+    }
+    let fill = mkt_parsers::msg::external_futures_fill::ExternalFuturesFill {
+        venue: TradingVenue::BinanceFutures as u8,
+        symbol: update.symbol.clone(),
+        order_id: update.order_id.to_string(),
+        trade_id: update.trade_id.to_string(),
+        timestamp_us: TradeUpdate::trade_time(update),
+        side: update.side,
+        price: if update.last_executed_price.is_finite() && update.last_executed_price > 0.0 {
+            update.last_executed_price
+        } else {
+            update.average_price
+        },
+        quantity: update.last_executed_quantity,
+        is_maker: TradeUpdate::factual_is_maker(update),
+        reason: Some("adl".to_string()),
+    };
+    fill.validate().ok()?;
+    Some(fill)
+}
+
+fn dispatch_adl_spot_repair(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    fill: &mkt_parsers::msg::external_futures_fill::ExternalFuturesFill,
+    cumulative_native_qty: Option<f64>,
+) {
+    let Some(futures) = TradingVenue::from_u8(fill.venue) else {
+        return;
+    };
+    let base_qty = match MonitorChannel::instance().qty_to_base_at_price(
+        futures,
+        &fill.symbol,
+        fill.quantity,
+        fill.price,
+    ) {
+        Ok(qty) if qty.is_finite() && qty > 0.0 => qty,
+        result => {
+            error!(
+                "ADL spot repair missing valid contract multiplier: symbol={} result={:?}",
+                fill.symbol, result
+            );
+            return;
+        }
+    };
+    let cumulative_base_qty = match cumulative_native_qty {
+        Some(qty) => match MonitorChannel::instance().qty_to_base_at_price(
+            futures,
+            &fill.symbol,
+            qty,
+            fill.price,
+        ) {
+            Ok(qty) if qty.is_finite() && qty > 0.0 => Some(qty),
+            result => {
+                error!(
+                    "ADL spot repair invalid cumulative quantity: symbol={} result={:?}",
+                    fill.symbol, result
+                );
+                return;
+            }
+        },
+        None => None,
+    };
+    let Some(id) = strategy_mgr
+        .borrow_mut()
+        .ensure_adl_spot_hedge_strategy(&fill.symbol, futures)
+    else {
+        return;
+    };
+    // Release the manager borrow before sending through the normal order path.
+    let Some(mut strategy) = strategy_mgr.borrow_mut().remove(id) else {
+        return;
+    };
+    if let Some(hedge) = strategy
+        .as_any_mut()
+        .downcast_mut::<crate::strategy::arb_hedge_strategy::ArbHedgeStrategy>()
+    {
+        if hedge.record_adl_spot_fill(fill, base_qty, cumulative_base_qty) {
+            strategy.handle_period_clock(get_timestamp_us());
+        }
+    }
+    strategy_mgr.borrow_mut().insert(strategy);
+}
+
+fn build_uta_external_uniform_order(
+    fill: &mkt_parsers::msg::external_futures_fill::ExternalFuturesFill,
+) -> Option<UnifiedOrderRecord> {
+    fill.validate().ok()?;
+    let reason = fill.reason.as_deref()?;
+    let mut record = UnifiedOrderRecord {
+        symbol_len: 0,
+        symbol: fill.symbol.as_bytes().to_vec(),
+        create_ts: fill.timestamp_us,
+        update_ts: fill.timestamp_us,
+        signal_ts: 0,
+        submit_ts: 0,
+        local_ts: get_timestamp_us(),
+        mkt_ts: 0,
+        client_order_id: 0,
+        venue: fill.venue,
+        ttype: order_common::OrderType::Market as u8,
+        side: fill.side,
+        price: fill.price,
+        price_offset: 0.0,
+        amount_init: fill.quantity,
+        amount_update: fill.quantity,
+        status: order_common::OrderStatus::Filled.to_u8(),
+        from_key_len: 0,
+        from_key: format!(
+            "exchange_forced_close:{reason}:order={}:trade={}",
+            fill.order_id, fill.trade_id
+        )
+        .into_bytes(),
+        signal_bbo: None,
+        fill_liquidity: persist_common::FillLiquidity::from_is_maker(fill.is_maker),
+    };
+    record.refresh_lengths();
+    Some(record)
+}
+
+fn build_binance_external_uniform_order(
+    update: &BinanceBasicOrderMsg,
+) -> Option<UnifiedOrderRecord> {
+    use order_common::OrderUpdate;
+
+    let reason = update.external_order_label()?;
+    let price = if update.last_executed_price.is_finite() && update.last_executed_price > 0.0 {
+        update.last_executed_price
+    } else {
+        update.average_price
+    };
+    if OrderUpdate::execution_type(update) != ExecutionType::Trade
+        || !update.last_executed_quantity.is_finite()
+        || update.last_executed_quantity <= 0.0
+        || !price.is_finite()
+        || price <= 0.0
+    {
+        return None;
+    }
+
+    let event_ts = OrderUpdate::event_time(update);
+    let mut record = UnifiedOrderRecord {
+        symbol_len: 0,
+        symbol: update.symbol.as_bytes().to_vec(),
+        create_ts: event_ts,
+        update_ts: event_ts,
+        signal_ts: 0,
+        submit_ts: 0,
+        local_ts: get_timestamp_us(),
+        mkt_ts: 0,
+        client_order_id: update.client_order_id,
+        venue: OrderUpdate::trading_venue(update) as u8,
+        ttype: update.order_type,
+        side: update.side,
+        price,
+        price_offset: 0.0,
+        amount_init: update.quantity,
+        amount_update: update.last_executed_quantity,
+        status: update.order_status,
+        from_key_len: 0,
+        from_key: format!(
+            "exchange_forced_close:{reason}:order={}:trade={}",
+            update.order_id, update.trade_id
+        )
+        .into_bytes(),
+        signal_bbo: None,
+        fill_liquidity: persist_common::FillLiquidity::from_is_maker(
+            order_common::TradeUpdate::factual_is_maker(update),
+        ),
+    };
+    record.refresh_lengths();
+    Some(record)
+}
+
+fn build_hyperliquid_external_uniform_order(
+    update: &HyperliquidBasicFillMsg,
+) -> Option<UnifiedOrderRecord> {
+    use order_common::{OrderType, Side, TradeUpdate};
+
+    if update.client_order_id != 0
+        || TradeUpdate::trading_venue(update) != TradingVenue::HyperliquidFutures
+        || update.order_id <= 0
+        || !update.price.is_finite()
+        || update.price <= 0.0
+        || !update.last_filled_quantity.is_finite()
+        || update.last_filled_quantity <= 0.0
+    {
+        return None;
+    }
+    let method = update.liquidation_method.trim();
+    if method.is_empty()
+        || !method
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return None;
+    }
+    let side = Side::from_u8(update.side)?;
+    let synthetic_client_order_id = update.order_id.checked_neg()?;
+    let event_ts = TradeUpdate::event_time(update);
+    let mut record = UnifiedOrderRecord {
+        symbol_len: 0,
+        symbol: update.symbol.as_bytes().to_vec(),
+        create_ts: event_ts,
+        update_ts: event_ts,
+        signal_ts: 0,
+        submit_ts: 0,
+        local_ts: get_timestamp_us(),
+        mkt_ts: 0,
+        client_order_id: synthetic_client_order_id,
+        venue: TradingVenue::HyperliquidFutures.to_u8(),
+        ttype: OrderType::Market.to_u8(),
+        side: side.to_u8(),
+        price: update.price,
+        price_offset: 0.0,
+        amount_init: update.last_filled_quantity,
+        amount_update: update.last_filled_quantity,
+        status: OrderStatus::Filled.to_u8(),
+        from_key_len: 0,
+        from_key: format!(
+            "exchange_forced_close:liquidation:method={method}:order={}:trade={}:tx={}",
+            update.order_id, update.venue_trade_id, update.transaction_hash
+        )
+        .into_bytes(),
+        signal_bbo: None,
+        fill_liquidity: persist_common::FillLiquidity::from_is_maker(
+            order_common::TradeUpdate::factual_is_maker(update),
+        ),
+    };
+    record.refresh_lengths();
+    Some(record)
+}
+
 fn dispatch_order_update_to_strategy<T>(
     strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
     strategy_id: i32,
@@ -5003,8 +8505,11 @@ where
 
     let matched = strategy.is_strategy_order(order_id);
     if matched {
+        if normalized_update.amendment_succeeded().is_some() {
+            strategy.apply_order_amendment_result(normalized_update);
+        }
         match normalized_update.execution_type() {
-            ExecutionType::New | ExecutionType::Canceled => {
+            ExecutionType::New | ExecutionType::Canceled | ExecutionType::Replaced => {
                 strategy.apply_order_update(normalized_update);
             }
             ExecutionType::Trade => {
@@ -5019,15 +8524,6 @@ where
                     OrderUpdate::order_id(normalized_update)
                 );
                 strategy.apply_order_update(normalized_update);
-            }
-            _ => {
-                log::error!(
-                    "Unhandled execution type: {:?}, sym={} cli_id={} ord_id={}",
-                    normalized_update.execution_type(),
-                    OrderUpdate::symbol(normalized_update),
-                    OrderUpdate::client_order_id(normalized_update),
-                    OrderUpdate::order_id(normalized_update)
-                );
             }
         }
     }
@@ -5054,7 +8550,7 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::common::min_qty_table::MinQtyTable;
     use crate::pre_trade::price_table::PriceTable;
@@ -5062,7 +8558,8 @@ mod tests {
     use crate::strategy::manager::OpenPriceMapEntry;
     use crate::strategy::{Strategy, StrategyManager};
     use mkt_parsers::msg::basic_account_msg::{
-        BasicBalanceMsg, BasicPositionMsg, BinanceBasicOrderMsg, GateBasicOrderMsg,
+        BasicAccountEventMsg, BasicAccountScope, BasicBalanceMsg, BasicPositionMsg,
+        BinanceBasicOrderMsg, GateBasicOrderMsg,
     };
     use signal_common::cancel_signal::{ArbCancelCtx, MmCancelCtx};
     use signal_common::min_qty_table::MinQtyEntry;
@@ -5073,6 +8570,1360 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
+
+    #[test]
+    fn gate_rest_marks_include_balanced_holdings_and_skip_unlisted_spot_only_assets() {
+        let exposures = HashMap::from([
+            ("BICO".into(), (1000.0, -1000.0)),
+            ("PUNDIX".into(), (0.0, -100.0)),
+            ("BTC".into(), (1.0, 0.0)),
+            ("SLVON".into(), (0.01, 0.0)),
+            ("FLAT".into(), (0.0, 0.0)),
+            ("USDT".into(), (1000.0, 0.0)),
+        ]);
+        let mut prices = PriceTable::new();
+        let mut rules = VenueMinQtyTable::new(TradingVenue::GateFutures);
+        rules.set_entry_for_test(VenueMinQtyEntry {
+            symbol: "BTCUSDT".into(),
+            base_asset: "BTC".into(),
+            quote_asset: "USDT".into(),
+            min_qty: 1.0,
+            step_size: 1.0,
+            price_tick: Some(0.1),
+            min_notional: None,
+        });
+        assert_eq!(
+            gate_missing_mark_symbols(&exposures, &prices, TradingVenue::GateMargin, Some(&rules)),
+            vec!["BICO_USDT", "BTC_USDT", "PUNDIX_USDT"]
+        );
+        // An index update does not resolve a missing mark.
+        prices.update_index_price("PUNDIX_USDT", 0.1, 1);
+        prices.update_mark_price("BICO_USDT", 0.01315, 2);
+        assert_eq!(
+            gate_missing_mark_symbols(&exposures, &prices, TradingVenue::GateMargin, None),
+            vec!["PUNDIX_USDT"]
+        );
+        let reversed = exposures
+            .iter()
+            .map(|(a, &(o, h))| (a.clone(), (h, o)))
+            .collect();
+        assert_eq!(
+            gate_missing_mark_symbols(&reversed, &prices, TradingVenue::GateFutures, None),
+            vec!["PUNDIX_USDT"]
+        );
+        assert!(super::super::gate_mark_price_supplement::seed_missing_mark(
+            &mut prices,
+            "PUNDIX_USDT",
+            0.0839,
+            3,
+        ));
+        assert!(
+            gate_missing_mark_symbols(&exposures, &prices, TradingVenue::GateMargin, None)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn concentration_spot_fallback_does_not_replace_a_mark_or_price_futures() {
+        let exposures = HashMap::from([
+            ("BTC".into(), (1.0, -1.0)),
+            ("SLVON".into(), (0.01, 0.0)),
+            ("UNPRICED_FUT".into(), (2.0, -2.0)),
+            ("UNKNOWN".into(), (0.2, 0.0)),
+        ]);
+        let marks = HashMap::from([("BTC".into(), 100.0)]);
+        let positions = HashMap::from([("BTC".into(), 200.0)]);
+        let spots = HashMap::from([
+            ("BTC".into(), 1.0),
+            ("SLVON".into(), 40.0),
+            ("UNPRICED_FUT".into(), 10.0),
+        ]);
+        let (values, unknown) = concentration_positions_with_spot_quotes(
+            TradingVenue::GateMargin,
+            TradingVenue::GateFutures,
+            &exposures,
+            &marks,
+            &positions,
+            &spots,
+        );
+        assert_eq!(values["BTC"], 200.0);
+        assert!((values["SLVON"] - 0.4).abs() < 1e-12);
+        assert_eq!(unknown, vec!["UNKNOWN", "UNPRICED_FUT"]);
+        let (values, unknown) = concentration_positions_with_spot_quotes(
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+            &exposures,
+            &marks,
+            &positions,
+            &spots,
+        );
+        assert_eq!(values, positions);
+        assert!(unknown.contains(&"SLVON".to_string()));
+    }
+
+    #[test]
+    fn concentration_spot_fallback_accepts_reverse_gate_pair_and_rejects_bad_value() {
+        assert_eq!(
+            gate_spot_only_quantity(
+                TradingVenue::GateFutures,
+                TradingVenue::GateMargin,
+                (0.0, -2.0)
+            ),
+            Some(2.0)
+        );
+        assert_eq!(
+            gate_spot_only_quantity(
+                TradingVenue::GateMargin,
+                TradingVenue::GateFutures,
+                (2.0, 1.0)
+            ),
+            None
+        );
+        assert_eq!(
+            gate_spot_only_quantity(
+                TradingVenue::GateMargin,
+                TradingVenue::GateFutures,
+                (f64::NAN, 0.0)
+            ),
+            None
+        );
+        let exposures = HashMap::from([("A".into(), (1.0, 0.0))]);
+        for value in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let (priced, unknown) = concentration_positions_with_spot_quotes(
+                TradingVenue::GateMargin,
+                TradingVenue::GateFutures,
+                &exposures,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::from([("A".into(), value)]),
+            );
+            assert!(priced.is_empty());
+            assert_eq!(unknown, vec!["A"]);
+        }
+    }
+    fn hyperliquid_test_order_update(
+        venue: TradingVenue,
+        client_order_id: i64,
+    ) -> HyperliquidBasicOrderMsg {
+        HyperliquidBasicOrderMsg::create(
+            venue.to_u8(),
+            1_725_000_000_123,
+            "BTCUSDC".to_string(),
+            99,
+            client_order_id,
+            "0x0000000000000000000000000000002a".to_string(),
+            Side::Buy.to_u8(),
+            order_common::OrderType::Limit.to_u8(),
+            order_common::TimeInForce::GTC.to_u8(),
+            ExecutionType::Canceled.to_u8(),
+            OrderStatus::Canceled.to_u8(),
+            100.0,
+            1.0,
+            0.0,
+            "canceled".to_string(),
+        )
+    }
+
+    fn hyperliquid_test_local_order(
+        venue: TradingVenue,
+        client_order_id: i64,
+        order_type: order_common::OrderType,
+    ) -> Order {
+        Order::new(
+            venue,
+            client_order_id,
+            order_type,
+            "BTCUSDC".to_string(),
+            Side::Buy,
+            1.0,
+            100.0,
+            false,
+            1.0,
+            None,
+            false,
+        )
+    }
+
+    #[test]
+    fn uta_forced_fill_has_exchange_attribution_without_a_strategy() {
+        let fill=mkt_parsers::msg::external_futures_fill::ExternalFuturesFill::from_exchange(5,&serde_json::json!({"category":"linear","symbol":"BTCUSDT","orderId":"native-order","execId":"native-trade","execTime":"1700000000000","side":"Sell","execPrice":"50000","execQty":"0.2"}),Some("delivery")).unwrap();
+        let record = build_uta_external_uniform_order(&fill).unwrap();
+        assert_eq!(record.client_order_id, 0);
+        assert_eq!(record.signal_ts, 0);
+        assert_eq!(record.amount_update, 0.2);
+        assert_eq!(
+            record.from_key,
+            b"exchange_forced_close:delivery:order=native-order:trade=native-trade"
+        );
+        let mut unknown = fill;
+        unknown.reason = None;
+        assert!(build_uta_external_uniform_order(&unknown).is_none());
+    }
+
+    #[test]
+    fn gate_adl_uniform_fill_keeps_native_contract_quantity_and_ids() {
+        let fill = mkt_parsers::msg::external_futures_fill::ExternalFuturesFill::from_gate_adl(
+            &serde_json::json!({"id":5395499,"order_id":"11540474397072413","text":"auto_deleveraging","contract":"ALPINE_USDT","create_time":1793355400.7977,"size":"4250.1","price":"0.4269","role":"taker"})
+        ).unwrap();
+        use order_common::TradeUpdate;
+        assert_eq!(fill.trading_venue(), TradingVenue::GateFutures);
+        let record = build_uta_external_uniform_order(&fill).unwrap();
+        assert_eq!(record.client_order_id, 0);
+        assert_eq!(record.venue, TradingVenue::GateFutures as u8);
+        assert_eq!(record.status, OrderStatus::Filled.to_u8());
+        assert_eq!(record.amount_update, 4250.1);
+        assert_eq!(
+            record.from_key,
+            b"exchange_forced_close:adl:order=11540474397072413:trade=5395499"
+        );
+    }
+
+    #[test]
+    fn adl_spot_repair_is_scoped_to_same_venue_linear_funding_environments() {
+        use trade_signal::ArbMode;
+        for (spot, futures) in [
+            (TradingVenue::GateMargin, TradingVenue::GateFutures),
+            (TradingVenue::BybitMargin, TradingVenue::BybitFutures),
+            (TradingVenue::BinanceMargin, TradingVenue::BinanceFutures),
+            (TradingVenue::BitgetMargin, TradingVenue::BitgetFutures),
+            (TradingVenue::OkexMargin, TradingVenue::OkexFutures),
+        ] {
+            assert!(adl_spot_repair_enabled(
+                spot,
+                futures,
+                ArbMode::FundingArb,
+                false
+            ));
+            assert!(!adl_spot_repair_enabled(
+                spot,
+                futures,
+                ArbMode::FundingArb,
+                true
+            ));
+            for mode in [ArbMode::IntraArb, ArbMode::CrossArb] {
+                assert!(!adl_spot_repair_enabled(spot, futures, mode, false));
+            }
+        }
+        assert!(!adl_spot_repair_enabled(
+            TradingVenue::BinanceMargin,
+            TradingVenue::BybitFutures,
+            ArbMode::FundingArb,
+            false
+        ));
+        assert!(!adl_spot_repair_enabled(
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceCoinFutures,
+            ArbMode::FundingArb,
+            false
+        ));
+        assert!(!adl_spot_repair_enabled(
+            TradingVenue::BitgetMargin,
+            TradingVenue::BitgetCoinFutures,
+            ArbMode::FundingArb,
+            false
+        ));
+    }
+
+    #[test]
+    fn okex_adl_uniform_fill_retains_native_identity_and_filled_status() {
+        use mkt_parsers::msg::external_futures_fill::ExternalFuturesFill;
+        use order_common::TradeUpdate;
+        let row = serde_json::json!({"instType":"SWAP","instId":"BTC-USDT-SWAP","category":"adl",
+            "ordId":"9001","tradeId":"-101","side":"buy","fillPx":"50000","fillSz":"5",
+            "fillTime":"1793355400797","execType":"T"});
+        let fill = ExternalFuturesFill::from_okex_order_fill(&row).unwrap();
+        assert_eq!(fill.trading_venue(), TradingVenue::OkexFutures);
+        let record = build_uta_external_uniform_order(&fill).unwrap();
+        assert_eq!(record.symbol, b"BTCUSDT");
+        assert_eq!(record.client_order_id, 0);
+        assert_eq!(record.venue, TradingVenue::OkexFutures as u8);
+        assert_eq!(record.amount_update, 5.0);
+        assert_eq!(record.status, OrderStatus::Filled.to_u8());
+        assert_eq!(
+            record.from_key,
+            b"exchange_forced_close:adl:order=9001:trade=-101"
+        );
+    }
+
+    #[test]
+    fn binance_adl_adapter_accepts_only_factual_usdm_adl_fills() {
+        let mut update = BinanceBasicOrderMsg::create(
+            BinanceBasicOrderMsg::VENUE_UM,
+            1_793_355_400_798,
+            1_793_355_400_797,
+            "BTCUSDT".to_string(),
+            998877,
+            -998877,
+            556677,
+            Side::Buy.to_u8(),
+            order_common::OrderType::Market.to_u8(),
+            order_common::TimeInForce::IOC.to_u8(),
+            ExecutionType::Trade.to_u8(),
+            OrderStatus::PartiallyFilled.to_u8(),
+            false,
+            0.0,
+            0.5,
+            0.2,
+            0.3,
+            50000.0,
+            50000.0,
+            0.0,
+            0.0,
+            "USDT".to_string(),
+        );
+        update.external_order_kind = BinanceBasicOrderMsg::EXTERNAL_ADL;
+        let fill = binance_adl_repair_fill(&update).unwrap();
+        assert_eq!(fill.venue, TradingVenue::BinanceFutures as u8);
+        assert_eq!(fill.order_id, "998877");
+        assert_eq!(fill.trade_id, "556677");
+        assert_eq!(fill.timestamp_us, 1_793_355_400_797_000);
+        assert_eq!(fill.quantity, 0.2);
+        assert_eq!(fill.reason.as_deref(), Some("adl"));
+        update.external_order_kind = BinanceBasicOrderMsg::EXTERNAL_LIQUIDATION;
+        assert!(binance_adl_repair_fill(&update).is_none());
+        update.external_order_kind = BinanceBasicOrderMsg::EXTERNAL_ADL;
+        update.last_executed_quantity = 0.0;
+        assert!(binance_adl_repair_fill(&update).is_none());
+        update.last_executed_quantity = 0.2;
+        for cumulative in [0.0, -0.1, f64::NAN, f64::INFINITY] {
+            update.cumulative_filled_quantity = cumulative;
+            assert!(binance_adl_repair_fill(&update).is_none());
+        }
+        update.cumulative_filled_quantity = 0.3;
+        update.venue = BinanceBasicOrderMsg::VENUE_CM;
+        assert!(binance_adl_repair_fill(&update).is_none());
+    }
+
+    #[test]
+    fn mixed_exec_position_readiness_is_scoped_to_each_market() {
+        EXEC_RUNTIME_MODE.with(|mode| mode.set(true));
+        EXEC_POSITION_SNAPSHOT_READY.with(|ready| ready.set(false));
+        EXEC_POSITION_SNAPSHOT_VENUES.with(|venues| venues.borrow_mut().clear());
+        let monitor = MonitorChannel::instance();
+        monitor.mark_exec_position_snapshot_ready(TradingVenue::BinanceFutures, "test_um_snapshot");
+        assert!(monitor.exec_position_snapshot_ready_for_venue(TradingVenue::BinanceFutures));
+        assert!(!monitor.exec_position_snapshot_ready_for_venue(TradingVenue::BinanceCoinFutures));
+        monitor.mark_exec_position_snapshot_ready(
+            TradingVenue::BinanceCoinFutures,
+            "test_cm_empty_snapshot",
+        );
+        assert!(monitor.exec_position_snapshot_ready_for_venue(TradingVenue::BinanceCoinFutures));
+        assert!(monitor.exec_position_snapshot_ready_for_venue(TradingVenue::BinanceFutures));
+        EXEC_RUNTIME_MODE.with(|mode| mode.set(false));
+        EXEC_POSITION_SNAPSHOT_READY.with(|ready| ready.set(false));
+        EXEC_POSITION_SNAPSHOT_VENUES.with(|venues| venues.borrow_mut().clear());
+    }
+
+    #[test]
+    fn hyperliquid_private_update_uses_local_order_intent() {
+        for venue in [
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ] {
+            for (order_type, expected_tif) in [
+                (
+                    order_common::OrderType::Limit,
+                    order_common::TimeInForce::GTX,
+                ),
+                (
+                    order_common::OrderType::Market,
+                    order_common::TimeInForce::IOC,
+                ),
+            ] {
+                let mut update = hyperliquid_test_order_update(venue, 42);
+                let order = hyperliquid_test_local_order(venue, 42, order_type);
+
+                assert!(override_hyperliquid_order_intent_from_local(
+                    &mut update,
+                    Some(&order)
+                ));
+                assert_eq!(update.order_type, order_type.to_u8());
+                assert_eq!(update.time_in_force, expected_tif.to_u8());
+            }
+        }
+    }
+
+    #[test]
+    fn hyperliquid_terminal_without_local_order_is_not_guessed() {
+        let mut update = hyperliquid_test_order_update(TradingVenue::HyperliquidFutures, 42);
+        let original_order_type = update.order_type;
+        let original_tif = update.time_in_force;
+
+        assert!(!override_hyperliquid_order_intent_from_local(
+            &mut update,
+            None
+        ));
+        assert_eq!(update.order_type, original_order_type);
+        assert_eq!(update.time_in_force, original_tif);
+    }
+
+    #[test]
+    fn factual_account_services_require_non_overflow() {
+        use runtime_common::execution_backend::ExecBackend;
+        assert!(account_service_requires_non_overflow(
+            Exchange::Hyperliquid,
+            ExecBackend::Native
+        ));
+        assert!(account_service_requires_non_overflow(
+            Exchange::Binance,
+            ExecBackend::Ltp
+        ));
+        assert!(account_service_requires_non_overflow(
+            Exchange::Okex,
+            ExecBackend::Ltp
+        ));
+        assert!(!account_service_requires_non_overflow(
+            Exchange::Binance,
+            ExecBackend::Native
+        ));
+        assert!(!account_service_requires_non_overflow(
+            Exchange::Gate,
+            ExecBackend::Native
+        ));
+    }
+
+    fn temporary_fact_cursor_path(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "mkt_signal_hyperliquid_cursor_test_{}_{}_{}",
+                std::process::id(),
+                label,
+                nonce
+            ))
+            .join("cursor.bin")
+    }
+
+    #[test]
+    fn hyperliquid_fact_cursor_persists_atomically_and_is_identity_bound() {
+        let account_hash = [31; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN];
+        let path = temporary_fact_cursor_path("roundtrip");
+        let parent = path.parent().unwrap().to_path_buf();
+        let store = HyperliquidFactCursorStore::at_path(path.clone(), account_hash);
+        assert_eq!(store.load().unwrap(), HyperliquidFactCursor::default());
+
+        let cursor = HyperliquidFactCursor {
+            monitor_id: 901,
+            last_fact_seq: 73,
+        };
+        store.persist(cursor).unwrap();
+        assert_eq!(store.load().unwrap(), cursor);
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+
+        let wrong_identity =
+            HyperliquidFactCursorStore::at_path(path, [32; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN]);
+        assert!(wrong_identity.load().is_err());
+        store.clear().unwrap();
+        assert_eq!(store.load().unwrap(), HyperliquidFactCursor::default());
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn hyperliquid_portfolio_readiness_requires_both_fresh_snapshots_and_risk() {
+        let mode = Some(HyperliquidAccountMode::PortfolioMargin);
+        let mut readiness = HyperliquidLiveSnapshotReadiness::default();
+        for venue in [
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ] {
+            for phase in [
+                HyperliquidSnapshotPhase::Begin,
+                HyperliquidSnapshotPhase::Complete,
+            ] {
+                let control = HyperliquidSnapshotCompleteMsg::create_control(
+                    phase,
+                    HyperliquidSnapshotPath::Primary,
+                    venue.to_u8(),
+                    7,
+                    11,
+                    1,
+                    900,
+                    2000,
+                );
+                readiness.apply_control(venue, &control, 1000).unwrap();
+            }
+            if venue == TradingVenue::HyperliquidMargin {
+                assert_eq!(readiness.exec_ready_until_ms(mode, venue, 1000, true), None);
+            }
+        }
+        for venue in [
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ] {
+            assert_eq!(
+                readiness.exec_ready_until_ms(mode, venue, 1000, false),
+                None
+            );
+            assert_eq!(readiness.arb_ready_until_ms(mode, venue, 1000, false), None);
+            assert_eq!(
+                readiness.exec_ready_until_ms(mode, venue, 1000, true),
+                Some(2000)
+            );
+            assert_eq!(
+                readiness.arb_ready_until_ms(mode, venue, 1000, true),
+                Some(2000)
+            );
+            assert_eq!(readiness.arb_ready_until_ms(mode, venue, 2000, true), None);
+        }
+        let begin = HyperliquidSnapshotCompleteMsg::create_control(
+            HyperliquidSnapshotPhase::Begin,
+            HyperliquidSnapshotPath::Secondary,
+            TradingVenue::HyperliquidFutures.to_u8(),
+            7,
+            12,
+            2,
+            1100,
+            2500,
+        );
+        readiness
+            .apply_control(TradingVenue::HyperliquidFutures, &begin, 1100)
+            .unwrap();
+        assert_eq!(
+            readiness.exec_ready_until_ms(mode, TradingVenue::HyperliquidFutures, 1100, true),
+            None
+        );
+        assert!(!readiness.is_snapshot_row(
+            BasicAccountEventType::AccountRisk,
+            BasicAccountScope::HyperliquidPortfolioMargin,
+            mode
+        ));
+        assert!(!hyperliquid_snapshot_owns_risk(
+            mode,
+            TradingVenue::HyperliquidFutures
+        ));
+        assert!(hyperliquid_snapshot_owns_risk(
+            mode,
+            TradingVenue::HyperliquidMargin
+        ));
+        let mut complete = begin.clone();
+        complete.phase = HyperliquidSnapshotPhase::Complete as u8;
+        readiness
+            .apply_control(TradingVenue::HyperliquidFutures, &complete, 1100)
+            .unwrap();
+        assert_eq!(
+            readiness.exec_ready_until_ms(mode, TradingVenue::HyperliquidFutures, 1100, true),
+            Some(2000)
+        );
+        readiness.spot.fail_closed();
+        assert_eq!(
+            readiness.exec_ready_until_ms(mode, TradingVenue::HyperliquidFutures, 1100, true),
+            None
+        );
+    }
+
+    #[test]
+    fn hyperliquid_portfolio_ipc_risk_rejects_invalid_ratio() {
+        for value in [f64::NAN, f64::INFINITY, -0.1] {
+            let msg = BasicAccountRiskMsg::create(1000, 0.0, 0.0, 0.0, 0.0, value, 0.0, 0.0);
+            assert!(decode_hyperliquid_portfolio_risk(&msg.to_bytes()).is_err());
+        }
+        assert!(decode_hyperliquid_portfolio_risk(&[0; 2]).is_err());
+        let msg = BasicAccountRiskMsg::create(1000, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0);
+        assert_eq!(
+            decode_hyperliquid_portfolio_risk(&msg.to_bytes())
+                .unwrap()
+                .margin_ratio,
+            2.0
+        );
+    }
+
+    #[test]
+    fn hyperliquid_native_fact_ack_binds_exact_payload_and_identity() {
+        use mkt_parsers::msg::hyperliquid_native_msg::HyperliquidNativeSource;
+        let identity = HyperliquidFactIdentity {
+            account_hash: [41; 32],
+            monitor_id: 52,
+            fact_seq: 63,
+        };
+        let msg = HyperliquidNativeEventMsg::create(
+            1000,
+            HyperliquidNativeSource::NonUserCancel,
+            "BTC:7".into(),
+            &serde_json::json!({"coin":"BTC","oid":7}),
+        )
+        .unwrap()
+        .with_fact_identity(identity);
+        let encode = |msg: &HyperliquidNativeEventMsg| {
+            BasicAccountEventMsg::create(
+                BasicAccountEventType::HyperliquidNativeEvent,
+                BasicAccountScope::HyperliquidUnified,
+                msg.to_bytes(),
+            )
+            .to_bytes()
+        };
+        let envelope = encode(&msg);
+        let metadata = hyperliquid_audit_fact_metadata(&envelope).unwrap().unwrap();
+        let ack = HyperliquidAccountFactAck {
+            account_hash: identity.account_hash,
+            monitor_id: 52,
+            fact_seq: 63,
+            stable_key: metadata.stable_key,
+            value_digest: hyperliquid_account_fact_value_digest(&metadata.stable_key, &envelope),
+        };
+        assert!(hyperliquid_fact_ack_matches_payload(&ack, &envelope).unwrap());
+        let mut changed = msg.clone();
+        changed.payload_json = r#"{"coin":"ETH","oid":7}"#.into();
+        assert!(!hyperliquid_fact_ack_matches_payload(&ack, &encode(&changed)).unwrap());
+        changed = msg;
+        changed.identity.fact_seq += 1;
+        assert!(!hyperliquid_fact_ack_matches_payload(&ack, &encode(&changed)).unwrap());
+    }
+
+    #[test]
+    fn hyperliquid_fact_ack_must_match_identity_stable_key_and_exact_value() {
+        let identity = HyperliquidFactIdentity {
+            account_hash: [41; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+            monitor_id: 52,
+            fact_seq: 63,
+        };
+        let fact = HyperliquidFundingMsg::create(
+            1_725_000_000_000,
+            "BTC".to_string(),
+            "-1.25".to_string(),
+            "2.0".to_string(),
+            "0.0001".to_string(),
+        )
+        .with_fact_identity(identity);
+        let envelope = BasicAccountEventMsg::create(
+            BasicAccountEventType::HyperliquidFunding,
+            BasicAccountScope::HyperliquidUnified,
+            fact.to_bytes(),
+        )
+        .to_bytes();
+        let metadata = hyperliquid_audit_fact_metadata(&envelope).unwrap().unwrap();
+        let ack = HyperliquidAccountFactAck {
+            account_hash: identity.account_hash,
+            monitor_id: identity.monitor_id,
+            fact_seq: identity.fact_seq,
+            stable_key: metadata.stable_key,
+            value_digest: hyperliquid_account_fact_value_digest(&metadata.stable_key, &envelope),
+        };
+        let mut padded = envelope.to_vec();
+        padded.resize(HYPERLIQUID_ACCOUNT_FACT_MAX_BYTES, 0);
+        assert!(hyperliquid_fact_ack_matches_payload(&ack, &padded).unwrap());
+
+        let mut wrong_key = ack;
+        wrong_key.stable_key[0] ^= 1;
+        assert!(!hyperliquid_fact_ack_matches_payload(&wrong_key, &padded).unwrap());
+        let mut wrong_value = ack;
+        wrong_value.value_digest[0] ^= 1;
+        assert!(!hyperliquid_fact_ack_matches_payload(&wrong_value, &padded).unwrap());
+    }
+
+    #[test]
+    fn pending_hyperliquid_fact_marks_post_ack_replay_once() {
+        let mut pending = PendingHyperliquidFactBatch::new(Vec::new(), true);
+        assert!(pending.require_recovery());
+        assert!(!pending.require_recovery());
+        assert!(pending.recovery_required);
+    }
+
+    #[test]
+    fn hyperliquid_fact_restart_resumes_cursor_and_explicit_epoch_gap_resets_once() {
+        let account_hash = [33; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN];
+        let cursor = HyperliquidFactCursor {
+            monitor_id: 910,
+            last_fact_seq: 44,
+        };
+        let mut protocol =
+            HyperliquidFactReplayProtocol::new_with_cursor(account_hash, 920, cursor);
+        let resumed = protocol.begin_request();
+        assert_eq!(resumed.last_monitor_id, 910);
+        assert_eq!(resumed.last_fact_seq, 44);
+
+        let changed_epoch_gap = HyperliquidFactReplayControlMsg::create(
+            HyperliquidFactReplayPhase::Gap,
+            account_hash,
+            911,
+            920,
+            resumed.request_id,
+            1,
+            0,
+            0,
+        );
+        assert!(matches!(
+            protocol.observe_control(changed_epoch_gap),
+            HyperliquidFactControlDisposition::ResetProducerEpoch
+        ));
+        assert!(protocol.reset_producer_epoch());
+        let from_origin = protocol.begin_request();
+        assert_eq!(from_origin.last_monitor_id, 0);
+        assert_eq!(from_origin.last_fact_seq, 0);
+
+        let origin_not_retained = HyperliquidFactReplayControlMsg::create(
+            HyperliquidFactReplayPhase::Gap,
+            account_hash,
+            911,
+            920,
+            from_origin.request_id,
+            2,
+            44,
+            44,
+        );
+        assert!(matches!(
+            protocol.observe_control(origin_not_retained),
+            HyperliquidFactControlDisposition::FailClosed(
+                "producer replay ring cannot cover requested cursor"
+            )
+        ));
+        assert!(protocol.is_gap());
+    }
+
+    #[test]
+    fn hyperliquid_fact_replay_commits_only_after_complete_then_enforces_live_sequence() {
+        let account_hash = [9; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN];
+        let mut protocol = HyperliquidFactReplayProtocol::new(account_hash, 71);
+        let request = protocol.begin_request();
+        let begin = HyperliquidFactReplayControlMsg::create(
+            HyperliquidFactReplayPhase::Begin,
+            account_hash,
+            81,
+            71,
+            request.request_id,
+            1,
+            2,
+            2,
+        );
+        assert!(matches!(
+            protocol.observe_control(begin),
+            HyperliquidFactControlDisposition::Waiting
+        ));
+        for (seq, payload) in [(1, b"fact-1".as_slice()), (2, b"fact-2".as_slice())] {
+            assert!(matches!(
+                protocol.observe_fact(
+                    HyperliquidFactIdentity {
+                        account_hash,
+                        monitor_id: 81,
+                        fact_seq: seq,
+                    },
+                    payload,
+                ),
+                HyperliquidFactDisposition::Drop
+            ));
+            assert!(!protocol.is_ready());
+        }
+        let complete = HyperliquidFactReplayControlMsg::create(
+            HyperliquidFactReplayPhase::Complete,
+            account_hash,
+            81,
+            71,
+            request.request_id,
+            1,
+            2,
+            2,
+        );
+        let HyperliquidFactControlDisposition::Commit { events, caught_up } =
+            protocol.observe_control(complete)
+        else {
+            panic!("expected a validated replay commit");
+        };
+        assert!(caught_up);
+        assert_eq!(
+            events,
+            vec![Bytes::from_static(b"fact-1"), Bytes::from_static(b"fact-2")]
+        );
+        assert!(!protocol.is_ready());
+        assert_eq!(protocol.monitor_id, 0);
+        assert_eq!(protocol.last_fact_seq, 0);
+        assert!(protocol.complete_commit());
+        assert!(protocol.is_ready());
+        assert_eq!(protocol.monitor_id, 81);
+        assert_eq!(protocol.last_fact_seq, 2);
+
+        let live = HyperliquidFactIdentity {
+            account_hash,
+            monitor_id: 81,
+            fact_seq: 3,
+        };
+        assert!(matches!(
+            protocol.observe_fact(live, b"live"),
+            HyperliquidFactDisposition::Apply
+        ));
+        assert_eq!(protocol.last_fact_seq, 2);
+        assert!(protocol.complete_commit());
+        assert_eq!(protocol.last_fact_seq, 3);
+        assert!(matches!(
+            protocol.observe_fact(live, b"duplicate"),
+            HyperliquidFactDisposition::Drop
+        ));
+        assert!(matches!(
+            protocol.observe_fact(
+                HyperliquidFactIdentity {
+                    fact_seq: 5,
+                    ..live
+                },
+                b"gap",
+            ),
+            HyperliquidFactDisposition::Recover("live factual sequence gap")
+        ));
+    }
+
+    #[test]
+    fn hyperliquid_fact_replay_rejects_account_mismatch_and_cross_epoch_resume() {
+        let account_hash = [4; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN];
+        let mut protocol = HyperliquidFactReplayProtocol::new(account_hash, 72);
+        let request = protocol.begin_request();
+        let begin = HyperliquidFactReplayControlMsg::create(
+            HyperliquidFactReplayPhase::Begin,
+            account_hash,
+            82,
+            72,
+            request.request_id,
+            1,
+            0,
+            0,
+        );
+        assert!(matches!(
+            protocol.observe_control(begin),
+            HyperliquidFactControlDisposition::Waiting
+        ));
+        let complete = HyperliquidFactReplayControlMsg::create(
+            HyperliquidFactReplayPhase::Complete,
+            account_hash,
+            82,
+            72,
+            request.request_id,
+            1,
+            0,
+            0,
+        );
+        assert!(matches!(
+            protocol.observe_control(complete),
+            HyperliquidFactControlDisposition::Commit { events, caught_up: true }
+                if events.is_empty()
+        ));
+        assert!(protocol.complete_commit());
+
+        let request = protocol.begin_request();
+        let new_epoch = HyperliquidFactReplayControlMsg::create(
+            HyperliquidFactReplayPhase::Begin,
+            account_hash,
+            83,
+            72,
+            request.request_id,
+            1,
+            0,
+            0,
+        );
+        assert!(matches!(
+            protocol.observe_control(new_epoch),
+            HyperliquidFactControlDisposition::FailClosed(
+                "producer epoch changed after a committed factual cursor"
+            )
+        ));
+        assert!(protocol.is_gap());
+
+        let mut protocol = HyperliquidFactReplayProtocol::new(account_hash, 73);
+        let request = protocol.begin_request();
+        let wrong_account = HyperliquidFactReplayControlMsg::create(
+            HyperliquidFactReplayPhase::Gap,
+            [5; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+            84,
+            73,
+            request.request_id,
+            1,
+            9,
+            9,
+        );
+        assert!(matches!(
+            protocol.observe_control(wrong_account),
+            HyperliquidFactControlDisposition::FailClosed(
+                "replay control account identity mismatch"
+            )
+        ));
+        assert!(protocol.is_gap());
+    }
+
+    #[test]
+    fn hyperliquid_fact_replay_partial_transaction_advances_cursor_without_readiness() {
+        let account_hash = [8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN];
+        let mut protocol = HyperliquidFactReplayProtocol::new(account_hash, 74);
+        let request = protocol.begin_request();
+        let begin = HyperliquidFactReplayControlMsg::create(
+            HyperliquidFactReplayPhase::Begin,
+            account_hash,
+            85,
+            74,
+            request.request_id,
+            1,
+            2,
+            5,
+        );
+        assert!(matches!(
+            protocol.observe_control(begin),
+            HyperliquidFactControlDisposition::Waiting
+        ));
+        for seq in 1..=2 {
+            assert!(matches!(
+                protocol.observe_fact(
+                    HyperliquidFactIdentity {
+                        account_hash,
+                        monitor_id: 85,
+                        fact_seq: seq,
+                    },
+                    &[seq as u8],
+                ),
+                HyperliquidFactDisposition::Drop
+            ));
+        }
+        let complete = HyperliquidFactReplayControlMsg::create(
+            HyperliquidFactReplayPhase::Complete,
+            account_hash,
+            85,
+            74,
+            request.request_id,
+            1,
+            2,
+            5,
+        );
+        assert!(matches!(
+            protocol.observe_control(complete),
+            HyperliquidFactControlDisposition::Commit {
+                events,
+                caught_up: false
+            } if events.len() == 2
+        ));
+        assert!(!protocol.is_ready());
+        assert_eq!(protocol.monitor_id, 0);
+        assert_eq!(protocol.last_fact_seq, 0);
+        assert!(protocol.complete_commit());
+        assert!(!protocol.is_ready());
+        let next = protocol.begin_request();
+        assert_eq!(next.last_monitor_id, 85);
+        assert_eq!(next.last_fact_seq, 2);
+    }
+
+    #[test]
+    fn hyperliquid_snapshot_controls_require_matched_batches_and_fresh_scopes() {
+        fn control(
+            phase: HyperliquidSnapshotPhase,
+            path: HyperliquidSnapshotPath,
+            venue: TradingVenue,
+            batch_id: u64,
+            valid_until: i64,
+        ) -> HyperliquidSnapshotCompleteMsg {
+            HyperliquidSnapshotCompleteMsg::create_control(
+                phase,
+                path,
+                venue.to_u8(),
+                7,
+                11,
+                batch_id,
+                900,
+                valid_until,
+            )
+        }
+
+        let mut readiness = HyperliquidLiveSnapshotReadiness::default();
+        let spot = readiness
+            .stream_mut(TradingVenue::HyperliquidMargin)
+            .unwrap();
+        spot.apply_control(
+            &control(
+                HyperliquidSnapshotPhase::Begin,
+                HyperliquidSnapshotPath::Primary,
+                TradingVenue::HyperliquidMargin,
+                1,
+                2_000,
+            ),
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(spot.ready_until_ms(1_000), None);
+        assert!(spot
+            .apply_control(
+                &control(
+                    HyperliquidSnapshotPhase::Complete,
+                    HyperliquidSnapshotPath::Primary,
+                    TradingVenue::HyperliquidMargin,
+                    2,
+                    2_000,
+                ),
+                1_000,
+            )
+            .is_err());
+        spot.apply_control(
+            &control(
+                HyperliquidSnapshotPhase::Complete,
+                HyperliquidSnapshotPath::Primary,
+                TradingVenue::HyperliquidMargin,
+                1,
+                2_000,
+            ),
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(spot.ready_until_ms(1_000), Some(2_000));
+        assert_eq!(spot.ready_until_ms(2_000), None);
+
+        assert_eq!(
+            readiness.exec_ready_until_ms(
+                Some(HyperliquidAccountMode::Standard),
+                TradingVenue::HyperliquidMargin,
+                1_000,
+                false,
+            ),
+            Some(2_000)
+        );
+        assert_eq!(
+            readiness.exec_ready_until_ms(
+                Some(HyperliquidAccountMode::Unified),
+                TradingVenue::HyperliquidMargin,
+                1_000,
+                true,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn hyperliquid_begin_invalidates_every_preexisting_path_lease() {
+        let mut stream = HyperliquidStreamSnapshotState::default();
+        let make = |phase, path, batch_id, valid_until| {
+            HyperliquidSnapshotCompleteMsg::create_control(
+                phase,
+                path,
+                TradingVenue::HyperliquidFutures.to_u8(),
+                9,
+                3,
+                batch_id,
+                1_000,
+                valid_until,
+            )
+        };
+        for phase in [
+            HyperliquidSnapshotPhase::Begin,
+            HyperliquidSnapshotPhase::Complete,
+        ] {
+            stream
+                .apply_control(
+                    &make(phase, HyperliquidSnapshotPath::Secondary, 1, 3_000),
+                    1_500,
+                )
+                .unwrap();
+        }
+        assert_eq!(stream.ready_until_ms(1_500), Some(3_000));
+
+        stream
+            .apply_control(
+                &make(
+                    HyperliquidSnapshotPhase::Begin,
+                    HyperliquidSnapshotPath::Primary,
+                    1,
+                    4_000,
+                ),
+                1_500,
+            )
+            .unwrap();
+        assert_eq!(stream.ready_until_ms(1_500), None);
+        stream
+            .apply_control(
+                &make(
+                    HyperliquidSnapshotPhase::Invalidate,
+                    HyperliquidSnapshotPath::Primary,
+                    0,
+                    4_000,
+                ),
+                1_500,
+            )
+            .unwrap();
+        assert_eq!(stream.ready_until_ms(1_500), None);
+
+        for phase in [
+            HyperliquidSnapshotPhase::Begin,
+            HyperliquidSnapshotPhase::Complete,
+        ] {
+            stream
+                .apply_control(
+                    &make(phase, HyperliquidSnapshotPath::Secondary, 2, 5_000),
+                    1_500,
+                )
+                .unwrap();
+        }
+        assert_eq!(stream.ready_until_ms(1_500), Some(5_000));
+    }
+
+    #[test]
+    fn hyperliquid_state_rows_require_an_active_scope_matched_transaction() {
+        let mut readiness = HyperliquidLiveSnapshotReadiness::default();
+        assert!(!readiness.is_snapshot_row(
+            BasicAccountEventType::BalanceUpdate,
+            BasicAccountScope::HyperliquidUnified,
+            Some(HyperliquidAccountMode::Unified),
+        ));
+        let begin = HyperliquidSnapshotCompleteMsg::create_control(
+            HyperliquidSnapshotPhase::Begin,
+            HyperliquidSnapshotPath::Primary,
+            TradingVenue::HyperliquidMargin.to_u8(),
+            41,
+            1,
+            1,
+            1_000,
+            2_000,
+        );
+        readiness
+            .apply_control(TradingVenue::HyperliquidMargin, &begin, 1_100)
+            .unwrap();
+        assert!(readiness.is_snapshot_row(
+            BasicAccountEventType::BalanceUpdate,
+            BasicAccountScope::HyperliquidUnified,
+            Some(HyperliquidAccountMode::Unified),
+        ));
+        assert!(readiness.is_snapshot_row(
+            BasicAccountEventType::HyperliquidSpotBalance,
+            BasicAccountScope::HyperliquidUnified,
+            Some(HyperliquidAccountMode::Unified),
+        ));
+        assert!(!readiness.is_snapshot_row(
+            BasicAccountEventType::BalanceUpdate,
+            BasicAccountScope::HyperliquidStdSpot,
+            Some(HyperliquidAccountMode::Unified),
+        ));
+        assert!(!readiness.is_snapshot_row(
+            BasicAccountEventType::PositionUpdate,
+            BasicAccountScope::HyperliquidUnified,
+            Some(HyperliquidAccountMode::Unified),
+        ));
+    }
+
+    #[test]
+    fn malformed_hyperliquid_perp_dex_row_invalidates_snapshot_batch() {
+        let mut readiness = HyperliquidLiveSnapshotReadiness::default();
+        let control = |phase| {
+            HyperliquidSnapshotCompleteMsg::create_control(
+                phase,
+                HyperliquidSnapshotPath::Primary,
+                TradingVenue::HyperliquidFutures.to_u8(),
+                41,
+                1,
+                1,
+                1_000,
+                2_000,
+            )
+        };
+        readiness
+            .apply_control(
+                TradingVenue::HyperliquidFutures,
+                &control(HyperliquidSnapshotPhase::Begin),
+                1_100,
+            )
+            .unwrap();
+        assert!(readiness.is_snapshot_row(
+            BasicAccountEventType::HyperliquidPerpDexState,
+            BasicAccountScope::HyperliquidUnified,
+            Some(HyperliquidAccountMode::Unified),
+        ));
+
+        let valid = HyperliquidPerpDexStateMsg::create(
+            1_000,
+            "xyz".to_string(),
+            2,
+            "100.000".to_string(),
+            "25.00".to_string(),
+            "75.000".to_string(),
+            "2.500".to_string(),
+            "90.000".to_string(),
+            "25.00".to_string(),
+            "65.000".to_string(),
+            "2.500".to_string(),
+            "1.250".to_string(),
+            "70.125".to_string(),
+        )
+        .to_bytes();
+        assert!(readiness.validate_perp_dex_state_row(&valid).is_ok());
+
+        let malformed = &valid[..valid.len() - 1];
+        assert!(readiness.validate_perp_dex_state_row(malformed).is_err());
+        assert!(!readiness.is_snapshot_row(
+            BasicAccountEventType::HyperliquidPerpDexState,
+            BasicAccountScope::HyperliquidUnified,
+            Some(HyperliquidAccountMode::Unified),
+        ));
+        assert!(readiness
+            .apply_control(
+                TradingVenue::HyperliquidFutures,
+                &control(HyperliquidSnapshotPhase::Complete),
+                1_100,
+            )
+            .is_err());
+        assert_eq!(readiness.perp.ready_until_ms(1_100), None);
+    }
+
+    #[test]
+    fn new_monitor_identity_revokes_all_old_path_completions() {
+        let mut readiness = HyperliquidLiveSnapshotReadiness::default();
+        for venue in [
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ] {
+            for phase in [
+                HyperliquidSnapshotPhase::Begin,
+                HyperliquidSnapshotPhase::Complete,
+            ] {
+                readiness
+                    .apply_control(
+                        venue,
+                        &HyperliquidSnapshotCompleteMsg::create_control(
+                            phase,
+                            HyperliquidSnapshotPath::Primary,
+                            venue.to_u8(),
+                            10,
+                            1,
+                            1,
+                            1_000,
+                            3_000,
+                        ),
+                        1_500,
+                    )
+                    .unwrap();
+            }
+        }
+        assert_eq!(readiness.spot.ready_until_ms(1_500), Some(3_000));
+        assert_eq!(readiness.perp.ready_until_ms(1_500), Some(3_000));
+
+        readiness
+            .apply_control(
+                TradingVenue::HyperliquidMargin,
+                &HyperliquidSnapshotCompleteMsg::create_control(
+                    HyperliquidSnapshotPhase::Invalidate,
+                    HyperliquidSnapshotPath::Secondary,
+                    TradingVenue::HyperliquidMargin.to_u8(),
+                    11,
+                    1,
+                    0,
+                    1_600,
+                    3_000,
+                ),
+                1_700,
+            )
+            .unwrap();
+        assert_eq!(readiness.spot.ready_until_ms(1_700), None);
+        assert_eq!(readiness.perp.ready_until_ms(1_700), None);
+    }
+
+    #[test]
+    fn binance_total_equity_override_requires_shared_account_scope() {
+        assert_eq!(
+            exchange_scoped_total_equity_scope(
+                TradingVenue::BinanceMargin,
+                TradingVenue::BinanceFutures,
+                Some(BinanceAccountMode::Unified),
+                None,
+            ),
+            Some(BasicAccountScope::BinanceUnified)
+        );
+        assert_eq!(
+            exchange_scoped_total_equity_scope(
+                TradingVenue::BinanceMargin,
+                TradingVenue::BinanceFutures,
+                Some(BinanceAccountMode::Standard),
+                None,
+            ),
+            None
+        );
+        assert_eq!(
+            exchange_scoped_total_equity_scope(
+                TradingVenue::BinanceFutures,
+                TradingVenue::BinanceFutures,
+                Some(BinanceAccountMode::Standard),
+                None,
+            ),
+            Some(BasicAccountScope::BinanceStdUm)
+        );
+        assert_eq!(
+            exchange_scoped_total_equity_scope(
+                TradingVenue::BinanceMargin,
+                TradingVenue::BinanceCoinFutures,
+                Some(BinanceAccountMode::Unified),
+                None,
+            ),
+            None
+        );
+
+        assert_eq!(
+            exchange_scoped_total_equity_scope(
+                TradingVenue::HyperliquidMargin,
+                TradingVenue::HyperliquidFutures,
+                None,
+                Some(HyperliquidAccountMode::Unified),
+            ),
+            Some(BasicAccountScope::HyperliquidUnified)
+        );
+        assert_eq!(
+            exchange_scoped_total_equity_scope(
+                TradingVenue::HyperliquidMargin,
+                TradingVenue::HyperliquidFutures,
+                None,
+                Some(HyperliquidAccountMode::Standard),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn binance_standard_exec_uses_exchange_valued_multi_asset_equity() {
+        let open_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Binance))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+        let hedge_leg = open_leg.clone();
+
+        let mut usdt_mgr = UsdtBalanceManager::new(Exchange::Binance);
+        usdt_mgr.apply_balance(&BasicBalanceMsg::create(0, "USDT".to_string(), 10_000.0));
+        let usdt_mgrs = HashMap::from([(
+            BasicAccountScope::BinanceStdUm,
+            Rc::new(RefCell::new(usdt_mgr)),
+        )]);
+        let mut inner = MonitorChannelInner {
+            open_venue: TradingVenue::BinanceFutures,
+            hedge_venue: TradingVenue::BinanceFutures,
+            arb_mode: ArbMode::CrossArb,
+            binance_account_mode: Some(BinanceAccountMode::Standard),
+            hyperliquid_account_mode: None,
+            open_leg,
+            hedge_leg,
+            usdt_mgrs,
+            price_table: Rc::new(RefCell::new(PriceTable::new())),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Standard,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
+            trade_update_seq: 0,
+            latest_account_risk: HashMap::from([(
+                BasicAccountScope::BinanceStdUm,
+                BasicAccountRiskMsg::create(
+                    0, 98_765.43, 98_765.43, 2_500.0, 12_000.0, 39.506172, 0.0, 0.0,
+                ),
+            )]),
+            latest_binance_std_um_wallet: None,
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        let state = MonitorChannel::compute_basic_state(&inner);
+        assert!((state.total_equity_usdt - 98_765.43).abs() < 1e-9);
+        inner.hedge_venue = TradingVenue::BinanceCoinFutures;
+        let state = MonitorChannel::compute_basic_state(&inner);
+        assert!((state.total_equity_usdt - 98_765.43).abs() < 1e-9);
+
+        let state = MonitorChannel::compute_basic_state_price_update_from_parts(
+            &inner,
+            &inner.price_table.borrow(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::from([(BasicAccountScope::BinanceUnified, 10_000.0)]),
+            &HashMap::from([(BasicAccountScope::BinanceUnifiedCm, 500.0)]),
+            Some((BasicAccountScope::BinanceUnified, 98_765.43)),
+        );
+        assert!((state.total_equity_usdt - 98_765.43).abs() < 1e-9);
+    }
 
     #[test]
     fn top_two_gross_positions_are_ranked_by_usdt_value() {
@@ -5096,6 +9947,8 @@ mod tests {
             ("SOL".to_string(), 0.0),
             ("XRP".to_string(), 1e-6),
             ("USDT".to_string(), 1_000_000.0),
+            ("USDC".to_string(), 900_000.0),
+            ("BFUSD".to_string(), 800_000.0),
             ("DOGE".to_string(), 50.0),
         ]);
 
@@ -5123,6 +9976,8 @@ mod tests {
     fn missing_position_marks_ignore_cash_and_dust() {
         let exposures = HashMap::from([
             ("USDT".to_string(), (10_000.0, 0.0)),
+            ("USDC".to_string(), (20_000.0, 0.0)),
+            ("BFUSD".to_string(), (50_000.0, 0.0)),
             ("DUST".to_string(), (0.0000004, 0.0000004)),
             ("BTC".to_string(), (0.1, -0.1)),
             ("ETH".to_string(), (10.0, -10.0)),
@@ -5135,6 +9990,19 @@ mod tests {
         marks.insert("BTC".to_string(), 100_000.0);
         assert!(missing_position_mark_assets(&exposures, &marks).is_empty());
     }
+
+    #[test]
+    fn gate_mark_price_lookup_maps_internal_symbol_to_contract_symbol() {
+        let mapper = create_symbol_mapper(Exchange::Gate);
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("PIPPIN_USDT", 0.01856, 0);
+
+        assert_eq!(
+            MonitorChannel::mark_price_for_asset(&*mapper, &price_table, "PIPPIN"),
+            0.01856
+        );
+    }
+
     #[test]
     fn monitor_fast_poll_budget_maps_messages_to_tokens() {
         assert_eq!(
@@ -5183,6 +10051,124 @@ mod tests {
 
         assert_eq!(order_common::OrderUpdate::symbol(&normalized), "BTCUSDT");
         assert!(matches!(normalized.symbol, Cow::Borrowed("BTCUSDT")));
+        assert_eq!(TradeUpdate::factual_is_maker(&normalized), Some(false));
+        let mut maker = update.clone();
+        maker.is_maker = 1;
+        assert_eq!(
+            TradeUpdate::factual_is_maker(&NormalizedUpdate::new(&maker)),
+            Some(true)
+        );
+        maker.is_maker = 255;
+        assert_eq!(
+            TradeUpdate::factual_is_maker(&NormalizedUpdate::new(&maker)),
+            None
+        );
+    }
+
+    #[test]
+    fn external_settlement_builds_nav_uniform_fill() {
+        let mut update = BinanceBasicOrderMsg::create(
+            BinanceBasicOrderMsg::VENUE_UM,
+            1_787_734_851_000,
+            1_787_734_850_999,
+            "STORJUSDT".to_string(),
+            998_877,
+            -998_877,
+            556_677,
+            Side::Sell.to_u8(),
+            order_common::OrderType::Market.to_u8(),
+            order_common::TimeInForce::IOC.to_u8(),
+            ExecutionType::Trade.to_u8(),
+            OrderStatus::Filled.to_u8(),
+            false,
+            0.0,
+            43_407.86712966,
+            43_407.86712966,
+            43_407.86712966,
+            0.1832,
+            0.1832,
+            0.0,
+            -123.45,
+            "USDT".to_string(),
+        );
+        update.external_order_kind = BinanceBasicOrderMsg::EXTERNAL_SETTLEMENT;
+
+        let record = build_binance_external_uniform_order(&update).expect("uniform fill");
+
+        assert_eq!(record.symbol, b"STORJUSDT");
+        assert_eq!(record.side, Side::Sell.to_u8());
+        assert_eq!(record.status, OrderStatus::Filled.to_u8());
+        assert_eq!(
+            record.from_key,
+            b"exchange_forced_close:settlement:order=998877:trade=556677"
+        );
+        assert!((record.price - 0.1832).abs() < 1e-12);
+        assert!((record.amount_update - 43_407.86712966).abs() < 1e-9);
+        assert!(record.length_fields_consistent());
+    }
+
+    #[test]
+    fn hyperliquid_liquidation_builds_auditable_uniform_fill() {
+        let update = HyperliquidBasicFillMsg::create(
+            TradingVenue::HyperliquidFutures.to_u8(),
+            1_787_734_851_000,
+            1_787_734_851_000,
+            "BTCUSDC".to_string(),
+            998_877,
+            0,
+            String::new(),
+            "hl:fixture",
+            556_677,
+            "0xabc123".to_string(),
+            "backstop".to_string(),
+            order_common::Side::Sell.to_u8(),
+            false,
+            95_000.0,
+            0.25,
+            0.25,
+            None,
+        );
+
+        let record =
+            build_hyperliquid_external_uniform_order(&update).expect("uniform liquidation fill");
+
+        assert_eq!(record.symbol, b"BTCUSDC");
+        assert_eq!(record.client_order_id, -998_877);
+        assert_eq!(record.side, order_common::Side::Sell.to_u8());
+        assert_eq!(record.status, OrderStatus::Filled.to_u8());
+        assert_eq!(record.create_ts, 1_787_734_851_000_000);
+        assert_eq!(
+            record.from_key,
+            b"exchange_forced_close:liquidation:method=backstop:order=998877:trade=556677:tx=0xabc123"
+        );
+        assert_eq!(record.amount_init, 0.25);
+        assert_eq!(record.amount_update, 0.25);
+        assert!(record.length_fields_consistent());
+    }
+
+    #[test]
+    fn hyperliquid_manual_fill_is_not_attributed_as_forced_close() {
+        let update = HyperliquidBasicFillMsg::create(
+            TradingVenue::HyperliquidFutures.to_u8(),
+            1,
+            1,
+            "BTCUSDC".to_string(),
+            42,
+            0,
+            String::new(),
+            "hl:fixture",
+            7,
+            "0xmanual".to_string(),
+            String::new(),
+            order_common::Side::Buy.to_u8(),
+            false,
+            100.0,
+            1.0,
+            1.0,
+            None,
+        );
+
+        assert!(build_hyperliquid_external_uniform_order(&update).is_none());
     }
 
     #[test]
@@ -5213,6 +10199,12 @@ mod tests {
             normalized.symbol,
             Cow::Owned(ref symbol) if symbol == "BTCUSDT"
         ));
+        // Gate order-channel is_maker is inferred from TIF/lifecycle, not a fill fact.
+        let mut inferred_maker = update.clone();
+        inferred_maker.is_maker = 1;
+        let inferred = NormalizedUpdate::new(&inferred_maker);
+        assert!(TradeUpdate::is_maker(&inferred));
+        assert_eq!(TradeUpdate::factual_is_maker(&inferred), None);
     }
 
     struct TestMmOpenStrategy {
@@ -5320,6 +10312,10 @@ mod tests {
 
         let mut venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>> = HashMap::new();
         venue_min_qty_tables.insert(TradingVenue::OkexFutures, Rc::new(okx_table));
+        venue_min_qty_tables.insert(
+            TradingVenue::OkexMargin,
+            Rc::new(VenueMinQtyTable::new(TradingVenue::OkexMargin)),
+        );
 
         let mut usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>> =
             HashMap::new();
@@ -5330,9 +10326,10 @@ mod tests {
 
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::OkexFutures,
-            hedge_venue: TradingVenue::BinanceFutures,
+            hedge_venue: TradingVenue::OkexMargin,
             arb_mode: ArbMode::CrossArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -5344,6 +10341,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -5361,6 +10359,71 @@ mod tests {
         assert!((base_qty - 0.1).abs() < 1e-12);
         let overhedge_factor = 1.0 / base_qty;
         assert!((overhedge_factor - 10.0).abs() < 1e-12);
+
+        let replacement = HashMap::from([(
+            "FILUSDT".to_string(),
+            VenueMinQtyEntry {
+                symbol: "FILUSDT".to_string(),
+                base_asset: "FIL".to_string(),
+                quote_asset: "USDT".to_string(),
+                min_qty: 1.0,
+                step_size: 1.0,
+                price_tick: Some(0.001),
+                min_notional: None,
+            },
+        )]);
+        MonitorChannel::replace_manager_order_rules(
+            TradingVenue::OkexFutures,
+            signal_common::min_qty_table::MarketType::Futures,
+            replacement,
+            HashMap::from([("FILUSDT".to_string(), 0.2)]),
+            std::collections::HashSet::from(["FILUSDT".to_string()]),
+        )
+        .unwrap();
+
+        let venue_table = MonitorChannel::instance()
+            .try_venue_min_qty_table(TradingVenue::OkexFutures)
+            .unwrap();
+        assert_eq!(venue_table.price_tick("FILUSDT"), Some(0.001));
+        assert_eq!(venue_table.contract_multiplier_opt("FILUSDT"), Some(0.2));
+        let legacy_multiplier = MonitorChannel::with_inner(|inner| match &inner.open_leg {
+            LegMgr::Futures { min_qty_table, .. } => {
+                min_qty_table.borrow().contract_multiplier("FILUSDT")
+            }
+            LegMgr::Margin { .. } => unreachable!(),
+        });
+        assert_eq!(legacy_multiplier, 0.2);
+
+        // OKX unified Exec also reloads cash rules. A cash snapshot must not
+        // erase the futures contract multiplier used for account positions.
+        MonitorChannel::replace_manager_order_rules(
+            TradingVenue::OkexMargin,
+            signal_common::min_qty_table::MarketType::Spot,
+            HashMap::new(),
+            HashMap::new(),
+            std::collections::HashSet::new(),
+        )
+        .unwrap();
+        MonitorChannel::with_inner(|inner| match &inner.open_leg {
+            LegMgr::Futures {
+                um, min_qty_table, ..
+            } => {
+                um.borrow_mut().apply_position(&BasicPositionMsg::create(
+                    1,
+                    "FIL-USDT-SWAP".to_string(),
+                    'N',
+                    -62.0,
+                ));
+                assert_eq!(min_qty_table.borrow().contract_multiplier("FILUSDT"), 0.2);
+            }
+            LegMgr::Margin { .. } => unreachable!(),
+        });
+        assert!(
+            (MonitorChannel::instance().get_position_qty("FILUSDT", TradingVenue::OkexFutures)
+                + 12.4)
+                .abs()
+                < 1e-9
+        );
     }
 
     #[test]
@@ -5387,6 +10450,7 @@ mod tests {
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::CrossArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -5398,6 +10462,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -5441,6 +10506,7 @@ mod tests {
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::CrossArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -5452,6 +10518,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -5490,6 +10557,7 @@ mod tests {
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::CrossArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -5501,6 +10569,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -5571,6 +10640,7 @@ mod tests {
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::CrossArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -5582,6 +10652,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -5630,6 +10701,7 @@ mod tests {
             hedge_venue: TradingVenue::GateFutures,
             arb_mode: ArbMode::FundingArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -5641,6 +10713,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -5663,7 +10736,7 @@ mod tests {
             .is_ok());
     }
 
-    fn install_binance_arb_hedge_exposure_fixture(
+    pub(crate) fn install_binance_arb_hedge_exposure_fixture(
         open_qty: f32,
         hedge_qty: f32,
         startup_gate_enabled: bool,
@@ -5718,6 +10791,7 @@ mod tests {
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::FundingArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -5729,6 +10803,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -5741,6 +10816,36 @@ mod tests {
         });
         MonitorChannel::refresh_basic_state_cache();
         strategy_mgr
+    }
+
+    pub(crate) fn update_arb_hedge_exposure_fixture(hedge_qty: f32, qty_step: f64) {
+        MonitorChannel::with_inner_mut(|inner| {
+            let mut positions = BasicUmManager::new(Exchange::Binance);
+            positions.apply_position(&BasicPositionMsg::create(
+                0,
+                "FILUSDT".into(),
+                if hedge_qty >= 0.0 { 'L' } else { 'S' },
+                hedge_qty.abs(),
+            ));
+            if let LegMgr::Futures { um, .. } = &inner.hedge_leg {
+                *um.borrow_mut() = positions;
+            }
+            let mut table = VenueMinQtyTable::new(TradingVenue::BinanceFutures);
+            table.set_entry_for_test(MinQtyEntry {
+                symbol: "FILUSDT".into(),
+                base_asset: "FIL".into(),
+                quote_asset: "USDT".into(),
+                min_qty: qty_step,
+                step_size: qty_step,
+                price_tick: Some(0.01),
+                min_notional: None,
+            });
+            inner
+                .venue_min_qty_tables
+                .insert(TradingVenue::BinanceFutures, Rc::new(table));
+        });
+        MonitorChannel::clear_basic_state_runtime_cache();
+        MonitorChannel::refresh_basic_state_cache();
     }
 
     fn install_binance_exec_cross_section_fixture() {
@@ -5787,6 +10892,7 @@ mod tests {
             hedge_venue: TradingVenue::BinanceMargin,
             arb_mode: ArbMode::CrossArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -5798,6 +10904,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -5843,6 +10950,7 @@ mod tests {
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::FundingArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -5854,6 +10962,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -5877,6 +10986,12 @@ mod tests {
         open_bal
             .borrow_mut()
             .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 1.0));
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(0, "USDC".to_string(), 20_000.0));
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(0, "BFUSD".to_string(), 50_000.0));
 
         let open_leg = LegMgr::Margin { bal: open_bal };
         let hedge_leg = LegMgr::Futures {
@@ -5894,6 +11009,7 @@ mod tests {
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::FundingArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -5905,8 +11021,14 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
-            latest_account_risk: HashMap::new(),
+            latest_account_risk: HashMap::from([(
+                BasicAccountScope::BinanceUnified,
+                BasicAccountRiskMsg::create(
+                    0, 69_000.0, 70_000.0, 1_000.0, 2_000.0, 70.0, 0.0, 0.0,
+                ),
+            )]),
             latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
@@ -5914,10 +11036,19 @@ mod tests {
         let state = MonitorChannel::compute_basic_state(&inner);
         assert!(!state.exposures.contains_key("DOGE"));
         assert!(state.exposures.contains_key("FIL"));
+        assert!(!state.exposures.contains_key("USDC"));
+        assert!(!state.exposures.contains_key("BFUSD"));
         assert!(!state
             .margin_balances_by_scope
             .values()
             .any(|balances| balances.contains_key("DOGE")));
+        let collateral_balances = state
+            .margin_balances_by_scope
+            .get(&BasicAccountScope::BinanceUnified)
+            .expect("Binance PM collateral balances");
+        assert_eq!(collateral_balances.get("USDC"), Some(&20_000.0));
+        assert_eq!(collateral_balances.get("BFUSD"), Some(&50_000.0));
+        assert!((state.total_equity_usdt - 70_000.0).abs() < 1e-12);
         assert!((state.total_position_usdt - 100.0).abs() < 1e-12);
     }
 
@@ -5953,6 +11084,7 @@ mod tests {
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::FundingArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -5964,6 +11096,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -6011,6 +11144,7 @@ mod tests {
             hedge_venue: TradingVenue::BybitFutures,
             arb_mode: ArbMode::IntraArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -6022,6 +11156,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk,
             latest_binance_std_um_wallet: None,
@@ -6068,6 +11203,7 @@ mod tests {
             hedge_venue: TradingVenue::OkexFutures,
             arb_mode: ArbMode::IntraArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -6079,6 +11215,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk,
             latest_binance_std_um_wallet: None,
@@ -6125,6 +11262,7 @@ mod tests {
             hedge_venue: TradingVenue::BitgetFutures,
             arb_mode: ArbMode::IntraArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -6136,6 +11274,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk,
             latest_binance_std_um_wallet: None,
@@ -6182,6 +11321,7 @@ mod tests {
             hedge_venue: TradingVenue::GateFutures,
             arb_mode: ArbMode::IntraArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs,
@@ -6193,6 +11333,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk,
             latest_binance_std_um_wallet: None,
@@ -6270,7 +11411,7 @@ mod tests {
         install_binance_arb_hedge_exposure_fixture(20.0, 0.0, false);
 
         assert!(MonitorChannel::instance()
-            .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, -5.0)
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, -5.0)
             .is_ok());
     }
 
@@ -6279,9 +11420,9 @@ mod tests {
         install_binance_arb_hedge_exposure_fixture(20.0, 0.0, false);
 
         let err = MonitorChannel::instance()
-            .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
             .unwrap_err();
-        assert!(err.contains("单币敞口扩大且当前已超限"), "err={err}");
+        assert!(err.contains("单币敞口扩大后超限"), "err={err}");
     }
 
     #[test]
@@ -6289,8 +11430,200 @@ mod tests {
         install_binance_arb_hedge_exposure_fixture(1.0, 0.0, false);
 
         assert!(MonitorChannel::instance()
-            .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
             .is_ok());
+    }
+
+    #[test]
+    fn emergency_reduction_survives_hedge_stall_without_spending_unknown_reservations() {
+        install_binance_arb_hedge_exposure_fixture(130.0, -100.0, false);
+        let mon = MonitorChannel::instance();
+        mon.set_arb_hedge_execution_block("FILUSDT", Some("unknown_old_order"));
+        // Closing shorts can temporarily increase net while lowering gross risk.
+        assert!(mon.check_arb_hedge_execution_risk("FILUSDT", 20.0).is_err());
+        assert!(mon
+            .check_reducing_order("FILUSDT", TradingVenue::BinanceFutures, Side::Buy, 20.0)
+            .is_ok());
+        assert!(mon
+            .check_reducing_order("FILUSDT", TradingVenue::BinanceFutures, Side::Sell, 1.0)
+            .is_err());
+        assert!(mon
+            .check_reducing_order("FILUSDT", TradingVenue::BinanceFutures, Side::Buy, 101.0)
+            .is_err());
+        let manager = mon.order_manager();
+        manager.borrow_mut().create_order(
+            TradingVenue::BinanceFutures,
+            123,
+            order_common::OrderType::Market,
+            "FILUSDT".into(),
+            Side::Buy,
+            90.0,
+            100.0,
+            true,
+            1.0,
+        );
+        assert_eq!(
+            mon.available_reducing_base_qty("FILUSDT", TradingVenue::BinanceFutures, Side::Buy)
+                .unwrap(),
+            10.0
+        );
+        assert!(mon
+            .check_reducing_order("FILUSDT", TradingVenue::BinanceFutures, Side::Buy, 10.0)
+            .is_ok());
+        assert!(mon
+            .check_reducing_order("FILUSDT", TradingVenue::BinanceFutures, Side::Buy, 20.0)
+            .is_err());
+        assert!(manager.borrow().get(123).is_some());
+        assert_eq!(
+            mon.available_reducing_base_qty("FILUSDT", TradingVenue::BinanceMargin, Side::Sell)
+                .unwrap(),
+            130.0
+        );
+    }
+
+    #[test]
+    fn stalled_hedge_blocks_both_expanding_directions_below_normal_limit() {
+        for (net, expanding, reducing) in [(1.0, 1.0, -1.0), (-1.0, -1.0, 1.0)] {
+            install_binance_arb_hedge_exposure_fixture(net, 0.0, false);
+            let monitor = MonitorChannel::instance();
+            assert!(monitor
+                .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, expanding)
+                .is_ok());
+            monitor.set_arb_hedge_execution_block("FILUSDT", Some("test_rejection"));
+            assert!(monitor
+                .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, expanding)
+                .unwrap_err()
+                .contains("hedge execution blocked"));
+            assert!(monitor
+                .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, reducing)
+                .is_ok());
+            assert!(monitor
+                .check_arb_order_exposure_risk(
+                    "FILUSDT",
+                    TradingVenue::BinanceFutures,
+                    reducing * 3.0
+                )
+                .is_err());
+            monitor.set_arb_hedge_execution_block("FILUSDT", None);
+            assert!(monitor
+                .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, expanding)
+                .is_ok());
+        }
+    }
+
+    #[test]
+    fn stalled_hedge_does_not_overbook_reducing_orders_or_forget_reservations() {
+        install_binance_arb_hedge_exposure_fixture(1.0, 0.0, false);
+        let monitor = MonitorChannel::instance();
+        let manager = monitor.order_manager();
+        manager.borrow_mut().create_order(
+            TradingVenue::BinanceFutures,
+            123,
+            order_common::OrderType::Limit,
+            "FILUSDT".into(),
+            Side::Sell,
+            4.0,
+            100.0,
+            false,
+            1.0,
+        );
+        monitor.set_arb_hedge_execution_block("FILUSDT", Some("test_timeout"));
+        assert!(monitor
+            .check_arb_hedge_execution_risk("FILUSDT", -1.0)
+            .is_ok());
+        assert!(monitor
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, -1.0)
+            .unwrap_err()
+            .contains("including active orders"));
+        assert!(manager.borrow().get(123).is_some());
+    }
+
+    #[test]
+    fn stalled_hedge_guard_excludes_non_fr_modes() {
+        install_binance_arb_hedge_exposure_fixture(1.0, 0.0, false);
+        MonitorChannel::with_inner_mut(|inner| inner.arb_mode = ArbMode::IntraArb);
+        let monitor = MonitorChannel::instance();
+        monitor.set_arb_hedge_execution_block("FILUSDT", Some("test_rejection"));
+        assert!(monitor
+            .check_arb_hedge_execution_risk("FILUSDT", 1.0)
+            .is_ok());
+    }
+
+    #[test]
+    fn arb_exposure_rejects_an_order_that_crosses_the_symbol_limit() {
+        install_binance_arb_hedge_exposure_fixture(7.0, 0.0, false);
+        assert!(MonitorChannel::instance()
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 2.0,)
+            .is_err());
+    }
+
+    #[test]
+    fn arb_exposure_reserves_commit_orders_and_does_not_net_opposite_live_orders() {
+        install_binance_arb_hedge_exposure_fixture(1.0, 0.0, false);
+        let manager = MonitorChannel::instance().order_manager();
+        for (id, side) in [(1, Side::Buy), (2, Side::Sell)] {
+            manager.borrow_mut().create_order(
+                TradingVenue::BinanceFutures,
+                id,
+                order_common::OrderType::Limit,
+                "FILUSDT".into(),
+                side,
+                3.0,
+                100.0,
+                false,
+                1.0,
+            );
+        }
+        assert!(MonitorChannel::instance()
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0,)
+            .is_err());
+        manager.borrow_mut().remove(1);
+        assert!(MonitorChannel::instance()
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0,)
+            .is_ok());
+    }
+
+    #[test]
+    fn paired_close_admission_survives_existing_account_imbalance_and_caps_unfinished_work() {
+        install_binance_arb_hedge_exposure_fixture(20.0, -40.0, false);
+        let monitor = MonitorChannel::instance();
+        assert!(monitor.check_open_exposure("FILUSDT").is_err());
+        monitor
+            .reserve_paired_close_exposure(
+                "FILUSDT",
+                TradingVenue::BinanceMargin,
+                Side::Sell,
+                6.0,
+                1,
+            )
+            .unwrap();
+        assert!(monitor.check_paired_close_first(1, TradingVenue::BinanceMargin, Side::Sell, 6.0));
+        assert!(!monitor.check_paired_close_first(1, TradingVenue::BinanceMargin, Side::Buy, 6.0));
+        assert_eq!(
+            monitor
+                .reserve_paired_close_exposure(
+                    "FILUSDT",
+                    TradingVenue::BinanceMargin,
+                    Side::Sell,
+                    3.0,
+                    2
+                )
+                .unwrap(),
+            2.0
+        );
+        assert!(monitor.record_paired_close_first_fill(1, 2.0));
+        monitor.finish_paired_close_first(1);
+        assert!(monitor
+            .check_paired_close_hedge(1, "FILUSDT", TradingVenue::BinanceFutures, Side::Buy, 2.0)
+            .is_ok());
+        assert!(monitor
+            .check_paired_close_hedge(1, "FILUSDT", TradingVenue::BinanceFutures, Side::Buy, 3.0)
+            .is_err());
+        assert!(monitor
+            .check_paired_close_hedge(1, "FILUSDT", TradingVenue::BinanceFutures, Side::Sell, 2.0)
+            .is_err());
+        monitor.record_paired_close_hedge_fill(1, 2.0);
+        assert!(!monitor.is_paired_close(1));
     }
 
     #[test]
@@ -6613,6 +11946,7 @@ mod tests {
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::CrossArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg,
             hedge_leg,
             usdt_mgrs: HashMap::new(),
@@ -6624,6 +11958,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -6675,6 +12010,18 @@ mod tests {
                 ArbMode::IntraArb,
             ),
             "dat_pbs/binance-futures/derivatives"
+        );
+    }
+
+    #[test]
+    fn binance_mark_price_proxy_does_not_change_other_venues() {
+        assert_eq!(
+            MonitorChannel::mark_price_service_with_proxy(BINANCE_DIRECT_DERIVATIVES_SERVICE, true,),
+            BINANCE_PROXY_DERIVATIVES_SERVICE
+        );
+        assert_eq!(
+            MonitorChannel::mark_price_service_with_proxy(OKEX_DERIVATIVES_SERVICE, true),
+            OKEX_DERIVATIVES_SERVICE
         );
     }
 
@@ -6877,6 +12224,7 @@ mod tests {
             hedge_venue: TradingVenue::BitgetFutures,
             arb_mode: ArbMode::IntraArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg: LegMgr::Margin {
                 bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Bitget))),
             },
@@ -6894,6 +12242,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -6934,6 +12283,7 @@ mod tests {
             hedge_venue: TradingVenue::BitgetFutures,
             arb_mode: ArbMode::IntraArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg: LegMgr::Margin {
                 bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Bitget))),
             },
@@ -6951,6 +12301,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -6979,6 +12330,121 @@ mod tests {
     }
 
     #[test]
+    fn coin_exec_restart_and_algorithm_handoff_preserve_face_when_the_mark_changes() {
+        use crate::pre_trade::exec_algorithm_switch::ExecAlgorithmSwitch;
+        use crate::pre_trade::exec_position_ledger::ExecPositionLedger;
+        use crate::strategy::batch_exec_strategy::{BatchExecConfig, BatchExecStrategy};
+        use crate::strategy::chase_exec::ChaseExecConfig;
+        use crate::strategy::chase_exec_strategy::ChaseExecStrategy;
+        let mut coin_table = VenueMinQtyTable::new(TradingVenue::BinanceCoinFutures);
+        coin_table.set_entry_for_test(MinQtyEntry {
+            symbol: "BTCUSD_PERP".to_string(),
+            base_asset: "BTC".to_string(),
+            quote_asset: "USD".to_string(),
+            min_qty: 1.0,
+            step_size: 1.0,
+            price_tick: Some(0.1),
+            min_notional: Some(5.0),
+        });
+        coin_table.set_contract_multiplier_for_test("BTCUSD_PERP", 100.0);
+
+        let mut venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>> = HashMap::new();
+        venue_min_qty_tables.insert(TradingVenue::BinanceCoinFutures, Rc::new(coin_table));
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BinanceMargin,
+            hedge_venue: TradingVenue::BinanceCoinFutures,
+            arb_mode: ArbMode::IntraArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
+            open_leg: LegMgr::Margin {
+                bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance))),
+            },
+            hedge_leg: LegMgr::Futures {
+                exchange: Exchange::Binance,
+                um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Binance))),
+                min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+            },
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(PriceTable::new())),
+            venue_min_qty_tables,
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
+            trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+        MonitorChannel::clear_basic_state_runtime_cache();
+        MONITOR_CHANNEL.with(|mc| *mc.borrow_mut() = Some(inner));
+
+        let prices = MonitorChannel::instance().price_table();
+        prices
+            .borrow_mut()
+            .update_mark_price("BTCUSD_PERP", 50000.0, 1);
+        prices.borrow_mut().update_mark_price("BTCUSDT", 70000.0, 1);
+        let venue = TradingVenue::BinanceCoinFutures;
+        let mut ledger = ExecPositionLedger::empty();
+        ledger
+            .set_for_venue(venue, "coin", "BTCUSD", 0.004)
+            .unwrap();
+        let restored: ExecPositionLedger =
+            serde_json::from_str(&serde_json::to_string(&ledger).unwrap()).unwrap();
+        restored.validate().unwrap();
+        let mut batch =
+            BatchExecStrategy::new(1, "coin", "BTCUSD", venue, BatchExecConfig::default());
+        batch.apply_position_allocation(0.004, 1).unwrap();
+        let mut switch: ExecAlgorithmSwitch = serde_json::from_value(serde_json::json!({
+            "from_family": "batch_exec", "to_family": "chase_exec", "state": "ready",
+            "requested_at_us": 1, "updated_at_us": 2, "positions": {"BTCUSD": 0.004}
+        }))
+        .unwrap();
+        switch.capture_inverse_positions(venue).unwrap();
+        assert_eq!(switch.inverse_notionals["BTCUSD"], 200.0);
+        prices
+            .borrow_mut()
+            .update_mark_price("BTCUSD_PERP", 60000.0, 3);
+        let pending = Order::new(
+            venue,
+            99,
+            order_common::OrderType::Limit,
+            "BTCUSD".into(),
+            Side::Buy,
+            2.0,
+            50_000.0,
+            false,
+            100.0 / 50_000.0,
+            None,
+            false,
+        );
+        let reserved_base = MonitorChannel::with_inner(|inner| {
+            MonitorChannel::active_order_base_qty(inner, &pending)
+        })
+        .unwrap();
+        assert!((reserved_base - 200.0 / 60_000.0).abs() < 1e-12);
+        let expected = 200.0 / 60000.0;
+        assert!(
+            (restored.get_for_venue(venue, "coin", "BTCUSD").unwrap() - expected).abs() < 1e-12
+        );
+        assert!((batch.virtual_position_qty().unwrap() - expected).abs() < 1e-12);
+        let switched = switch.valued_positions(venue).unwrap();
+        let mut chase =
+            ChaseExecStrategy::new(2, "coin", "BTCUSD", venue, ChaseExecConfig::default());
+        chase
+            .apply_position_allocation(switched["BTCUSD"], 3)
+            .unwrap();
+        prices
+            .borrow_mut()
+            .update_mark_price("BTCUSD_PERP", 40000.0, 4);
+        assert!((chase.virtual_position_qty().unwrap() - 0.005).abs() < 1e-12);
+        MONITOR_CHANNEL.with(|mc| *mc.borrow_mut() = None);
+    }
+
+    #[test]
     fn bitget_coin_futures_min_notional_uses_face_value() {
         let mut bitget_table = VenueMinQtyTable::new(TradingVenue::BitgetCoinFutures);
         bitget_table.set_entry_for_test(MinQtyEntry {
@@ -6999,6 +12465,7 @@ mod tests {
             hedge_venue: TradingVenue::BitgetCoinFutures,
             arb_mode: ArbMode::IntraArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
             open_leg: LegMgr::Margin {
                 bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Bitget))),
             },
@@ -7016,6 +12483,7 @@ mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_execution_blocks: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,

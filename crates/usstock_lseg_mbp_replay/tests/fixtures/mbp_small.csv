@@ -1,0 +1,44 @@
+#RIC,Domain,Date-Time,GMT Offset,Type,MsgClass/FID number,UpdateType/Action,FID Name,FID Value,FID Enum String,PE Code,Template Number,Key/Msg Sequence Number,Number of FIDs
+AAA.BAT,Market By Price,2026-07-01T00:00:00.000000001Z,-4,Raw,REFRESH,,,,,5065,0,1,0
+,,,,Summary,,,,,,,,,3
+,,,,FID,15,,CURRENCY,840,USD,,,,
+,,,,FID,6516,,BOOK_STATE,1,N,,,,
+,,,,FID,14269,,TIMACT_NS,00:00:00.000000001,,,,,
+,,,,MapEntry,,ADD,,,,,,10.00B,7
+,,,,FID,3427,,ORDER_PRC,10.00,,,,,
+,,,,FID,3428,,ORDER_SIDE,1,BID,,,,
+,,,,FID,3430,,NO_ORD,1,,,,,
+,,,,FID,4356,,ACC_SIZE,100,,,,,
+,,,,FID,6527,,LV_TIM_MS,0,,,,,
+,,,,FID,6528,,LV_TIM_MSP,100,,,,,
+,,,,FID,6529,,LV_DATE,2026-06-30,,,,,
+,,,,MapEntry,,ADD,,,,,,10.10A,8
+,,,,FID,3427,,ORDER_PRC,10.10,,,,,
+,,,,FID,3428,,ORDER_SIDE,2,ASK,,,,
+,,,,FID,3430,,NO_ORD,2,,,,,
+,,,,FID,4356,,ACC_SIZE,200,,,,,
+,,,,FID,6527,,LV_TIM_MS,0,,,,,
+,,,,FID,6528,,LV_TIM_MSP,200,,,,,
+,,,,FID,6529,,LV_DATE,2026-06-30,,,,,
+,,,,FID,14268,,LV_TIM_NS,00:00:00.000000200,,,,,
+AAA.BAT,Market By Price,2026-07-01T00:00:00.000000002Z,-4,Raw,UPDATE,UNSPECIFIED,,,,5065,,2,0
+,,,,Summary,,,,,,,,,2
+,,,,FID,14269,,TIMACT_NS,00:00:00.000000002,,,,,
+,,,,FID,4148,,TIMACT_MS,0,,,,,
+,,,,MapEntry,,DELETE,,,,,,10.00B,0
+,,,,MapEntry,,UPDATE,,,,,,10.05B,8
+,,,,FID,3427,,ORDER_PRC,10.05,,,,,
+,,,,FID,3428,,ORDER_SIDE,1,BID,,,,
+,,,,FID,3430,,NO_ORD,3,,,,,
+,,,,FID,4356,,ACC_SIZE,300,,,,,
+,,,,FID,6527,,LV_TIM_MS,0,,,,,
+,,,,FID,6528,,LV_TIM_MSP,300,,,,,
+,,,,FID,6529,,LV_DATE,2026-06-30,,,,,
+,,,,FID,14268,,LV_TIM_NS,00:00:00.000000300,,,,,
+AAA.BAT,Market By Price,2026-07-01T00:00:00.000000003Z,-4,Raw,REFRESH,,,,,5065,0,3,0
+,,,,Summary,,,,,,,,,2
+,,,,FID,3984,,TRD_TYPE,,,,,,
+,,,,FID,6614,,TRD_STATUS,,,,,,
+BBB.BAT,Market By Price,2026-07-01T00:00:00.000000004Z,-4,Raw,UPDATE,UNSPECIFIED,,,,5066,,1,0
+,,,,MapEntry,,DELETE,,,,,,20.00A,0
+BBB.BAT,Market By Price,2026-07-01T00:00:00.000000005Z,-4,Raw,STATUS,,,,,5066,,,0

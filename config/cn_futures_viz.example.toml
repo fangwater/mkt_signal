@@ -1,0 +1,25 @@
+# SDK-free, read-only IPC -> WebSocket relay. No database or trading credentials.
+stale_after_ms = 15000
+
+[http]
+bind = "127.0.0.1"
+port = 8811
+ws_path = "/ws"
+
+# account is a display alias; never put a native investor ID or credentials here.
+# namespace and hash must match the running trader's position_ipc / identity.
+[[counters]]
+id = "yida-sim"
+label = "易达仿真柜台"
+account = "simulation-observe"
+adapter = "yida"
+position_namespace = "cn_yida_sim"
+expected_account_hash = "<64-character account hash>"
+
+# [[counters]]
+# id = "ctp-sim"
+# label = "CTP 仿真柜台"
+# account = "ctp-observe"
+# adapter = "ctp"
+# position_namespace = "cn_ctp_sim"
+# expected_account_hash = "<64-character account hash>"

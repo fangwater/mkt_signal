@@ -41,7 +41,7 @@ impl StageLatency {
         let p90 = results.get(1).and_then(|v| *v).unwrap_or(f64::NAN);
         let p95 = results.get(2).and_then(|v| *v).unwrap_or(f64::NAN);
         let p99 = results.get(3).and_then(|v| *v).unwrap_or(f64::NAN);
-        log::info!(
+        log::debug!(
             "pre_trade_reactor[{}] latency_us n={} p50={:.0} p90={:.0} p95={:.0} p99={:.0}",
             self.stage.label(),
             n,

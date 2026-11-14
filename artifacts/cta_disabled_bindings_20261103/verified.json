@@ -1,0 +1,123 @@
+{
+  "bindings": [
+    {
+      "source_id": "binance_exec_trade06",
+      "binding_name": "cta-prep01-bn-1min-pos",
+      "position_strategy_name": "cta-prep01-bn-1min-pos",
+      "order_strategy_name": "lgq_grid_prep",
+      "shares": 0.0
+    },
+    {
+      "source_id": "binance_exec_trade06",
+      "binding_name": "cta-prep01-bn-5min-pos",
+      "position_strategy_name": "cta-prep01-bn-5min-pos",
+      "order_strategy_name": "lgq_grid_prep",
+      "shares": 0.0
+    },
+    {
+      "source_id": "binance_exec_trade06",
+      "binding_name": "cta-prep01-bn-15min-pos",
+      "position_strategy_name": "cta-prep01-bn-15min-pos",
+      "order_strategy_name": "lgq_grid_prep",
+      "shares": 0.0
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "binding_name": "cta-prep02-bn-1min-pos",
+      "position_strategy_name": "cta-prep02-bn-1min-pos",
+      "order_strategy_name": "lgq_grid_prep",
+      "shares": 0.0
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "binding_name": "cta-prep02-bn-5min-pos",
+      "position_strategy_name": "cta-prep02-bn-5min-pos",
+      "order_strategy_name": "lgq_grid_prep",
+      "shares": 0.0
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "binding_name": "cta-prep02-bn-15min-pos",
+      "position_strategy_name": "cta-prep02-bn-15min-pos",
+      "order_strategy_name": "lgq_grid_prep",
+      "shares": 0.0
+    },
+    {
+      "source_id": "okex_exec_trade01",
+      "binding_name": "cta-spread01-okx-bn-1min-pos",
+      "position_strategy_name": "cta-spread01-okx-bn-1min-pos",
+      "order_strategy_name": "lgq_grid_spread",
+      "shares": 0.0
+    },
+    {
+      "source_id": "binance_exec_spread01",
+      "binding_name": "cta-spread01-okx-bn-1min-pos",
+      "position_strategy_name": "cta-spread01-okx-bn-1min-pos",
+      "order_strategy_name": "lgq_grid_spread",
+      "shares": 0.0
+    }
+  ],
+  "unique_position_strategies": 7,
+  "physical_bindings": 8,
+  "all_shares_zero": true,
+  "all_seven_publishing_disabled": true,
+  "four_exec_submitters_stopped": true,
+  "runtime": [
+    {
+      "source_id": "binance_exec_trade07",
+      "strategy_name": "cta-prep02-bn-15min-pos",
+      "targets": 24,
+      "nonzero_targets": 0
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "strategy_name": "cta-prep02-bn-1min-pos",
+      "targets": 37,
+      "nonzero_targets": 0
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "strategy_name": "cta-prep02-bn-5min-pos",
+      "targets": 6,
+      "nonzero_targets": 0
+    },
+    {
+      "source_id": "binance_exec_spread01",
+      "strategy_name": "cta-spread01-okx-bn-1min-pos",
+      "targets": 8,
+      "nonzero_targets": 0
+    },
+    {
+      "source_id": "okex_exec_trade01",
+      "strategy_name": "cta-spread01-okx-bn-1min-pos",
+      "targets": 8,
+      "nonzero_targets": 0
+    },
+    {
+      "source_id": "binance_exec_trade06",
+      "strategy_name": "cta-prep01-bn-15min-pos",
+      "targets": 38,
+      "nonzero_targets": 0
+    },
+    {
+      "source_id": "binance_exec_trade06",
+      "strategy_name": "cta-prep01-bn-1min-pos",
+      "targets": 16,
+      "nonzero_targets": 0
+    },
+    {
+      "source_id": "binance_exec_trade06",
+      "strategy_name": "cta-prep01-bn-5min-pos",
+      "targets": 15,
+      "nonzero_targets": 0
+    }
+  ],
+  "other_account_bindings_unchanged": 13,
+  "execution_templates_unchanged": true,
+  "runtime_configs_unchanged": true,
+  "protected_processes_unchanged": 83,
+  "rx03_monitoring_source_restored": true,
+  "rx03_funding_collection_disabled": true,
+  "exchange_order_api_calls": 0,
+  "checked_at_ms": 1793686741296
+}

@@ -31,6 +31,82 @@ def make_amount_u_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
     return f"{env_name}:{open_venue}:{hedge_venue}:amount_u_overrides"
 
 
+def normalize_intra_trailing_stop_mapping(values: Any) -> Dict[str, Dict[str, float]]:
+    if not isinstance(values, dict):
+        raise ValueError("values must be a symbol-to-config JSON object")
+    result = {}
+    for raw_symbol, config in values.items():
+        symbol = normalize_amount_u_symbol(raw_symbol)
+        if symbol.endswith("SWAP"):
+            raise ValueError(f"use the internal symbol without SWAP: {raw_symbol}")
+        if symbol in result:
+            raise ValueError(f"duplicate normalized symbol: {symbol}")
+        if not isinstance(config, dict) or set(config) != {"take_profit", "reward_risk_ratio"}:
+            raise ValueError(f"{symbol}: requires exactly take_profit and reward_risk_ratio")
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in config.values()):
+            raise ValueError(f"{symbol}: parameters must be JSON numbers")
+        tp, rr = float(config["take_profit"]), float(config["reward_risk_ratio"])
+        if not (math.isfinite(tp) and math.isfinite(rr) and 0 < tp < 1 and rr > 0 and tp / rr < 1):
+            raise ValueError(f"{symbol}: requires 0 < take_profit < 1, reward_risk_ratio > 0, take_profit / reward_risk_ratio < 1")
+        result[symbol] = {"take_profit": tp, "reward_risk_ratio": rr}
+    return dict(sorted(result.items()))
+
+
+def read_intra_trailing_stop(rds, env_name: str, open_venue: str, hedge_venue: str) -> Dict[str, Any]:
+    key = f"{env_name}:{open_venue}:{hedge_venue}:intra_trailing_stop_overrides"
+    raw = rds.get(key)
+    values = normalize_intra_trailing_stop_mapping(json.loads(_decode_redis_str(raw)) if raw is not None else {})
+    return {"key": key, "values": values, "count": len(values)}
+
+
+def write_intra_trailing_stop(rds, env_name: str, open_venue: str, hedge_venue: str, values: Any) -> Dict[str, Any]:
+    key = f"{env_name}:{open_venue}:{hedge_venue}:intra_trailing_stop_overrides"
+    normalized = normalize_intra_trailing_stop_mapping(values)
+    rds.set(key, json.dumps(normalized, sort_keys=True, allow_nan=False))
+    return {"key": key, "values": normalized, "count": len(normalized)}
+
+
+def render_intra_trailing_stop_panel_html() -> str:
+    return """
+    <section class="panel">
+      <div class="section-header">
+        <h2>Per-Symbol Take Profit / Trailing Stop</h2>
+        <div class="actions">
+          <button id="load-intra-trailing-stop" class="secondary">读取</button>
+          <button id="save-intra-trailing-stop">保存</button>
+        </div>
+      </div>
+      <textarea id="intra-trailing-stop-text" class="mono" spellcheck="false"
+        aria-label="Per-symbol take profit and reward risk ratio"
+        placeholder='{"BTCUSDT":{"take_profit":0.005,"reward_risk_ratio":2}}'></textarea>
+      <div id="intra-trailing-stop-status" class="status"></div>
+    </section>
+"""
+
+
+def render_intra_trailing_stop_panel_js() -> str:
+    return r"""
+    async function updateIntraTrailingStop(save) {
+      const id = 'intra-trailing-stop';
+      try {
+        const input = document.getElementById(id + '-text');
+        const options = save ? {method: 'POST', body: _psBody(JSON.parse(input.value || '{}'))} : undefined;
+        const data = await _psFetch(id, options);
+        input.value = JSON.stringify(data.values || {}, null, 2);
+        _psSetStatus(id + '-status', (save ? 'Saved ' : 'Loaded ') + data.count + ' symbols', 'ok');
+      } catch (err) {
+        _psSetStatus(id + '-status', _psFormatError(err), 'err');
+      }
+    }
+    const _psBindBeforeIntraTrailingStop = bindPerSymbolPanels;
+    bindPerSymbolPanels = function() {
+      _psBindBeforeIntraTrailingStop();
+      document.getElementById('load-intra-trailing-stop').addEventListener('click', () => updateIntraTrailingStop(false));
+      document.getElementById('save-intra-trailing-stop').addEventListener('click', () => updateIntraTrailingStop(true));
+    };
+"""
+
+
 def make_max_pos_u_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
     return f"{env_name}:{open_venue}:{hedge_venue}:max_pos_u_overrides"
 

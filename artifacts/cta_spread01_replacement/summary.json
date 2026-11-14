@@ -1,0 +1,29 @@
+{
+  "rule_count": 209,
+  "symbol_count": 12,
+  "by_frequency": {
+    "1h": 107,
+    "15min": 18,
+    "1min": 28,
+    "5min": 56
+  },
+  "by_symbol": {
+    "AAVEUSDT": 7,
+    "ADAUSDT": 11,
+    "ATOMUSDT": 9,
+    "BCHUSDT": 11,
+    "CRVUSDT": 3,
+    "DOGEUSDT": 42,
+    "DOTUSDT": 31,
+    "ETCUSDT": 11,
+    "FILUSDT": 4,
+    "NEARUSDT": 23,
+    "TRBUSDT": 50,
+    "UNIUSDT": 7
+  },
+  "by_nq": {
+    "0.2/0.8": 54,
+    "0.50/0.50": 74,
+    "NQ关": 81
+  }
+}

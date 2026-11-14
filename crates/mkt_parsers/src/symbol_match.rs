@@ -8,6 +8,9 @@ use symbol_utils::TradingVenue;
 /// - 去除分隔符 '-' 和 '_'（便于 okex/gate/bybit 等对齐）
 /// - 去除 OKEx 等可能带的 "-SWAP"/"SWAP" 后缀
 pub fn normalize_symbol_for_pairing(symbol: &str, exchange_hint: &str) -> String {
+    if exchange_hint == "binance-coin-futures" {
+        return symbol_utils::symbol_util::normalize_symbol_for_internal(symbol);
+    }
     let upper = symbol.to_uppercase();
     let mut cleaned = upper.replace(['-', '_'], "");
     if exchange_hint.starts_with("okex") && cleaned.ends_with("SWAP") {
@@ -70,11 +73,17 @@ pub fn map_symbol_between_venues(
 
 /// 用于白名单/比对的符号规范化：大写，移除 '-'/'_'，并去掉 OKEx 的 "-SWAP" 后缀
 pub fn normalize_symbol_for_whitelist(symbol: &str, venue: TradingVenue) -> String {
+    if venue == TradingVenue::BinanceCoinFutures {
+        return symbol_utils::symbol_util::normalize_symbol_for_internal(symbol);
+    }
     let mut cleaned = symbol.to_uppercase().replace(['-', '_'], "");
     if matches!(venue, TradingVenue::OkexMargin | TradingVenue::OkexFutures)
         && cleaned.ends_with("SWAP")
     {
         cleaned.truncate(cleaned.len().saturating_sub(4));
+    }
+    if cleaned.ends_with("USDPERP") {
+        cleaned.truncate(cleaned.len() - "PERP".len());
     }
     cleaned
 }
@@ -83,11 +92,13 @@ pub fn normalize_symbol_for_whitelist(symbol: &str, venue: TradingVenue) -> Stri
 pub fn normalize_symbol_for_whitelist_cow(symbol: &str, venue: TradingVenue) -> Cow<'_, str> {
     let strips_swap_suffix = matches!(venue, TradingVenue::OkexMargin | TradingVenue::OkexFutures)
         && symbol.ends_with("SWAP");
+    let strips_perp_suffix = symbol.ends_with("USDPERP");
     let already_canonical = symbol.is_ascii()
         && !symbol
             .bytes()
             .any(|byte| byte.is_ascii_lowercase() || matches!(byte, b'-' | b'_'))
-        && !strips_swap_suffix;
+        && !strips_swap_suffix
+        && !strips_perp_suffix;
     if already_canonical {
         Cow::Borrowed(symbol)
     } else {
@@ -127,6 +138,12 @@ mod tests {
         let alias = normalize_symbol_for_whitelist_cow("btc-usdt-swap", TradingVenue::OkexFutures);
         assert!(matches!(alias, Cow::Owned(_)));
         assert_eq!(alias, "BTCUSDT");
+        for symbol in ["BTCUSD_PERP", "BTCUSDPERP", "BTCUSD"] {
+            assert_eq!(
+                normalize_symbol_for_whitelist_cow(symbol, TradingVenue::BinanceCoinFutures),
+                "BTCUSD"
+            );
+        }
     }
 
     #[test]

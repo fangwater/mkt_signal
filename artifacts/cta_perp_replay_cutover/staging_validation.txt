@@ -1,0 +1,4 @@
+verified artifact set 133bf23fcdc53001eb2dbac72cd0b1d64ac285ca
+DRY RUN install environments ['binance-cta-perp-rx02', 'binance-cta-perp-rx03'] venue Binance Futures; RX02 v1 / RX03 v0
+cta_perp_signal ABI/help check passed
+cta_perp_factor_model_1m_pub ABI/help check passed

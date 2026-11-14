@@ -35,7 +35,7 @@ def try_import_redis():
         return None
 
 
-SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
+SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate", "hyperliquid"]
 
 
 def normalize_exchange(ex: str) -> str:
@@ -54,7 +54,7 @@ def ensure_intra_venue(venue: str) -> str:
 
 def infer_exchange_from_name(name: str) -> Optional[str]:
     n = (name or "").strip().lower()
-    m = re.match(r"^([a-z0-9]+)[-_]intra([_-].*)?$", n)
+    m = re.match(r"^([a-z0-9]+)[-_](intra)([_-].*)?$", n)
     if not m:
         return None
     ex = normalize_exchange(m.group(1))

@@ -1,0 +1,9 @@
+{
+  "utc": "2026-11-03T14:30:54Z",
+  "branch": "arbmm",
+  "head": "6ee63160771cebecf807efd263d92ff465f31b22",
+  "target_host": "jp-meta-elvpn",
+  "env": "binance_fr_arb03",
+  "dirty_worktree": true,
+  "note": "Existing uncommitted monitor_channel.rs change is scoped to Manager order-rule replacement, used by Exec. No source edits made for this republish."
+}

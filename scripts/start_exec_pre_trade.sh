@@ -20,15 +20,115 @@ while [[ $# -gt 0 ]]; do
     --config-reload-ms) CONFIG_RELOAD_MS="${2:-}"; shift 2 ;;
     --core) CORE="${2:-}"; shift 2 ;;
     -h|--help)
-      echo "Usage: scripts/start_exec_pre_trade.sh --venue <binance-futures|binance-coin-futures|okex-futures>"
+      echo "Usage: scripts/start_exec_pre_trade.sh --venue <binance-futures|binance-coin-futures|okex-futures|bybit-futures|bitget-futures>"
       exit 0
       ;;
     *) echo "[ERROR] Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
-if [[ "$VENUE" != "binance-futures" && "$VENUE" != "binance-coin-futures" && "$VENUE" != "okex-futures" ]]; then
+if [[ "$VENUE" != "binance-futures" && "$VENUE" != "binance-coin-futures" && "$VENUE" != "okex-futures" && "$VENUE" != "bybit-futures" && "$VENUE" != "bitget-futures" ]]; then
   echo "[ERROR] unsupported venue: $VENUE" >&2
   exit 1
+fi
+if [[ -n "${EXEC_VENUE:-}" && "$VENUE" != "$EXEC_VENUE" ]] || [[ -n "${EXEC_START_VENUE:-}" && "$VENUE" != "$EXEC_START_VENUE" ]]; then
+  echo "[ERROR] --venue must match EXEC_VENUE / EXEC_START_VENUE" >&2
+  exit 1
+fi
+export EXEC_VENUE="$VENUE"
+
+case "$VENUE" in
+  binance-futures|binance-coin-futures) EXCHANGE="binance" ;;
+  okex-futures) EXCHANGE="okex" ;;
+  bybit-futures) EXCHANGE="bybit" ;;
+  bitget-futures) EXCHANGE="bitget" ;;
+esac
+
+# Keep this parser aligned with runtime_common::execution_backend::ExecBackend.
+parse_exec_backend() {
+  local raw="$1"
+  raw="$(printf '%s' "$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    ''|native|exchange|direct) printf '%s\n' native ;;
+    ltp|rapidx|liquidity|liquiditytech) printf '%s\n' ltp ;;
+    *) echo "[ERROR] invalid execution backend: $1 (expected native or rapidx)" >&2; return 1 ;;
+  esac
+}
+
+exec_backend_for_exchange() {
+  local exchange="$1"
+  local default_backend="${TRADE_ENGINE_EXEC_BACKEND:-}"
+  local mapping="${TRADE_ENGINE_EXEC_BACKEND_MAP:-}"
+  local parsed_default wildcard='' specific='' entry key value parsed
+  local wildcard_set=0 specific_set=0
+  local -a entries=()
+
+  if [[ "$mapping" == *$'\n'* || "$mapping" == *$'\r'* ]]; then
+    echo "[ERROR] execution backend map must not contain newlines" >&2
+    return 1
+  fi
+  parsed_default="$(parse_exec_backend "$default_backend")" || return 1
+  IFS=',' read -r -a entries <<< "$mapping"
+  for entry in "${entries[@]}"; do
+    entry="$(printf '%s' "$entry" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [[ -z "$entry" ]] && continue
+    if [[ "$entry" != *=* ]]; then
+      echo "[ERROR] invalid execution backend map entry: $entry (expected exchange=backend)" >&2
+      return 1
+    fi
+    key="$(printf '%s' "${entry%%=*}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+    value="${entry#*=}"
+    parsed="$(parse_exec_backend "$value")" || return 1
+    case "$key" in
+      '*')
+        if ((wildcard_set)); then
+          echo "[ERROR] duplicate wildcard execution backend mapping" >&2
+          return 1
+        fi
+        wildcard="$parsed"
+        wildcard_set=1
+        ;;
+      binance|okex|bybit|bitget|gate|hyperliquid)
+        if [[ "$key" == "$exchange" ]]; then
+          if ((specific_set)); then
+            echo "[ERROR] duplicate $exchange execution backend mapping" >&2
+            return 1
+          fi
+          specific="$parsed"
+          specific_set=1
+        fi
+        ;;
+      *)
+        echo "[ERROR] unknown exchange in execution backend map: $key" >&2
+        return 1
+        ;;
+    esac
+  done
+
+  if ((specific_set)); then
+    printf '%s\n' "$specific"
+  elif ((wildcard_set)); then
+    printf '%s\n' "$wildcard"
+  else
+    printf '%s\n' "$parsed_default"
+  fi
+}
+
+EXEC_BACKEND="$(exec_backend_for_exchange "$EXCHANGE")" || exit 1
+if [[ "$EXEC_BACKEND" == "ltp" ]]; then
+  if [[ "$VENUE" != "binance-futures" && "$VENUE" != "okex-futures" ]]; then
+    echo "[ERROR] RapidX Exec supports Binance/OKX linear perpetual venues only" >&2
+    exit 1
+  fi
+  for variable in LTP_API_KEY LTP_API_SECRET LTP_PORTFOLIO_ID; do
+    if [[ -z "${!variable:-}" ]]; then
+      echo "[ERROR] $variable is required for RapidX Exec" >&2
+      exit 1
+    fi
+  done
+  if [[ ! "$LTP_PORTFOLIO_ID" =~ ^[0-9]{1,64}$ ]]; then
+    echo "[ERROR] LTP_PORTFOLIO_ID must contain 1..64 ASCII digits" >&2
+    exit 1
+  fi
 fi
 
 BIN_PATH=""
@@ -40,6 +140,7 @@ if [[ -z "$BIN_PATH" ]]; then
   exit 1
 fi
 
+if [[ "$EXEC_BACKEND" == "native" ]]; then
 case "$VENUE" in
   binance-futures)
     for file in binance_cancel_all_std_um_ws_orders.py binance_cancel_all_unified_open_orders.py binance_local_ip.py sell_margin_spot.py; do
@@ -55,6 +156,7 @@ case "$VENUE" in
     [[ -f "${SCRIPT_DIR}/okx_swap_open_orders.py" ]] || { echo "[ERROR] missing startup cancel dependency: scripts/okx_swap_open_orders.py" >&2; exit 1; }
     ;;
 esac
+fi
 
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 command -v "$PMDAEMON_BIN" >/dev/null 2>&1 || { echo "[ERROR] pmdaemon not found: ${PMDAEMON_BIN}" >&2; exit 1; }
@@ -72,7 +174,7 @@ done
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file"' EXIT
 cat >"$cfg_file" <<JSON
-{"apps":[{"name":"${PROC_NAME}","script":"${BIN_PATH}","args":[${json_args}],"cwd":"${BASE_DIR}","env":{"RUST_LOG":"${RUST_LOG:-info}","enable_ipc_fast_poll":"0","ENABLE_IPC_FAST_POLL":"0"}}]}
+{"apps":[{"name":"${PROC_NAME}","script":"${BIN_PATH}","args":[${json_args}],"cwd":"${BASE_DIR}","env":{"RUST_LOG":"${RUST_LOG:-info}","EXEC_VENUE":"${VENUE}","EXEC_START_VENUE":"${EXEC_START_VENUE:-}","enable_ipc_fast_poll":"0","ENABLE_IPC_FAST_POLL":"0"}}]}
 JSON
 
 PMDAEMON_NAME="$PROC_NAME" "${SCRIPT_DIR}/stop_exec_pre_trade.sh"

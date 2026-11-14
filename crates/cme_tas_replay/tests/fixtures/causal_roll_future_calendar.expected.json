@@ -1,0 +1,322 @@
+[
+  {
+    "product": "TY",
+    "trading_day": "2026-02-23",
+    "decision_ns": 1771800900000000000,
+    "effective_ns": 1771801200000000000,
+    "previous_day": "2026-02-20",
+    "previous_ric": null,
+    "selected_ric": "TYH26",
+    "reason": "seed",
+    "detail": "",
+    "exit_ric": null,
+    "entry_ric": "TYH26",
+    "challenger": null,
+    "confirmation_count": 0,
+    "segment_id": 1,
+    "offset_e9": 0,
+    "adjustment_status": "anchor",
+    "reference_day": null,
+    "reference_age": null,
+    "old_price_e9": null,
+    "new_price_e9": null,
+    "old_published_ns": null,
+    "new_published_ns": null,
+    "calendar_source": "synthetic_fixture",
+    "calendar_known_at_ns": 1767247200000000000,
+    "volume_available_at_ns": 1771627800000000000,
+    "volume_source": "tas_printable",
+    "volume_complete": true,
+    "current_metadata_known_at_ns": null,
+    "current_roll_by_ns": null,
+    "current_risk_deadline_ns": null,
+    "selected_metadata_known_at_ns": 1767247200000000000,
+    "selected_roll_by_ns": null,
+    "selected_risk_deadline_ns": 1772085600000000000,
+    "current_volume": null,
+    "selected_volume": 100,
+    "candidate_comparisons": [
+      {
+        "ric": "TYH26",
+        "delivery_month": "2026-03",
+        "volume": 100,
+        "known_at_ns": 1767247200000000000,
+        "roll_by_ns": null,
+        "source": "synthetic_fixture_not_historical_metadata",
+        "deadline_basis": "known_future_session",
+        "risk_date": "2026-02-26"
+      },
+      {
+        "ric": "TYM26",
+        "delivery_month": "2026-06",
+        "volume": 30,
+        "known_at_ns": 1767247200000000000,
+        "roll_by_ns": null,
+        "source": "synthetic_fixture_not_historical_metadata",
+        "deadline_basis": "known_future_session",
+        "risk_date": "2026-05-28"
+      }
+    ],
+    "deadline_buffer_session": {
+      "day": "2026-02-24",
+      "segments": [
+        [
+          1771887600000000000,
+          1771970400000000000
+        ]
+      ],
+      "known_at_ns": 1767247200000000000,
+      "source": "synthetic_fixture_preannounced_complete_session_not_historical_evidence"
+    }
+  },
+  {
+    "product": "TY",
+    "trading_day": "2026-02-24",
+    "decision_ns": 1771887300000000000,
+    "effective_ns": 1771887600000000000,
+    "previous_day": "2026-02-23",
+    "previous_ric": "TYH26",
+    "selected_ric": "TYH26",
+    "reason": "hold",
+    "detail": "",
+    "exit_ric": null,
+    "entry_ric": null,
+    "challenger": null,
+    "confirmation_count": 0,
+    "segment_id": 1,
+    "offset_e9": 0,
+    "adjustment_status": "carry",
+    "reference_day": null,
+    "reference_age": null,
+    "old_price_e9": null,
+    "new_price_e9": null,
+    "old_published_ns": null,
+    "new_published_ns": null,
+    "calendar_source": "synthetic_fixture",
+    "calendar_known_at_ns": 1767247200000000000,
+    "volume_available_at_ns": 1771887000000000000,
+    "volume_source": "tas_printable",
+    "volume_complete": true,
+    "current_metadata_known_at_ns": 1767247200000000000,
+    "current_roll_by_ns": null,
+    "current_risk_deadline_ns": 1772085600000000000,
+    "selected_metadata_known_at_ns": 1767247200000000000,
+    "selected_roll_by_ns": null,
+    "selected_risk_deadline_ns": 1772085600000000000,
+    "current_volume": 200,
+    "selected_volume": 200,
+    "candidate_comparisons": [
+      {
+        "ric": "TYH26",
+        "delivery_month": "2026-03",
+        "volume": 200,
+        "known_at_ns": 1767247200000000000,
+        "roll_by_ns": null,
+        "source": "synthetic_fixture_not_historical_metadata",
+        "deadline_basis": "known_future_session",
+        "risk_date": "2026-02-26"
+      },
+      {
+        "ric": "TYM26",
+        "delivery_month": "2026-06",
+        "volume": 60,
+        "known_at_ns": 1767247200000000000,
+        "roll_by_ns": null,
+        "source": "synthetic_fixture_not_historical_metadata",
+        "deadline_basis": "known_future_session",
+        "risk_date": "2026-05-28"
+      }
+    ],
+    "deadline_buffer_session": {
+      "day": "2026-02-25",
+      "segments": [
+        [
+          1771974000000000000,
+          1772056800000000000
+        ]
+      ],
+      "known_at_ns": 1767247200000000000,
+      "source": "synthetic_fixture_preannounced_complete_session_not_historical_evidence"
+    }
+  },
+  {
+    "product": "TY",
+    "trading_day": "2026-02-25",
+    "decision_ns": 1771973700000000000,
+    "effective_ns": 1771974000000000000,
+    "previous_day": "2026-02-24",
+    "previous_ric": "TYH26",
+    "selected_ric": "TYM26",
+    "reason": "deadline",
+    "detail": "",
+    "exit_ric": "TYH26",
+    "entry_ric": "TYM26",
+    "challenger": null,
+    "confirmation_count": 0,
+    "segment_id": 1,
+    "offset_e9": 62500000,
+    "adjustment_status": "settlement_bridge",
+    "reference_day": "2026-02-24",
+    "reference_age": 1,
+    "old_price_e9": 113296875000,
+    "new_price_e9": 113234375000,
+    "old_published_ns": 1771972800000000000,
+    "new_published_ns": 1771972800000000000,
+    "calendar_source": "synthetic_fixture",
+    "calendar_known_at_ns": 1767247200000000000,
+    "volume_available_at_ns": 1771973400000000000,
+    "volume_source": "tas_printable",
+    "volume_complete": true,
+    "current_metadata_known_at_ns": 1771887300000000001,
+    "current_roll_by_ns": 1771974000000000000,
+    "current_risk_deadline_ns": 1772085600000000000,
+    "selected_metadata_known_at_ns": 1767247200000000000,
+    "selected_roll_by_ns": null,
+    "selected_risk_deadline_ns": 1779944400000000000,
+    "current_volume": 1161479,
+    "selected_volume": 659597,
+    "candidate_comparisons": [
+      {
+        "ric": "TYM26",
+        "delivery_month": "2026-06",
+        "volume": 659597,
+        "known_at_ns": 1767247200000000000,
+        "roll_by_ns": null,
+        "source": "synthetic_fixture_not_historical_metadata",
+        "deadline_basis": "known_future_session",
+        "risk_date": "2026-05-28"
+      }
+    ],
+    "deadline_buffer_session": {
+      "day": "2026-02-26",
+      "segments": [
+        [
+          1772060400000000000,
+          1772143200000000000
+        ]
+      ],
+      "known_at_ns": 1767247200000000000,
+      "source": "synthetic_fixture_preannounced_complete_session_not_historical_evidence"
+    }
+  },
+  {
+    "product": "TY",
+    "trading_day": "2026-02-26",
+    "decision_ns": 1772060100000000000,
+    "effective_ns": 1772060400000000000,
+    "previous_day": "2026-02-25",
+    "previous_ric": "TYM26",
+    "selected_ric": "TYM26",
+    "reason": "hold",
+    "detail": "",
+    "exit_ric": null,
+    "entry_ric": null,
+    "challenger": null,
+    "confirmation_count": 0,
+    "segment_id": 1,
+    "offset_e9": 62500000,
+    "adjustment_status": "carry",
+    "reference_day": null,
+    "reference_age": null,
+    "old_price_e9": null,
+    "new_price_e9": null,
+    "old_published_ns": null,
+    "new_published_ns": null,
+    "calendar_source": "synthetic_fixture",
+    "calendar_known_at_ns": 1767247200000000000,
+    "volume_available_at_ns": 1772059800000000000,
+    "volume_source": "tas_printable",
+    "volume_complete": true,
+    "current_metadata_known_at_ns": 1767247200000000000,
+    "current_roll_by_ns": null,
+    "current_risk_deadline_ns": 1779944400000000000,
+    "selected_metadata_known_at_ns": 1767247200000000000,
+    "selected_roll_by_ns": null,
+    "selected_risk_deadline_ns": 1779944400000000000,
+    "current_volume": 1029387,
+    "selected_volume": 1029387,
+    "candidate_comparisons": [
+      {
+        "ric": "TYM26",
+        "delivery_month": "2026-06",
+        "volume": 1029387,
+        "known_at_ns": 1767247200000000000,
+        "roll_by_ns": null,
+        "source": "synthetic_fixture_not_historical_metadata",
+        "deadline_basis": "known_future_session",
+        "risk_date": "2026-05-28"
+      }
+    ],
+    "deadline_buffer_session": {
+      "day": "2026-02-27",
+      "segments": [
+        [
+          1772146800000000000,
+          1772229600000000000
+        ]
+      ],
+      "known_at_ns": 1767247200000000000,
+      "source": "synthetic_fixture_preannounced_complete_session_not_historical_evidence"
+    }
+  },
+  {
+    "product": "TY",
+    "trading_day": "2026-02-27",
+    "decision_ns": 1772146500000000000,
+    "effective_ns": 1772146800000000000,
+    "previous_day": "2026-02-26",
+    "previous_ric": "TYM26",
+    "selected_ric": "TYM26",
+    "reason": "hold",
+    "detail": "",
+    "exit_ric": null,
+    "entry_ric": null,
+    "challenger": null,
+    "confirmation_count": 0,
+    "segment_id": 1,
+    "offset_e9": 62500000,
+    "adjustment_status": "carry",
+    "reference_day": null,
+    "reference_age": null,
+    "old_price_e9": null,
+    "new_price_e9": null,
+    "old_published_ns": null,
+    "new_published_ns": null,
+    "calendar_source": "synthetic_fixture",
+    "calendar_known_at_ns": 1767247200000000000,
+    "volume_available_at_ns": 1772146200000000000,
+    "volume_source": "tas_printable",
+    "volume_complete": true,
+    "current_metadata_known_at_ns": 1767247200000000000,
+    "current_roll_by_ns": null,
+    "current_risk_deadline_ns": 1779944400000000000,
+    "selected_metadata_known_at_ns": 1767247200000000000,
+    "selected_roll_by_ns": null,
+    "selected_risk_deadline_ns": 1779944400000000000,
+    "current_volume": 2045549,
+    "selected_volume": 2045549,
+    "candidate_comparisons": [
+      {
+        "ric": "TYM26",
+        "delivery_month": "2026-06",
+        "volume": 2045549,
+        "known_at_ns": 1767247200000000000,
+        "roll_by_ns": null,
+        "source": "synthetic_fixture_not_historical_metadata",
+        "deadline_basis": "known_future_session",
+        "risk_date": "2026-05-28"
+      }
+    ],
+    "deadline_buffer_session": {
+      "day": "2026-03-02",
+      "segments": [
+        [
+          1772406000000000000,
+          1772488800000000000
+        ]
+      ],
+      "known_at_ns": 1767247200000000000,
+      "source": "synthetic_fixture_preannounced_complete_session_not_historical_evidence"
+    }
+  }
+]

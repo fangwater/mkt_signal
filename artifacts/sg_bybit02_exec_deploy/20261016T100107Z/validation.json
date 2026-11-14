@@ -1,0 +1,52 @@
+{
+  "verified_at_utc": "2026-10-16T10:14:34.463577+00:00",
+  "source_id": "bybit_exec_trade02",
+  "alias": "bybit-02",
+  "source_commit": "a73d427de74bbff49fdb9dd8088cfdcf477a2d67",
+  "binaries_verified": 6,
+  "rx02_order_parameters_equal": true,
+  "rx02_bindings_equal": true,
+  "rx02_risk_params_equal": true,
+  "binding_count": 10,
+  "zero_initial_targets": true,
+  "live_rx02_publication_connected": false,
+  "virtual_id": "virtual01",
+  "virtual_owner": "lgq",
+  "multiplier": 1,
+  "compatible_bybit_symbols": 47,
+  "market_rules_count": 797,
+  "account_feed_status": "ok",
+  "gateway_http": {
+    "/exec_trade02/": 200,
+    "/exec_trade02/config/": 200,
+    "/exec_trade02/snapshot": 200
+  },
+  "websocket_status": 101,
+  "anonymous_denied": true,
+  "processes": [
+    {
+      "pid": 2304238,
+      "process": "python3",
+      "affinity": "0-7"
+    },
+    {
+      "pid": 2304304,
+      "process": "viz_server",
+      "affinity": "0-7"
+    },
+    {
+      "pid": 2304424,
+      "process": "persist_manager",
+      "affinity": "0-7"
+    },
+    {
+      "pid": 2304583,
+      "process": "account_monitor",
+      "affinity": "0-7"
+    }
+  ],
+  "trading_processes_running": false,
+  "old_intra_processes_running": false,
+  "protected_intra_configs_unchanged": true,
+  "account_socket_source_ip": "172.31.7.124"
+}

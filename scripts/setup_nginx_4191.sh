@@ -2,6 +2,11 @@
 # Install nginx (Debian/Ubuntu) and configure a reverse proxy on port 4191.
 # (Renamed from setup_nginx_4911.sh; now defaults to 4191.)
 # Supports multiple path→upstream mappings for HTTP/WebSocket, and optional static directory hosting.
+#
+# jp-meta 4191 is a shared public front. This script tees the whole server from
+# MAPPING_FILE. That drops hand-maintained routes (crypto CTA /manager/, includes)
+# unless they are also in the mapping. Refuse that overwrite unless
+# FORCE_NGINX_REWRITE=1.
 
 set -euo pipefail
 
@@ -13,6 +18,13 @@ MAPPING_FILE="${MAPPING_FILE:-$HOME/nginx_locations.txt}"
 KEEP_OLD_PORTS="${KEEP_OLD_PORTS:-0}"
 SITE_NAME="${SITE_NAME:-crypto_proxy_${PORT}}"
 CONF_PATH="${CONF_PATH:-/etc/nginx/sites-available/${SITE_NAME}.conf}"
+
+# A mapping-only rewrite would remove the per-location FR access gates.
+# Preserve the live site and use the scoped renderer for authenticated FR routes.
+if [[ -f "$CONF_PATH" ]] && grep -q 'delist_access.conf' "$CONF_PATH"; then
+    echo '[ERROR] authenticated FR routes are installed; preserve this site and use protect_delist_routes.py for scoped changes' >&2
+    exit 1
+fi
 
 need_sudo() {
     if [ "$(id -u)" -ne 0 ]; then
@@ -104,6 +116,26 @@ EOF
                 continue
             fi
 
+            # external snippet include (installed and owned outside this file,
+            # e.g. crypto CTA manager SPA + auth_request gates).
+            # Mapping format:
+            #   /manager/ external:/etc/nginx/snippets/crypto_cta_manager.conf
+            # The path column is documentary and feeds the /manager guard below;
+            # the include target must exist on this host or the rewrite aborts
+            # instead of silently dropping the routes it provides.
+            if [[ "${upstream}" == external:* ]]; then
+                inc="${upstream#external:}"
+                if [[ "${inc}" != /* || ! -f "${inc}" ]]; then
+                    echo "[ERROR] invalid external include (need an existing absolute path): ${line}" >&2
+                    exit 1
+                fi
+                cat <<EOF
+    include ${inc};
+
+EOF
+                continue
+            fi
+
             # nginx does not accept ws:// or wss:// in proxy_pass; WebSocket still uses HTTP(S)
             upstream="${upstream/#ws:\/\//http:\/\/}"
             upstream="${upstream/#wss:\/\//https:\/\/}"
@@ -137,12 +169,34 @@ EOF
     fi
 }
 
+if [[ -f "${CONF_PATH}" && "${FORCE_NGINX_REWRITE:-0}" != "1" ]]; then
+    # /manager routes may live in the conf literally or behind an included
+    # snippet (the external: row); either form counts as "manager present".
+    if grep -Eq 'location[[:space:]]+(=[[:space:]]+)?/manager(/|[[:space:]]|$)' "${CONF_PATH}" \
+        || grep -Eq 'include[[:space:]]+\S*crypto_cta_manager' "${CONF_PATH}"; then
+        mapping_has_manager=0
+        if [[ -f "${MAPPING_FILE}" ]] && grep -Eq '^[[:space:]]*/manager(/|[[:space:]]|$)' "${MAPPING_FILE}"; then
+            mapping_has_manager=1
+        fi
+        if [[ "${mapping_has_manager}" -eq 0 ]]; then
+            echo "[ERROR] refusing to overwrite ${CONF_PATH}: existing /manager/ routes are not in ${MAPPING_FILE}" >&2
+            echo "[ERROR] rewriting 4191 from mapping-only drops crypto CTA manager. Patch the existing conf in place." >&2
+            echo "[ERROR] set FORCE_NGINX_REWRITE=1 only if you intentionally replace the whole site." >&2
+            exit 1
+        fi
+    fi
+fi
+
+# Render before teeing: a failing locations() (e.g. missing external include)
+# must abort the rewrite instead of leaving a half-generated conf behind.
+rendered_locations="$(locations)"
+
 cat <<EOF | ${SUDO} tee "${CONF_PATH}" >/dev/null
 server {
     listen ${PORT};
     server_name ${SERVER_NAME};
 
-$(locations)
+${rendered_locations}
 }
 EOF
 

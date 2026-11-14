@@ -1,0 +1,364 @@
+{
+  "binary_build": {
+    "commit": "87bf37fbcd7ab4c80f8eb8a2e550d94dd6080831",
+    "binaries": {
+      "pre_trade": "7e968e178b0c8c2d3202cf499c0b4aa147d9f85df1d8b520198e925d853cc262",
+      "trade_engine": "84094c9dcaf8b18d7678d29635f5a1983bcbe4c5429a7ce07f2002dfa684223b",
+      "trade_signal": "cc9e5bbcdc3b5ca2b0fac97d09649a7125d1e6e923c4ad930988a4ac47e3f8b1",
+      "bybit_account_monitor": "3886c2a5578aef4ee00e87a4883d041e4edf7b7eb307e73a977a92e643904c27",
+      "persist_manager": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf",
+      "viz_server": "52c23245e10a8b058d3cf2e1ca0ebff8d60349d2af7afe4df58bb54198b87609",
+      "fr_signal_dashboard": "0a9c62cdaff65ee903734415c6b23b43317dcb4593a726d274973412b45b8114"
+    }
+  },
+  "collateral_helper": {
+    "source_commit": "8ebec272b432aef8d1f7d0365c054f850084e690",
+    "sha256": "9892e52cd0b7c9ecd73966ccf8ce2a3d140db3db05c00133ac57a8f040ef0056"
+  },
+  "collateral_helper_install": {
+    "source_commit": "8ebec272",
+    "before_sha256": "a7d598ea1c2c91a39973b4cc4e95bedcbf5493a724ca2379f5cbfcbb0c4585af",
+    "after_sha256": "9892e52cd0b7c9ecd73966ccf8ce2a3d140db3db05c00133ac57a8f040ef0056"
+  },
+  "verified_utc": "2026-11-12T15:34:15.855328+00:00",
+  "processes": [
+    {
+      "pid": 3247112,
+      "kind": "persist_manager",
+      "comm": "persist_manager",
+      "cpus": "15",
+      "sha256": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf"
+    },
+    {
+      "pid": 3248727,
+      "kind": "account_monitor",
+      "comm": "account_monitor",
+      "cpus": "0-5,48-95",
+      "sha256": "3886c2a5578aef4ee00e87a4883d041e4edf7b7eb307e73a977a92e643904c27"
+    },
+    {
+      "pid": 3249630,
+      "kind": "trade_engine",
+      "comm": "trade_engine",
+      "cpus": "0-5,48-95",
+      "sha256": "84094c9dcaf8b18d7678d29635f5a1983bcbe4c5429a7ce07f2002dfa684223b"
+    },
+    {
+      "pid": 3260314,
+      "kind": "pre_trade",
+      "comm": "pre_trade",
+      "cpus": "0-5,48-95",
+      "sha256": "7e968e178b0c8c2d3202cf499c0b4aa147d9f85df1d8b520198e925d853cc262"
+    },
+    {
+      "pid": 3260419,
+      "kind": "viz_server",
+      "comm": "viz_server",
+      "cpus": "0-5,48-95",
+      "sha256": "52c23245e10a8b058d3cf2e1ca0ebff8d60349d2af7afe4df58bb54198b87609"
+    },
+    {
+      "pid": 3261114,
+      "kind": "fr_config_server.py",
+      "comm": "python3",
+      "cpus": "0-5,48-95",
+      "sha256": null
+    },
+    {
+      "pid": 3261571,
+      "kind": "fr_signal_dashboard",
+      "comm": "fr_signal_dashb",
+      "cpus": "0-5,48-95",
+      "sha256": "0a9c62cdaff65ee903734415c6b23b43317dcb4593a726d274973412b45b8114"
+    },
+    {
+      "pid": 3264862,
+      "kind": "trade_signal",
+      "comm": "trade_signal",
+      "cpus": "0-5,48-95",
+      "sha256": "cc9e5bbcdc3b5ca2b0fac97d09649a7125d1e6e923c4ad930988a4ac47e3f8b1"
+    }
+  ],
+  "config_preserved": true,
+  "local_ips": [
+    "172.31.35.232",
+    "172.31.35.233"
+  ],
+  "snapshot_ages": {
+    "pre_trade_exposure": 2.787679433822632,
+    "pre_trade_risk": 2.787682294845581
+  },
+  "auth_evidence": {
+    "account_monitor": [
+      "[2026-11-12T15:23:22Z INFO  account_monitor_common::bybit_user_stream] [secondary][ip=172.31.35.233] Bybit: auth successful",
+      "[2026-11-12T15:23:22Z INFO  account_monitor_common::bybit_user_stream] [primary][ip=172.31.35.232] Bybit: auth successful"
+    ],
+    "trade_engine": [
+      "[2026-11-12T15:23:30Z INFO  trade_engine::engine] bybit precheck REST source local IP: 172.31.35.232",
+      "[2026-11-12T15:23:30Z INFO  trade_engine::bybit_precheck] bybit precheck pass: unifiedMarginStatus=6 spotMarginMode=1",
+      "[2026-11-12T15:23:31Z INFO  trade_engine::ws_client] trade ws client id=1 Bybit auth successful: {\"retCode\":0,\"retMsg\":\"OK\",\"op\":\"auth\",\"connId\":\"dbc2g024l63cbdvvt6p0-1uom\"}",
+      "[2026-11-12T15:23:31Z INFO  trade_engine::ws_client] trade ws client id=0 Bybit auth successful: {\"retCode\":0,\"retMsg\":\"OK\",\"op\":\"auth\",\"connId\":\"dbc2k77cbumha17meb80-1uoe\"}"
+    ],
+    "pre_trade": [
+      "[2026-11-12T15:28:56Z INFO  pre_trade] pre_trade Bybit REST source local IP: 172.31.35.232 (/home/ubuntu/bybit_fr_arb01/trade_engine.toml)"
+    ],
+    "trade_signal": []
+  },
+  "exchange_sockets": [
+    {
+      "kind": "trade_engine",
+      "pid": 3249630,
+      "local": "172.31.35.232:51051",
+      "remote": "13.225.158.24:443"
+    },
+    {
+      "kind": "account_monitor",
+      "pid": 3248727,
+      "local": "172.31.35.233:48545",
+      "remote": "3.175.227.41:443"
+    },
+    {
+      "kind": "trade_engine",
+      "pid": 3249630,
+      "local": "172.31.35.233:56145",
+      "remote": "3.175.227.41:443"
+    },
+    {
+      "kind": "account_monitor",
+      "pid": 3248727,
+      "local": "172.31.35.232:59821",
+      "remote": "3.168.245.113:443"
+    },
+    {
+      "kind": "trade_engine",
+      "pid": 3249630,
+      "local": "172.31.35.232:57681",
+      "remote": "3.175.227.23:443"
+    },
+    {
+      "kind": "account_monitor",
+      "pid": 3248727,
+      "local": "172.31.35.232:40525",
+      "remote": "3.175.227.88:443"
+    },
+    {
+      "kind": "account_monitor",
+      "pid": 3248727,
+      "local": "172.31.35.232:51447",
+      "remote": "3.168.245.44:443"
+    }
+  ],
+  "log_counts": {
+    "account_monitor": {
+      "panic": 0,
+      "factor_unavailable": 0,
+      "hedge_stalled": 0,
+      "error": 0,
+      "exchange_reject": 0
+    },
+    "trade_engine": {
+      "panic": 0,
+      "factor_unavailable": 0,
+      "hedge_stalled": 0,
+      "error": 0,
+      "exchange_reject": 0
+    },
+    "pre_trade": {
+      "panic": 0,
+      "factor_unavailable": 0,
+      "hedge_stalled": 0,
+      "error": 0,
+      "exchange_reject": 0
+    },
+    "trade_signal": {
+      "panic": 0,
+      "factor_unavailable": 0,
+      "hedge_stalled": 0,
+      "error": 0,
+      "exchange_reject": 0
+    }
+  },
+  "delist": {
+    "slug": "bybit_fr_arb01",
+    "checked_ms": 1794497656416,
+    "complete": true,
+    "risk_status": "ok",
+    "risk_abs_usdt": 7.529457088149108,
+    "limit_usdt": 2752.3205825355
+  },
+  "protected_checks": [
+    {
+      "env": "/home/ubuntu/binance_fr_arb02",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/binance_fr_arb03",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/binance_fr_arb04",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/bitget_fr_arb01",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/bitget_fr_arb02",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/bitget_fr_arb03",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/gate_fr_arb01",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/gate_fr_arb02",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/gate_fr_arb03",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/gate_fr_arb04",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/gate_fr_arb05",
+      "unchanged": true,
+      "count": 0
+    },
+    {
+      "env": "/home/ubuntu/spread_pbs/bybit-both",
+      "unchanged": true,
+      "count": 2
+    },
+    {
+      "env": "/home/ubuntu/depth_pub/bybit-both",
+      "unchanged": true,
+      "count": 1
+    },
+    {
+      "env": "/home/ubuntu/trade_flow_feature/bybit-margin",
+      "unchanged": true,
+      "count": 1
+    },
+    {
+      "env": "/home/ubuntu/trade_flow_feature/bybit-futures",
+      "unchanged": true,
+      "count": 1
+    },
+    {
+      "env": "/home/ubuntu/rolling_metrics/bybit-margin-bybit-futures",
+      "unchanged": true,
+      "count": 1
+    }
+  ],
+  "alignment": {
+    "orders": [
+      {
+        "symbol": "VELOUSDT",
+        "side": "Buy",
+        "qty": "2150",
+        "reduceOnly": true,
+        "notional": "6.89505",
+        "fee": "0.00124111",
+        "fills": 1,
+        "submit_time": 1794496901.9617298,
+        "order_id": "3e65d409-3783-44a3-8b96-a57f31b3a2c5"
+      },
+      {
+        "symbol": "SLXUSDT",
+        "side": "Sell",
+        "qty": "186",
+        "reduceOnly": false,
+        "notional": "6.17354",
+        "fee": "0.00111124",
+        "fills": 2,
+        "submit_time": 1794496907.1768067,
+        "order_id": "2febd75a-acc0-41cb-be5c-d40e943bd115"
+      },
+      {
+        "symbol": "DYDXUSDT",
+        "side": "Sell",
+        "qty": "70.2",
+        "reduceOnly": false,
+        "notional": "6.164262",
+        "fee": "0.00110957",
+        "fills": 1,
+        "submit_time": 1794496912.398326,
+        "order_id": "8af7943a-bb5e-4128-bf63-d8077d57d812"
+      }
+    ],
+    "total_notional": "19.232852",
+    "total_fee": "0.00346192",
+    "min_submit_interval": 5.215076923370361,
+    "remaining_abs_excluding_bnb": "47.986577262180985",
+    "largest_tail_excluding_bnb": {
+      "asset": "ZRO",
+      "symbol": "ZROUSDT",
+      "spot_equity": "2.62605679",
+      "futures_qty": "0",
+      "net_qty": "2.62605679",
+      "mark": "1.5068",
+      "net_usdt": "3.956942371172"
+    },
+    "unpriced_or_unmapped": [
+      {
+        "asset": "EUR",
+        "spot_equity": "0.00485557",
+        "futures_qty": "0"
+      },
+      {
+        "asset": "HFT",
+        "spot_equity": "20.15738603",
+        "futures_qty": "0"
+      }
+    ]
+  },
+  "post_resume_order_counts": {
+    "linear": 0,
+    "spot_Order": 0,
+    "spot_StopOrder": 0,
+    "spot_tpslOrder": 0,
+    "spot_OcoOrder": 0,
+    "spot_BidirectionalTpslOrder": 0
+  },
+  "post_resume_largest_valued_non_bnb_net_usdt": "3.940398213395",
+  "sg_previous_runtime": {
+    "host": "ip-172-31-7-123.ap-southeast-1.compute.internal",
+    "runtime_dirs": [
+      "/home/ubuntu/bybit_fr_arb01",
+      "/home/ubuntu/bybit-intra-arb01"
+    ],
+    "matching_processes": [],
+    "method": "Read-only SSH /proc cwd/exe audit before JP publication"
+  },
+  "gate_version_gap": {
+    "source_commit": "293f63523f551984ac0f356c844f1f4b52acbe2e",
+    "pre_trade_sha256": "3351318bf02d219073056f8ea4bbbc503dc73e2f8e5b4b9449b4b9af6f85b1e8",
+    "envs": [
+      "gate_fr_arb01",
+      "gate_fr_arb02",
+      "gate_fr_arb03",
+      "gate_fr_arb04"
+    ],
+    "missing_guard_correction": "90b24c42 Restrict FR hedge blocking to execution exceptions",
+    "verified_by": "Live /proc/exe SHA256 against committed scheduler_deployment_verification.json",
+    "mutated": false
+  }
+}

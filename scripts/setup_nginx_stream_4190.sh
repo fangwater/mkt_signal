@@ -7,8 +7,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 PORT="${PORT:-4190}"
-LISTEN="${LISTEN:-${PORT}}"
-DEFAULT_UPSTREAM="${UPSTREAM:-127.0.0.1:6379}"
 MAPPING_FILE="${MAPPING_FILE:-$HOME/nginx_streams.txt}"
 SITE_NAME="${SITE_NAME:-crypto_proxy_stream_${PORT}}"
 STREAM_DIR="${STREAM_DIR:-/etc/nginx/stream-enabled}"
@@ -148,15 +146,8 @@ server {
 EOF
         done < "${MAPPING_FILE}"
     else
-        local listen upstream
-        listen="$(normalize_listen "${LISTEN}")"
-        upstream="$(normalize_upstream "${DEFAULT_UPSTREAM}")"
-        cat <<EOF
-server {
-    listen ${listen};
-    proxy_pass ${upstream};
-}
-EOF
+        echo "[ERROR] Missing stream mapping file: ${MAPPING_FILE}" >&2
+        return 1
     fi
 }
 
@@ -164,9 +155,8 @@ ensure_nginx
 ensure_stream_include
 ensure_mapping_file
 
-cat <<EOF | ${SUDO} tee "${STREAM_CONF}" >/dev/null
-$(stream_servers)
-EOF
+servers="$(stream_servers)"
+printf '%s\n' "${servers}" | ${SUDO} tee "${STREAM_CONF}" >/dev/null
 
 ${SUDO} nginx -t
 if command -v systemctl >/dev/null 2>&1; then

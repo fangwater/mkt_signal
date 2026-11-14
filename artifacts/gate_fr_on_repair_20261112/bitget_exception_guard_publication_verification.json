@@ -1,0 +1,216 @@
+{
+  "checked_ms": 1794493616437,
+  "environments": [
+    {
+      "env": "bitget_fr_arb01",
+      "commit": "2136a80db809c2988edee9a2ec42ce6a970f9016",
+      "processes": [
+        {
+          "kind": "persist_manager",
+          "pid": 3077808,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218169845"
+        },
+        {
+          "kind": "account_monitor",
+          "pid": 3078143,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218171036"
+        },
+        {
+          "kind": "trade_engine",
+          "pid": 3078258,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218172268"
+        },
+        {
+          "kind": "pre_trade",
+          "pid": 3078391,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218173448"
+        },
+        {
+          "kind": "viz_server",
+          "pid": 3079135,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218174649"
+        },
+        {
+          "kind": "fr_config_server.py",
+          "pid": 3079413,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218175068"
+        },
+        {
+          "kind": "fr_signal_dashboard",
+          "pid": 3080441,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218175725"
+        },
+        {
+          "kind": "trade_signal",
+          "pid": 3080734,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218177412"
+        }
+      ],
+      "config_preserved": true,
+      "local_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ],
+      "preflight_orders": {
+        "USDT-FUTURES": 0,
+        "SPOT": 0,
+        "MARGIN": 0
+      },
+      "ready_orders": {
+        "USDT-FUTURES": 0,
+        "SPOT": 0,
+        "MARGIN": 0
+      },
+      "verified_utc_ms": 1794493615495
+    },
+    {
+      "env": "bitget_fr_arb02",
+      "commit": "2136a80db809c2988edee9a2ec42ce6a970f9016",
+      "processes": [
+        {
+          "kind": "persist_manager",
+          "pid": 3092647,
+          "cpu": "15",
+          "start_ticks": "218207662"
+        },
+        {
+          "kind": "account_monitor",
+          "pid": 3092975,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218208657"
+        },
+        {
+          "kind": "trade_engine",
+          "pid": 3093148,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218209892"
+        },
+        {
+          "kind": "pre_trade",
+          "pid": 3094118,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218211005"
+        },
+        {
+          "kind": "viz_server",
+          "pid": 3095377,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218212027"
+        },
+        {
+          "kind": "fr_config_server.py",
+          "pid": 3095449,
+          "cpu": "0-5",
+          "start_ticks": "218212542"
+        },
+        {
+          "kind": "fr_signal_dashboard",
+          "pid": 3095500,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218212969"
+        },
+        {
+          "kind": "trade_signal",
+          "pid": 3098989,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218223251"
+        }
+      ],
+      "config_preserved": true,
+      "local_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ],
+      "preflight_orders": {
+        "USDT-FUTURES": 0,
+        "SPOT": 0,
+        "MARGIN": 0
+      },
+      "ready_orders": {
+        "USDT-FUTURES": 0,
+        "SPOT": 0,
+        "MARGIN": 0
+      },
+      "verified_utc_ms": 1794493615799
+    },
+    {
+      "env": "bitget_fr_arb03",
+      "commit": "2136a80db809c2988edee9a2ec42ce6a970f9016",
+      "processes": [
+        {
+          "kind": "persist_manager",
+          "pid": 3111597,
+          "cpu": "15",
+          "start_ticks": "218256571"
+        },
+        {
+          "kind": "account_monitor",
+          "pid": 3112171,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218258023"
+        },
+        {
+          "kind": "trade_engine",
+          "pid": 3112704,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218258860"
+        },
+        {
+          "kind": "pre_trade",
+          "pid": 3114192,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218259975"
+        },
+        {
+          "kind": "viz_server",
+          "pid": 3114298,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218260743"
+        },
+        {
+          "kind": "fr_config_server.py",
+          "pid": 3114359,
+          "cpu": "0-5",
+          "start_ticks": "218261130"
+        },
+        {
+          "kind": "fr_signal_dashboard",
+          "pid": 3114413,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218261988"
+        },
+        {
+          "kind": "trade_signal",
+          "pid": 3115168,
+          "cpu": "0-5,48-95",
+          "start_ticks": "218264802"
+        }
+      ],
+      "config_preserved": true,
+      "local_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ],
+      "preflight_orders": {
+        "USDT-FUTURES": 0,
+        "SPOT": 0,
+        "MARGIN": 0
+      },
+      "ready_orders": {
+        "USDT-FUTURES": 0,
+        "SPOT": 0,
+        "MARGIN": 0
+      },
+      "verified_utc_ms": 1794493616220
+    }
+  ],
+  "other_processes_unchanged": 98
+}

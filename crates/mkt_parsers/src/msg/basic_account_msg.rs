@@ -23,6 +23,30 @@ pub enum BasicAccountEventType {
     AccountRisk = 4007,
     /// Binance standard UM wallet snapshot from USD-M Futures WS API `v2/account.balance`
     BinanceStdUmWalletSnapshot = 4008,
+    /// Hyperliquid fill retaining venue order/trade identity for attribution or unmatched audit.
+    HyperliquidFill = 4009,
+    /// Hyperliquid atomic spot/perpetual snapshot lifecycle control.
+    HyperliquidSnapshotComplete = 4010,
+    /// Hyperliquid order/fill fact replay lifecycle control.
+    HyperliquidFactReplayControl = 4011,
+    /// Hyperliquid perpetual funding payment retaining venue-native fields.
+    HyperliquidFunding = 4012,
+    /// Hyperliquid non-funding account ledger update retaining the complete delta.
+    HyperliquidLedger = 4013,
+    /// One venue-native row from a Hyperliquid spot account-state snapshot.
+    HyperliquidSpotBalance = 4014,
+    /// One venue-native Hyperliquid perpetual DEX account-state summary row.
+    HyperliquidPerpDexState = 4015,
+    /// Hyperliquid TWAP parent id associated with one venue-native slice fill.
+    HyperliquidTwapSliceFill = 4016,
+    /// One venue-native Hyperliquid TWAP lifecycle history row.
+    HyperliquidTwapHistory = 4017,
+    /// Native Hyperliquid account evidence that must not synthesize fills or balances.
+    HyperliquidNativeEvent = 4018,
+    /// Factual exchange-owned UTA futures fill, without a CTA strategy identity.
+    ExternalFuturesFill = 4019,
+    /// RapidX live financial readiness, frozen margin and durable-delivery backlog (JSON).
+    RapidXFinancial = 4020,
     /// 错误
     Error = 4999,
 }
@@ -79,6 +103,10 @@ pub enum BasicAccountScope {
     BitgetUnified = 12,
     BybitUnified = 13,
     BitgetUnifiedCoinFutures = 14,
+    HyperliquidStdSpot = 15,
+    HyperliquidStdPerp = 16,
+    HyperliquidUnified = 17,
+    HyperliquidPortfolioMargin = 18,
 }
 
 /// 轻量成交更新消息。
@@ -250,6 +278,10 @@ impl BasicAccountScope {
             12 => Self::BitgetUnified,
             13 => Self::BybitUnified,
             14 => Self::BitgetUnifiedCoinFutures,
+            15 => Self::HyperliquidStdSpot,
+            16 => Self::HyperliquidStdPerp,
+            17 => Self::HyperliquidUnified,
+            18 => Self::HyperliquidPortfolioMargin,
             _ => Self::Unknown,
         }
     }
@@ -267,6 +299,10 @@ impl BasicAccountScope {
             Self::BitgetUnified => "bitget_unified",
             Self::BybitUnified => "bybit_unified",
             Self::BitgetUnifiedCoinFutures => "bitget_unified_coin_futures",
+            Self::HyperliquidStdSpot => "hyperliquid_std_spot",
+            Self::HyperliquidStdPerp => "hyperliquid_std_perp",
+            Self::HyperliquidUnified => "hyperliquid_unified",
+            Self::HyperliquidPortfolioMargin => "hyperliquid_portfolio_margin",
         }
     }
 }
@@ -291,7 +327,13 @@ pub struct OkexOrderMsg {
     pub ord_type: u8,
     pub cancel_source: u8,
     pub amend_source: u8,
+    /// OKX amendResult: -1=failed, 0=success, 1=automatic cancel;
+    /// i8::MIN means the field was absent from this order event.
+    pub amend_result: i8,
+    /// Current order limit price.
     pub price: f64,
+    /// Price of the latest execution, if present.
+    pub fill_price: f64,
     pub quantity: f64,
     pub cumulative_filled_quantity: f64,
     pub create_time: i64,
@@ -300,6 +342,8 @@ pub struct OkexOrderMsg {
 }
 
 impl OkexOrderMsg {
+    pub const AMEND_RESULT_NONE: i8 = i8::MIN;
+
     /// 将 instType 文本映射为紧凑编码
     pub fn inst_type_to_u8(inst_type: &str) -> u8 {
         match inst_type {
@@ -410,7 +454,8 @@ impl OkexOrderMsg {
             + 1  // ord_type u8
             + 1  // cancel_source u8
             + 1  // amend_source u8
-            + 8 * 3  // price, quantity, cumulative_filled_quantity
+            + 1  // amend_result i8
+            + 8 * 4  // price, fill_price, quantity, cumulative_filled_quantity
             + 8 * 3; // create_time, update_time, fill_time
 
         let mut buf = BytesMut::with_capacity(total_size);
@@ -437,9 +482,11 @@ impl OkexOrderMsg {
         buf.put_u8(self.cancel_source);
 
         buf.put_u8(self.amend_source);
+        buf.put_i8(self.amend_result);
 
         // 数值字段
         buf.put_f64_le(self.price);
+        buf.put_f64_le(self.fill_price);
         buf.put_f64_le(self.quantity);
         buf.put_f64_le(self.cumulative_filled_quantity);
 
@@ -509,12 +556,17 @@ impl OkexOrderMsg {
             anyhow::bail!("Not enough data for amend_source");
         }
         let amend_source = cursor.get_u8();
+        if cursor.remaining() < 1 {
+            anyhow::bail!("Not enough data for amend_result");
+        }
+        let amend_result = cursor.get_i8();
 
-        if cursor.remaining() < 8 * 3 {
+        if cursor.remaining() < 8 * 4 {
             anyhow::bail!("Not enough data for numeric fields");
         }
 
         let price = cursor.get_f64_le();
+        let fill_price = cursor.get_f64_le();
         let quantity = cursor.get_f64_le();
         let cumulative_filled_quantity = cursor.get_f64_le();
 
@@ -537,7 +589,9 @@ impl OkexOrderMsg {
             ord_type,
             cancel_source,
             amend_source,
+            amend_result,
             price,
+            fill_price,
             quantity,
             cumulative_filled_quantity,
             create_time,
@@ -574,7 +628,12 @@ pub struct BinanceBasicOrderMsg {
     pub execution_type: u8,
     /// 1..=6: OrderStatus
     pub order_status: u8,
+    /// 0=taker, 1=maker, 255=role not reported (including order/query supplements).
     pub is_maker: u8,
+    /// 0=ordinary, 1=liquidation, 2=adl, 3=settlement, 4=delivery
+    pub external_order_kind: u8,
+    /// RapidX amendment result: -1=failed, 0=success; i8::MIN=absent.
+    pub amend_result: i8,
     pub price: f64,
     pub quantity: f64,
     pub last_executed_quantity: f64,
@@ -591,6 +650,27 @@ impl BinanceBasicOrderMsg {
     pub const VENUE_MARGIN: u8 = 1;
     pub const VENUE_UM: u8 = 2;
     pub const VENUE_CM: u8 = 3;
+    pub const EXTERNAL_NONE: u8 = 0;
+    pub const EXTERNAL_LIQUIDATION: u8 = 1;
+    pub const EXTERNAL_ADL: u8 = 2;
+    pub const EXTERNAL_SETTLEMENT: u8 = 3;
+    pub const EXTERNAL_DELIVERY: u8 = 4;
+    pub const AMEND_RESULT_NONE: i8 = i8::MIN;
+    pub const IS_MAKER_UNKNOWN: u8 = u8::MAX;
+
+    pub fn set_reported_fill_role(&mut self, is_maker: Option<bool>) {
+        self.is_maker = is_maker.map(u8::from).unwrap_or(Self::IS_MAKER_UNKNOWN);
+    }
+
+    pub fn external_order_label(&self) -> Option<&'static str> {
+        match self.external_order_kind {
+            Self::EXTERNAL_LIQUIDATION => Some("liquidation"),
+            Self::EXTERNAL_ADL => Some("adl"),
+            Self::EXTERNAL_SETTLEMENT => Some("settlement"),
+            Self::EXTERNAL_DELIVERY => Some("delivery"),
+            _ => None,
+        }
+    }
 
     #[allow(clippy::too_many_arguments)]
     pub fn create(
@@ -633,6 +713,8 @@ impl BinanceBasicOrderMsg {
             execution_type,
             order_status,
             is_maker: if is_maker { 1 } else { 0 },
+            external_order_kind: 0,
+            amend_result: Self::AMEND_RESULT_NONE,
             price,
             quantity,
             last_executed_quantity,
@@ -654,7 +736,7 @@ impl BinanceBasicOrderMsg {
             + 4
             + self.symbol_length as usize
             + 8 * 3
-            + 6
+            + 8
             + 8 * 8
             + 4
             + self.commission_asset_length as usize;
@@ -678,6 +760,8 @@ impl BinanceBasicOrderMsg {
         buf.put_u8(self.execution_type);
         buf.put_u8(self.order_status);
         buf.put_u8(self.is_maker);
+        buf.put_u8(self.external_order_kind);
+        buf.put_i8(self.amend_result);
 
         buf.put_f64_le(self.price);
         buf.put_f64_le(self.quantity);
@@ -696,8 +780,8 @@ impl BinanceBasicOrderMsg {
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         // u32 msg_type + u8 venue + i64 + i64 + u32 symbol_len + (symbol bytes) + 3*i64
-        // + 6*u8 + 8*f64 + u32 comm_asset_len + (comm_asset bytes)
-        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 8 + 4 + 8 * 3 + 6 + 8 * 8 + 4;
+        // + 8 one-byte fields + 8*f64 + u32 comm_asset_len + (comm_asset bytes)
+        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 8 + 4 + 8 * 3 + 8 + 8 * 8 + 4;
         if data.len() < MIN_FIXED_SIZE {
             anyhow::bail!("BinanceBasicOrderMsg too short: {}", data.len());
         }
@@ -718,7 +802,7 @@ impl BinanceBasicOrderMsg {
         }
         let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
 
-        if cursor.remaining() < 8 * 3 + 6 + 8 * 8 + 4 {
+        if cursor.remaining() < 8 * 3 + 8 + 8 * 8 + 4 {
             anyhow::bail!("BinanceBasicOrderMsg truncated after symbol");
         }
 
@@ -732,6 +816,8 @@ impl BinanceBasicOrderMsg {
         let execution_type = cursor.get_u8();
         let order_status = cursor.get_u8();
         let is_maker = cursor.get_u8();
+        let external_order_kind = cursor.get_u8();
+        let amend_result = cursor.get_i8();
 
         let price = cursor.get_f64_le();
         let quantity = cursor.get_f64_le();
@@ -768,6 +854,8 @@ impl BinanceBasicOrderMsg {
             execution_type,
             order_status,
             is_maker,
+            external_order_kind,
+            amend_result,
             price,
             quantity,
             last_executed_quantity,
@@ -1464,9 +1552,26 @@ pub struct BasicAccountRiskMsg {
     pub margin_ratio: f64,
     pub borrowed_usd: f64,
     pub notional_usd: f64,
+    /// Exchange-reported opening margin headroom; NaN when unavailable.
+    pub available_margin_usd: f64,
 }
 
 impl BasicAccountRiskMsg {
+    /// Unavailable financial amounts are NaN on the fixed-width IPC wire, not
+    /// factual zeroes. JSON views must expose these amounts as null.
+    pub fn ratio_only(timestamp: i64, margin_ratio: f64) -> Self {
+        Self::create(
+            timestamp,
+            f64::NAN,
+            f64::NAN,
+            f64::NAN,
+            f64::NAN,
+            margin_ratio,
+            f64::NAN,
+            f64::NAN,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         timestamp: i64,
@@ -1488,11 +1593,12 @@ impl BasicAccountRiskMsg {
             margin_ratio,
             borrowed_usd,
             notional_usd,
+            available_margin_usd: f64::NAN,
         }
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 8 + 8 * 7;
+        let total_size = 4 + 8 + 8 * 8;
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type as u32);
         buf.put_i64_le(self.timestamp);
@@ -1503,11 +1609,12 @@ impl BasicAccountRiskMsg {
         buf.put_f64_le(self.margin_ratio);
         buf.put_f64_le(self.borrowed_usd);
         buf.put_f64_le(self.notional_usd);
+        buf.put_f64_le(self.available_margin_usd);
         buf.freeze()
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        const MIN_SIZE: usize = 4 + 8 + 8 * 7;
+        const MIN_SIZE: usize = 4 + 8 + 8 * 8;
         if data.len() < MIN_SIZE {
             anyhow::bail!("account risk msg too short: {}", data.len());
         }
@@ -1528,6 +1635,7 @@ impl BasicAccountRiskMsg {
             margin_ratio: cursor.get_f64_le(),
             borrowed_usd: cursor.get_f64_le(),
             notional_usd: cursor.get_f64_le(),
+            available_margin_usd: cursor.get_f64_le(),
         })
     }
 }
@@ -1539,7 +1647,10 @@ impl AccountRiskLevelProvider for BasicAccountRiskMsg {
             | BasicAccountScope::OkexUnified
             | BasicAccountScope::GateUnified
             | BasicAccountScope::BitgetUnified
-            | BasicAccountScope::BybitUnified => {
+            | BasicAccountScope::BybitUnified
+            | BasicAccountScope::HyperliquidStdPerp
+            | BasicAccountScope::HyperliquidUnified
+            | BasicAccountScope::HyperliquidPortfolioMargin => {
                 account_risk_level_from_margin_ratio(self.margin_ratio)
             }
             _ => None,
@@ -1640,6 +1751,18 @@ pub fn get_basic_event_type(data: &[u8]) -> BasicAccountEventType {
         4006 => BasicAccountEventType::TradeUpdateLite,
         4007 => BasicAccountEventType::AccountRisk,
         4008 => BasicAccountEventType::BinanceStdUmWalletSnapshot,
+        4009 => BasicAccountEventType::HyperliquidFill,
+        4010 => BasicAccountEventType::HyperliquidSnapshotComplete,
+        4011 => BasicAccountEventType::HyperliquidFactReplayControl,
+        4012 => BasicAccountEventType::HyperliquidFunding,
+        4013 => BasicAccountEventType::HyperliquidLedger,
+        4014 => BasicAccountEventType::HyperliquidSpotBalance,
+        4015 => BasicAccountEventType::HyperliquidPerpDexState,
+        4016 => BasicAccountEventType::HyperliquidTwapSliceFill,
+        4017 => BasicAccountEventType::HyperliquidTwapHistory,
+        4018 => BasicAccountEventType::HyperliquidNativeEvent,
+        4019 => BasicAccountEventType::ExternalFuturesFill,
+        4020 => BasicAccountEventType::RapidXFinancial,
         _ => BasicAccountEventType::Error,
     }
 }
@@ -1740,6 +1863,21 @@ mod tests {
         assert!((msg.adj_equity_usd - 100.0).abs() < 1e-12);
         assert!((msg.margin_ratio - 5.0).abs() < 1e-12);
         assert!((msg.notional_usd - 200.0).abs() < 1e-12);
+        assert!(msg.available_margin_usd.is_nan());
+    }
+
+    #[test]
+    fn account_risk_margin_headroom_survives_ipc_and_rejects_truncation() {
+        let mut msg = BasicAccountRiskMsg::create(123, 100.0, 99.0, 20.0, 40.0, 5.0, 3.0, 200.0);
+        for available in [3_496.19, 0.0, -50.0] {
+            msg.available_margin_usd = available;
+            let payload = msg.to_bytes();
+            let decoded =
+                BasicAccountRiskMsg::from_bytes(&payload).expect("complete risk snapshot");
+            assert_eq!(decoded.available_margin_usd, available);
+            assert_eq!(decoded.actual_equity_usd, 99.0);
+            assert!(BasicAccountRiskMsg::from_bytes(&payload[..payload.len() - 1]).is_err());
+        }
     }
 
     #[test]

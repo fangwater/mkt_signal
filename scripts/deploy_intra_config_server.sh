@@ -52,7 +52,7 @@ normalize_env_name() {
 
 require_intra_env_name() {
   local name="$1"
-  if [[ ! "$name" =~ ^[a-z0-9]+-intra-[a-z0-9][a-z0-9_-]*$ ]]; then
+  if [[ ! "$name" =~ ^[a-z0-9]+-(intra)-[a-z0-9][a-z0-9_-]*$ ]]; then
     echo "[ERROR] env-name must match <exchange>-intra-<suffix> (got: ${name})" >&2
     exit 1
   fi
@@ -60,8 +60,8 @@ require_intra_env_name() {
 
 intra_env_suffix() {
   local name="$1"
-  if [[ "$name" =~ ^[a-z0-9]+[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
-    echo "${BASH_REMATCH[1]}"
+  if [[ "$name" =~ ^[a-z0-9]+[-_](intra)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+    echo "${BASH_REMATCH[2]}"
   fi
 }
 
@@ -209,7 +209,7 @@ case "$ENV_SUFFIX" in
 esac
 
 if [[ -z "$EXCHANGE" ]]; then
-  if [[ "$ENV_NAME" =~ ^([a-z0-9]+)-intra-[a-z0-9][a-z0-9_-]*$ ]]; then
+  if [[ "$ENV_NAME" =~ ^([a-z0-9]+)-(intra)-[a-z0-9][a-z0-9_-]*$ ]]; then
     EXCHANGE="${BASH_REMATCH[1]}"
   fi
 fi
@@ -230,7 +230,8 @@ if [[ -z "$PORT" ]]; then
 fi
 
 if [[ -z "$NGINX_PREFIX" ]]; then
-  NGINX_PREFIX="/intra/${ENV_NAME}/config"
+  NS_PREFIX="intra"
+  NGINX_PREFIX="/${NS_PREFIX}/${ENV_NAME}/config"
 fi
 
 DEST_SCRIPT_DIR="$TARGET_DIR/scripts"

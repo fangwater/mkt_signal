@@ -1,0 +1,6 @@
+# Example only. Select three distinct physical cores on one allowed NUMA node
+# of the explicitly authorized external host; never run CTP on local/intranet hosts.
+numa_node = 0
+business_cpu = 0
+sdk_cpus = [1]
+background_cpus = [2]

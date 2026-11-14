@@ -1,0 +1,177 @@
+{
+  "observed_utc": "2026-10-19T10:19:10.376514+00:00",
+  "source_id": "binance_exec_trade06",
+  "signal_env": "binance-cta-spread-rx01",
+  "snapshot_ts_us": 1792404818623482,
+  "snapshot_cash_dust_usdt": "2.75926122025381025990910280",
+  "snapshot_perpetual_positions": 0,
+  "snapshot_debts": 0,
+  "enabled_at_us": 1792405025124339,
+  "enabled": true,
+  "max_pos_u": 10,
+  "strategies": 57,
+  "configured_combinations": 794,
+  "score_ready_combinations": 773,
+  "expected_blank_combinations": 21,
+  "manager_redis_targets_verified": 1632,
+  "pending_publishes": 0,
+  "publication_error": null,
+  "publisher_pid_preserved": 2798755,
+  "kafka_generation_preserved": true,
+  "env_and_binary_hashes_preserved": true,
+  "manager_health": {
+    "status": "ok",
+    "source_count": 7,
+    "generated_at_us": 1792405164158625,
+    "last_attempt_at_us": 1792405161757573,
+    "refresh_interval_secs": 60,
+    "last_refresh_error": null
+  },
+  "post_restart_live_trade_seen": true,
+  "historical_orders_changed": false,
+  "source_ip": "172.31.35.228",
+  "processes": [
+    {
+      "pid": 2798755,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "comm": "cta_spread_fact",
+      "start_ticks": "8153951",
+      "affinity": [
+        17
+      ]
+    },
+    {
+      "pid": 2879569,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "comm": "python3",
+      "start_ticks": "8388285",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 2879622,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "comm": "cta_spread_sign",
+      "start_ticks": "8388408",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3199097,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "comm": "persist_manager",
+      "start_ticks": "9324950",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3199439,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "comm": "rapidx_account_",
+      "start_ticks": "9325179",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3199538,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "comm": "viz_server",
+      "start_ticks": "9325447",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3199632,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "comm": "python3",
+      "start_ticks": "9325739",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3207816,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "comm": "python3",
+      "start_ticks": "9346838",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3207923,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "comm": "trade_engine",
+      "start_ticks": "9349113",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3224367,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "comm": "exec-pre-trade",
+      "start_ticks": "9394967",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    }
+  ],
+  "manager_effective_snapshot_ts_us": 1792404818623482,
+  "manager_initial_position_count": 20,
+  "final_exec_position_ready": true,
+  "final_exec_state_age_ms": 535.305908203125,
+  "final_exec_live_orders": 0,
+  "final_exec_pending_qty": 0,
+  "final_exec_active_batches": 0
+}

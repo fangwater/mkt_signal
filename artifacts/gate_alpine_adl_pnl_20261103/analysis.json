@@ -1,0 +1,112 @@
+{
+  "environment": "gate_fr_arb01",
+  "contract": "ALPINE_USDT",
+  "valuation_utc": "2026-11-03T14:13:55Z",
+  "adl_trades": [
+    {
+      "id": 5395334,
+      "contract": "ALPINE_USDT",
+      "create_time": 1793355399.7052,
+      "size": "6",
+      "close_size": "6",
+      "price": "0.4411",
+      "order_id": "11540474397071498",
+      "fee": "0",
+      "point_fee": "0",
+      "role": "taker",
+      "text": "auto_deleveraging",
+      "biz_info": "-",
+      "amend_text": "-"
+    },
+    {
+      "id": 5395494,
+      "contract": "ALPINE_USDT",
+      "create_time": 1793355400.7876,
+      "size": "2125",
+      "close_size": "2125",
+      "price": "0.454",
+      "order_id": "11540474397072397",
+      "fee": "0",
+      "point_fee": "0",
+      "role": "taker",
+      "text": "auto_deleveraging",
+      "biz_info": "-",
+      "amend_text": "-"
+    },
+    {
+      "id": 5395497,
+      "contract": "ALPINE_USDT",
+      "create_time": 1793355400.7939,
+      "size": "2125",
+      "close_size": "2125",
+      "price": "0.4314",
+      "order_id": "11540474397072406",
+      "fee": "0",
+      "point_fee": "0",
+      "role": "taker",
+      "text": "auto_deleveraging",
+      "biz_info": "-",
+      "amend_text": "-"
+    },
+    {
+      "id": 5395499,
+      "contract": "ALPINE_USDT",
+      "create_time": 1793355400.7977,
+      "size": "4250",
+      "close_size": "4250",
+      "price": "0.4269",
+      "order_id": "11540474397072413",
+      "fee": "0",
+      "point_fee": "0",
+      "role": "taker",
+      "text": "auto_deleveraging",
+      "biz_info": "-",
+      "amend_text": "-"
+    }
+  ],
+  "adl_qty": "8506",
+  "repaired_qty": "8500",
+  "core_adl_vwap": "0.4348",
+  "repair_vwap": "0.3026980117647058823529411765",
+  "repair_fees_usdt": "0.51458662",
+  "core_futures_price_gap_usdt": "1122.8669",
+  "actual_retained_2576_funding_usdt": "-12.1281099072",
+  "counterfactual_extra_8500_funding_usdt": "-40.0189962000",
+  "incremental_adl_loss_8500_usdt": "1083.3624904200",
+  "incremental_adl_loss_all_8506_usdt": "1084.1658417168",
+  "actual_adl_realized_pnl_usdt": "-970.010401579562",
+  "spot_trade_immediately_before_adl": {
+    "id": "2955582",
+    "create_time": "1793355399",
+    "create_time_ms": "1793355399493.638000",
+    "currency_pair": "ALPINE_USDT",
+    "side": "sell",
+    "amount": "5.8",
+    "price": "1.1215",
+    "sequence_id": "2955582"
+  },
+  "spot_price_at_adl": "1.1215",
+  "spot_price_at_valuation": "0.381",
+  "spot_mark_to_market_drawdown_8500_usdt": "6294.2500",
+  "spot_trade_price_difference_is_account_equity_drawdown": false,
+  "caveat": "The spot calculation uses two small-trade prices; it does not establish the valuation of the whole position or an observed account equity drawdown, and must not be reported as actual account loss. It includes spot/perpetual basis changes and is not entirely caused by ADL. Incremental ADL loss compares observed fills/fees/funding with retaining all original shorts, holding other trades fixed. It already captures the ADL settlement; never add ADL realized PnL again. Spot prices are small-trade marks, not guaranteed execution prices for the full inventory.",
+  "actual_account_equity_reconciliation": {
+    "source": "Gate AccountRisk actual_eq_usd in deployed account-monitor log",
+    "one_minute_before_adl": {
+      "ts_ms": 1793355337000,
+      "equity_usd": 753878.65
+    },
+    "adl_time": {
+      "ts_ms": 1793355399000,
+      "equity_usd": 754789.72
+    },
+    "latest": {
+      "ts_ms": 1793715707000,
+      "equity_usd": 752425.94
+    },
+    "equity_change_from_adl_time_usd": "-2363.78",
+    "equity_change_from_one_minute_before_usd": "-1452.71",
+    "scope": "Whole account, all assets and income; not ALPINE-only attribution",
+    "timestamp_resolution_ms": 1000
+  }
+}

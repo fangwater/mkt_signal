@@ -1,0 +1,34 @@
+{
+  "accounts": [
+    {
+      "retired_source": "binance_exec_trade06",
+      "new_source": "binance_exec_rx01",
+      "group": "prep01",
+      "bindings": 3,
+      "shares": 0,
+      "perpetual_positions": 0,
+      "open_orders": 0,
+      "historical_snapshots_imported": 0
+    },
+    {
+      "retired_source": "binance_exec_trade07",
+      "new_source": "binance_exec_rx03",
+      "group": "prep02",
+      "bindings": 3,
+      "shares": 0,
+      "perpetual_positions": 0,
+      "open_orders": 0,
+      "historical_snapshots_imported": 0
+    }
+  ],
+  "automatic_execution_history_backfill_removed": true,
+  "new_account_orders_and_strategy_targets_zero": true,
+  "old_runtime_data_archived": true,
+  "all_seven_publishing_disabled": true,
+  "trading_submitters_stopped": true,
+  "factor_settings_unchanged": true,
+  "other_bindings_unchanged": 15,
+  "protected_processes_unchanged": 77,
+  "exchange_order_api_calls": 0,
+  "checked_at_ms": 1793688049967
+}

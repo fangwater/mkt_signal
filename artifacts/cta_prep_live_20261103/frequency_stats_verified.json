@@ -1,0 +1,41 @@
+{
+  "checked_at_ms": 1793698673425,
+  "strategies": [
+    {
+      "source_id": "binance_exec_rx01",
+      "strategy_name": "cta-prep01-bn-1min-pos",
+      "fill_count": 11,
+      "generated_at_us": 1793698646878353
+    },
+    {
+      "source_id": "binance_exec_rx01",
+      "strategy_name": "cta-prep01-bn-5min-pos",
+      "fill_count": 6,
+      "generated_at_us": 1793698646878353
+    },
+    {
+      "source_id": "binance_exec_rx01",
+      "strategy_name": "cta-prep01-bn-15min-pos",
+      "fill_count": 26,
+      "generated_at_us": 1793698646878353
+    },
+    {
+      "source_id": "binance_exec_rx03",
+      "strategy_name": "cta-prep02-bn-1min-pos",
+      "fill_count": 10,
+      "generated_at_us": 1793698646878353
+    },
+    {
+      "source_id": "binance_exec_rx03",
+      "strategy_name": "cta-prep02-bn-5min-pos",
+      "fill_count": 1,
+      "generated_at_us": 1793698646878353
+    },
+    {
+      "source_id": "binance_exec_rx03",
+      "strategy_name": "cta-prep02-bn-15min-pos",
+      "fill_count": 18,
+      "generated_at_us": 1793698646878353
+    }
+  ]
+}

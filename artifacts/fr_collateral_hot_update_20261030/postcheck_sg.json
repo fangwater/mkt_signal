@@ -1,0 +1,34 @@
+[
+  {
+    "assets": [
+      "BASED",
+      "BILL",
+      "BSB",
+      "COMP",
+      "COOKIE",
+      "DYDX",
+      "EDGE",
+      "EGLD",
+      "FLOW",
+      "GRVT",
+      "H",
+      "MERL",
+      "QTUM",
+      "RECALL",
+      "SLX",
+      "SNX",
+      "USDT",
+      "VELO",
+      "WOO"
+    ],
+    "disabled": [],
+    "enabled": [],
+    "env": "bybit_fr_arb01",
+    "errors": [],
+    "exchange": "bybit",
+    "mode": "PORTFOLIO_MARGIN",
+    "notes": [],
+    "ok": true,
+    "unsupported": []
+  }
+]

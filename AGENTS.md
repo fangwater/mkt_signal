@@ -4,6 +4,8 @@
 
 `mkt_signal` is a multi-binary Rust trading system for market data, funding-rate arbitrage, intra-exchange arbitrage, cross-exchange arbitrage, market making, account monitoring, order execution, persistence, and visualization.
 
+The actively maintained worktree is `/home/fanghaizhou/mkt_signal`.
+
 The crate is both a library and a binary collection. Primary code lives under `src/`; scripts and deployment wrappers live under `scripts/`, `xarb_scripts/`, `intra_scripts/`, `cross_scripts/`, and `mm_scripts/`.
 
 Important modules:
@@ -55,6 +57,19 @@ Deployed environments normally live in `$HOME/<env-name>` and include:
 
 Most runtime wrappers source `env.sh` automatically from the environment directory. Do not hard-code credentials or account-specific values in repo files.
 
+## RapidX / LTP API Documentation
+
+Use the LiquidityTech LTP API reference as the authoritative external contract:
+https://apidocliquidity.readme.io/reference/get-account-list. For an
+agent-readable documentation index and OpenAPI links, use
+https://apidocliquidity.readme.io/llms.txt; appending `.md` to a documentation
+page URL returns its Markdown representation.
+
+`GET /api/v1/tradeAccount/list` requires a primary-user or sub-user LTP API key
+with `READ` permission. RapidX sub-portfolio API keys cannot call this endpoint,
+so an authorization failure there alone does not prove that a sub-portfolio key
+is invalid for its supported trading endpoints.
+
 Current production SSH hosts are only `jp-meta-elvpn` (Japan) and `sg` / `ubuntu@47.131.162.78` (Singapore). Do not use retired aliases such as `jp2`.
 
 After deploying, migrating, or retiring a live env on `jp-meta-elvpn` or `sg`, update the living ops docs when they change: `docs/core_allocation.md` (CPU pins) and `docs/jp-meta-elvpn_ip_binding.md` (`local_ips` / ENI source IPs).
@@ -87,6 +102,16 @@ cd ~/gate_fr_arb01
 ./scripts/stop_account_monitor.sh
 ```
 
+Always start and stop env processes through these env-local scripts
+(`~/` `<env>` `/scripts/*.sh`, `~/` `<env>` `/intra_scripts/*.sh`), never through
+raw `pmdaemon`/`pm2` subcommands. The scripts wrap the supervisor with the
+correct env.sh, cwd, process name, and startup semantics (e.g. exec-pre-trade
+cancels open orders on startup; cta_special pre_trade must start before
+cta_special_signal because `signal_pubs/trade_signal` is created with
+`.create()` by pre_trade). Direct `pmdaemon stop`/`restart` can desync the
+registry from the real process state (marks stopped while the pid stays
+alive, or reports a start that never spawned).
+
 ## Known Exec Deployment: el01
 
 The following is a historical snapshot verified on 2026-08-10 UTC. It proves that the environment existed at that time, but it is not a statement that the same processes, binaries, ports, or configuration are still live. Re-check the remote host before any operation. The original full deployment invocation was not found; the available evidence starts with a post-deployment audit.
@@ -106,6 +131,48 @@ The following is a historical snapshot verified on 2026-08-10 UTC. It proves tha
 - Commit `72a4aff9` (`Trim hedge fields from exec order exports`) added Exec environment-name support and removes the six `signal_hedge_*` columns from Exec exports; the resulting `uniform_orders` file has 28 columns while retaining the same 1,141 rows.
 
 Never copy passwords, API keys, or values from the remote `env.sh` into this file, chat, commits, or command output.
+
+## Exec Delisting And Forced Close
+
+Native Exec deployments normally own one configured market. Native OKX unified
+Execs and RapidX Binance/OKX linear Execs also own that exchange's USDT cash market:
+bare targets such as `BTC`
+mean spot, while `BTCUSDT` / `BTCUSDC` mean perpetuals. Cash and perpetual
+strategy indexes, rules and position ledgers remain venue-scoped; FIFO is
+computed per market before aggregation. `binance-coin-futures` accepts only USD
+coin-margined perpetuals. Never automatically add COIN-M to a native USD-M Exec. Keep separate
+environment directories, namespaces, Redis prefixes, persistence stores and
+Viz/Config listeners for each market. Exec Viz requires an explicit configured
+venue and uses independently maintained USD-M and COIN-M frontends. Shared
+Portfolio Margin collateral/risk remains account-wide, but order/position streams
+and trade/query submission must stay within the deployment's owned markets.
+Native OKX cash uses cross SPOT with base-quantity targets and the existing
+`okex-margin` venue scope; borrowing follows the account's auto-loan setting.
+Do not run another strategy against the same account's cash inventory.
+
+Manager is the sole owner of venue order-rule refresh for Exec and publishes one
+complete current cache every 60 seconds. `exec-pre-trade` hot-reloads that cache
+and must not independently poll the venue for the same rules. Only venue-active
+symbol statuses are tradable. Once a complete loaded snapshot omits a symbol or
+marks it inactive, no strategy may create a new order for that symbol.
+
+Do not discard exchange-owned futures fills because their client order ID is not
+numeric. Recognize only documented forced-close identities such as liquidation,
+ADL, delisting settlement, and contract delivery. Persist each factual fill as
+both unmatched exchange evidence and a `uniform_orders` fill with an
+`exchange_forced_close:<reason>` attribution prefix plus exchange order/trade
+identifiers. Do not assign it to a CTA strategy without factual strategy
+identity. Reconcile BatchExec's position ledger to the
+exchange account position for an untradable symbol; never create an offsetting
+`SYSTEM_POSITION_CLOSE` loop that cannot be submitted. Liquidation penalties and
+other balance adjustments are account-ledger events and must not be invented as
+fill fees.
+
+Keep one current internal Manager/Exec cache and IPC contract. Never add parallel
+`v1`/`v2` formats, version-suffixed Redis keys, versioned internal API paths,
+duplicate versioned types, compatibility branches, or a schema-version field.
+Venue-owned external paths such as Binance `/fapi/v1/...` retain the names the
+venue requires and are not internal contract versions.
 
 ## Crypto Market SID Map And Storage Layers
 
@@ -139,9 +206,40 @@ SID_MARKETS = {
 
 ## Domestic Futures Baseline Replay
 
-`tonglian_baseline_replay` is a bounded offline batch tool. Its `volume_multiple` values and `verified` state must come only from the read-only PostgreSQL table `market_metadata.public.domestic_future_product_multipliers` through Unix socket `/mnt/nvme-raid0-28t/postgresql/domestic_futures/16/run` on port `5433`. Do not restore inline product maps, DataGateway or exchange-API calls, turnover inference, or a default of `1`. A product missing from the loaded catalog must panic with identifying context. This explicit batch-tool rule is an exception to the long-running-service panic guidance below. Never write to this metadata instance and never use the read-only PostgreSQL standby on port `5432` for this workflow.
+`crates/cn_futures_l2` is the only maintained Tonglian domestic-futures replay
+and export implementation. It writes the production RocksDB and derives 1s,
+1min, ylabel, and HFQ parquet outputs. The former root binary
+`tonglian_baseline_replay` and its ClickHouse staging configuration were removed
+when this crate replaced them; do not restore or run that path.
+
+`cn_futures_l2` loads `volume_multiple` values and their `verified` state only
+from the read-only PostgreSQL table
+`market_metadata.public.domestic_future_product_multipliers` through Unix socket
+`/mnt/nvme-raid0-28t/postgresql/domestic_futures/16/run` on port `5433`. Do not
+restore inline product maps, DataGateway or exchange-API calls, turnover
+inference, or a default of `1`. A product missing from the loaded catalog must
+panic with identifying context. This explicit batch-tool rule is an exception
+to the long-running-service panic guidance below. Never write to this metadata
+instance and never use the read-only PostgreSQL standby on port `5432` for this
+workflow.
 
 The current table is an undated 88-product snapshot. Replay configs must retain a separately validated bounded date range; do not infer full historical applicability from the table. Snapshot-construction provenance lives in `../preprocess/database/domestic_future_product_multipliers.sql` and is not a runtime source.
+
+## LSEG US Stock Replay
+
+US-stock production replay code is maintained in this repository. Keep the
+three source products separate because their source contracts and persisted
+codecs differ:
+
+- `crates/usstock_replay`: TAS/normalised source-row replay and downstream tools.
+- `crates/usstock_lseg_mbp_replay`: Market By Price raw replay, template audit,
+  Python correctness baseline, and MBP/normalised comparison tools.
+- `crates/usstock_lseg_raw_replay`: general RAW zstd staging, typed event replay,
+  verifier, schema printer, Python correctness baselines, and audit fixtures.
+
+The data-contract and audit-result documentation remains in
+`../preprocess/data_format/lseg/`. Do not add replay implementations back under
+`preprocess`.
 
 ## IPC And Config
 
@@ -181,8 +279,64 @@ Before live-impact commands, state the target env, exchange, symbol scope, and w
 
 Never revert user or operator changes in environment directories unless explicitly asked. If repo and env copies differ, inspect both and explain which one you are modifying.
 
+For FR exposure alignment, exclude BNB by default, including BNB fee and interest
+liabilities. Do not submit a BNB hedge or trade unless the user explicitly asks
+for that BNB action; a general request to clear exposure does not include it.
+
+For FR exposure alignment (平敞口 / 补敞口 / 仓位对齐), preserve spot inventory
+and prefer adjusting the futures leg. A factual net long normally requires a
+futures SELL; a factual net short normally requires a futures BUY, sized from
+fresh spot equity plus futures base quantity. Alignment is not a request to
+liquidate both legs or to minimize gross holdings. Do not buy or sell spot for
+alignment unless the user explicitly authorizes that spot action. If futures
+cannot safely execute, report the concrete blocker instead of silently switching
+to spot. Follow the user's taker chunk size and interval, verify each order's
+actual fill and refreshed net position before the next order, and never submit
+a replacement while an earlier order's outcome is unknown.
+
+Before stopping an incident environment, preserve its relevant runtime logs.
+Env-local stop wrappers may delete supervisor registrations and their log files;
+persisted order records do not retain every local pre-trade rejection or queue
+decision. Continue to use the required env-local wrappers after preserving the
+evidence.
+
+## CTP Execution Location Restriction
+
+CTP must not run on the current development machine or on any intranet machine.
+This applies to `ctp-trader`, `ctp-md`, `ctp-md-probe`, and other CTP clients,
+probes, tests, and benchmarks, including production, simulation, read-only,
+synthetic-SDK, and offline SDK execution. Do not initialize or load the CTP SDK,
+connect to CTP fronts, or probe their TCP ports from these machines. Do not
+bypass this restriction through SSH, jump hosts, proxies, or tunnels to another
+intranet machine.
+
+Code editing, static review, formatting, and compilation without executing CTP
+code are allowed here. Do not run CTP binaries, `cargo run`, CTP tests or smoke
+scripts, SDK-version queries, or mixed test/benchmark suites that execute CTP
+code on these machines.
+
+The user designated `sh_dev` (`ssh sh_dev`) as the external CTP deployment and
+execution environment on 2026-11-13. Use this host for CTP deployment and
+authorized runtime validation. Build artifacts locally in the maintained
+`arbmm` worktree, then publish the exact artifacts with checksum verification;
+do not compile them on `sh_dev`. Keep the raw SSH endpoint and credentials out
+of repository files. Host designation does not imply an already running CTP
+deployment.
+
+The current development machine and all intranet machines remain prohibited
+CTP execution locations. Existing credentials, configuration files, historical
+test instructions, and permission to implement or build CTP do not authorize
+execution on a prohibited machine. This restriction takes precedence over
+generic build/test and runtime examples elsewhere in the repository.
+
 ## Coding Conventions
 
+- Hard requirement: directly remove code that no longer serves a purpose. Delete
+  obsolete parameters, fields, functions, branches, and superseded implementations,
+  updating their callers in the same change. Do not retain unused code by renaming
+  it with an underscore, adding `allow(dead_code)` / `allow(unused)`, or leaving
+  empty compatibility wrappers. Preserve only code required by current behavior
+  or an actual interface contract; tests must cover the retained behavior.
 - Keep changes scoped to the touched exchange/path/strategy.
 - Reuse existing parsers, signing helpers, connection wrappers, query mappings, and IPC message types.
 - Add concise context to errors with `anyhow::Context`.
@@ -197,6 +351,7 @@ Living inventories (no date in the filename). Update them in the same change as 
 
 - `docs/core_allocation.md`: isolated-core bindings on `jp-meta-elvpn` and `sg`.
 - `docs/jp-meta-elvpn_ip_binding.md`: private/public IPv4 to strategy env on `jp-meta-elvpn`. Update whenever `trade_engine.toml local_ips` change, an EIP is assigned, or an env that owns a source IP is added or retired.
+- `docs/public_api_cache.md`: host-local Nginx shared-cache policy, endpoint allowlists, TTLs, and deployment state for exchange public REST APIs. Review and update it before adding a venue or public endpoint, and never route private or mutating APIs through this cache.
 
 Do not create a new dated copy. Edit the living file and bump its `最后更新` line.
 
@@ -210,6 +365,16 @@ deploy from `main` or another branch. Before any production operation, verify
 that `git branch --show-current` returns `arbmm` and that it is synchronized
 with `origin/arbmm`. `main` may receive merges for integration, but it is not a
 production deployment source.
+
+Build production Rust binaries in the actively maintained local worktree
+`/home/fanghaizhou/mkt_signal`; never run Cargo builds on a production host.
+After a successful local release build, upload the exact artifacts with `scp`
+to explicit temporary paths on the target host, verify SHA-256 checksums, and
+atomically install them into the environment directory before restarting any
+process. Production hosts such as `jp-meta-elvpn` and `sg` only run published
+artifacts. If a deploy wrapper normally builds locally, use its publish-only or
+`--skip-build` path after the locally built artifacts have been uploaded; do not
+fall back to compiling on the remote host.
 
 Check worktree state before editing:
 

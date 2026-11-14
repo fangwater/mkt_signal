@@ -1,20 +1,24 @@
 use account_common::bybit_auth::BybitCredentials;
 use account_common::gate_auth::GateCredentials;
 use account_common::{init_binance_account_mode, BinanceAccountMode};
-use anyhow::{Context, Result};
+use account_monitor_common::hyperliquid_account::discover_account_mode;
+use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
+use hmac::{Hmac, Mac};
 use log::{error, info, warn};
 use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
-use mkt_signal::pre_trade::auto_repay::{BinanceRepayer, BybitRepayer, GateRepayer};
+use mkt_signal::pre_trade::auto_repay::{BinanceRepayer, BybitRepayer, GateRepayer, RapidXRepayer};
 use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
 use mkt_signal::pre_trade::batch_exec_config::BatchExecConfigReloader;
 use mkt_signal::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
 use mkt_signal::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
+use mkt_signal::pre_trade::chase_exec_config::ChaseExecConfigReloader;
 use mkt_signal::pre_trade::exec_resample_channel::ExecResampleChannel;
 use mkt_signal::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
 use mkt_signal::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use mkt_signal::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use mkt_signal::pre_trade::leverage_guard::LeverageGuard;
+use mkt_signal::pre_trade::manager_market_rules::ManagerMarketRulesReloader;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
 use mkt_signal::pre_trade::notification_client::{
     LocalNotificationClient, NotificationRequest, NotificationSeverity,
@@ -42,8 +46,10 @@ use order_common::TradingVenue;
 use runtime_common::affinity::maybe_pin_current_thread;
 use runtime_common::mkt_cfg::load_primary_local_ip_from_trade_engine_sync;
 use runtime_common::redis_client::RedisSettings;
+use sha2::Sha256;
 use std::cell::RefCell;
-use std::net::IpAddr;
+use std::collections::BTreeMap;
+use std::net::{IpAddr, UdpSocket};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -53,13 +59,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
 use trade_engine::config::RestConstants;
+use trade_engine::ltp_rest::LtpRestClient;
 use trade_signal::ArbMode;
 
 #[derive(Parser, Debug)]
 #[command(name = env!("CARGO_BIN_NAME"))]
 #[command(about = "Pre-trade risk management and order execution")]
 struct Args {
-    /// Single execution venue. Required by exec-pre-trade.
+    /// The configured execution market (OKX unified Exec also owns USDT cash).
     #[arg(long, value_enum)]
     venue: Option<ExecVenue>,
 
@@ -90,6 +97,16 @@ enum ExecVenue {
 }
 
 const FR_STARTUP_STABILITY_DELAY: Duration = Duration::from_secs(3);
+type HmacSha256 = Hmac<Sha256>;
+
+fn exec_runtime_venues(venue: TradingVenue) -> Result<Vec<TradingVenue>> {
+    let exchange = runtime_common::exchange::Exchange::from_str(venue.trade_engine_exchange())
+        .context("invalid Exec exchange")?;
+    Ok(runtime_common::exec_market::runtime_venues(
+        venue,
+        runtime_common::execution_backend::ExecBackend::for_exchange(exchange)?,
+    ))
+}
 
 #[derive(Debug, Clone)]
 struct FrStartupContext {
@@ -212,6 +229,7 @@ fn futures_venue(ex: &str) -> Option<TradingVenue> {
         "gate" => Some(TradingVenue::GateFutures),
         "bybit" => Some(TradingVenue::BybitFutures),
         "bitget" => Some(TradingVenue::BitgetFutures),
+        "hyperliquid" => Some(TradingVenue::HyperliquidFutures),
         _ => None,
     }
 }
@@ -223,6 +241,7 @@ fn margin_venue(ex: &str) -> Option<TradingVenue> {
         "gate" => Some(TradingVenue::GateMargin),
         "bybit" => Some(TradingVenue::BybitMargin),
         "bitget" => Some(TradingVenue::BitgetMargin),
+        "hyperliquid" => Some(TradingVenue::HyperliquidMargin),
         _ => None,
     }
 }
@@ -266,6 +285,14 @@ fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
     let cwd = std::env::current_dir().ok()?;
     let leaf = cwd.file_name()?.to_string_lossy().to_string();
     infer_venues_from_dir_name(&leaf)
+}
+
+fn ensure_execution_env_supported(env_name: &str) -> Result<()> {
+    anyhow::ensure!(
+        normalized_dir_parts(env_name).get(1).map(String::as_str) != Some("cta"),
+        "CTA environments publish targets only; use a separate Exec environment for execution"
+    );
+    Ok(())
 }
 
 fn infer_arb_mode_from_dir_name(dir_name: &str) -> Option<ArbMode> {
@@ -330,12 +357,161 @@ fn exec_python_bin() -> String {
         })
 }
 
-async fn cancel_all_exec_orders_on_startup(
+fn exec_redis_prefix(source: Option<&str>, venue: TradingVenue) -> String {
+    match source {
+        Some(name) if !name.is_empty() => format!("{}:{}:", name, venue.data_pub_slug()),
+        _ => format!("{}:", venue.data_pub_slug()),
+    }
+}
+
+fn parse_binance_multi_assets_mode(body: &str) -> Result<bool> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).context("Binance accountConfig response is not JSON")?;
+    let mode = value
+        .get("multiAssetsMargin")
+        .context("Binance accountConfig response is missing multiAssetsMargin")?;
+    mode.as_bool()
+        .or_else(|| match mode.as_str() {
+            Some(value) if value.eq_ignore_ascii_case("true") => Some(true),
+            Some(value) if value.eq_ignore_ascii_case("false") => Some(false),
+            _ => None,
+        })
+        .context("Binance accountConfig response has invalid multiAssetsMargin")
+}
+
+fn exec_account_query_local_ip(configured: IpAddr) -> Result<IpAddr> {
+    if !configured.is_unspecified() {
+        return Ok(configured);
+    }
+    // UDP connect selects the local route without sending a packet.
+    let destination: IpAddr = if configured.is_ipv4() {
+        "192.0.2.1"
+    } else {
+        "2001:db8::1"
+    }
+    .parse()?;
+    let socket = UdpSocket::bind((configured, 0)).context("bind account-query route probe")?;
+    socket
+        .connect((destination, 443))
+        .context("resolve account-query default route without sending packets")?;
+    let local_ip = socket.local_addr()?.ip();
+    anyhow::ensure!(
+        !local_ip.is_unspecified(),
+        "account-query default route has no concrete local address"
+    );
+    Ok(local_ip)
+}
+
+async fn require_binance_multi_assets_mode_on_exec_startup(local_ip: IpAddr) -> Result<()> {
+    let api_key = std::env::var("BINANCE_API_KEY")
+        .context("BINANCE_API_KEY is required for the Exec account-mode startup gate")?;
+    let api_secret = std::env::var("BINANCE_API_SECRET")
+        .context("BINANCE_API_SECRET is required for the Exec account-mode startup gate")?;
+    let base_url = std::env::var("BINANCE_FAPI_URL")
+        .unwrap_or_else(|_| "https://fapi.binance.com".to_string());
+    let mut params = BTreeMap::new();
+    params.insert("recvWindow", "5000".to_string());
+    params.insert(
+        "timestamp",
+        chrono::Utc::now().timestamp_millis().to_string(),
+    );
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.extend_pairs(params);
+    let query = serializer.finish();
+    let mut mac = HmacSha256::new_from_slice(api_secret.as_bytes())
+        .context("invalid Binance API secret for account-mode startup gate")?;
+    mac.update(query.as_bytes());
+    let signature = hex::encode(mac.finalize().into_bytes());
+    let url = format!(
+        "{}/fapi/v1/accountConfig?{}&signature={}",
+        base_url.trim_end_matches('/'),
+        query,
+        signature
+    );
+    let client = reqwest::Client::builder()
+        .local_address(local_ip)
+        .timeout(Duration::from_secs(10))
+        .no_proxy()
+        .build()
+        .context("build Binance account-mode startup client")?;
+    let response = client
+        .get(url)
+        .header("X-MBX-APIKEY", api_key.trim())
+        .send()
+        .await
+        .context("query Binance accountConfig for Exec startup")?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!(
+            "Binance account-mode startup query failed status={} body={}",
+            status.as_u16(),
+            body.chars().take(300).collect::<String>()
+        );
+    }
+    if !parse_binance_multi_assets_mode(&body)? {
+        bail!("Binance USD-M Multi-Assets Mode is disabled; refusing to start exec-pre-trade");
+    }
+    info!(
+        "exec-pre-trade account-mode startup gate passed: Binance USD-M Multi-Assets Mode enabled via local_ip={}",
+        local_ip
+    );
+    Ok(())
+}
+
+async fn cancel_all_orders_on_startup(
     venue: TradingVenue,
     binance_account_mode: Option<BinanceAccountMode>,
+    gate_name: &str,
+    account_query_local_ip: Option<IpAddr>,
 ) -> Result<()> {
+    let exchange = runtime_common::exchange::Exchange::from_str(venue.trade_engine_exchange())
+        .context("invalid startup cancellation exchange")?;
+    if runtime_common::execution_backend::ExecBackend::for_exchange(exchange)?
+        == runtime_common::execution_backend::ExecBackend::Ltp
+    {
+        let wire_exchange = match venue {
+            TradingVenue::BinanceFutures | TradingVenue::BinanceMargin => "BINANCE",
+            TradingVenue::OkexFutures | TradingVenue::OkexMargin => "OKX",
+            _ => anyhow::bail!(
+                "RapidX startup cancellation supports Binance/OKX linear and cash venues only"
+            ),
+        };
+        let timeout = std::env::var("EXEC_STARTUP_CANCEL_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(120)
+            .max(1);
+        let client = trade_engine::ltp_rest::LtpRestClient::from_env()?;
+        let business_type = match venue {
+            TradingVenue::BinanceMargin => {
+                match runtime_common::execution_backend::rapidx_binance_cash_business_type()? {
+                    runtime_common::execution_backend::RapidXCashBusinessType::Spot => "SPOT",
+                    runtime_common::execution_backend::RapidXCashBusinessType::Margin => "MARGIN",
+                }
+            }
+            TradingVenue::OkexMargin => "SPOT",
+            _ => "PERP",
+        };
+        warn!(
+            "{} startup gate: cancelling RapidX {} {} orders in portfolio {} and verifying empty",
+            gate_name,
+            wire_exchange,
+            business_type,
+            client.portfolio_id()
+        );
+        return client
+            .cancel_open_orders(wire_exchange, business_type, Duration::from_secs(timeout))
+            .await;
+    }
+    if matches!(
+        venue,
+        TradingVenue::BybitFutures | TradingVenue::BitgetFutures
+    ) {
+        return trade_engine::native_uta_exec::cancel_orders_on_startup(venue).await;
+    }
     let cwd = std::env::current_dir().context("resolve current directory")?;
-    let (script_name, args): (&str, Vec<String>) = match venue {
+    let (script_name, mut args): (&str, Vec<String>) = match venue {
         TradingVenue::BinanceFutures => match binance_account_mode {
             Some(BinanceAccountMode::Standard) => (
                 "binance_cancel_all_std_um_ws_orders.py",
@@ -374,19 +550,28 @@ async fn cancel_all_exec_orders_on_startup(
             ),
             None => anyhow::bail!("BINANCE_ACCOUNT_MODE is required for binance-coin-futures"),
         },
-        TradingVenue::OkexFutures => (
+        TradingVenue::OkexFutures | TradingVenue::OkexMargin => (
             "okx_swap_open_orders.py",
             vec![
+                "--inst-type".to_string(),
+                if venue.is_spot() { "SPOT" } else { "SWAP" }.to_string(),
+                "--quote-ccy".to_string(),
+                "USDT".to_string(),
                 "--fetch-all".to_string(),
                 "--max-pages".to_string(),
                 "0".to_string(),
                 "--cancel".to_string(),
             ],
         ),
-        _ => anyhow::bail!(
-            "exec-pre-trade only supports binance-futures, binance-coin-futures and okex-futures: venue={venue:?}"
-        ),
+        _ => anyhow::bail!("unsupported startup cancellation venue={venue:?}"),
     };
+    if let Some(local_ip) =
+        account_query_local_ip.filter(|_| venue.trade_engine_exchange() == "binance")
+    {
+        // Reuse the fixed binding from accountConfig for the STANDARD UM
+        // startup order query; leave the live trade-engine configuration intact.
+        args.extend(["--local-address".to_string(), local_ip.to_string()]);
+    }
     let script = exec_cancel_script(script_name)?;
     let timeout_secs = std::env::var("EXEC_STARTUP_CANCEL_TIMEOUT_SECS")
         .ok()
@@ -395,7 +580,8 @@ async fn cancel_all_exec_orders_on_startup(
         .max(1);
 
     warn!(
-        "exec-pre-trade startup gate: cancelling all {:?} open orders with {}",
+        "{} startup gate: cancelling all {:?} open orders with {}",
+        gate_name,
         venue,
         script.display()
     );
@@ -408,6 +594,14 @@ async fn cancel_all_exec_orders_on_startup(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
+    if account_query_local_ip.is_some() {
+        command.env("NO_PROXY", "*").env("no_proxy", "*");
+    }
+    if venue.trade_engine_exchange() == "okex" {
+        if let Some(local_ip) = account_query_local_ip {
+            command.env("OKX_LOCAL_IP", local_ip.to_string());
+        }
+    }
     let status = tokio::time::timeout(Duration::from_secs(timeout_secs), command.status())
         .await
         .with_context(|| {
@@ -424,8 +618,8 @@ async fn cancel_all_exec_orders_on_startup(
         );
     }
     info!(
-        "exec-pre-trade startup gate passed: all {:?} open orders cancelled",
-        venue
+        "{} startup gate passed: all {:?} open orders cancelled",
+        gate_name, venue
     );
     Ok(())
 }
@@ -478,6 +672,8 @@ fn main() -> Result<()> {
 async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     // 解析命令行参数
     let args = Args::parse();
+    let env_name = infer_dir_prefix_from_cwd().unwrap_or_default();
+    ensure_execution_env_supported(&env_name)?;
     let exec_pre_trade = env!("CARGO_BIN_NAME") == "exec-pre-trade";
     maybe_pin_current_thread(args.core, "PRE_TRADE_CORE")?;
     let (open_venue, hedge_venue) = if exec_pre_trade {
@@ -495,10 +691,18 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             TradingVenue::BinanceFutures
                 | TradingVenue::OkexFutures
                 | TradingVenue::BinanceCoinFutures
+                | TradingVenue::BybitFutures
+                | TradingVenue::BitgetFutures
         ) {
             return Err(anyhow::anyhow!(
-                "exec-pre-trade only supports binance-futures, binance-coin-futures and okex-futures"
+                "exec-pre-trade requires a supported native futures venue or RapidX Binance/OKX"
             ));
+        }
+        if let Some(configured) = runtime_common::exec_market::configured_venue()? {
+            anyhow::ensure!(
+                configured == venue,
+                "Exec --venue must match EXEC_VENUE / EXEC_START_VENUE"
+            );
         }
         (venue, venue)
     } else {
@@ -546,8 +750,84 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     }
     let need_binance = open_venue.trade_engine_exchange() == "binance"
         || hedge_venue.trade_engine_exchange() == "binance";
+    let mut rapidx_exchanges = std::collections::HashSet::new();
+    for venue in [open_venue, hedge_venue] {
+        let exchange = runtime_common::exchange::Exchange::from_str(venue.trade_engine_exchange())
+            .context("invalid trade engine exchange")?;
+        if runtime_common::execution_backend::ExecBackend::for_exchange(exchange)?
+            == runtime_common::execution_backend::ExecBackend::Ltp
+        {
+            runtime_common::execution_backend::rapidx_portfolio_id()?;
+            rapidx_exchanges.insert(exchange);
+        }
+    }
+    let rapidx_binance = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Binance);
+    let rapidx_okex = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Okex);
+    let exec_venues = if exec_pre_trade {
+        exec_runtime_venues(open_venue)?
+    } else {
+        vec![open_venue]
+    };
+    let hedge_venue = if exec_pre_trade {
+        *exec_venues.last().expect("Exec always has a venue")
+    } else {
+        hedge_venue
+    };
+    if exec_pre_trade && (!rapidx_exchanges.is_empty() || open_venue == TradingVenue::OkexFutures) {
+        anyhow::ensure!(
+            matches!(
+                open_venue,
+                TradingVenue::BinanceFutures | TradingVenue::OkexFutures
+            ),
+            "multi-market Exec supports Binance/OKX linear venues only"
+        );
+        for venue in &exec_venues {
+            let mut redis = RedisSettings::default();
+            redis.prefix = Some(exec_redis_prefix(
+                infer_dir_prefix_from_cwd().as_deref(),
+                *venue,
+            ));
+            ManagerMarketRulesReloader::verify_startup(redis, *venue).await?;
+        }
+    }
+    if exec_pre_trade
+        && matches!(
+            open_venue,
+            TradingVenue::BybitFutures | TradingVenue::BitgetFutures
+        )
+    {
+        let mut redis = RedisSettings::default();
+        redis.prefix = Some(exec_redis_prefix(
+            infer_dir_prefix_from_cwd().as_deref(),
+            open_venue,
+        ));
+        ManagerMarketRulesReloader::verify_startup(redis, open_venue).await?;
+        trade_engine::native_uta_exec::validate_startup(open_venue).await?;
+    }
     let binance_account_mode = if need_binance {
-        Some(init_binance_account_mode("pre_trade"))
+        Some(if rapidx_binance {
+            BinanceAccountMode::Unified
+        } else {
+            init_binance_account_mode("pre_trade")
+        })
+    } else {
+        None
+    };
+    let need_hyperliquid = open_venue.trade_engine_exchange() == "hyperliquid"
+        || hedge_venue.trade_engine_exchange() == "hyperliquid";
+    let hyperliquid_account_mode = if need_hyperliquid {
+        let endpoints = signal_common::hyperliquid::HyperliquidEndpoints::from_env()?;
+        let user = std::env::var("HYPERLIQUID_ACCOUNT_ADDRESS")
+            .context("Hyperliquid pre_trade requires the target account address")?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .context("build Hyperliquid read-only account discovery client")?;
+        Some(
+            discover_account_mode(&client, &endpoints.info_url, &user)
+                .await
+                .context("discover Hyperliquid exchange account rules")?,
+        )
     } else {
         None
     };
@@ -568,17 +848,23 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
         None
     };
     let mut required_env: Vec<&str> = Vec::new();
-    if open_venue.trade_engine_exchange() == "binance"
-        || hedge_venue.trade_engine_exchange() == "binance"
-    {
+    if need_binance && !rapidx_binance {
         required_env.extend(["BINANCE_API_KEY", "BINANCE_API_SECRET"]);
     }
-    if need_binance {
+    if need_binance && !rapidx_binance {
         required_env.push("BINANCE_ACCOUNT_MODE");
     }
-    if open_venue.trade_engine_exchange() == "okex" || hedge_venue.trade_engine_exchange() == "okex"
+    if need_hyperliquid {
+        required_env.push("HYPERLIQUID_ACCOUNT_ADDRESS");
+    }
+    if !rapidx_okex
+        && (open_venue.trade_engine_exchange() == "okex"
+            || hedge_venue.trade_engine_exchange() == "okex")
     {
         required_env.extend(["OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE"]);
+    }
+    if !rapidx_exchanges.is_empty() {
+        required_env.extend(["LTP_API_KEY", "LTP_API_SECRET", "LTP_PORTFOLIO_ID"]);
     }
     if !required_env.is_empty() {
         info!("Required env vars: {}", required_env.join(", "));
@@ -586,8 +872,54 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     if let Some(mode) = binance_account_mode {
         info!("BINANCE_ACCOUNT_MODE={}", mode.as_str());
     }
-    if exec_pre_trade {
-        cancel_all_exec_orders_on_startup(open_venue, binance_account_mode).await?;
+    let mut startup_query_ip = None;
+    if exec_pre_trade
+        && open_venue == TradingVenue::BinanceFutures
+        && !rapidx_binance
+        && binance_account_mode == Some(BinanceAccountMode::Standard)
+    {
+        let (raw_ip, source) = load_primary_local_ip_from_trade_engine_sync()
+            .context("load Binance REST local IP for the Exec account-mode startup gate")?;
+        let configured_ip = raw_ip
+            .parse::<IpAddr>()
+            .with_context(|| format!("invalid Binance REST local IP {raw_ip} from {source}"))?;
+        let local_ip = exec_account_query_local_ip(configured_ip)?;
+        startup_query_ip = Some(local_ip);
+        info!(
+            "exec-pre-trade account-mode startup gate using Binance REST local_ip={} ({})",
+            local_ip, source
+        );
+        require_binance_multi_assets_mode_on_exec_startup(local_ip).await?;
+    }
+    if exec_pre_trade && open_venue == TradingVenue::OkexFutures && !rapidx_okex {
+        let (raw_ip, _) = load_primary_local_ip_from_trade_engine_sync()
+            .context("load OKX Exec account trading IP")?;
+        let local_ip = exec_account_query_local_ip(raw_ip.parse()?)?;
+        startup_query_ip = Some(local_ip);
+        let client = reqwest::Client::builder()
+            .local_address(local_ip)
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(10))
+            .build()?;
+        trade_engine::okex_precheck::ensure_unified_margin_mode(
+            &client,
+            &account_common::okex_auth::OkexCredentials::from_env()?,
+        )
+        .await?;
+    }
+    if let Some(mode) = hyperliquid_account_mode {
+        info!(
+            "Hyperliquid account rules detected from exchange: {}",
+            mode.as_str()
+        );
+    }
+    let startup_cancel_gate = exec_pre_trade.then_some("exec-pre-trade");
+    if let Some(gate_name) = startup_cancel_gate {
+        for venue in &exec_venues {
+            cancel_all_orders_on_startup(*venue, binance_account_mode, gate_name, startup_query_ip)
+                .await?;
+        }
     }
     let local = tokio::task::LocalSet::new();
     local
@@ -603,12 +935,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             // 统一标准：使用 kebab-case venue slug（例如 okex-margin），与 scripts/ 运维保持一致。
             let dir_prefix = infer_dir_prefix_from_cwd();
             let prefix = if exec_pre_trade {
-                match dir_prefix.as_deref() {
-                    Some(name) if !name.is_empty() => {
-                        format!("{}:{}:", name, open_venue.data_pub_slug())
-                    }
-                    _ => format!("{}:", open_venue.data_pub_slug()),
-                }
+                exec_redis_prefix(dir_prefix.as_deref(), open_venue)
             } else {
                 match dir_prefix.as_deref() {
                 Some(name) if !name.is_empty() => format!(
@@ -737,6 +1064,8 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     hedge_venue,
                     arb_mode,
                     binance_account_mode,
+                    hyperliquid_account_mode,
+                    !exec_pre_trade,
                 )
                 .await
             {
@@ -744,40 +1073,95 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             }
             info!("MonitorChannel initialized successfully");
             if exec_pre_trade {
-                trade_signal::MktChannel::init_bbo_singleton_readonly(open_venue, open_venue)?;
+                trade_signal::MktChannel::init_bbo_singleton_readonly(open_venue, hedge_venue)?;
+                mkt_signal::pre_trade::exec_volume_channel::start(&exec_venues);
+                mkt_signal::pre_trade::exec_volatility_channel::start(&exec_venues);
                 info!(
-                    "exec-pre-trade BBO subscriber initialized: spread_pbs/{}/ask_bid_spread",
-                    open_venue.data_pub_slug()
+                    "exec-pre-trade BBO subscribers initialized: open={} hedge={}",
+                    open_venue.data_pub_slug(),
+                    hedge_venue.data_pub_slug()
+                );
+            } else if matches!(
+                arb_mode,
+                ArbMode::IntraArb
+            ) || matches!(
+                open_venue,
+                TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
+            ) || matches!(
+                hedge_venue,
+                TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
+            ) {
+                trade_signal::MktChannel::init_bbo_singleton_readonly(open_venue, hedge_venue)?;
+                info!(
+                    "Pre-trade protection BBO subscribers initialized: open={} hedge={}",
+                    open_venue.data_pub_slug(),
+                    hedge_venue.data_pub_slug()
                 );
             }
             UnimmrOpenLock::initialize(dir_prefix.clone(), arb_mode, binance_account_mode)?;
             UnimmrForceClose::initialize(arb_mode, binance_account_mode);
 
             if exec_pre_trade {
-                let mut batch_redis = RedisSettings::default();
-                batch_redis.prefix = Some(prefix.clone());
-                let mut reloader = BatchExecConfigReloader::connect(
-                    batch_redis,
-                    open_venue,
-                    binance_account_mode,
-                )
-                .await?;
-                reloader.reload(&strategy_mgr).await?;
-                reloader.spawn(
-                    strategy_mgr.clone(),
-                    Duration::from_millis(args.config_reload_ms.max(100)),
-                );
-                info!(
-                    "BatchExec Redis reload started: interval_ms={} notify=batch_exec_pubs/reload_notify index_key=batch_exec:strategy_names position_ledger_key=batch_exec_state:position_allocations leverage_init_key=batch_exec_state:leverage_initialized default_leverage=5",
-                    args.config_reload_ms.max(100)
-                );
+                let position_lock = Rc::new(tokio::sync::Mutex::new(()));
+                for venue in &exec_venues {
+                    let mut batch_redis = RedisSettings::default();
+                    batch_redis.prefix = Some(exec_redis_prefix(dir_prefix.as_deref(), *venue));
+                    let mut market_rules = ManagerMarketRulesReloader::connect(
+                        batch_redis.clone(),
+                        *venue,
+                    )
+                    .await?;
+                    if !market_rules.reload().await? {
+                        warn!(
+                            "Manager market-rules cache is not available yet; symbols remain blocked until Manager publishes it"
+                        );
+                    }
+                    market_rules.spawn(Duration::from_millis(args.config_reload_ms.max(100)));
+                    let mut reloader = BatchExecConfigReloader::connect(
+                        batch_redis.clone(),
+                        *venue,
+                        binance_account_mode,
+                    )
+                    .await?;
+                    reloader.reload(&strategy_mgr).await?;
+                    let mut chase_reloader = ChaseExecConfigReloader::connect(
+                        batch_redis,
+                        *venue,
+                        binance_account_mode,
+                    )
+                    .await?;
+                    chase_reloader.reload(&strategy_mgr).await?;
+                    mkt_signal::pre_trade::exec_position_ledger::cross_family_unexecuted_targets(
+                        &strategy_mgr,
+                        *venue,
+                    );
+                    reloader.spawn(
+                        strategy_mgr.clone(),
+                        Duration::from_millis(args.config_reload_ms.max(100)),
+                        position_lock.clone(),
+                    );
+                    info!(
+                        "BatchExec Redis reload started: interval_ms={} notify=batch_exec_pubs/reload_notify index_key=batch_exec:strategy_names position_ledger_key=batch_exec_state:position_allocations leverage_init_key=batch_exec_state:leverage_initialized default_leverage=5",
+                        args.config_reload_ms.max(100)
+                    );
+                    chase_reloader.spawn(
+                        strategy_mgr.clone(),
+                        Duration::from_millis(args.config_reload_ms.max(100)),
+                        position_lock.clone(),
+                    );
+                    info!(
+                        "ChaseExec Redis reload started: interval_ms={} notify=batch_exec_pubs/reload_notify index_key=chase_exec:strategy_names position_ledger_key=chase_exec_state:position_allocations leverage_init_key=chase_exec_state:leverage_initialized default_leverage=5",
+                        args.config_reload_ms.max(100)
+                    );
+                }
             }
 
             // 3.1 启动多交易所自动还款服务（启动即跑一次 + 每小时 :55 UTC）。
-            //     - Binance：仅 PM (UNIFIED) 账户模式注册，端点 /papi/v1/repayLoan
+            //     - Binance：仅 PM (UNIFIED) 账户模式注册，端点 /papi/v1/repayLoan；
+            //               RapidX 执行后端走 LTP rapidxLoan/loan/repay
             //     - Gate   ：UNIFIED 账户，端点 POST /api/v4/unified/loans (type=repay)
-            //     - Bybit  ：UNIFIED 账户，端点 POST /v5/account/quick-repayment（占位实现，
-            //               已知近期返回 "no liability" 但 borrowAmount 不归零，待端点确认）
+            //     - Bybit  ：UNIFIED 账户，仅为 USDT 调用 /v5/account/no-convert-repay；
+            //               非 USDT 持仓币禁止自动还款，避免绕开策略对冲状态。
             let mut auto_repay_service = None;
             {
                 let mut repay_svc = AutoRepayService::new();
@@ -786,7 +1170,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     || matches!(hedge_venue, TradingVenue::BinanceMargin);
                 let binance_is_unified =
                     matches!(binance_account_mode, Some(BinanceAccountMode::Unified));
-                if binance_in_play && binance_is_unified {
+                if binance_in_play && binance_is_unified && !rapidx_binance {
                     let binance_api_key = std::env::var("BINANCE_API_KEY").unwrap_or_default();
                     let binance_api_secret =
                         std::env::var("BINANCE_API_SECRET").unwrap_or_default();
@@ -807,6 +1191,13 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                             binance_api_secret,
                             RestConstants::RECV_WINDOW_MS,
                         )));
+                    }
+                } else if binance_in_play && rapidx_binance {
+                    match LtpRestClient::from_env() {
+                        Ok(client) => repay_svc.register(Box::new(RapidXRepayer::new(
+                            client, "BINANCE",
+                        ))),
+                        Err(e) => warn!("rapidx auto-repay disabled: {e:#}"),
                     }
                 } else if binance_in_play {
                     info!(
@@ -849,9 +1240,8 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             // - pre_trade 重启后立即执行一次；
             // - 每天 UTC+8 12:00 执行一次；
             let mut auto_collection_service = None;
-            if matches!(open_venue, TradingVenue::BinanceMargin)
-                || matches!(hedge_venue, TradingVenue::BinanceMargin)
-            {
+            if !rapidx_binance && (matches!(open_venue, TradingVenue::BinanceMargin)
+                || matches!(hedge_venue, TradingVenue::BinanceMargin)) {
                 let is_unified = matches!(binance_account_mode, Some(BinanceAccountMode::Unified));
                 if is_unified {
                     let binance_api_key = std::env::var("BINANCE_API_KEY").unwrap_or_default();
@@ -1039,7 +1429,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
 
             // 7.2 启动时执行一次账户快照查询（用于补齐/初始化本地风控状态）
             let snapshot_query = if exec_pre_trade {
-                SnapshotQueryConfig::new_exec(open_venue, binance_account_mode)
+                SnapshotQueryConfig::new_exec(open_venue, hedge_venue, binance_account_mode)
             } else {
                 SnapshotQueryConfig::new(open_venue, hedge_venue, binance_account_mode)
             };
@@ -1122,6 +1512,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn exec_account_query_preserves_explicit_trading_address() {
+        for address in ["192.0.2.10", "2001:db8::10"] {
+            let configured = address.parse().unwrap();
+            assert_eq!(exec_account_query_local_ip(configured).unwrap(), configured);
+        }
+    }
+
+    #[test]
+    fn exec_account_query_resolves_wildcard_without_sending_packets() {
+        let address = exec_account_query_local_ip("0.0.0.0".parse().unwrap()).unwrap();
+        assert!(address.is_ipv4());
+        assert!(!address.is_unspecified());
+        // A later query reuses this concrete address instead of looking up a
+        // potentially changed default route again.
+        assert_eq!(exec_account_query_local_ip(address).unwrap(), address);
+    }
+
+    #[test]
+    fn rejects_cta_execution_environments_before_startup() {
+        for env in [
+            "binance-cta-rx01",
+            "binance-cta-special-rx02",
+            "binance-cta-perp-rx02",
+            "binance_cta_spread_rx01",
+        ] {
+            assert!(ensure_execution_env_supported(env).is_err());
+        }
+        assert!(ensure_execution_env_supported("binance_exec_trade05").is_ok());
+        assert!(ensure_execution_env_supported("binance-exec-cta-spread-test").is_ok());
+        assert!(ensure_execution_env_supported("cta_exec_trade").is_ok());
+        assert!(ensure_execution_env_supported("binance-intra-arb01").is_ok());
+    }
+
+    #[test]
+    fn native_exec_keeps_binance_markets_separate_and_adds_okx_cash() {
+        assert_eq!(
+            runtime_common::exec_market::runtime_venues(
+                TradingVenue::BinanceFutures,
+                runtime_common::execution_backend::ExecBackend::Native
+            ),
+            vec![TradingVenue::BinanceFutures]
+        );
+        assert_eq!(
+            runtime_common::exec_market::runtime_venues(
+                TradingVenue::BinanceCoinFutures,
+                runtime_common::execution_backend::ExecBackend::Native
+            ),
+            vec![TradingVenue::BinanceCoinFutures]
+        );
+        assert_eq!(
+            runtime_common::exec_market::runtime_venues(
+                TradingVenue::OkexFutures,
+                runtime_common::execution_backend::ExecBackend::Native
+            ),
+            vec![TradingVenue::OkexFutures, TradingVenue::OkexMargin]
+        );
+    }
+
+    #[test]
     fn infer_arb_mode_uses_dir_namespace_before_venue_shape() {
         assert_eq!(
             infer_arb_mode_from_dir_name("binance_fr_arb03"),
@@ -1139,6 +1588,18 @@ mod tests {
             infer_arb_mode_from_dir_name("binance-intra-arb03"),
             Some(ArbMode::IntraArb)
         );
+        assert_eq!(
+            infer_arb_mode_from_dir_name("binance-cta-special-rx02"),
+            None
+        );
+        assert_eq!(infer_venues_from_dir_name("binance-cta-special-rx02"), None);
+    }
+
+    #[test]
+    fn parses_binance_multi_assets_mode_for_exec_startup_gate() {
+        assert!(parse_binance_multi_assets_mode(r#"{"multiAssetsMargin":true}"#).unwrap());
+        assert!(!parse_binance_multi_assets_mode(r#"{"multiAssetsMargin":false}"#).unwrap());
+        assert!(parse_binance_multi_assets_mode(r#"{}"#).is_err());
     }
 
     #[test]

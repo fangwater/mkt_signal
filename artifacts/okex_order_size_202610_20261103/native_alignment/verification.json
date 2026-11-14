@@ -1,0 +1,57 @@
+{
+  "verified_at_utc": "2026-11-03T03:09:57.309255+00:00",
+  "host": "jp-meta-elvpn",
+  "environment": "/home/ubuntu/tlen_config_shared",
+  "redis_key": "okex-futures:amount-thresholds",
+  "source_month": "2026-10",
+  "apply_month": "2026-11",
+  "csv_sha256": "e81dfd6e934d5e8a21d01b214a394a0fafdf061b4cfb9fa29430544ab91a3832",
+  "unit": "price_x_contracts",
+  "http_and_redis_match_csv": true,
+  "count": 8,
+  "source_samples": 65332809,
+  "hours_per_symbol": 744,
+  "tool_tests": 8,
+  "publication_tests": 10,
+  "period_pbs_tests": 17,
+  "backup": "/home/ubuntu/tlen_config_shared/run/okex_order_size_202610_20261103/native_alignment/redis_before.json",
+  "factor_plans_unchanged": true,
+  "corrected_from_csv_sha256": "75368ac8ff7a8944aa7bd6d96c957f4e6dabb693accb57be87d0321490064841",
+  "supersedes": "../verification.json",
+  "published_thresholds": {
+    "TRB-USDT-SWAP": {
+      "large_notional_threshold": 2138.0,
+      "medium_notional_threshold": 166.88
+    },
+    "DOT-USDT-SWAP": {
+      "large_notional_threshold": 170.952,
+      "medium_notional_threshold": 4.6668
+    },
+    "ADA-USDT-SWAP": {
+      "large_notional_threshold": 7.537859999999999,
+      "medium_notional_threshold": 0.14622
+    },
+    "NEAR-USDT-SWAP": {
+      "large_notional_threshold": 91.60900000000001,
+      "medium_notional_threshold": 1.0231999999999999
+    },
+    "ATOM-USDT-SWAP": {
+      "large_notional_threshold": 262.78599999999994,
+      "medium_notional_threshold": 11.544
+    },
+    "DOGE-USDT-SWAP": {
+      "large_notional_threshold": 0.8590416000000001,
+      "medium_notional_threshold": 0.0052578
+    },
+    "ETC-USDT-SWAP": {
+      "large_notional_threshold": 14.586299999999998,
+      "medium_notional_threshold": 0.5297999999999999
+    },
+    "CRV-USDT-SWAP": {
+      "large_notional_threshold": 200.3904,
+      "medium_notional_threshold": 2.3954
+    }
+  },
+  "live_unit_evidence": "../unit_audit/ipc_comparison_verified.json",
+  "kafka_probe": "timed out; no Kafka unit assertion"
+}

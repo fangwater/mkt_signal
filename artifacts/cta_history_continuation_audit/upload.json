@@ -1,0 +1,20 @@
+{
+  "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+  "installed_at_ms": 1794220474909,
+  "history": "/home/ubuntu/cta-hourly-history/rx01_rx03_1h_20261108/data",
+  "current": "/home/ubuntu/cta-hourly-history/current/data",
+  "archive": "/home/ubuntu/cta-hourly-history/rx01_rx03_1h_20261108.tar.gz",
+  "archive_sha256": "bc01bcb710cfa4a0479a68f66f6cb9ffbc6a0adba5e37cd3ec46aa61ec7bd5a3",
+  "archive_bytes": 29689568,
+  "verified_files": 87,
+  "symbols": 34,
+  "rows": 25296,
+  "ready_formulas": 232,
+  "formula_count": 233,
+  "nq_count": 32,
+  "not_ready": [
+    "binance-futures-dashusdt-1h-depth_imb_bps1"
+  ],
+  "live_worker_binaries_replaced": false,
+  "live_processes_restarted": false
+}

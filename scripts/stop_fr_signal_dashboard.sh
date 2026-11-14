@@ -60,7 +60,7 @@ find_env_dashboard_pids() {
 
 if npx pm2 describe "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1; then
   echo "[INFO] Stopping ${PROC_NAME} (namespace=${NAMESPACE})"
-  npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE"
+  npx pm2 delete "$PROC_NAME"
 else
   echo "[INFO] ${PROC_NAME} not running in namespace ${NAMESPACE}"
 fi

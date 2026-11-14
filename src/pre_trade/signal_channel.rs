@@ -1,4 +1,5 @@
 use crate::pre_trade::account_open_block::{check_account_open_block, AccountOpenBlockReason};
+use crate::pre_trade::account_order_stream_health;
 use crate::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
 use crate::pre_trade::binance_std_cm_margin_guard::BinanceStdCmMarginGuard;
 use crate::pre_trade::binance_std_um_margin_guard::BinanceStdUmMarginGuard;
@@ -6,12 +7,15 @@ use crate::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
 use crate::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
 use crate::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use crate::pre_trade::leverage_guard::LeverageGuard;
-use crate::pre_trade::log_throttle::{log_pending_limit_summary, log_strategy_inactive_summary};
+use crate::pre_trade::log_throttle::{
+    log_arb_close_precheck_summary, log_pending_limit_summary, log_strategy_inactive_summary,
+};
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
 use crate::pre_trade::runtime_flags::fast_poll_hot_path_mode;
 use crate::pre_trade::signal_throttle::{
     check_account_signal_throttle, check_signal_throttle,
+    SIGNAL_THROTTLE_ERROR_CODE_BINANCE_MAX_LEVERAGE_RATIO,
     SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT,
 };
 use crate::pre_trade::taker_decision_model::{
@@ -31,9 +35,10 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use ipc_common::iceoryx_publisher::{SignalPublisher, TradeSignalIpcPayload, SIGNAL_PAYLOAD};
-use log::{debug, info, warn};
+use log::{debug, info, warn, Level};
+use order_common::trade_error_code::gate;
 use order_common::TradingVenue;
-use rolling_common::arb_open_latency::record_arb_open_latency;
+use rolling_common::arb_open_latency::record_arb_open_latency_with_level;
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
@@ -51,6 +56,7 @@ use signal_common::trade_signal::{SignalType, TradeSignalView};
 use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
+use trade_signal::ArbMode;
 
 thread_local! {
     static SIGNAL_CHANNEL: OnceCell<SignalChannel> = const { OnceCell::new() };
@@ -67,7 +73,21 @@ pub const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 const ARB_CLOSE_MIN_NOTIONAL_U: f64 = 25.0;
 const ARB_OPEN_MAX_RECEIVE_LAG_US: i64 = 100;
 const TAKER_DECISION_MODEL_OPEN_GATE_LOG_INTERVAL_US: i64 = 20_000_000;
+const ACCOUNT_ORDER_STREAM_BLOCK_LOG_INTERVAL_US: i64 = 20_000_000;
 const SIGNAL_COUNT_BUCKETS: usize = 14;
+
+fn arb_open_latency_log_level(arb_mode: ArbMode) -> Level {
+    if arb_mode == ArbMode::FundingArb {
+        Level::Debug
+    } else {
+        Level::Info
+    }
+}
+
+fn record_pre_trade_arb_open_latency(stage: &'static str, delta_us: i64) {
+    let log_level = arb_open_latency_log_level(MonitorChannel::instance().arb_mode());
+    record_arb_open_latency_with_level(stage, delta_us, log_level);
+}
 
 fn normalize_fixed_symbol_for_internal(symbol: &[u8; 32]) -> String {
     normalize_fixed_symbol_for_internal_cow(symbol).into_owned()
@@ -282,6 +302,17 @@ fn is_open_signal_type(signal_type: &SignalType) -> bool {
     )
 }
 
+fn is_maker_signal_type(signal_type: &SignalType) -> bool {
+    matches!(
+        signal_type,
+        SignalType::ArbOpen | SignalType::ArbClose | SignalType::MMOpen | SignalType::MMOpenBatch
+    )
+}
+
+fn should_block_maker_signal_for_account_order_stream(signal_type: &SignalType) -> bool {
+    is_maker_signal_type(signal_type) && !account_order_stream_health::is_healthy()
+}
+
 fn should_drop_open_signal_for_slow_round(
     signal_type: &SignalType,
     reason: Option<OpenSignalDropReason>,
@@ -448,6 +479,8 @@ struct SignalListener {
     dropped_startup_buffered: usize,
     dropped_stale_arb_open: usize,
     dropped_slow_round_open: usize,
+    dropped_unhealthy_account_order_stream: usize,
+    last_unhealthy_account_order_stream_log_us: i64,
     _node: Node<ipc::Service>,
     subscriber: Subscriber<ipc::Service, TradeSignalIpcPayload, ()>,
 }
@@ -514,6 +547,8 @@ impl SignalListener {
             dropped_startup_buffered: 0,
             dropped_stale_arb_open: 0,
             dropped_slow_round_open: 0,
+            dropped_unhealthy_account_order_stream: 0,
+            last_unhealthy_account_order_stream_log_us: 0,
             _node: node,
             subscriber,
         })
@@ -598,10 +633,29 @@ impl SignalListener {
                                 }
                                 continue;
                             }
+                            if should_block_maker_signal_for_account_order_stream(
+                                &signal.signal_type,
+                            ) {
+                                self.dropped_unhealthy_account_order_stream += 1;
+                                if self.last_unhealthy_account_order_stream_log_us == 0
+                                    || receive_us.saturating_sub(
+                                        self.last_unhealthy_account_order_stream_log_us,
+                                    ) >= ACCOUNT_ORDER_STREAM_BLOCK_LOG_INTERVAL_US
+                                {
+                                    warn!(
+                                        "signal channel {} blocked order-creating signal because account order stream is unhealthy: type={} dropped={}; cancel, query, and hedge processing remain enabled",
+                                        self.channel_name,
+                                        signal.signal_type.as_str(),
+                                        self.dropped_unhealthy_account_order_stream
+                                    );
+                                    self.last_unhealthy_account_order_stream_log_us = receive_us;
+                                }
+                                continue;
+                            }
                             if matches!(signal.signal_type, SignalType::ArbOpen)
                                 && signal.generation_time > 0
                             {
-                                record_arb_open_latency(
+                                record_pre_trade_arb_open_latency(
                                     "pt_receive_minus_generation",
                                     receive_us.saturating_sub(signal.generation_time),
                                 );
@@ -784,7 +838,8 @@ impl SignalChannel {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_position_reducing, normalize_fixed_symbol_for_internal,
+        arb_open_latency_log_level, is_maker_signal_type, is_position_reducing,
+        is_retired_cta_open, normalize_fixed_symbol_for_internal,
         normalize_fixed_symbol_for_internal_cow, should_drop_open_signal_for_slow_round,
         should_drop_startup_buffered_signal, should_suppress_arb_open_inactive_warning,
         stale_arb_open_receive_lag_us, OpenSignalDropReason, ARB_OPEN_MAX_RECEIVE_LAG_US,
@@ -792,12 +847,37 @@ mod tests {
     use bytes::Bytes;
     use signal_common::trade_signal::{SignalType, TradeSignal};
     use std::borrow::Cow;
+    use trade_signal::ArbMode;
+
+    #[test]
+    fn retired_cta_signals_cannot_fall_back_to_intra_execution() {
+        assert!(is_retired_cta_open(b"model:cta_rule=rx01:long"));
+        assert!(is_retired_cta_open(b"model:cta_special=1"));
+        assert!(!is_retired_cta_open(b"intra:binance:long"));
+        assert!(!is_retired_cta_open(b""));
+    }
 
     fn fixed_symbol(value: &str) -> [u8; 32] {
         let mut out = [0u8; 32];
         let bytes = value.as_bytes();
         out[..bytes.len().min(32)].copy_from_slice(&bytes[..bytes.len().min(32)]);
         out
+    }
+
+    #[test]
+    fn funding_arb_open_latency_logs_at_debug_level() {
+        assert_eq!(
+            arb_open_latency_log_level(ArbMode::FundingArb),
+            log::Level::Debug
+        );
+        assert_eq!(
+            arb_open_latency_log_level(ArbMode::IntraArb),
+            log::Level::Info
+        );
+        assert_eq!(
+            arb_open_latency_log_level(ArbMode::CrossArb),
+            log::Level::Info
+        );
     }
 
     #[test]
@@ -945,6 +1025,28 @@ mod tests {
     }
 
     #[test]
+    fn account_order_stream_health_blocks_only_maker_signals() {
+        for signal_type in [
+            SignalType::ArbOpen,
+            SignalType::ArbClose,
+            SignalType::MMOpen,
+            SignalType::MMOpenBatch,
+        ] {
+            assert!(is_maker_signal_type(&signal_type));
+        }
+        for signal_type in [
+            SignalType::ArbCancel,
+            SignalType::ArbCancelTrigger,
+            SignalType::ArbHedge,
+            SignalType::MMCancel,
+            SignalType::MMCancelTrigger,
+            SignalType::MMHedge,
+        ] {
+            assert!(!is_maker_signal_type(&signal_type));
+        }
+    }
+
+    #[test]
     fn suppresses_expected_arb_open_inactive_risk_noise() {
         assert!(should_suppress_arb_open_inactive_warning(
             "AVAUSDT",
@@ -974,6 +1076,15 @@ fn handle_trade_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
     }
 }
 
+fn is_retired_cta_open(from_key: &[u8]) -> bool {
+    from_key
+        .windows(b":cta_rule=".len())
+        .any(|part| part == b":cta_rule=")
+        || from_key
+            .windows(b"cta_special=1".len())
+            .any(|part| part == b"cta_special=1")
+}
+
 fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
     if should_block_arb_signal_for_startup_net_gate(&signal.signal_type) {
         return;
@@ -981,6 +1092,10 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
 
     match ArbOpenCtxView::from_bytes(signal.context) {
         Ok(open_ctx) => {
+            if is_retired_cta_open(&open_ctx.from_key) {
+                warn!("ArbOpen rejected: legacy CTA execution is retired; publish targets through Exec");
+                return;
+            }
             let handle_start_us = get_timestamp_us();
             let symbol = normalize_fixed_symbol_for_internal_cow(&open_ctx.opening_symbol);
             if symbol.is_empty() {
@@ -996,10 +1111,14 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             let account_throttle_hit = check_account_signal_throttle();
             let account_open_block_hit = check_account_open_block();
             if let Some(hit) = symbol_throttle_hit.as_ref().filter(|hit| {
-                hit.last_error_code == SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT
+                matches!(
+                    hit.last_error_code,
+                    SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT
+                        | SIGNAL_THROTTLE_ERROR_CODE_BINANCE_MAX_LEVERAGE_RATIO
+                )
             }) {
                 debug!(
-                    "ArbOpen: blocked by Bitget position tier symbol-side lock, symbol={} side={} remain_us={} last_code={} until_us={}, skip strategy construction",
+                    "ArbOpen: blocked by position-limit symbol-side lock, symbol={} side={} remain_us={} last_code={} until_us={}, skip strategy construction",
                     symbol,
                     side.as_str(),
                     hit.remaining_us,
@@ -1009,7 +1128,10 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 return;
             }
             if account_throttle_hit.is_none() && account_open_block_hit.is_none() {
-                if let Some(hit) = symbol_throttle_hit.as_ref() {
+                if let Some(hit) = symbol_throttle_hit
+                    .as_ref()
+                    .filter(|hit| hit.last_error_code != gate::RISK_CHECK_MARKET_FORBIDDEN)
+                {
                     debug!(
                         "ArbOpen: throttled by pre_trade block, symbol={} side={} remain_us={} last_code={} until_us={}, skip strategy construction",
                         symbol,
@@ -1032,6 +1154,19 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 warn!(
                     "ArbOpen: signal venue mismatch, configured_open={:?} configured_hedge={:?} but got open={:?} hedge={:?}, ignore",
                     configured_open_venue, configured_hedge_venue, opening_venue, hedging_venue
+                );
+                return;
+            }
+
+            if let Err(reason) = crate::pre_trade::binance_pm_buy_capacity::check_open(
+                opening_venue,
+                side,
+                &symbol,
+                open_ctx.amount_value() * open_ctx.price_value(),
+            ) {
+                debug!(
+                    "ArbOpen: blocked by Binance PM buying power symbol={} reason={}",
+                    symbol, reason
                 );
                 return;
             }
@@ -1099,6 +1234,33 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 side,
                 open_ctx.amount_value(),
             );
+            if account_throttle_hit.is_none() && account_open_block_hit.is_none() {
+                if let Some(hit) = symbol_throttle_hit
+                    .as_ref()
+                    .filter(|hit| hit.last_error_code == gate::RISK_CHECK_MARKET_FORBIDDEN)
+                {
+                    if !leverage_guard_reducing {
+                        debug!(
+                            "ArbOpen: Gate market-forbidden pair cooldown, symbol={} side={} open_venue={:?} hedge_venue={:?} qty={:.8} remain_us={} until_us={}, skip strategy construction",
+                            symbol,
+                            side.as_str(),
+                            opening_venue,
+                            hedging_venue,
+                            open_ctx.amount_value(),
+                            hit.remaining_us,
+                            hit.until_us
+                        );
+                        return;
+                    }
+                    debug!(
+                        "ArbOpen: Gate market-forbidden pair cooldown active but signal is reducing, symbol={} side={} remain_us={}",
+                        symbol,
+                        side.as_str(),
+                        hit.remaining_us
+                    );
+                }
+            }
+
             if FrPositionConcentrationGuard::should_block_arb_open(&symbol, leverage_guard_reducing)
             {
                 return;
@@ -1250,6 +1412,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 }
             }
 
+            let strategy_mgr = MonitorChannel::instance().strategy_mgr();
             let mut pending_limit_prechecked = false;
             match open_ctx.get_order_type() {
                 Some(order_type) => {
@@ -1271,7 +1434,6 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             let signal_price = open_ctx.price_value();
             let signal_amount = open_ctx.amount_value();
             let signal_spread_rate = open_ctx.spread_rate;
-            let strategy_mgr = MonitorChannel::instance().strategy_mgr();
             {
                 let mut mgr = strategy_mgr.borrow_mut();
                 let _ = mgr.ensure_arb_hedge_strategy_for_normalized_symbol(&symbol);
@@ -1286,7 +1448,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 receive_us,
                 handle_start_us,
             );
-            record_arb_open_latency(
+            record_pre_trade_arb_open_latency(
                 "pt_handle_strategy_total",
                 get_timestamp_us().saturating_sub(handle_start_us),
             );
@@ -1423,7 +1585,7 @@ fn handle_mm_open_level(
     }
 }
 
-fn handle_trade_signal(signal: TradeSignalView<'_>, _receive_us: i64) {
+fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
     if should_block_arb_signal_for_startup_net_gate(&signal.signal_type) {
         return;
     }
@@ -1499,11 +1661,59 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, _receive_us: i64) {
                     let hedging_pos =
                         MonitorChannel::instance().get_position_qty(&hedging_symbol, hedging_venue);
                     if !arb_close_side_matches_open_position(close_side, opening_pos) {
+                        log_arb_close_precheck_summary(
+                            "side_position_mismatch",
+                            Level::Warn,
+                            &opening_symbol,
+                            opening_venue,
+                            &hedging_symbol,
+                            hedging_venue,
+                            close_side,
+                            opening_pos,
+                            hedging_pos,
+                            close_ctx_view.amount_value(),
+                            close_ctx_view.amount_count(),
+                            close_ctx_view.price_value(),
+                            signal.generation_time,
+                            receive_us,
+                        );
                         return;
                     }
                     if !arb_close_notional_meets_min_view(&close_ctx_view) {
+                        log_arb_close_precheck_summary(
+                            "notional_below_min_or_non_finite",
+                            Level::Warn,
+                            &opening_symbol,
+                            opening_venue,
+                            &hedging_symbol,
+                            hedging_venue,
+                            close_side,
+                            opening_pos,
+                            hedging_pos,
+                            close_ctx_view.amount_value(),
+                            close_ctx_view.amount_count(),
+                            close_ctx_view.price_value(),
+                            signal.generation_time,
+                            receive_us,
+                        );
                         return;
                     }
+                    log_arb_close_precheck_summary(
+                        "precheck_pass",
+                        Level::Info,
+                        &opening_symbol,
+                        opening_venue,
+                        &hedging_symbol,
+                        hedging_venue,
+                        close_side,
+                        opening_pos,
+                        hedging_pos,
+                        close_ctx_view.amount_value(),
+                        close_ctx_view.amount_count(),
+                        close_ctx_view.price_value(),
+                        signal.generation_time,
+                        receive_us,
+                    );
                     let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                     let close_price = close_ctx_view.price_value();
 
@@ -1515,12 +1725,30 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, _receive_us: i64) {
 
                     let strategy_id = StrategyManager::generate_strategy_id();
                     let mut strategy = ArbCloseStrategy::new(strategy_id);
+                    let close_amount = close_ctx_view.amount_value();
+                    let close_amount_count = close_ctx_view.amount_count();
                     strategy.handle_arb_close_view_with_symbols(
                         close_ctx_view,
                         opening_symbol.as_str(),
                         hedging_symbol.as_str(),
                     );
                     if strategy.is_active() {
+                        log_arb_close_precheck_summary(
+                            "order_request_published",
+                            Level::Info,
+                            &opening_symbol,
+                            opening_venue,
+                            &hedging_symbol,
+                            hedging_venue,
+                            close_side,
+                            opening_pos,
+                            hedging_pos,
+                            close_amount,
+                            close_amount_count,
+                            close_price,
+                            signal.generation_time,
+                            receive_us,
+                        );
                         debug!(
                             "🔔 收到 ArbClose 信号: opening={} {:?} hedging={} {:?} | side={:?} open_pos={:.4} hedge_pos={:.4} price={:.6}",
                             opening_symbol,
@@ -1533,6 +1761,16 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, _receive_us: i64) {
                             close_price
                         );
                         strategy_mgr.borrow_mut().insert(Box::new(strategy));
+                    } else {
+                        let reason = strategy
+                            .open_strategy_inactive_reason()
+                            .unwrap_or("unknown");
+                        log_strategy_inactive_summary(
+                            "ArbClose",
+                            Some(strategy_id),
+                            &opening_symbol,
+                            reason,
+                        );
                     }
                 }
                 Err(err) => warn!("failed to decode ArbClose context: {err}"),

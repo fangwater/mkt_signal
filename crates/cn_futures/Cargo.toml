@@ -1,0 +1,50 @@
+[package]
+name = "cn_futures"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+ctp-sdk = ["dep:cc"]
+yida-sdk = ["dep:cc"]
+latency-metrics = []
+
+[dependencies]
+cn_futures_state = { path = "../cn_futures_state" }
+persist_common = { path = "../persist_common" }
+persist_manager = { path = "../persist_manager", features = ["embedded"] }
+anyhow.workspace = true
+sha2 = "0.10"
+crossbeam-channel = "0.5"
+encoding_rs = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json.workspace = true
+toml = "0.8"
+smallvec = { version = "1.15", features = ["serde"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[build-dependencies]
+cc = { version = "1.2", optional = true }
+
+[[bin]]
+name = "ctp-trader"
+path = "src/bin/ctp_trader.rs"
+
+[[bin]]
+name = "ctp-md"
+path = "src/bin/ctp_md.rs"
+
+[[bin]]
+name = "yida-trader"
+path = "src/bin/yida_trader.rs"
+
+[[bench]]
+name = "native_hot_path"
+harness = false
+
+[[bench]]
+name = "native_pipeline"
+harness = false
+required-features = ["yida-sdk", "latency-metrics"]

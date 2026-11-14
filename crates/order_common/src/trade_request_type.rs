@@ -26,10 +26,18 @@ pub enum TradeRequestType {
     BinancePmNewCmOrder = 4022,                 // Binance Portfolio Margin COIN-M order
     BinancePmCancelCmOrder = 4023,              // Binance Portfolio Margin COIN-M cancel
     BinancePmCmSetLeverage = 4024,              // Binance Portfolio Margin COIN-M leverage
+    BinanceLtpNewSpotOrder = 4025,              // RapidX Binance spot order
+    BinanceLtpCancelSpotOrder = 4026,           // RapidX Binance spot cancel
+    BinanceStdModifyUMOrder = 4027,             // Standard UM REST single-order modify
+    BinanceStdBatchModifyUMOrders = 4028,       // Standard UM REST batch modify (max 5)
+    BinanceWsModifyUMOrder = 4029,              // Standard UM WebSocket order.modify
+    BinanceModifyCmOrder = 4030,                // Standard COIN-M REST order modify
+    BinancePmModifyCmOrder = 4031,              // Portfolio Margin COIN-M REST order modify
     OkexNewMarginOrder = 5001,                  // Okex 下单（现货/杠杆）
     OkexNewUMOrder = 5002,                      // Okex 下单（合约/UM风格）
     OkexCancelMarginOrder = 5003,               // Okex 撤单（现货/杠杆）
     OkexCancelUMOrder = 5004,                   // Okex 撤单（合约/UM风格）
+    OkexModifyUMOrder = 5005,                   // Okex 修改合约订单
     GateUnifiedNewOrder = 5201,                 // Gate 统一账户下单请求
     GateUnifiedCancelOrder = 5202,              // Gate 统一账户撤单请求
     GateFuturesNewOrder = 5203,                 // Gate U 本位合约下单请求
@@ -46,6 +54,10 @@ pub enum TradeRequestType {
     BitgetCancelSpotOrder = 5406,               // Bitget UTA Spot 撤单请求
     BitgetNewCoinFuturesOrder = 5407,           // Bitget UTA COIN-FUTURES 下单请求
     BitgetCancelCoinFuturesOrder = 5408,        // Bitget UTA COIN-FUTURES 撤单请求
+    HyperliquidNewMarginOrder = 5501,           // Hyperliquid 现货下单请求
+    HyperliquidNewUMOrder = 5502,               // Hyperliquid 永续下单请求
+    HyperliquidCancelMarginOrder = 5503,        // Hyperliquid 现货按 cloid 撤单请求
+    HyperliquidCancelUMOrder = 5504,            // Hyperliquid 永续按 cloid 撤单请求
 }
 
 impl TryFrom<u32> for TradeRequestType {
@@ -74,10 +86,18 @@ impl TryFrom<u32> for TradeRequestType {
             4022 => Ok(TradeRequestType::BinancePmNewCmOrder),
             4023 => Ok(TradeRequestType::BinancePmCancelCmOrder),
             4024 => Ok(TradeRequestType::BinancePmCmSetLeverage),
+            4025 => Ok(TradeRequestType::BinanceLtpNewSpotOrder),
+            4026 => Ok(TradeRequestType::BinanceLtpCancelSpotOrder),
+            4027 => Ok(TradeRequestType::BinanceStdModifyUMOrder),
+            4028 => Ok(TradeRequestType::BinanceStdBatchModifyUMOrders),
+            4029 => Ok(TradeRequestType::BinanceWsModifyUMOrder),
+            4030 => Ok(TradeRequestType::BinanceModifyCmOrder),
+            4031 => Ok(TradeRequestType::BinancePmModifyCmOrder),
             5001 => Ok(TradeRequestType::OkexNewMarginOrder),
             5002 => Ok(TradeRequestType::OkexNewUMOrder),
             5003 => Ok(TradeRequestType::OkexCancelMarginOrder),
             5004 => Ok(TradeRequestType::OkexCancelUMOrder),
+            5005 => Ok(TradeRequestType::OkexModifyUMOrder),
             5201 => Ok(TradeRequestType::GateUnifiedNewOrder),
             5202 => Ok(TradeRequestType::GateUnifiedCancelOrder),
             5203 => Ok(TradeRequestType::GateFuturesNewOrder),
@@ -94,6 +114,10 @@ impl TryFrom<u32> for TradeRequestType {
             5406 => Ok(TradeRequestType::BitgetCancelSpotOrder),
             5407 => Ok(TradeRequestType::BitgetNewCoinFuturesOrder),
             5408 => Ok(TradeRequestType::BitgetCancelCoinFuturesOrder),
+            5501 => Ok(TradeRequestType::HyperliquidNewMarginOrder),
+            5502 => Ok(TradeRequestType::HyperliquidNewUMOrder),
+            5503 => Ok(TradeRequestType::HyperliquidCancelMarginOrder),
+            5504 => Ok(TradeRequestType::HyperliquidCancelUMOrder),
             _ => Err(()),
         }
     }
@@ -108,6 +132,7 @@ impl TradeRequestType {
                 | TradeRequestType::BinanceNewMarginOrder
                 | TradeRequestType::BinanceWsNewUMOrder
                 | TradeRequestType::BinanceWsNewMarginOrder
+                | TradeRequestType::BinanceLtpNewSpotOrder
                 | TradeRequestType::BinanceNewCmOrder
                 | TradeRequestType::BinancePmNewCmOrder
                 | TradeRequestType::OkexNewMarginOrder
@@ -120,6 +145,51 @@ impl TradeRequestType {
                 | TradeRequestType::BitgetNewUMOrder
                 | TradeRequestType::BitgetNewSpotOrder
                 | TradeRequestType::BitgetNewCoinFuturesOrder
+                | TradeRequestType::HyperliquidNewMarginOrder
+                | TradeRequestType::HyperliquidNewUMOrder
         )
+    }
+}
+
+const HYPERLIQUID_CLOID_NAMESPACE: &str = "6d6b745f73696731";
+
+/// Encode this system's positive i64 client id in Hyperliquid's 128-bit cloid space.
+pub fn hyperliquid_cloid_from_client_order_id(client_order_id: i64) -> Option<String> {
+    let value = u64::try_from(client_order_id).ok()?;
+    (value != 0).then(|| format!("0x{HYPERLIQUID_CLOID_NAMESPACE}{value:016x}"))
+}
+
+/// Decode only cloids generated by [`hyperliquid_cloid_from_client_order_id`].
+/// The upper 64 bits are a fixed namespace so numeric cloids from other API
+/// clients cannot be attributed to one of this system's strategies.
+pub fn hyperliquid_client_order_id_from_cloid(cloid: &str) -> Option<i64> {
+    let raw = cloid.trim().strip_prefix("0x")?;
+    if raw.len() != 32 || !raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    if !raw[..16].eq_ignore_ascii_case(HYPERLIQUID_CLOID_NAMESPACE) {
+        return None;
+    }
+    let value = u64::from_str_radix(&raw[16..], 16).ok()?;
+    let value = i64::try_from(value).ok()?;
+    (value > 0).then_some(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hyperliquid_client_order_id_from_cloid, hyperliquid_cloid_from_client_order_id};
+
+    #[test]
+    fn hyperliquid_cloid_roundtrips_only_internal_namespace() {
+        let cloid = hyperliquid_cloid_from_client_order_id(42).unwrap();
+        assert_eq!(cloid, "0x6d6b745f73696731000000000000002a");
+        assert_eq!(hyperliquid_client_order_id_from_cloid(&cloid), Some(42));
+        assert!(hyperliquid_cloid_from_client_order_id(0).is_none());
+        assert!(
+            hyperliquid_client_order_id_from_cloid("0x0000000000000000000000000000002a").is_none()
+        );
+        assert!(
+            hyperliquid_client_order_id_from_cloid("0x1000000000000000000000000000002a").is_none()
+        );
     }
 }

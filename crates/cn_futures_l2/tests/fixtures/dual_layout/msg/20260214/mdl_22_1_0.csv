@@ -1,0 +1,3 @@
+InstruID,TradDay,ActionDay,UpdateTime,OpenInt,Volume,Turnover,SetPrice,ClosePrice,LastPrice,HighPrice,LowPrice,BidPrice1,BidVolume1,BidPrice2,BidVolume2,BidPrice3,BidVolume3,BidPrice4,BidVolume4,BidPrice5,BidVolume5,AskPrice1,AskVolume1,AskPrice2,AskVolume2,AskPrice3,AskVolume3,AskPrice4,AskVolume4,AskPrice5,AskVolume5,LocalTime,SeqNo
+rb2605,20260216,20260214,00:00:00.500,185020,18,60920,0,0,3385,3385,3380,3384,10,3383,8,3382,6,3381,4,3380,2,3386,8,3387,6,3388,4,3389,2,3390,1,2026-02-14 00:00:00.510,4
+rbefp,20260216,20260214,00:00:00.500,9,9,9,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2026-02-14 00:00:00.510,5

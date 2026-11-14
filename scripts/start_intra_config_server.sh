@@ -30,8 +30,8 @@ normalize_exchange() {
 
 intra_env_suffix() {
   local name="$1"
-  if [[ "$name" =~ ^[a-z0-9]+[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
-    echo "${BASH_REMATCH[1]}"
+  if [[ "$name" =~ ^[a-z0-9]+[-_](intra)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+    echo "${BASH_REMATCH[2]}"
   fi
 }
 
@@ -93,7 +93,7 @@ case "$ENV_SUFFIX" in
 esac
 
 EXCHANGE=""
-if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra([-_].+)?$ ]]; then
+if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra)([-_].+)?$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
 fi
 EXCHANGE="$(normalize_exchange "${EXCHANGE:-}")"

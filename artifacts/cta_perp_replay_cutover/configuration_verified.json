@@ -1,0 +1,8 @@
+{
+  "rx02_requested_factors": 17,
+  "rx02_active_symbols": 47,
+  "rx02_active_pairs": 192,
+  "rx02_exact_requested_signs_and_membership_except_icx": true,
+  "excluded_symbol": "ICXUSDT",
+  "rx03_original_factor_table_preserved": true
+}

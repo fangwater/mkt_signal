@@ -1,0 +1,11 @@
+{
+  "first_checked_at": "2026-10-14T08:04:18.141247+00:00",
+  "last_checked_at": "2026-10-14T08:05:57.837871+00:00",
+  "continuously_updated_pairs": 34,
+  "signal_enabled": true,
+  "publication_error": null,
+  "protected_processes": 71,
+  "protected_files": 48,
+  "protected_changed": [],
+  "nonzero_target_rows": 0
+}

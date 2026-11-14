@@ -1,0 +1,35 @@
+{
+  "created": [
+    "binance_cta_perp_rx03_TD_CI_008",
+    "binance_cta_perp_rx03_TD_MT_019",
+    "binance_cta_perp_rx03_TD_PT_002",
+    "binance_cta_perp_rx03_TD_TI_008",
+    "binance_cta_perp_rx03_TD_TI_013",
+    "binance_cta_perp_rx03_TD_TI_024",
+    "binance_cta_perp_rx03_TD_TI_043",
+    "binance_cta_perp_rx03_TP_VPI_002",
+    "binance_cta_perp_rx03_baseline_005",
+    "binance_cta_perp_rx03_baseline_028",
+    "binance_cta_perp_rx03_baseline_040",
+    "binance_cta_perp_rx03_baseline_091",
+    "binance_cta_perp_rx03_baseline_140",
+    "binance_cta_perp_rx03_baseline_146",
+    "binance_cta_perp_rx03_baseline_151",
+    "binance_cta_perp_rx03_buy_avg_price",
+    "binance_cta_perp_rx03_factor_036",
+    "binance_cta_perp_rx03_factor_051",
+    "binance_cta_perp_rx03_factor_113",
+    "binance_cta_perp_rx03_factor_128",
+    "binance_cta_perp_rx03_factor_170",
+    "binance_cta_perp_rx03_factor_trades_040",
+    "binance_cta_perp_rx03_sell_avg_price"
+  ],
+  "active_factors": 26,
+  "all_bound_strategies": 28,
+  "retired_strategies_kept_for_clear": [
+    "binance_cta_perp_rx03_TD_MT_029",
+    "binance_cta_perp_rx03_baseline_085"
+  ],
+  "order_strategy": "lgq_grid_prep",
+  "max_pos_u": 200.0
+}

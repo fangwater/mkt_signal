@@ -1,0 +1,58 @@
+# Native Hanlin YDApi 1.502.55.35. Keep vendor files outside the repo.
+sdk_library = "/opt/yida/1.502.55.35/x86_64/yd.so"
+# Onload 9 hosts may select the matching x86_64_onload9/yd.so from this same SDK.
+sdk_config = "/opt/yida/trade-server.cfg"
+observation_l1 = false # enable native TCP L1 for position valuation; match ConnectTCPMarketData=yes and TCPMarketDataCPUID
+trading_protocol = "xtcp" # tcp / udp / xtcp; must match native TradingProtocol
+order_group = 1 # account-wide 1..255, dedicated to this runtime; recovered on each login
+execution_route = { mode = "any" } # fixed/preferred also require connection_id=0..63; packed prefers lower IDs
+public_simulation = false # explicit official-simulator-only, one-lot test mode
+# Configure the strict [placement] example below for a trading host.
+flow_directory = "/tmp/mkt_yida_sim/flow"
+journal = "/tmp/mkt_yida_sim/events.jsonl"
+position_ipc = { namespace = "cn_yida_sim", interval_ms = 1000 }
+# persistence_directory defaults to flow_directory/persist_manager; one account/adapter/front per store.
+sync_before_send = false # true: wait for synced RocksDB intent before calling the SDK
+user_id_env = "YIDA_USER_ID"
+password_env = "YIDA_PASSWORD"
+app_id_env = "YIDA_APP_ID"
+auth_code_env = "YIDA_AUTH_CODE"
+event_capacity = 8192
+preallocated_orders = 4096 # cold-path capacity hint, grows automatically; not a history limit
+response_timeout_ms = 30000
+idle_sleep_us = 0
+
+[[symbols]]
+venue = "SHFE"
+symbol = "cu2612"
+cash_budget_per_open_lot = 250000.0
+
+[[symbols]]
+venue = "INE"
+symbol = "sc2612"
+cash_budget_per_open_lot = 250000.0
+
+[risk]
+max_order_lots = 1
+max_position_lots_per_side = 2
+max_working_lots = 2
+max_actions_per_second = 2
+minimum_cash_remaining = 10000.0
+enable_fak_fok = false
+close_priority = "today_first"
+
+# For an option, add a [[symbols]] table before [risk], for example:
+# [[symbols]]
+# venue = "SHFE"
+# symbol = "cu2612C106000"
+# cash_budget_per_open_lot = 100000.0
+# cash_buffer_per_buy_lot = 100.0 # positive fee/risk buffer for every option buy, including closes
+
+# Set all four fields for the target host; CPU domains must use distinct physical
+# cores on this NUMA node. SDK TCPTradingCPUID/TimerCPUID/XTCPTradingCPUID must
+# belong to sdk_cpus. Missing OS permissions or topology mismatches stop startup.
+# [placement]
+# numa_node = 0
+# business_cpu = 2
+# sdk_cpus = [4, 6]
+# background_cpus = [8]

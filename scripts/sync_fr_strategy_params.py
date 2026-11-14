@@ -177,7 +177,7 @@ PARAM_COMMENTS: Dict[str, str] = {
     "hedge_offset_ratio": "对冲偏移手动系数（最终 offset 直接乘该系数）",
     "hedge_price_offset_limit_lower": "对冲侧偏移下界（price_offset_limit）",
     "hedge_price_offset_limit_upper": "对冲侧偏移上界（price_offset_limit）",
-    "enable_return_score_adjust_hedge": "是否启用 return score 调整 hedge offset（false=使用中性 score 计算 hedge offset）",
+    "enable_return_score_adjust_hedge": "是否启用 return score 调整 hedge offset（false 或 return_model_service='-' 均使用中性 score）",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
     "enable_tlen_cancel": "是否启用基于 tlen 的 open 撤单链路（true=允许发 trigger/query/cancel）",
     "tlen_cancel_freq_ms": "tlen 撤单触发频率(ms)，需为正整数，默认 3000",

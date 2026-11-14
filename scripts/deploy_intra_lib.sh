@@ -119,6 +119,7 @@ intra_venues_for_exchange() {
     gate)    echo "gate-margin gate-futures" ;;
     bybit)   echo "bybit-margin bybit-futures" ;;
     bitget)  echo "bitget-margin bitget-futures" ;;
+    hyperliquid) echo "hyperliquid-margin hyperliquid-futures" ;;
     *)
       echo "[ERROR] 无法推断 intra venues for exchange=$ex" >&2
       exit 1

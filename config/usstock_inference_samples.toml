@@ -1,0 +1,7 @@
+# Read-only examples of Trades that cannot be direction-inferred from prior BBO.
+rocksdb_dir = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/usstock_tas_rocksdb"
+period = "2026-07-01_2026-08-14"
+ric = "AAPL.O"
+max_samples_per_class = 3
+max_scanned_rows = 1000
+output_json = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/usstock_aapl_inference_samples.json"

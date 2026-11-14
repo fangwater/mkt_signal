@@ -1,0 +1,7 @@
+{
+  "observed_utc": "2026-10-19T07:29:49.136306+00:00",
+  "sha256": "26bc6a9988fa5c912aa077fd5136900f864c5bf05f52241089e6cf165d6f8b6e",
+  "backup": "/home/ubuntu/binance-cta-spread-rx01/run/spread_exit_defaults_20261019T072100Z/ui_copy/before.html",
+  "http_verified": true,
+  "process_restart": false
+}

@@ -1,0 +1,16 @@
+{
+  "execute": true,
+  "files_verified": 4,
+  "config_preserved": true,
+  "state_preserved": true,
+  "factor_generation": "9389c457-cff7-4fce-a392-90f8f9ea438d",
+  "publisher_restart": false,
+  "perp_config_sha256": {
+    "binance-cta-perp-rx02": "31cb2891da3f3ea72081ae297da993ee5a829a8cc6930cf8d7b8e5b23d4a637d",
+    "binance-cta-perp-rx03": "40d1907c625cea919eb5c3b96a0255dceffbef3e9a9d6fc37f6d461b7294eb0c"
+  },
+  "observed_utc": "2026-10-19T07:26:47.897842+00:00",
+  "backup": "/home/ubuntu/binance-cta-spread-rx01/run/spread_exit_defaults_20261019T072100Z/backup",
+  "runtime_config_sha256": "e724d5387d05db63b52c0e40e4e5c9b8db0714b61c274d6d556b3771543cd512",
+  "state_sha256": "6d2ff8a3294953f2de4ad18ac453c4562e4f01b0bca9dda48b23d0a2e7913ee8"
+}

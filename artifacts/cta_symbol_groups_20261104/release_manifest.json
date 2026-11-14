@@ -1,0 +1,22 @@
+{
+  "commit": "f281e5f429632547a563c1d1d7658878befe379a",
+  "source": "committed arbmm snapshot inside maintained worktree",
+  "snapshot": "/home/fanghaizhou/mkt_signal/artifacts/cta_symbol_groups_20261104/build-source",
+  "sha256": {
+    "cta-prep-binance-futures": "fefb2f4b7a2e414cd8602abb9b3f247a4d7560e911ed80cd48c42c2ddc3e0923",
+    "cta-factor-spread": "f1a9ffd10d5182c98df33694f3363097f0f7206a4961ae62a541bea8c1827407",
+    "cta-factor-config": "66522843f6b0b791c0104555ac3df7f0aa45c8f8d1dd72a225a358c97f1b7463",
+    "cta-symbol-group-migrate": "a069b4b80fe70a3bc0b93677db18b9062746a673181510cf99fdc9c4431429f4",
+    "delist_risk_server": "a2a490e1f810706b6af7b08f5a05609f4607f24d3b8ec20c097bdb082684df06",
+    "nav_allocation_reconcile": "f0004ae50cc9dc277773c34bed2c94fe3c7df7b2643182120c9173aa81377d05",
+    "nav_cached_marks": "5ace670338b315756079d06beb9deac826bda53576cae2a9b74bc5d1ce9d1597"
+  },
+  "migration_commit": "37ea9caeb4059b822bf75edd352f3dea470cf647",
+  "binary_source_commits": {
+    "cta-prep-binance-futures": "f281e5f429632547a563c1d1d7658878befe379a",
+    "cta-factor-spread": "f281e5f429632547a563c1d1d7658878befe379a",
+    "cta-factor-config": "f281e5f429632547a563c1d1d7658878befe379a",
+    "cta-symbol-group-migrate": "37ea9caeb4059b822bf75edd352f3dea470cf647",
+    "delist_risk_server": "37ea9caeb4059b822bf75edd352f3dea470cf647"
+  }
+}

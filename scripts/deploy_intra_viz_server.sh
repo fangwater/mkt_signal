@@ -111,7 +111,7 @@ resolve_port() {
 }
 
 if [[ -n "$ENV_NAME" && -z "$EXCHANGE" ]]; then
-  if [[ "${ENV_NAME,,}" =~ ^([a-z0-9]+)[-_]intra[-_][a-z0-9][a-z0-9_-]*$ ]]; then
+  if [[ "${ENV_NAME,,}" =~ ^([a-z0-9]+)[-_](intra)[-_][a-z0-9][a-z0-9_-]*$ ]]; then
     EXCHANGE="${BASH_REMATCH[1]}"
   fi
 fi
@@ -126,6 +126,12 @@ EXCHANGE="$(intra_ensure_exchange "$EXCHANGE")"
 if [[ -z "$ENV_NAME" ]]; then
   ENV_NAME="${EXCHANGE}-${ENV_SUFFIX}"
 fi
+
+if [[ "${ENV_NAME,,}" =~ (^|[-_])cta([-_]|$) ]]; then
+  echo "[ERROR] Legacy CTA execution is retired; use CTA target publishers with Exec" >&2
+  exit 1
+fi
+
 ENV_NAME="${ENV_NAME,,}"
 
 PORT="$(resolve_port "$EXCHANGE" "$ENV_SUFFIX")"
@@ -136,7 +142,8 @@ TARGET_DIR="$HOME/${ENV_NAME}"
 mkdir -p "$TARGET_DIR"
 
 if [[ -z "$NGINX_PREFIX" ]]; then
-  NGINX_PREFIX="/intra/${ENV_NAME}"
+  NS_PREFIX="intra"
+  NGINX_PREFIX="/${NS_PREFIX}/${ENV_NAME}"
 fi
 if [[ -z "$NGINX_MAPPING_FILE" ]]; then
   NGINX_MAPPING_FILE="$HOME/nginx_locations.txt"

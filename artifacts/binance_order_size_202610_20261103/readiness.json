@@ -1,0 +1,48 @@
+{
+  "checked_at_ms": 1793694832986,
+  "generation": "483c9c50-405a-4434-b05f-aa71dd017b6f",
+  "warming": false,
+  "kafka_error": null,
+  "factor_outputs": 404,
+  "ready_factors": 331,
+  "unready_factors": 73,
+  "distinct_unready_factor_names": 30,
+  "frequencies": {
+    "15min": {
+      "total": 201,
+      "标准化值为空": 3,
+      "ready": 143,
+      "原始值为空": 28,
+      "有效样本不足": 27
+    },
+    "1min": {
+      "total": 134,
+      "ready": 132,
+      "有效样本不足": 2
+    },
+    "5min": {
+      "total": 69,
+      "ready": 56,
+      "有效样本不足": 13
+    }
+  },
+  "amount_threshold_symbols": 51,
+  "missing_amount_threshold_symbols": 0,
+  "nq_ready": 94,
+  "nq_total": 94,
+  "all_seven_publishing_disabled": true,
+  "all_eight_bindings_stopped": true,
+  "raw_missing_all_15min": true,
+  "unready_15min_count": 58,
+  "confirmed_history_constraints": {
+    "baseline_040": {
+      "bars": 360,
+      "hours_at_15min": 90
+    },
+    "baseline_151": {
+      "bars": 373,
+      "hours_at_15min": 93.25
+    },
+    "available_history": "Approximately two days retained in Kafka; not a diagnosis for every raw-missing row."
+  }
+}

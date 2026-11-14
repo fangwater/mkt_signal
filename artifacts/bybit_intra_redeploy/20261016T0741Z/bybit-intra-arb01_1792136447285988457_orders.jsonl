@@ -1,0 +1,45 @@
+{"intent": {"category": "linear", "symbol": "ATOMUSDT", "side": "Buy", "orderType": "Market", "qty": "1.4", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "reduceOnly": true, "positionIdx": 0, "orderLinkId": "9223372033694893413"}}
+{"accepted": {"orderId": "f9788844-eb46-4098-a418-ce1492f6e128", "orderLinkId": "9223372033694893413"}}
+{"final": {"symbol": "ATOMUSDT", "orderId": "f9788844-eb46-4098-a418-ce1492f6e128", "orderStatus": "Filled", "cumExecQty": "1.4", "cumExecValue": "2.4612", "avgPrice": "1.758", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "spot", "symbol": "BNBUSDT", "side": "Buy", "orderType": "Market", "qty": "0.0157", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "marketUnit": "baseCoin", "isLeverage": 0, "orderLinkId": "9223372033694893494"}}
+{"accepted": {"orderId": "2327003612481683200", "orderLinkId": "9223372033694893494"}}
+{"final": {"symbol": "BNBUSDT", "orderId": "2327003612481683200", "orderStatus": "Filled", "cumExecQty": "0.0157", "cumExecValue": "11.471048", "avgPrice": "730.64", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "spot", "symbol": "BTCUSDT", "side": "Sell", "orderType": "Market", "qty": "0.000860", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "marketUnit": "baseCoin", "isLeverage": 0, "orderLinkId": "9223372033694893569"}}
+{"accepted": {"orderId": "2327003613152771840", "orderLinkId": "9223372033694893569"}}
+{"final": {"symbol": "BTCUSDT", "orderId": "2327003613152771840", "orderStatus": "Filled", "cumExecQty": "0.00086", "cumExecValue": "70.6422060", "avgPrice": "82142.1", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "linear", "symbol": "DOGEUSDT", "side": "Buy", "orderType": "Market", "qty": "577", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "reduceOnly": false, "positionIdx": 0, "orderLinkId": "9223372033694893662"}}
+{"accepted": {"orderId": "126fbca0-a26e-4d82-b596-055a03a8eb07", "orderLinkId": "9223372033694893662"}}
+{"final": {"symbol": "DOGEUSDT", "orderId": "126fbca0-a26e-4d82-b596-055a03a8eb07", "orderStatus": "Filled", "cumExecQty": "577", "cumExecValue": "47.36016", "avgPrice": "0.08208", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "linear", "symbol": "EIGENUSDT", "side": "Sell", "orderType": "Market", "qty": "22", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "reduceOnly": false, "positionIdx": 0, "orderLinkId": "9223372033694893741"}}
+{"accepted": {"orderId": "bf504319-e1b0-4b0c-b90c-521f4f4b224b", "orderLinkId": "9223372033694893741"}}
+{"final": {"symbol": "EIGENUSDT", "orderId": "bf504319-e1b0-4b0c-b90c-521f4f4b224b", "orderStatus": "Filled", "cumExecQty": "22", "cumExecValue": "5.5506", "avgPrice": "0.2523", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "spot", "symbol": "ETHUSDT", "side": "Sell", "orderType": "Market", "qty": "0.01158", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "marketUnit": "baseCoin", "isLeverage": 0, "orderLinkId": "9223372033694893810"}}
+{"accepted": {"orderId": "2327003615199592192", "orderLinkId": "9223372033694893810"}}
+{"final": {"symbol": "ETHUSDT", "orderId": "2327003615199592192", "orderStatus": "Filled", "cumExecQty": "0.01158", "cumExecValue": "28.3843170", "avgPrice": "2451.15", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "linear", "symbol": "ETHFIUSDT", "side": "Sell", "orderType": "Market", "qty": "12.4", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "reduceOnly": false, "positionIdx": 0, "orderLinkId": "9223372033694893894"}}
+{"accepted": {"orderId": "9df25209-c040-4d6b-ab46-73ab11cd1719", "orderLinkId": "9223372033694893894"}}
+{"final": {"symbol": "ETHFIUSDT", "orderId": "9df25209-c040-4d6b-ab46-73ab11cd1719", "orderStatus": "Filled", "cumExecQty": "12.4", "cumExecValue": "8.62792", "avgPrice": "0.6958", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "linear", "symbol": "GMTUSDT", "side": "Buy", "orderType": "Market", "qty": "4148", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "reduceOnly": true, "positionIdx": 0, "orderLinkId": "9223372033694893967"}}
+{"accepted": {"orderId": "6956ef4b-2dad-492c-a044-491beb644c90", "orderLinkId": "9223372033694893967"}}
+{"final": {"symbol": "GMTUSDT", "orderId": "6956ef4b-2dad-492c-a044-491beb644c90", "orderStatus": "Filled", "cumExecQty": "4148", "cumExecValue": "33.216492", "avgPrice": "0.00800783", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "linear", "symbol": "HOMEUSDT", "side": "Buy", "orderType": "Market", "qty": "44080", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "reduceOnly": false, "positionIdx": 0, "orderLinkId": "9223372033694894022"}}
+{"accepted": {"orderId": "059c8fbe-2ead-4c81-a07a-94d1b203e932", "orderLinkId": "9223372033694894022"}}
+{"final": {"symbol": "HOMEUSDT", "orderId": "059c8fbe-2ead-4c81-a07a-94d1b203e932", "orderStatus": "Filled", "cumExecQty": "44080", "cumExecValue": "227.31235", "avgPrice": "0.00515681", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "spot", "symbol": "LINEAUSDT", "side": "Sell", "orderType": "Market", "qty": "1678.1", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "marketUnit": "baseCoin", "isLeverage": 0, "orderLinkId": "9223372033694894086"}}
+{"accepted": {"orderId": "2327003617313521408", "orderLinkId": "9223372033694894086"}}
+{"final": {"symbol": "LINEAUSDT", "orderId": "2327003617313521408", "orderStatus": "Filled", "cumExecQty": "1678.1", "cumExecValue": "5.0191971", "avgPrice": "0.002991", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "spot", "symbol": "SOLUSDT", "side": "Buy", "orderType": "Market", "qty": "0.7389", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "marketUnit": "baseCoin", "isLeverage": 0, "orderLinkId": "9223372033694894146"}}
+{"accepted": {"orderId": "2327003617858780928", "orderLinkId": "9223372033694894146"}}
+{"final": {"symbol": "SOLUSDT", "orderId": "2327003617858780928", "orderStatus": "Filled", "cumExecQty": "0.7389", "cumExecValue": "78.449013", "avgPrice": "106.17", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "linear", "symbol": "TRXUSDT", "side": "Buy", "orderType": "Market", "qty": "675", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "reduceOnly": false, "positionIdx": 0, "orderLinkId": "9223372033694894215"}}
+{"accepted": {"orderId": "1a43dce3-4f24-41d3-b1ae-71107fc04f5b", "orderLinkId": "9223372033694894215"}}
+{"final": {"symbol": "TRXUSDT", "orderId": "1a43dce3-4f24-41d3-b1ae-71107fc04f5b", "orderStatus": "Filled", "cumExecQty": "675", "cumExecValue": "225.6525", "avgPrice": "0.3343", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "linear", "symbol": "WIFUSDT", "side": "Buy", "orderType": "Market", "qty": "527", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "reduceOnly": false, "positionIdx": 0, "orderLinkId": "9223372033694894271"}}
+{"accepted": {"orderId": "96c77406-450e-4252-a3c6-074836df9cdf", "orderLinkId": "9223372033694894271"}}
+{"final": {"symbol": "WIFUSDT", "orderId": "96c77406-450e-4252-a3c6-074836df9cdf", "orderStatus": "Filled", "cumExecQty": "527", "cumExecValue": "106.0324", "avgPrice": "0.2012", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "linear", "symbol": "XRPUSDT", "side": "Buy", "orderType": "Market", "qty": "4.6", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "reduceOnly": false, "positionIdx": 0, "orderLinkId": "9223372033694894330"}}
+{"accepted": {"orderId": "3997863a-862e-4ea8-b4a0-69be073c77d9", "orderLinkId": "9223372033694894330"}}
+{"final": {"symbol": "XRPUSDT", "orderId": "3997863a-862e-4ea8-b4a0-69be073c77d9", "orderStatus": "Filled", "cumExecQty": "4.6", "cumExecValue": "6.15204", "avgPrice": "1.3374", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "linear", "symbol": "ZKUSDT", "side": "Buy", "orderType": "Market", "qty": "6069.0", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "reduceOnly": true, "positionIdx": 0, "orderLinkId": "9223372033694894387"}}
+{"accepted": {"orderId": "80174b2e-28f3-4506-ac5e-0794478a57f7", "orderLinkId": "9223372033694894387"}}
+{"final": {"symbol": "ZKUSDT", "orderId": "80174b2e-28f3-4506-ac5e-0794478a57f7", "orderStatus": "Filled", "cumExecQty": "6069", "cumExecValue": "107.8353998", "avgPrice": "0.01776823", "rejectReason": "EC_NoError"}}

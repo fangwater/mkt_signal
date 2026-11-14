@@ -1,4 +1,5 @@
 pub mod account_open_block;
+pub mod account_order_stream_health;
 pub mod auto_collection_service;
 pub mod auto_repay;
 pub mod auto_repay_service;
@@ -8,20 +9,30 @@ pub mod basic_um_manager;
 pub mod batch_exec_config;
 pub mod batch_exec_reload_notify;
 pub mod binance_fr_position_limit_guard;
+pub mod binance_pm_buy_capacity;
 pub mod binance_std_cm_margin_guard;
 pub mod binance_std_um_margin_guard;
 pub mod bitget_position_tier_guard;
 mod channel;
+pub mod chase_exec_config;
+pub(crate) mod close_exposure;
 pub mod close_inventory;
 pub mod event;
+pub mod exec_algorithm_switch;
+pub mod exec_position_ledger;
 pub mod exec_resample_channel;
+pub mod exec_volatility_channel;
+pub mod exec_volume_channel;
 pub mod fr_position_concentration_guard;
 pub mod gate_fr_risk_limit_guard;
+mod gate_mark_price_supplement;
+mod gate_spot_valuation;
 pub mod intra_bwd_symbol_list;
 pub mod kalman_filter;
 pub mod lazy_taker_action;
 pub mod leverage_guard;
 pub mod log_throttle;
+pub mod manager_market_rules;
 pub mod monitor_channel;
 pub mod net_position;
 pub mod notification_client;
@@ -66,3 +77,17 @@ pub use signal_channel::{SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL
 pub use trade_eng_channel::TradeEngHub;
 
 pub(crate) const POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER: f64 = 1.2;
+// 限仓 cap 额外预留的价格上涨缓冲（占交易所上限的比例）：检查只用当前 mark，已有仓位会随价格上涨逼近上限
+pub(crate) const POSITION_LIMIT_PRICE_BUFFER_RATIO: f64 = 0.015;
+
+pub(crate) fn hyperliquid_account_hash_from_env() -> Result<[u8; 32], String> {
+    let address = std::env::var("HYPERLIQUID_ACCOUNT_ADDRESS")
+        .map_err(|_| "HYPERLIQUID_ACCOUNT_ADDRESS is required".to_string())?;
+    let endpoints = signal_common::hyperliquid::HyperliquidEndpoints::from_env()
+        .map_err(|err| format!("invalid Hyperliquid endpoint configuration: {err:#}"))?;
+    mkt_parsers::msg::hyperliquid_account_msg::hyperliquid_account_identity_hash(
+        &address,
+        endpoints.testnet,
+    )
+    .map_err(|err| format!("invalid HYPERLIQUID_ACCOUNT_ADDRESS: {err:#}"))
+}

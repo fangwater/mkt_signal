@@ -1,0 +1,49 @@
+Sun Oct 18 08:23:39 UTC 2026
+ 08:23:39 up 14 min,  5 users,  load average: 1.55, 1.47, 1.03
+IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY
+ -2 0a3fc063182c4b9695572c9d77ca78ae Sat 2026-10-10 08:49:02 UTC Sat 2026-10-17 20:25:20 UTC
+ -1 15e98ddac0b94f9291b26ac37cfed953 Sun 2026-10-18 07:45:10 UTC Sun 2026-10-18 07:47:26 UTC
+  0 28b5119f25a54333b9b92351b2da1f4d Sun 2026-10-18 08:08:54 UTC Sun 2026-10-18 08:23:39 UTC
+ubuntu   pts/0        3.112.23.3       Sun Oct 18 08:15   still logged in
+runlevel (to lvl 5)   7.0.0-1014-aws   Sun Oct 18 08:09   still running
+reboot   system boot  7.0.0-1014-aws   Sun Oct 18 08:08   still running
+runlevel (to lvl 5)   7.0.0-1014-aws   Sun Oct 18 07:45 - 08:09  (00:23)
+ubuntu   pts/0        3.112.23.3       Sun Oct 18 07:45 - crash  (00:23)
+reboot   system boot  7.0.0-1014-aws   Sun Oct 18 07:45   still running
+ubuntu   pts/1        156.231.137.191  Tue Oct 13 08:54 - 08:57  (00:03)
+ubuntu   pts/1        156.231.137.191  Tue Oct 13 08:51 - 08:51  (00:00)
+
+wtmp begins Thu Jun 18 07:45:39 2026
+BOOT=-2
+BOOT=-1
+2026-10-18T07:45:10+00:00 ip-172-31-35-228 kernel: Command line: BOOT_IMAGE=/vmlinuz-7.0.0-1014-aws root=PARTUUID=fe814a98-f7fd-4c3d-9642-c18fe64c6e5d ro console=tty1 console=ttyS0 nvme_core.io_timeout=4294967295 nosmt=force isolcpus=nohz,domain,managed_irq,6-47 nohz_full=6-47 rcu_nocbs=6-47 irqaffinity=0-5 kthread_cpus=0-5 intel_idle.max_cstate=1 processor.max_cstate=1 panic=-1
+2026-10-18T07:45:10+00:00 ip-172-31-35-228 kernel: Kernel command line: BOOT_IMAGE=/vmlinuz-7.0.0-1014-aws root=PARTUUID=fe814a98-f7fd-4c3d-9642-c18fe64c6e5d ro console=tty1 console=ttyS0 nvme_core.io_timeout=4294967295 nosmt=force isolcpus=nohz,domain,managed_irq,6-47 nohz_full=6-47 rcu_nocbs=6-47 irqaffinity=0-5 kthread_cpus=0-5 intel_idle.max_cstate=1 processor.max_cstate=1 panic=-1
+2026-10-18T07:45:10+00:00 ip-172-31-35-228 kernel: watchdog: Disabling watchdog on nohz_full cores by default
+2026-10-18T07:45:10+00:00 ip-172-31-35-228 kernel: NMI watchdog: Enabled. Permanently consumes one hw-PMU counter.
+2026-10-18T07:45:10+00:00 ip-172-31-35-228 kernel: EXT4-fs (nvme0n1p1): INFO: recovery required on readonly filesystem
+2026-10-18T07:45:10+00:00 ip-172-31-35-228 kernel: EXT4-fs (nvme0n1p1): write access will be enabled during recovery
+2026-10-18T07:45:10+00:00 ip-172-31-35-228 kernel: EXT4-fs (nvme0n1p1): recovery complete
+2026-10-18T07:45:11+00:00 ip-172-31-35-228 systemd-journald[888]: File /var/log/journal/626c92a4657e47238d3a3995e9c07b48/system.journal corrupted or uncleanly shut down, renaming and replacing.
+BOOT=0
+2026-10-18T08:08:54+00:00 ip-172-31-35-228 kernel: Command line: BOOT_IMAGE=/vmlinuz-7.0.0-1014-aws root=PARTUUID=fe814a98-f7fd-4c3d-9642-c18fe64c6e5d ro console=tty1 console=ttyS0 nvme_core.io_timeout=4294967295 nosmt=force isolcpus=nohz,domain,managed_irq,6-47 nohz_full=6-47 rcu_nocbs=6-47 irqaffinity=0-5 kthread_cpus=0-5 intel_idle.max_cstate=1 processor.max_cstate=1 panic=-1
+2026-10-18T08:08:54+00:00 ip-172-31-35-228 kernel: Kernel command line: BOOT_IMAGE=/vmlinuz-7.0.0-1014-aws root=PARTUUID=fe814a98-f7fd-4c3d-9642-c18fe64c6e5d ro console=tty1 console=ttyS0 nvme_core.io_timeout=4294967295 nosmt=force isolcpus=nohz,domain,managed_irq,6-47 nohz_full=6-47 rcu_nocbs=6-47 irqaffinity=0-5 kthread_cpus=0-5 intel_idle.max_cstate=1 processor.max_cstate=1 panic=-1
+2026-10-18T08:08:54+00:00 ip-172-31-35-228 kernel: watchdog: Disabling watchdog on nohz_full cores by default
+2026-10-18T08:08:54+00:00 ip-172-31-35-228 kernel: NMI watchdog: Enabled. Permanently consumes one hw-PMU counter.
+2026-10-18T08:08:54+00:00 ip-172-31-35-228 kernel: EXT4-fs (nvme0n1p1): INFO: recovery required on readonly filesystem
+2026-10-18T08:08:54+00:00 ip-172-31-35-228 kernel: EXT4-fs (nvme0n1p1): write access will be enabled during recovery
+2026-10-18T08:08:54+00:00 ip-172-31-35-228 kernel: EXT4-fs (nvme0n1p1): recovery complete
+2026-10-18T08:08:54+00:00 ip-172-31-35-228 systemd-journald[890]: File /var/log/journal/626c92a4657e47238d3a3995e9c07b48/system.journal corrupted or uncleanly shut down, renaming and replacing.
+2026-10-18T08:08:59+00:00 ip-172-31-35-228 systemd-journald[890]: File /var/log/journal/626c92a4657e47238d3a3995e9c07b48/user-1000.journal corrupted or uncleanly shut down, renaming and replacing.
+2026-10-18T08:09:01+00:00 ip-172-31-35-228 systemd-journald[890]: File /var/log/journal/626c92a4657e47238d3a3995e9c07b48/user-1001.journal corrupted or uncleanly shut down, renaming and replacing.
+/sys/fs/pstore:
+total 0
+drwxr-x---  2 root root 0 Oct 18 08:08 .
+drwxr-xr-x 10 root root 0 Oct 18 08:22 ..
+
+/var/crash:
+total 8
+drwxrwsrwt  2 root root 4096 Sep 22 06:25 .
+drwxr-xr-x 14 root root 4096 Oct 18 07:45 ..
+inactive
+
+STDERR:

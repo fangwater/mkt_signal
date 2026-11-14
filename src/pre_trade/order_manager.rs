@@ -1,13 +1,19 @@
+use crate::pre_trade::hyperliquid_account_hash_from_env;
 use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
 use bytes::Bytes;
-use log::{info, warn};
+use log::{debug, warn};
 pub use order_common::{
     gate_text_from_client_order_id, BinanceAccountMode, Order, OrderExecutionStatus, OrderManager,
     OrderQuantizedValue, OrderStatus, OrderType, OrderUpdateSkipReason, ProtectedCumulativeFill,
     Side, TradeUpdateSkipReason, TradingVenue, CUMULATIVE_FILL_ROLLBACK_EPS,
 };
+use runtime_common::exchange::Exchange;
+use runtime_common::execution_backend::{
+    rapidx_binance_cash_business_type, ExecBackend, RapidXCashBusinessType,
+};
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::tick_math::QuantizedValue;
+use std::sync::OnceLock;
 pub use symbol_utils::symbol_util::gate_currency_pair_from_symbol;
 use symbol_utils::symbol_util::{
     binance_coin_futures_symbol, bitget_coin_futures_symbol, extract_assets_from_internal_symbol,
@@ -17,13 +23,18 @@ use trade_engine::bybit::{
     BybitCancelOrderParams, BybitCancelOrderRequest, BybitNewOrderParams, BybitNewOrderRequest,
 };
 use trade_engine::okex::{
-    OkexCancelOrderParams, OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest,
-    OkexOrderType,
+    OkexCancelOrderParams, OkexCancelOrderRequest, OkexModifyOrderParams, OkexModifyOrderRequest,
+    OkexNewOrderParams, OkexNewOrderRequest, OkexOrderType,
 };
 use trade_engine::trade_request::{
-    BinanceCancelOrderParams, BinanceNewOrderParams, BitgetCancelOrderParams, BitgetNewOrderParams,
-    GateCancelOrderParams, GateNewOrderParams, PreparedTradeRequest,
+    BinanceCancelOrderParams, BinanceModifyOrderParams, BinanceNewOrderParams,
+    BitgetCancelOrderParams, BitgetNewOrderParams, GateCancelOrderParams, GateNewOrderParams,
+    HyperliquidCancelOrderParams, HyperliquidNewOrderParams, PreparedTradeRequest,
 };
+use trade_signal::MktChannel;
+
+const HYPERLIQUID_DEFAULT_MARKET_SLIPPAGE_BPS: f64 = 500.0;
+const HYPERLIQUID_DEFAULT_BBO_MAX_AGE_MS: i64 = 2_000;
 fn quantize_order_decimal(value: f64) -> Option<QuantizedValue> {
     if let Some(qv) = QuantizedValue::from_decimal(value) {
         return Some(qv);
@@ -50,6 +61,134 @@ fn quantize_order_decimal(value: f64) -> Option<QuantizedValue> {
 
 fn qv_from_order_cache(qv: OrderQuantizedValue) -> QuantizedValue {
     QuantizedValue::from_parts(qv.tick_i64, qv.tick_exp, qv.count)
+}
+
+fn hyperliquid_env_f64(
+    name: &'static str,
+    default: f64,
+    min: f64,
+    max: f64,
+) -> Result<f64, String> {
+    let Some(raw) = std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(default);
+    };
+    let parsed = raw
+        .parse::<f64>()
+        .map_err(|err| format!("invalid {name}={raw:?}: {err}"))?;
+    if !parsed.is_finite() || parsed < min || parsed > max {
+        return Err(format!(
+            "invalid {name}={parsed}; expected a finite value in [{min}, {max}]"
+        ));
+    }
+    Ok(parsed)
+}
+
+fn hyperliquid_market_slippage_bps() -> Result<f64, String> {
+    static VALUE: OnceLock<Result<f64, String>> = OnceLock::new();
+    VALUE
+        .get_or_init(|| {
+            hyperliquid_env_f64(
+                "HYPERLIQUID_MARKET_SLIPPAGE_BPS",
+                HYPERLIQUID_DEFAULT_MARKET_SLIPPAGE_BPS,
+                0.0,
+                5_000.0,
+            )
+        })
+        .clone()
+}
+
+fn hyperliquid_bbo_max_age_us() -> Result<i64, String> {
+    static VALUE: OnceLock<Result<i64, String>> = OnceLock::new();
+    VALUE
+        .get_or_init(|| {
+            let millis = hyperliquid_env_f64(
+                "HYPERLIQUID_MARKET_BBO_MAX_AGE_MS",
+                HYPERLIQUID_DEFAULT_BBO_MAX_AGE_MS as f64,
+                1.0,
+                60_000.0,
+            )?;
+            Ok((millis * 1_000.0).round() as i64)
+        })
+        .clone()
+}
+
+fn hyperliquid_market_protection_price(
+    reference_price: f64,
+    side: Side,
+    slippage_bps: f64,
+) -> Result<f64, String> {
+    if !reference_price.is_finite() || reference_price <= 0.0 {
+        return Err(format!(
+            "invalid Hyperliquid BBO reference price {reference_price}"
+        ));
+    }
+    let fraction = slippage_bps / 10_000.0;
+    let price = match side {
+        Side::Buy => reference_price * (1.0 + fraction),
+        Side::Sell => reference_price * (1.0 - fraction),
+    };
+    if !price.is_finite() || price <= 0.0 {
+        return Err(format!(
+            "invalid Hyperliquid IOC protection price {price} from reference={reference_price} slippage_bps={slippage_bps}"
+        ));
+    }
+    Ok(price)
+}
+
+fn hyperliquid_price_qv(
+    order: &Order,
+    resolved: ResolvedOrderQuantities,
+) -> Result<QuantizedValue, String> {
+    if order.order_type.is_limit() {
+        return resolved.require_price_qv(order, "Hyperliquid");
+    }
+    if order.order_type != OrderType::Market {
+        return Err(format!(
+            "unsupported Hyperliquid order type: {:?}",
+            order.order_type
+        ));
+    }
+    if !MktChannel::is_initialized() {
+        return Err(format!(
+            "Hyperliquid market order requires initialized BBO cache: venue={:?} symbol={} client_order_id={}",
+            order.venue, order.symbol, order.client_order_id
+        ));
+    }
+    let quote = MktChannel::instance()
+        .get_quote(&order.symbol, order.venue)
+        .ok_or_else(|| {
+            format!(
+                "Hyperliquid market order has no valid BBO: venue={:?} symbol={} client_order_id={}",
+                order.venue, order.symbol, order.client_order_id
+            )
+        })?;
+    let now_us = get_timestamp_us();
+    let max_age_us = hyperliquid_bbo_max_age_us()?;
+    if quote.ts <= 0 || now_us.saturating_sub(quote.ts) > max_age_us {
+        return Err(format!(
+            "Hyperliquid market order BBO is stale: venue={:?} symbol={} quote_ts={} now_us={} max_age_us={}",
+            order.venue, order.symbol, quote.ts, now_us, max_age_us
+        ));
+    }
+    let reference_price = match order.side {
+        Side::Buy => quote.ask,
+        Side::Sell => quote.bid,
+    };
+    let price = hyperliquid_market_protection_price(
+        reference_price,
+        order.side,
+        hyperliquid_market_slippage_bps()?,
+    )?;
+    quantize_order_decimal(price).ok_or_else(|| {
+        format!(
+            "failed to quantize Hyperliquid IOC protection price: price={price:.12} venue={:?} symbol={} client_order_id={}",
+            order.venue, order.symbol, order.client_order_id
+        )
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -103,6 +242,15 @@ impl ResolvedOrderQuantities {
             Ok(QuantizedValue::zero())
         }
     }
+
+    fn require_price_qv(self, order: &Order, venue_name: &str) -> Result<QuantizedValue, String> {
+        self.price_qv.ok_or_else(|| {
+            format!(
+                "failed to quantize {venue_name} protection price: price={:.12} order_type={:?} symbol={} client_order_id={}",
+                order.price, order.order_type, order.symbol, order.client_order_id
+            )
+        })
+    }
 }
 
 fn order_quantity_qv(order: &Order) -> Option<QuantizedValue> {
@@ -119,13 +267,233 @@ fn order_price_qv(order: &Order) -> Option<QuantizedValue> {
         .or_else(|| quantize_order_decimal(order.price))
 }
 
+fn reducing_spot_buy_price_qv(
+    order: &Order,
+    resolved: ResolvedOrderQuantities,
+) -> Result<QuantizedValue, String> {
+    if order.reduce_only && order.order_type == OrderType::Market && order.side == Side::Buy {
+        if let Some(price) = resolved.price_qv.filter(|price| price.get_val() > 0.0) {
+            return Ok(price);
+        }
+        let quote = MktChannel::is_initialized()
+            .then(|| MktChannel::instance().get_quote(&order.symbol, order.venue))
+            .flatten()
+            .filter(|quote| {
+                let age = get_timestamp_us().saturating_sub(quote.ts);
+                quote.ts > 0
+                    && (0..=2_000_000).contains(&age)
+                    && quote.ask.is_finite()
+                    && quote.ask > 0.0
+                    && quote.bid.is_finite()
+                    && quote.bid > 0.0
+                    && quote.ask >= quote.bid
+            })
+            .ok_or_else(|| {
+                format!(
+                    "reducing spot buy needs a fresh ask: venue={:?} symbol={}",
+                    order.venue, order.symbol
+                )
+            })?;
+        quantize_order_decimal(quote.ask).ok_or_else(|| {
+            format!(
+                "invalid reducing spot buy ask: venue={:?} symbol={}",
+                order.venue, order.symbol
+            )
+        })
+    } else {
+        resolved.limit_price_qv_or_zero(order, order.venue.as_str())
+    }
+}
+
 fn qv_text_or_zero(qv: Option<QuantizedValue>) -> String {
     qv.map(|qv| qv.decimal_string())
         .unwrap_or_else(|| "0".to_string())
 }
 
-fn binance_margin_should_use_margin_buy(use_binance_ws_margin: bool, reduce_only: bool) -> bool {
-    !use_binance_ws_margin && !reduce_only
+#[derive(Debug, Clone, Copy)]
+struct BinanceCashRoute {
+    new_order: trade_engine::trade_request::TradeRequestType,
+    cancel_order: trade_engine::trade_request::TradeRequestType,
+    margin_business: bool,
+    maker_only: bool,
+    market_buy_uses_quote_qty: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BinanceCashTransportFlags {
+    ws_response_full: bool,
+    ws_um_response_result: bool,
+    ws_margin_limit_maker: bool,
+}
+
+fn binance_cash_transport_flags(
+    route: BinanceCashRoute,
+    use_binance_ws_margin: bool,
+) -> BinanceCashTransportFlags {
+    BinanceCashTransportFlags {
+        ws_response_full: use_binance_ws_margin,
+        ws_um_response_result: false,
+        ws_margin_limit_maker: route.maker_only,
+    }
+}
+
+fn binance_cash_route(account_mode: BinanceAccountMode) -> Result<BinanceCashRoute, String> {
+    if account_mode == BinanceAccountMode::Standard {
+        return Ok(binance_cash_route_for(
+            account_mode,
+            ExecBackend::Native,
+            RapidXCashBusinessType::Spot,
+        ));
+    }
+
+    let backend = ExecBackend::for_exchange(Exchange::Binance).map_err(|err| err.to_string())?;
+    let cash_business = if backend == ExecBackend::Ltp {
+        rapidx_binance_cash_business_type().map_err(|err| err.to_string())?
+    } else {
+        RapidXCashBusinessType::Margin
+    };
+    Ok(binance_cash_route_for(account_mode, backend, cash_business))
+}
+
+fn binance_cash_route_for(
+    account_mode: BinanceAccountMode,
+    backend: ExecBackend,
+    cash_business: RapidXCashBusinessType,
+) -> BinanceCashRoute {
+    use trade_engine::trade_request::TradeRequestType;
+
+    if account_mode == BinanceAccountMode::Standard {
+        BinanceCashRoute {
+            new_order: TradeRequestType::BinanceWsNewMarginOrder,
+            cancel_order: TradeRequestType::BinanceWsCancelMarginOrder,
+            margin_business: false,
+            maker_only: true,
+            market_buy_uses_quote_qty: backend == ExecBackend::Ltp,
+        }
+    } else if backend == ExecBackend::Ltp && cash_business == RapidXCashBusinessType::Spot {
+        BinanceCashRoute {
+            new_order: TradeRequestType::BinanceLtpNewSpotOrder,
+            cancel_order: TradeRequestType::BinanceLtpCancelSpotOrder,
+            margin_business: false,
+            maker_only: true,
+            market_buy_uses_quote_qty: backend == ExecBackend::Ltp,
+        }
+    } else {
+        BinanceCashRoute {
+            new_order: TradeRequestType::BinanceNewMarginOrder,
+            cancel_order: TradeRequestType::BinanceCancelMarginOrder,
+            margin_business: true,
+            maker_only: backend == ExecBackend::Ltp,
+            market_buy_uses_quote_qty: backend == ExecBackend::Ltp,
+        }
+    }
+}
+
+fn prepare_binance_cash_order(
+    order: &Order,
+    resolved: ResolvedOrderQuantities,
+    route: BinanceCashRoute,
+    now_us: i64,
+) -> Result<PreparedTradeRequest, String> {
+    let quote = if route.market_buy_uses_quote_qty
+        && order.order_type == OrderType::Market
+        && order.side == Side::Buy
+        && MktChannel::is_initialized()
+    {
+        let quote = MktChannel::instance().get_quote(&order.symbol, order.venue);
+        let price_tick = crate::pre_trade::monitor_channel::MonitorChannel::instance()
+            .try_venue_min_qty_table(order.venue)
+            .and_then(|table| {
+                table.price_tick(&quote_plan::order_align::min_qty_symbol_key(
+                    order.venue,
+                    &order.symbol,
+                ))
+            });
+        quote
+            .zip(price_tick)
+            .map(|(quote, price_tick)| (quote.ask, quote.ts, price_tick))
+    } else {
+        None
+    };
+    prepare_binance_cash_order_with_quote(order, resolved, route, now_us, quote)
+}
+
+fn prepare_binance_cash_order_with_quote(
+    order: &Order,
+    resolved: ResolvedOrderQuantities,
+    route: BinanceCashRoute,
+    now_us: i64,
+    ask_quote: Option<(f64, i64, f64)>,
+) -> Result<PreparedTradeRequest, String> {
+    let mut quantity_qv = resolved.require_quantity_qv(order, "binance")?;
+    let mut quote_order_qty_qv = QuantizedValue::zero();
+    if route.market_buy_uses_quote_qty
+        && order.order_type == OrderType::Market
+        && order.side == Side::Buy
+    {
+        let (ask, quote_ts, price_tick) = ask_quote.ok_or_else(|| {
+            format!(
+                "RapidX cash market buy requires BBO and Manager price tick: symbol={}",
+                order.symbol
+            )
+        })?;
+        const MAX_BBO_AGE_US: i64 = 2_000_000;
+        if !ask.is_finite()
+            || ask <= 0.0
+            || quote_ts <= 0
+            || now_us.saturating_sub(quote_ts) > MAX_BBO_AGE_US
+            || quote_ts.saturating_sub(now_us) > MAX_BBO_AGE_US
+        {
+            return Err(format!(
+                "RapidX cash market buy has invalid or stale BBO: symbol={}",
+                order.symbol
+            ));
+        }
+        // Keep the internal order/fill ledger in base quantity. Only the RapidX
+        // cash MARKET BUY wire request uses quote currency; never inflate it.
+        // RapidX also caps quoteOrderQty decimals at the symbol's price precision
+        // (401122). The Manager price tick provides a conservative decimal scale.
+        let price_scale = QuantizedValue::from_decimal(price_tick)
+            .ok_or_else(|| format!("invalid RapidX cash price tick: symbol={}", order.symbol))?
+            .get_tick_parts()
+            .1
+            .min(0);
+        quote_order_qty_qv =
+            QuantizedValue::encode_floor(quantity_qv.get_val() * ask, 10f64.powi(price_scale))
+                .filter(|value| !value.is_zero())
+                .ok_or_else(|| {
+                    format!(
+                        "invalid RapidX market buy notional: symbol={}",
+                        order.symbol
+                    )
+                })?;
+        quantity_qv = QuantizedValue::zero();
+    }
+    let flags = binance_cash_transport_flags(
+        route,
+        order.require_binance_account_mode() == BinanceAccountMode::Standard,
+    );
+    BinanceNewOrderParams::prepared_request_from_parts_with_quote_order_qty(
+        route.new_order,
+        now_us,
+        order.client_order_id,
+        &order.symbol,
+        order.side,
+        order.order_type,
+        quantity_qv,
+        resolved.limit_price_qv_or_zero(order, "binance")?,
+        order.reduce_only,
+        binance_margin_should_use_margin_buy(route.margin_business, order.reduce_only),
+        flags.ws_response_full,
+        flags.ws_um_response_result,
+        flags.ws_margin_limit_maker,
+        quote_order_qty_qv,
+    )
+    .ok_or_else(|| "failed to build binance cash order params".to_string())
+}
+
+fn binance_margin_should_use_margin_buy(margin_business: bool, reduce_only: bool) -> bool {
+    margin_business && !reduce_only
 }
 
 fn check_binance_unified_margin_balance(
@@ -172,7 +540,7 @@ fn check_binance_unified_margin_balance(
             );
         }
     } else if !suppress_pre_submit_hot_path_logs() {
-        info!(
+        debug!(
             "✅ 余额充足: 资产={} 需要={:.8} 可用={:.8} symbol={} side={:?}",
             check_asset, required_amount, available_balance, order.symbol, order.side
         );
@@ -283,11 +651,12 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
 
         match venue {
             TradingVenue::BinanceMargin => {
-                let req_type = if self.binance_is_standard() {
-                    trade_engine::trade_request::TradeRequestType::BinanceWsCancelMarginOrder
+                let req_type = binance_cash_route(if self.binance_is_standard() {
+                    BinanceAccountMode::Standard
                 } else {
-                    trade_engine::trade_request::TradeRequestType::BinanceCancelMarginOrder
-                };
+                    BinanceAccountMode::Unified
+                })?
+                .cancel_order;
                 BinanceCancelOrderParams::request_bytes_from_parts(
                     req_type,
                     get_timestamp_us(),
@@ -326,6 +695,25 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
                     client_order_id,
                 )
                 .ok_or_else(|| "failed to build binance cm cancel params".to_string())
+            }
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => {
+                let req_type = match venue {
+                    TradingVenue::HyperliquidMargin => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidCancelMarginOrder
+                    }
+                    TradingVenue::HyperliquidFutures => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidCancelUMOrder
+                    }
+                    _ => unreachable!(),
+                };
+                HyperliquidCancelOrderParams::request_bytes_from_parts(
+                    req_type,
+                    get_timestamp_us(),
+                    client_order_id,
+                    hyperliquid_account_hash_from_env()?,
+                    symbol,
+                )
+                .ok_or_else(|| "failed to build Hyperliquid unmatched cancel params".to_string())
             }
             _ => Err(format!(
                 "unmatched cancel fallback not supported for venue {:?}",
@@ -483,6 +871,8 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
 
 pub trait PreTradeOrderRequestExt {
     fn get_order_cancel_bytes(&self) -> Result<Bytes, String>;
+    fn get_order_modify_bytes(&self, price_qv: QuantizedValue) -> Result<Bytes, String>;
+    fn get_order_modify_to_best_price_bytes(&self) -> Result<Bytes, String>;
     fn get_order_request_bytes(&self) -> Result<Bytes, String>;
     fn get_order_request_prepared(&self) -> Result<PreparedTradeRequest, String>;
 }
@@ -494,11 +884,7 @@ impl PreTradeOrderRequestExt for Order {
             TradingVenue::BinanceMargin => {
                 // 使用 origClientOrderId 以客户端订单ID撤单；当前未保存交易所 orderId
                 let req_type =
-                    if self.require_binance_account_mode() == BinanceAccountMode::Standard {
-                        trade_engine::trade_request::TradeRequestType::BinanceWsCancelMarginOrder
-                    } else {
-                        trade_engine::trade_request::TradeRequestType::BinanceCancelMarginOrder
-                    };
+                    binance_cash_route(self.require_binance_account_mode())?.cancel_order;
                 BinanceCancelOrderParams::request_bytes_from_parts(
                     req_type,
                     now,
@@ -650,8 +1036,119 @@ impl PreTradeOrderRequestExt for Order {
                 )
                 .ok_or_else(|| "failed to build bitget cancel params".to_string())
             }
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => {
+                let req_type = match self.venue {
+                    TradingVenue::HyperliquidMargin => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidCancelMarginOrder
+                    }
+                    TradingVenue::HyperliquidFutures => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidCancelUMOrder
+                    }
+                    _ => unreachable!(),
+                };
+                HyperliquidCancelOrderParams::request_bytes_from_parts(
+                    req_type,
+                    now,
+                    self.client_order_id,
+                    hyperliquid_account_hash_from_env()?,
+                    &self.symbol,
+                )
+                .ok_or_else(|| "failed to build Hyperliquid cancel params".to_string())
+            }
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }
+    }
+
+    fn get_order_modify_bytes(&self, price_qv: QuantizedValue) -> Result<Bytes, String> {
+        if !self.order_type.is_limit() {
+            return Err(format!(
+                "order modify requires a limit order: venue={:?} order_type={:?}",
+                self.venue, self.order_type
+            ));
+        }
+        match self.venue {
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures => {
+                let quantity_qv = ResolvedOrderQuantities::from_order(self)
+                    .require_quantity_qv(self, "binance modify")?;
+                let req_type = match (self.venue, self.require_binance_account_mode()) {
+                    (TradingVenue::BinanceCoinFutures, BinanceAccountMode::Standard) => {
+                        trade_engine::trade_request::TradeRequestType::BinanceModifyCmOrder
+                    }
+                    (TradingVenue::BinanceCoinFutures, BinanceAccountMode::Unified) => {
+                        trade_engine::trade_request::TradeRequestType::BinancePmModifyCmOrder
+                    }
+                    (_, BinanceAccountMode::Standard) => {
+                        trade_engine::trade_request::TradeRequestType::BinanceWsModifyUMOrder
+                    }
+                    (_, BinanceAccountMode::Unified) => {
+                        trade_engine::trade_request::TradeRequestType::BinanceModifyUMOrder
+                    }
+                };
+                let symbol = if self.venue == TradingVenue::BinanceCoinFutures {
+                    binance_coin_futures_symbol(&self.symbol)
+                } else {
+                    self.symbol.clone()
+                };
+                BinanceModifyOrderParams::with_price(
+                    &symbol,
+                    self.side,
+                    quantity_qv,
+                    price_qv,
+                    self.exchange_order_id.unwrap_or(0),
+                    self.client_order_id,
+                    None,
+                )
+                .request_bytes(req_type, get_timestamp_us(), self.client_order_id)
+                .ok_or_else(|| "failed to build Binance futures modify request".to_string())
+            }
+            TradingVenue::OkexFutures => OkexModifyOrderRequest::create_um(
+                get_timestamp_us(),
+                self.client_order_id,
+                OkexModifyOrderParams {
+                    ord_id: self.exchange_order_id.unwrap_or(0),
+                    cl_ord_id: self.client_order_id,
+                    new_price_qv: price_qv,
+                    inst_id: okex_inst_id_from_symbol(&self.symbol, self.venue)?,
+                },
+            )
+            .map(|request| request.to_bytes())
+            .ok_or_else(|| "failed to build OKX futures modify request".to_string()),
+            _ => Err(format!(
+                "order modify unsupported for venue {:?}",
+                self.venue
+            )),
+        }
+    }
+
+    fn get_order_modify_to_best_price_bytes(&self) -> Result<Bytes, String> {
+        if self.venue != TradingVenue::BinanceFutures || !self.order_type.is_limit() {
+            return Err(format!(
+                "Binance UM best-price modify requires a BinanceFutures limit order: venue={:?} order_type={:?}",
+                self.venue, self.order_type
+            ));
+        }
+        let quantity_qv = ResolvedOrderQuantities::from_order(self)
+            .require_quantity_qv(self, "binance best-price modify")?;
+        let req_type = match self.require_binance_account_mode() {
+            BinanceAccountMode::Standard => {
+                trade_engine::trade_request::TradeRequestType::BinanceWsModifyUMOrder
+            }
+            BinanceAccountMode::Unified => {
+                trade_engine::trade_request::TradeRequestType::BinanceModifyUMOrder
+            }
+        };
+        BinanceModifyOrderParams::best_price_request_bytes_from_parts(
+            req_type,
+            get_timestamp_us(),
+            self.client_order_id,
+            &self.symbol,
+            self.side,
+            quantity_qv,
+            self.exchange_order_id.unwrap_or(0),
+            self.client_order_id,
+            None,
+        )
+        .ok_or_else(|| "failed to build Binance UM best-price modify request".to_string())
     }
 
     fn get_order_request_bytes(&self) -> Result<Bytes, String> {
@@ -666,49 +1163,15 @@ impl PreTradeOrderRequestExt for Order {
         match self.venue {
             //币安的杠杆账户下单
             TradingVenue::BinanceMargin => {
-                let use_binance_ws_margin =
-                    self.require_binance_account_mode() == BinanceAccountMode::Standard;
+                let account_mode = self.require_binance_account_mode();
+                let use_binance_ws_margin = account_mode == BinanceAccountMode::Standard;
+                let cash_route = binance_cash_route(account_mode)?;
                 let local_create_ts = get_timestamp_us();
                 if !use_binance_ws_margin {
                     check_binance_unified_margin_balance(self, resolved)?;
                 }
-                let margin_buy =
-                    binance_margin_should_use_margin_buy(use_binance_ws_margin, self.reduce_only);
-
-                let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
-                let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
-                if !suppress_pre_submit_hot_path_logs() {
-                    info!(
-                        "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
-                        self.venue,
-                        self.client_order_id,
-                        self.symbol,
-                        self.side,
-                        self.order_type,
-                        self.reduce_only
-                    );
-                }
-                let req_type = if use_binance_ws_margin {
-                    trade_engine::trade_request::TradeRequestType::BinanceWsNewMarginOrder
-                } else {
-                    trade_engine::trade_request::TradeRequestType::BinanceNewMarginOrder
-                };
-                BinanceNewOrderParams::request_bytes_from_parts(
-                    req_type,
-                    local_create_ts,
-                    self.client_order_id,
-                    &self.symbol,
-                    self.side,
-                    self.order_type,
-                    quantity_qv,
-                    price_qv,
-                    self.reduce_only,
-                    margin_buy,
-                    use_binance_ws_margin,
-                    false,
-                    use_binance_ws_margin,
-                )
-                .ok_or_else(|| "failed to build binance margin order params".to_string())
+                prepare_binance_cash_order(self, resolved, cash_route, local_create_ts)
+                    .map(|request| request.to_bytes())
             }
             TradingVenue::BinanceFutures => {
                 let use_binance_ws_um =
@@ -717,7 +1180,7 @@ impl PreTradeOrderRequestExt for Order {
                 let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
                 let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
                 if !suppress_pre_submit_hot_path_logs() {
-                    info!(
+                    debug!(
                         "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
                         self.venue,
                         self.client_order_id,
@@ -816,7 +1279,7 @@ impl PreTradeOrderRequestExt for Order {
                     ));
                 }
                 let quantity_qv = resolved.require_quantity_qv(self, "gate")?;
-                let price_qv = resolved.limit_price_qv_or_zero(self, "gate")?;
+                let price_qv = reducing_spot_buy_price_qv(self, resolved)?;
                 GateNewOrderParams::request_bytes_from_parts(
                     trade_engine::trade_request::TradeRequestType::GateUnifiedNewOrder,
                     create_ts,
@@ -890,7 +1353,11 @@ impl PreTradeOrderRequestExt for Order {
             TradingVenue::BitgetMargin => {
                 let create_ts = get_timestamp_us();
                 let quantity_qv = resolved.require_quantity_qv(self, "bitget")?;
-                let price_qv = resolved.limit_price_qv_or_zero(self, "bitget")?;
+                let price_qv = if self.bitget_spot_order {
+                    reducing_spot_buy_price_qv(self, resolved)?
+                } else {
+                    resolved.limit_price_qv_or_zero(self, "bitget")?
+                };
                 BitgetNewOrderParams::request_bytes_from_parts(
                     if self.bitget_spot_order {
                         trade_engine::trade_request::TradeRequestType::BitgetNewSpotOrder
@@ -945,6 +1412,38 @@ impl PreTradeOrderRequestExt for Order {
                 )
                 .ok_or_else(|| "failed to build bitget coin futures order params".to_string())
             }
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => {
+                if !matches!(self.order_type, OrderType::Limit | OrderType::Market) {
+                    return Err(format!(
+                        "unsupported Hyperliquid order type: {:?}",
+                        self.order_type
+                    ));
+                }
+                let req_type = match self.venue {
+                    TradingVenue::HyperliquidMargin => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidNewMarginOrder
+                    }
+                    TradingVenue::HyperliquidFutures => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidNewUMOrder
+                    }
+                    _ => unreachable!(),
+                };
+                let quantity_qv = resolved.require_quantity_qv(self, "Hyperliquid")?;
+                let price_qv = hyperliquid_price_qv(self, resolved)?;
+                HyperliquidNewOrderParams::request_bytes_from_parts(
+                    req_type,
+                    get_timestamp_us(),
+                    self.client_order_id,
+                    hyperliquid_account_hash_from_env()?,
+                    &self.symbol,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                )
+                .ok_or_else(|| "failed to build Hyperliquid order params".to_string())
+            }
             //之后在这支持别的类型下单，根据资产类型决定下单的request，统一序列化为bytes
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }
@@ -961,48 +1460,14 @@ impl PreTradeOrderRequestExt for Order {
 
         match self.venue {
             TradingVenue::BinanceMargin => {
-                let use_binance_ws_margin =
-                    self.require_binance_account_mode() == BinanceAccountMode::Standard;
+                let account_mode = self.require_binance_account_mode();
+                let use_binance_ws_margin = account_mode == BinanceAccountMode::Standard;
+                let cash_route = binance_cash_route(account_mode)?;
                 let local_create_ts = get_timestamp_us();
                 if !use_binance_ws_margin {
                     check_binance_unified_margin_balance(self, resolved)?;
                 }
-                let margin_buy =
-                    binance_margin_should_use_margin_buy(use_binance_ws_margin, self.reduce_only);
-                let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
-                let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
-                if !suppress_pre_submit_hot_path_logs() {
-                    info!(
-                        "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
-                        self.venue,
-                        self.client_order_id,
-                        self.symbol,
-                        self.side,
-                        self.order_type,
-                        self.reduce_only
-                    );
-                }
-                let req_type = if use_binance_ws_margin {
-                    trade_engine::trade_request::TradeRequestType::BinanceWsNewMarginOrder
-                } else {
-                    trade_engine::trade_request::TradeRequestType::BinanceNewMarginOrder
-                };
-                BinanceNewOrderParams::prepared_request_from_parts(
-                    req_type,
-                    local_create_ts,
-                    self.client_order_id,
-                    &self.symbol,
-                    self.side,
-                    self.order_type,
-                    quantity_qv,
-                    price_qv,
-                    self.reduce_only,
-                    margin_buy,
-                    use_binance_ws_margin,
-                    false,
-                    use_binance_ws_margin,
-                )
-                .ok_or_else(|| "failed to build binance margin order params".to_string())
+                prepare_binance_cash_order(self, resolved, cash_route, local_create_ts)
             }
             TradingVenue::BinanceFutures => {
                 let use_binance_ws_um =
@@ -1011,7 +1476,7 @@ impl PreTradeOrderRequestExt for Order {
                 let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
                 let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
                 if !suppress_pre_submit_hot_path_logs() {
-                    info!(
+                    debug!(
                         "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
                         self.venue,
                         self.client_order_id,
@@ -1111,7 +1576,7 @@ impl PreTradeOrderRequestExt for Order {
                     ));
                 }
                 let quantity_qv = resolved.require_quantity_qv(self, "gate")?;
-                let price_qv = resolved.limit_price_qv_or_zero(self, "gate")?;
+                let price_qv = reducing_spot_buy_price_qv(self, resolved)?;
                 GateNewOrderParams::prepared_request_from_parts(
                     trade_engine::trade_request::TradeRequestType::GateUnifiedNewOrder,
                     create_ts,
@@ -1154,7 +1619,11 @@ impl PreTradeOrderRequestExt for Order {
             TradingVenue::BitgetMargin => {
                 let create_ts = get_timestamp_us();
                 let quantity_qv = resolved.require_quantity_qv(self, "bitget")?;
-                let price_qv = resolved.limit_price_qv_or_zero(self, "bitget")?;
+                let price_qv = if self.bitget_spot_order {
+                    reducing_spot_buy_price_qv(self, resolved)?
+                } else {
+                    resolved.limit_price_qv_or_zero(self, "bitget")?
+                };
                 BitgetNewOrderParams::prepared_request_from_parts(
                     if self.bitget_spot_order {
                         trade_engine::trade_request::TradeRequestType::BitgetNewSpotOrder
@@ -1237,6 +1706,38 @@ impl PreTradeOrderRequestExt for Order {
                 }
                 .ok_or_else(|| "failed to build bybit new order request".to_string())
             }
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => {
+                if !matches!(self.order_type, OrderType::Limit | OrderType::Market) {
+                    return Err(format!(
+                        "unsupported Hyperliquid order type: {:?}",
+                        self.order_type
+                    ));
+                }
+                let req_type = match self.venue {
+                    TradingVenue::HyperliquidMargin => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidNewMarginOrder
+                    }
+                    TradingVenue::HyperliquidFutures => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidNewUMOrder
+                    }
+                    _ => unreachable!(),
+                };
+                let quantity_qv = resolved.require_quantity_qv(self, "Hyperliquid")?;
+                let price_qv = hyperliquid_price_qv(self, resolved)?;
+                HyperliquidNewOrderParams::prepared_request_from_parts(
+                    req_type,
+                    get_timestamp_us(),
+                    self.client_order_id,
+                    hyperliquid_account_hash_from_env()?,
+                    &self.symbol,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                )
+                .ok_or_else(|| "failed to build Hyperliquid order params".to_string())
+            }
             _ => Err(format!(
                 "prepared order request unsupported for venue {:?}",
                 self.venue
@@ -1248,15 +1749,22 @@ impl PreTradeOrderRequestExt for Order {
 #[cfg(test)]
 mod tests {
     use super::{
-        binance_margin_should_use_margin_buy, bybit_margin_should_use_leverage,
-        BybitNewOrderRequest, Order, OrderExecutionStatus, OrderManager, OrderQuantizedValue,
-        OrderStatus, OrderType, PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt, Side,
-        TradeUpdateSkipReason,
+        binance_cash_route_for, binance_cash_transport_flags, binance_margin_should_use_margin_buy,
+        bybit_margin_should_use_leverage, hyperliquid_market_protection_price,
+        prepare_binance_cash_order_with_quote, BybitNewOrderRequest, Order, OrderExecutionStatus,
+        OrderManager, OrderQuantizedValue, OrderStatus, OrderType, PreTradeOrderManagerRequestExt,
+        PreTradeOrderRequestExt, ResolvedOrderQuantities, Side, TradeUpdateSkipReason,
     };
+    use mkt_parsers::msg::hyperliquid_account_msg::hyperliquid_account_identity_hash;
     use order_common::{BinanceAccountMode, TradingVenue};
+    use runtime_common::execution_backend::{ExecBackend, RapidXCashBusinessType};
     use serde_json::Value;
+    use signal_common::tick_math::QuantizedValue;
     use symbol_utils::symbol_util::extract_assets_from_internal_symbol;
-    use trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
+    use trade_engine::okex::OkexModifyOrderParams;
+    use trade_engine::trade_request::{
+        BinanceModifyOrderParams, BinancePriceMatch, TradeRequestMsg, TradeRequestType,
+    };
     use trade_engine::{bitget_ws, gate_ws};
 
     fn extract_request_json(bytes: &[u8]) -> Value {
@@ -1299,13 +1807,415 @@ mod tests {
 
     #[test]
     fn binance_pm_margin_open_uses_margin_buy() {
-        assert!(binance_margin_should_use_margin_buy(false, false));
+        assert!(binance_margin_should_use_margin_buy(true, false));
+    }
+
+    #[test]
+    fn hyperliquid_market_protection_is_side_aware() {
+        assert_eq!(
+            hyperliquid_market_protection_price(100.0, Side::Buy, 500.0).unwrap(),
+            105.0
+        );
+        assert_eq!(
+            hyperliquid_market_protection_price(100.0, Side::Sell, 500.0).unwrap(),
+            95.0
+        );
+        assert!(hyperliquid_market_protection_price(0.0, Side::Buy, 500.0).is_err());
+    }
+
+    #[test]
+    fn hyperliquid_unmatched_cancel_uses_cloid_params() {
+        let account = "0x1111111111111111111111111111111111111111";
+        std::env::set_var("HYPERLIQUID_ACCOUNT_ADDRESS", account);
+        std::env::set_var("HYPERLIQUID_TESTNET", "0");
+        let manager = OrderManager::new(None);
+        let bytes = manager
+            .build_unmatched_cancel_bytes(TradingVenue::HyperliquidFutures, "BTCUSDT", 7_654_321)
+            .unwrap();
+        let request = TradeRequestMsg::parse(bytes.as_ref()).unwrap();
+        assert_eq!(request.req_type, TradeRequestType::HyperliquidCancelUMOrder);
+        let params =
+            trade_engine::trade_request::HyperliquidCancelOrderParams::from_bytes(&request.params)
+                .unwrap();
+        assert_eq!(
+            params.account_hash,
+            hyperliquid_account_identity_hash(account, false).unwrap()
+        );
+        assert_eq!(params.symbol, "BTCUSDT");
+        assert_eq!(request.client_order_id, 7_654_321);
     }
 
     #[test]
     fn binance_standard_or_reduce_only_margin_open_omits_margin_buy() {
-        assert!(!binance_margin_should_use_margin_buy(true, false));
-        assert!(!binance_margin_should_use_margin_buy(false, true));
+        assert!(!binance_margin_should_use_margin_buy(false, false));
+        assert!(!binance_margin_should_use_margin_buy(true, true));
+    }
+
+    #[test]
+    fn binance_best_price_modify_uses_queue_and_account_mode_transport() {
+        for (account_mode, expected_type) in [
+            (
+                BinanceAccountMode::Standard,
+                TradeRequestType::BinanceWsModifyUMOrder,
+            ),
+            (
+                BinanceAccountMode::Unified,
+                TradeRequestType::BinanceModifyUMOrder,
+            ),
+        ] {
+            let mut order = Order::new(
+                TradingVenue::BinanceFutures,
+                42,
+                OrderType::Limit,
+                "BTCUSDT".to_string(),
+                Side::Buy,
+                0.25,
+                65000.0,
+                false,
+                1.0,
+                Some(account_mode),
+                true,
+            );
+            order.set_exchange_order_id(9988);
+            let bytes = order.get_order_modify_to_best_price_bytes().unwrap();
+            let request = TradeRequestMsg::parse(&bytes).unwrap();
+            let params = BinanceModifyOrderParams::from_bytes(&request.params).unwrap();
+
+            assert_eq!(request.req_type, expected_type);
+            assert_eq!(params.price_match, BinancePriceMatch::Queue);
+            assert!(params.price_qv.is_zero());
+            assert_eq!(params.order_id, 9988);
+            assert_eq!(params.orig_client_order_id, 42);
+        }
+    }
+
+    #[test]
+    fn coin_modify_preserves_contract_quantity_and_wire_symbol() {
+        for (mode, kind) in [
+            (
+                BinanceAccountMode::Standard,
+                TradeRequestType::BinanceModifyCmOrder,
+            ),
+            (
+                BinanceAccountMode::Unified,
+                TradeRequestType::BinancePmModifyCmOrder,
+            ),
+        ] {
+            let mut order = Order::new(
+                TradingVenue::BinanceCoinFutures,
+                42,
+                OrderType::Limit,
+                "BTCUSD".to_string(),
+                Side::Sell,
+                5.0,
+                50000.0,
+                false,
+                100.0 / 50000.0,
+                Some(mode),
+                true,
+            );
+            order.set_exchange_order_id(9988);
+            let price = QuantizedValue::from_decimal(50001.5).unwrap();
+            let bytes = order.get_order_modify_bytes(price).unwrap();
+            let request = TradeRequestMsg::parse(&bytes).unwrap();
+            let params = BinanceModifyOrderParams::from_bytes(&request.params).unwrap();
+            assert_eq!(request.req_type, kind);
+            assert_eq!(params.symbol, "BTCUSD_PERP");
+            assert_eq!(
+                params.quantity_qv,
+                QuantizedValue::from_decimal(5.0).unwrap()
+            );
+            assert_eq!(params.price_qv, price);
+            assert_eq!(params.order_id, 9988);
+            assert_eq!(params.orig_client_order_id, 42);
+        }
+    }
+
+    #[test]
+    fn binance_explicit_modify_uses_supplied_quantized_price() {
+        let order = Order::new(
+            TradingVenue::BinanceFutures,
+            42,
+            OrderType::Limit,
+            "BTCUSDT".to_string(),
+            Side::Sell,
+            0.25,
+            65000.0,
+            false,
+            1.0,
+            Some(BinanceAccountMode::Standard),
+            true,
+        );
+        let price_qv = QuantizedValue::from_decimal(65001.5).unwrap();
+        let bytes = order.get_order_modify_bytes(price_qv).unwrap();
+        let request = TradeRequestMsg::parse(&bytes).unwrap();
+        let params = BinanceModifyOrderParams::from_bytes(&request.params).unwrap();
+
+        assert_eq!(params.price_match, BinancePriceMatch::None);
+        assert_eq!(params.price_qv, price_qv);
+    }
+
+    #[test]
+    fn okx_futures_explicit_modify_uses_supplied_price_and_order_ids() {
+        let mut order = Order::new(
+            TradingVenue::OkexFutures,
+            42,
+            OrderType::Limit,
+            "BTCUSDT".to_string(),
+            Side::Buy,
+            2.0,
+            65_000.0,
+            false,
+            1.0,
+            None,
+            true,
+        );
+        order.set_exchange_order_id(9988);
+        let price_qv = QuantizedValue::from_decimal(65_001.5).unwrap();
+        let bytes = order.get_order_modify_bytes(price_qv).unwrap();
+        let request = TradeRequestMsg::parse(&bytes).unwrap();
+        let params = OkexModifyOrderParams::from_bytes(&request.params).unwrap();
+
+        assert_eq!(request.req_type, TradeRequestType::OkexModifyUMOrder);
+        assert_eq!(params.new_price_qv, price_qv);
+        assert_eq!(params.ord_id, 9988);
+        assert_eq!(params.cl_ord_id, 42);
+        assert_eq!(params.inst_id, "BTC-USDT-SWAP");
+    }
+
+    #[test]
+    fn rapidx_binance_cash_route_distinguishes_spot_and_margin() {
+        let spot = binance_cash_route_for(
+            BinanceAccountMode::Unified,
+            ExecBackend::Ltp,
+            RapidXCashBusinessType::Spot,
+        );
+        assert_eq!(spot.new_order, TradeRequestType::BinanceLtpNewSpotOrder);
+        assert_eq!(
+            spot.cancel_order,
+            TradeRequestType::BinanceLtpCancelSpotOrder
+        );
+        assert!(!spot.margin_business);
+        assert!(spot.maker_only);
+
+        let margin = binance_cash_route_for(
+            BinanceAccountMode::Unified,
+            ExecBackend::Ltp,
+            RapidXCashBusinessType::Margin,
+        );
+        assert_eq!(margin.new_order, TradeRequestType::BinanceNewMarginOrder);
+        assert_eq!(
+            margin.cancel_order,
+            TradeRequestType::BinanceCancelMarginOrder
+        );
+        assert!(margin.margin_business);
+        assert!(margin.maker_only);
+
+        let flags = binance_cash_transport_flags(margin, false);
+        assert!(!flags.ws_response_full);
+        assert!(!flags.ws_um_response_result);
+        assert!(flags.ws_margin_limit_maker);
+
+        let standard = binance_cash_route_for(
+            BinanceAccountMode::Standard,
+            ExecBackend::Native,
+            RapidXCashBusinessType::Spot,
+        );
+        let flags = binance_cash_transport_flags(standard, true);
+        assert!(flags.ws_response_full);
+        assert!(!flags.ws_um_response_result);
+        assert!(flags.ws_margin_limit_maker);
+    }
+
+    #[test]
+    fn rapidx_cash_market_buy_reaches_wire_as_quote_notional() {
+        for business in [RapidXCashBusinessType::Spot, RapidXCashBusinessType::Margin] {
+            let route =
+                binance_cash_route_for(BinanceAccountMode::Unified, ExecBackend::Ltp, business);
+            let mut order = Order::new(
+                TradingVenue::BinanceMargin,
+                42,
+                OrderType::Market,
+                "XRPUSDT".into(),
+                Side::Buy,
+                3.17,
+                0.0,
+                false,
+                1.0,
+                Some(BinanceAccountMode::Unified),
+                false,
+            );
+            order.set_quantity_qv(OrderQuantizedValue::new(1, -2, 317));
+            let prepared = prepare_binance_cash_order_with_quote(
+                &order,
+                ResolvedOrderQuantities::from_order(&order),
+                route,
+                10_000_000,
+                Some((1.23456789, 9_999_999, 0.00001)),
+            )
+            .unwrap();
+            let bytes = prepared.to_bytes();
+            let msg = TradeRequestMsg::parse(&bytes).unwrap();
+            let params =
+                trade_engine::trade_request::BinanceNewOrderParams::from_bytes(&msg.params)
+                    .unwrap();
+            assert!(params.quantity_qv.is_zero());
+            assert_eq!(params.quote_order_qty_qv.decimal_string(), "3.91358");
+            assert!(params.price_qv.is_zero());
+            let payload: Value = serde_json::from_str(
+                &trade_engine::ltp_ws::build_order_payload(
+                    runtime_common::exchange::Exchange::Binance,
+                    &msg,
+                    1,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(payload["args"]["quoteOrderQty"], "3.91358");
+            assert!(payload["args"].get("orderQty").is_none());
+            assert_eq!(order.quantity, 3.17);
+            assert_eq!(order.quantity_qv.unwrap().count, 317);
+        }
+    }
+
+    #[test]
+    fn rapidx_cash_quote_amount_floors_to_manager_price_decimals() {
+        let route = binance_cash_route_for(
+            BinanceAccountMode::Unified,
+            ExecBackend::Ltp,
+            RapidXCashBusinessType::Margin,
+        );
+        let order = Order::new(
+            TradingVenue::BinanceMargin,
+            42,
+            OrderType::Market,
+            "XRPUSDT".into(),
+            Side::Buy,
+            100.0,
+            0.0,
+            false,
+            1.0,
+            Some(BinanceAccountMode::Unified),
+            false,
+        );
+        for (tick, expected) in [(0.00001, "123.45678"), (0.05, "123.45"), (5.0, "123")] {
+            let request = prepare_binance_cash_order_with_quote(
+                &order,
+                ResolvedOrderQuantities::from_order(&order),
+                route,
+                10_000_000,
+                Some((1.23456789, 10_000_000, tick)),
+            )
+            .unwrap();
+            let params = trade_engine::trade_request::BinanceNewOrderParams::from_bytes(
+                request.params_slice(),
+            )
+            .unwrap();
+            assert_eq!(params.quote_order_qty_qv.decimal_string(), expected);
+            assert!(params.quote_order_qty_qv.get_val() <= order.quantity * 1.23456789);
+        }
+    }
+
+    #[test]
+    fn rapidx_cash_market_buy_requires_fresh_positive_ask() {
+        let route = binance_cash_route_for(
+            BinanceAccountMode::Unified,
+            ExecBackend::Ltp,
+            RapidXCashBusinessType::Margin,
+        );
+        let order = Order::new(
+            TradingVenue::BinanceMargin,
+            42,
+            OrderType::Market,
+            "XRPUSDT".into(),
+            Side::Buy,
+            100.0,
+            0.0,
+            false,
+            1.0,
+            Some(BinanceAccountMode::Unified),
+            false,
+        );
+        for quote in [
+            None,
+            Some((1.0, 0, 0.00001)),
+            Some((1.0, 7_999_999, 0.00001)),
+            Some((0.0, 10_000_000, 0.00001)),
+            Some((f64::NAN, 10_000_000, 0.00001)),
+            Some((1.0, 10_000_000, 0.0)),
+        ] {
+            assert!(prepare_binance_cash_order_with_quote(
+                &order,
+                ResolvedOrderQuantities::from_order(&order),
+                route,
+                10_000_000,
+                quote,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn cash_limit_sell_and_native_market_orders_keep_base_quantity() {
+        for backend in [ExecBackend::Native, ExecBackend::Ltp] {
+            for (kind, side) in [
+                (OrderType::Limit, Side::Buy),
+                (OrderType::Limit, Side::Sell),
+                (OrderType::Market, Side::Sell),
+                (OrderType::Market, Side::Buy),
+            ] {
+                if backend == ExecBackend::Ltp && kind == OrderType::Market && side == Side::Buy {
+                    continue;
+                }
+                let route = binance_cash_route_for(
+                    BinanceAccountMode::Unified,
+                    backend,
+                    RapidXCashBusinessType::Margin,
+                );
+                let order = Order::new(
+                    TradingVenue::BinanceMargin,
+                    42,
+                    kind,
+                    "XRPUSDT".into(),
+                    side,
+                    3.17,
+                    if kind.is_limit() { 1.23 } else { 0.0 },
+                    false,
+                    1.0,
+                    Some(BinanceAccountMode::Unified),
+                    kind.is_limit(),
+                );
+                let request = prepare_binance_cash_order_with_quote(
+                    &order,
+                    ResolvedOrderQuantities::from_order(&order),
+                    route,
+                    10_000_000,
+                    None,
+                )
+                .unwrap();
+                let params = trade_engine::trade_request::BinanceNewOrderParams::from_bytes(
+                    request.params_slice(),
+                )
+                .unwrap();
+                assert_eq!(params.quantity_qv.decimal_string(), "3.17");
+                assert!(params.quote_order_qty_qv.is_zero());
+                if backend == ExecBackend::Ltp {
+                    let bytes = request.to_bytes();
+                    let msg = TradeRequestMsg::parse(&bytes).unwrap();
+                    let payload: Value = serde_json::from_str(
+                        &trade_engine::ltp_ws::build_order_payload(
+                            runtime_common::exchange::Exchange::Binance,
+                            &msg,
+                            1,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(payload["args"]["orderQty"], "3.17");
+                    assert!(payload["args"].get("quoteOrderQty").is_none());
+                }
+            }
+        }
     }
 
     #[test]
@@ -1334,6 +2244,8 @@ mod tests {
             trade_engine::trade_request::BinanceNewOrderParams::from_bytes(params_bytes.as_ref())
                 .expect("Binance params should parse");
         assert!(!params.margin_buy);
+        assert!(params.ws_response_full);
+        assert!(params.ws_margin_limit_maker);
 
         let prepared = order
             .get_order_request_prepared()
@@ -1346,6 +2258,58 @@ mod tests {
             trade_engine::trade_request::BinanceNewOrderParams::from_bytes(prepared.params_slice())
                 .expect("prepared Binance params should parse");
         assert!(!params.margin_buy);
+        assert!(params.ws_response_full);
+        assert!(params.ws_margin_limit_maker);
+    }
+
+    #[test]
+    fn standard_usdm_grid_orders_and_cancels_use_native_ws() {
+        use trade_engine::trade_request::{BinanceCancelOrderParams, BinanceNewOrderParams};
+
+        crate::strategy::grid_exec::validate_grid_account(
+            TradingVenue::BinanceFutures,
+            ExecBackend::Native,
+            Some(BinanceAccountMode::Standard),
+        )
+        .unwrap();
+        for kind in [OrderType::Limit, OrderType::Market] {
+            for reduce_only in [false, true] {
+                let order = Order::new(
+                    TradingVenue::BinanceFutures,
+                    408,
+                    kind,
+                    "BTCUSDT".into(),
+                    Side::Sell,
+                    0.001,
+                    if kind.is_limit() { 64_000.0 } else { 0.0 },
+                    reduce_only,
+                    1.0,
+                    Some(BinanceAccountMode::Standard),
+                    kind.is_limit(),
+                );
+                let bytes = order.get_order_request_bytes().unwrap();
+                let request = TradeRequestMsg::parse(&bytes).unwrap();
+                assert_eq!(request.req_type, TradeRequestType::BinanceWsNewUMOrder);
+                let params = BinanceNewOrderParams::from_bytes(&request.params).unwrap();
+                assert_eq!(params.symbol, "BTCUSDT");
+                assert_eq!(params.quantity_qv.decimal_string(), "0.001");
+                assert_eq!(params.order_type, kind);
+                assert_eq!(params.reduce_only, reduce_only);
+                let prepared = order.get_order_request_prepared().unwrap();
+                assert_eq!(prepared.req_type(), TradeRequestType::BinanceWsNewUMOrder);
+                let prepared_params =
+                    BinanceNewOrderParams::from_bytes(prepared.params_slice()).unwrap();
+                assert_eq!(prepared_params.quantity_qv, params.quantity_qv);
+                assert_eq!(prepared_params.price_qv, params.price_qv);
+                assert_eq!(prepared_params.reduce_only, reduce_only);
+                let cancel_bytes = order.get_order_cancel_bytes().unwrap();
+                let cancel = TradeRequestMsg::parse(&cancel_bytes).unwrap();
+                assert_eq!(cancel.req_type, TradeRequestType::BinanceWsCancelUMOrder);
+                let params = BinanceCancelOrderParams::from_bytes(&cancel.params).unwrap();
+                assert_eq!(params.symbol, "BTCUSDT");
+                assert_eq!(params.orig_client_order_id, 408);
+            }
+        }
     }
 
     #[test]
@@ -1364,7 +2328,7 @@ mod tests {
                 TradingVenue::BinanceCoinFutures,
                 401,
                 OrderType::Limit,
-                "BTCUSDPERP".to_string(),
+                "BTCUSD".to_string(),
                 Side::Buy,
                 2.0,
                 64_000.0,
@@ -1909,6 +2873,34 @@ mod tests {
     }
 
     #[test]
+    fn gate_reducing_market_buy_keeps_base_quantity_and_protection_price() {
+        let order = Order::new(
+            TradingVenue::GateMargin,
+            123,
+            OrderType::Market,
+            "ALPINEUSDT".to_string(),
+            Side::Buy,
+            12.5,
+            0.4269,
+            true,
+            1.0,
+            None,
+            false,
+        );
+        for request in [
+            order.get_order_request_bytes().unwrap(),
+            order.get_order_request_prepared().unwrap().to_bytes(),
+        ] {
+            let payload = extract_request_json(&request);
+            assert_eq!(payload["type"], "limit");
+            assert_eq!(payload["time_in_force"], "ioc");
+            assert_eq!(payload["amount"], "12.5");
+            assert_eq!(payload["price"], "0.4269");
+            assert!(payload.get("auto_borrow").is_none());
+        }
+    }
+
+    #[test]
     fn bitget_futures_sell_order_serializes_one_way_fields() {
         let order = Order::new(
             TradingVenue::BitgetFutures,
@@ -1955,6 +2947,51 @@ mod tests {
         assert_eq!(payload.get("clientOid").and_then(Value::as_str), Some("77"));
         assert!(payload.get("reduceOnly").is_none());
         assert!(payload.get("posSide").is_none());
+    }
+
+    #[test]
+    fn bitget_adl_spot_repair_requests_preserve_base_qty_and_spot_category() {
+        for side in [Side::Buy, Side::Sell] {
+            let mut order = Order::new(
+                TradingVenue::BitgetMargin,
+                42,
+                OrderType::Market,
+                "BTCUSDT".to_string(),
+                side,
+                0.2,
+                if side == Side::Buy { 50000.0 } else { 0.0 },
+                true,
+                1.0,
+                None,
+                false,
+            );
+            order.set_bitget_spot_order(true);
+            for bytes in [
+                order.get_order_request_bytes().unwrap(),
+                order.get_order_request_prepared().unwrap().to_bytes(),
+            ] {
+                let request = TradeRequestMsg::parse(&bytes).unwrap();
+                assert_eq!(request.req_type, TradeRequestType::BitgetNewSpotOrder);
+                let payload: Value = serde_json::from_str(
+                    &trade_engine::bitget_ws::build_order_payload(&request, 999).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(payload["category"], "spot");
+                let arg = &payload["args"][0];
+                assert_eq!(arg["qty"], "0.2");
+                assert_eq!(arg["reduceOnly"], "YES");
+                if side == Side::Buy {
+                    assert_eq!(arg["orderType"], "limit");
+                    assert_eq!(arg["timeInForce"], "ioc");
+                    assert_eq!(arg["price"], "50000");
+                } else {
+                    assert_eq!(arg["orderType"], "market");
+                }
+            }
+            let cancel = order.get_order_cancel_bytes().unwrap();
+            let request = TradeRequestMsg::parse(&cancel).unwrap();
+            assert_eq!(request.req_type, TradeRequestType::BitgetCancelSpotOrder);
+        }
     }
 
     #[test]

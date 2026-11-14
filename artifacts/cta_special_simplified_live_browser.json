@@ -1,0 +1,26 @@
+[
+  {
+    "account": "rx02",
+    "url": "http://13.115.227.29:4191/cta/binance-cta-special-rx02/config/",
+    "merged_sections": 2,
+    "symbols": 16,
+    "factors": 5,
+    "config_saved_unchanged": true,
+    "nq_preserved": true,
+    "trading_enabled": false,
+    "desktop_mobile_no_overflow": true,
+    "javascript_errors": []
+  },
+  {
+    "account": "rx03",
+    "url": "http://13.115.227.29:4191/cta/binance-cta-special-rx03/config/",
+    "merged_sections": 2,
+    "symbols": 16,
+    "factors": 5,
+    "config_saved_unchanged": true,
+    "nq_preserved": true,
+    "trading_enabled": false,
+    "desktop_mobile_no_overflow": true,
+    "javascript_errors": []
+  }
+]

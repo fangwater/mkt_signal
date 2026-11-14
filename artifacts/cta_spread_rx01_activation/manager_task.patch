@@ -1,0 +1,122 @@
+diff --git a/deploy/jp_meta/crypto-cta-nginx-snippet.conf b/deploy/jp_meta/crypto-cta-nginx-snippet.conf
+index 3d9df72..00364cd 100644
+--- a/deploy/jp_meta/crypto-cta-nginx-snippet.conf
++++ b/deploy/jp_meta/crypto-cta-nginx-snippet.conf
+@@ -270,3 +270,45 @@ location = /manager-auth/exec_trade05 {
+     proxy_pass_request_body off;
+     proxy_set_header Content-Length "";
+ }
++
++# RX01 mixed cash/perpetual Exec
++location /exec_trade06/config/ {
++    auth_request /manager-auth/exec_trade06;
++    proxy_pass http://127.0.0.1:18166/;
++    proxy_http_version 1.1;
++    proxy_set_header Host $host;
++    proxy_set_header X-Real-IP $remote_addr;
++    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++    proxy_set_header X-Forwarded-Proto $scheme;
++    proxy_connect_timeout 2s;
++    proxy_read_timeout 15s;
++    proxy_buffering off;
++}
++
++location = /exec_trade06 {
++    return 301 /exec_trade06/;
++}
++
++location /exec_trade06/ {
++    auth_request /manager-auth/exec_trade06;
++    proxy_pass http://127.0.0.1:10046/;
++    proxy_http_version 1.1;
++    proxy_set_header Host $host;
++    proxy_set_header X-Real-IP $remote_addr;
++    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++    proxy_set_header X-Forwarded-Proto $scheme;
++    proxy_set_header Upgrade $http_upgrade;
++    proxy_set_header Connection "upgrade";
++    proxy_connect_timeout 2s;
++    proxy_read_timeout 1h;
++    proxy_buffering off;
++}
++
++location = /manager-auth/exec_trade06 {
++    internal;
++    proxy_pass http://127.0.0.1:18201/api/auth/verify;
++    proxy_set_header Cookie $http_cookie;
++    proxy_set_header X-CTA-Source-ID binance_exec_trade06;
++    proxy_pass_request_body off;
++    proxy_set_header Content-Length "";
++}
+diff --git a/deploy/jp_meta/cta-manager.toml b/deploy/jp_meta/cta-manager.toml
+index b46c5be..6cf0657 100644
+--- a/deploy/jp_meta/cta-manager.toml
++++ b/deploy/jp_meta/cta-manager.toml
+@@ -110,6 +110,22 @@ exec_viz_url = "http://127.0.0.1:10045/"
+ estimated_fee_rate = 0.0004
+ ipc_namespace = "binance_exec_trade05"
+ 
++# RX01 cash entries and perpetual hedges, with independently carried inventory.
++# Derive account_ipc_service from the remote RX01 portfolio identity as for RX02.
++[[sources]]
++id = "binance_exec_trade06"
++account = "trade06"
++alias = "lgq_cta_RX01"
++venue = "binance-futures"
++rocksdb_path = "/home/ubuntu/binance_exec_trade06/data/persist_manager"
++enabled = true
++gateway_prefix = "/exec_trade06"
++exec_config_url = "http://127.0.0.1:18166/"
++exec_viz_url = "http://127.0.0.1:10046/"
++maker_fee_rate = -0.00002
++taker_fee_rate = 0.000175
++ipc_namespace = "binance_exec_trade06"
++
+ [[sources]]
+ id = "binance_exec_trade02"
+ account = "trade02"
+diff --git a/src/market_rules/rapidx.rs b/src/market_rules/rapidx.rs
+index 99d5dfc..3bc154c 100644
+--- a/src/market_rules/rapidx.rs
++++ b/src/market_rules/rapidx.rs
+@@ -79,7 +79,10 @@ fn parse_data(value: &Value, venue: &str) -> Result<BTreeMap<String, MarketRule>
+         }
+         let row_sym = row.get("sym").and_then(Value::as_str);
+         if !is_target(map_parsed.as_ref(), &target) {
+-            if row_sym.is_some_and(|sym| claims_target_perp(sym, &target)) {
++            if row_sym.is_some_and(|sym| match parse_symbol(sym) {
++                Some(parsed) => is_target(Some(&parsed), &target),
++                None => claims_target_perp(sym, &target),
++            }) {
+                 bail!("RapidX target row sym does not match unrelated map key: {map_symbol}");
+             }
+             continue;
+@@ -422,6 +425,28 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn cash_rules_skip_other_quote_markets_but_reject_hidden_target_rows() {
++        for (venue, exchange, original) in [
++            ("binance-margin", "BINANCE", "BTCUSDT"),
++            ("okex-margin", "OKX", "BTC-USDT"),
++        ] {
++            let sym = format!("{exchange}_SPOT_BTC_USDT");
++            let cash = serde_json::json!({"sym":sym,"originalSymbol":original,"state":"live",
++                "lotSize":"0.00001","tickSize":"0.01","minSize":"0.0001","minNotional":"5"});
++            let other = format!("{exchange}_SPOT_0G_USDC");
++            let mut data = serde_json::json!({sym.clone():cash,other.clone():{"sym":other}});
++            let rules = parse(&response(data.clone()), venue).unwrap();
++            assert_eq!(rules.len(), 1);
++            assert!(rules.contains_key("BTCUSDT"));
++
++            data[&other]["sym"] = serde_json::json!(sym);
++            assert!(parse(&response(data.clone()), venue).is_err());
++            data[&other]["sym"] = serde_json::json!(format!("{exchange}_SPOT_BTC_USDT_EXTRA"));
++            assert!(parse(&response(data), venue).is_err());
++        }
++    }
++
+     #[test]
+     fn parses_okx_contract_quantity_rules() {
+         let row = serde_json::json!({

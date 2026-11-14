@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CTA · 内存回放</title>
+  <style>
+    :root{color-scheme:dark;--bg:#10151b;--card:#182029;--line:#2c3947;--text:#e0e8ee;--muted:#95a6b5;--green:#5fd1a2;--red:#ed8795;--blue:#83bafa}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}main{max-width:1800px;margin:auto;padding:24px}
+    header{display:flex;justify-content:space-between;gap:20px;align-items:center;margin-bottom:18px}h1{font-size:24px;margin:0}h2{font-size:15px;margin:0 0 12px}p{margin:6px 0;color:var(--muted)}
+    .badge{border:1px solid var(--line);padding:5px 10px;border-radius:20px;color:var(--green)}.layout{display:grid;grid-template-columns:310px minmax(0,1fr);gap:16px}.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px}
+    label{display:block;color:var(--muted);font-size:12px;margin:0 0 10px}input,select,button{font:inherit;color:var(--text);background:#111820;border:1px solid #3a4a5c;border-radius:6px;padding:8px 10px}input,select{width:100%;display:block;margin-top:4px}button{cursor:pointer}button:hover{border-color:var(--blue)}button:disabled{opacity:.45;cursor:wait}.primary{background:#245b83;border-color:#418dc2;width:100%;font-weight:600}.pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}.inline{display:flex;align-items:center;gap:8px}.inline input{width:auto;margin:0}.hint{font-size:12px;color:var(--muted)}.error{color:#ffb5b9;white-space:pre-wrap}.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}.stat{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:14px}.stat small{display:block;color:var(--muted)}.stat b{display:block;font-size:20px;margin-top:4px;font-variant-numeric:tabular-nums}.positive{color:var(--green)}.negative{color:var(--red)}
+    #chart{height:470px;width:100%}.toolbar{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.table-scroll{overflow:auto;max-height:420px}table{border-collapse:collapse;width:100%;white-space:nowrap;font-variant-numeric:tabular-nums}th,td{text-align:right;padding:9px 12px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:12px;position:sticky;top:0;background:var(--card)}th:first-child,td:first-child{text-align:left}tbody tr{cursor:pointer}tbody tr:hover{background:#21303f}#inspector{min-height:55px}#coverage{word-break:break-word}.actions{display:flex;gap:8px;align-items:center;margin:10px 0}.notice{border-left:3px solid var(--blue);padding-left:10px;margin-bottom:14px}.compare td{font-size:12px}a{color:var(--blue)}
+    @media(max-width:1000px){.layout{grid-template-columns:250px minmax(0,1fr)}.stats{grid-template-columns:repeat(3,1fr)}main{padding:14px}#chart{height:570px}}
+    @media(max-width:720px){header{align-items:flex-start;flex-direction:column}.layout{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}.card{padding:12px}#chart{height:510px}main{padding:10px}}
+    .layout>*{min-width:0}.pair{grid-template-columns:repeat(2,minmax(0,1fr))}input,select{min-width:0}
+  </style>
+</head>
+<body><main>
+  <header><div><h1>CTA · 理论盈亏回放</h1><p>按策略汇总全部币种与因子规则，比较不同阈值的理论收益。</p></div><span class="badge" id="state">正在连接数据…</span></header>
+  <div class="layout">
+    <aside><form id="parameters" class="card">
+      <h2>组合回放</h2>
+      <label>策略组<select id="strategy-group"><option value="*">全部策略组</option></select></label>
+      <label>券池<select id="symbol-group"><option value="*">全部券池</option></select></label>
+      <label>周期<select id="interval"><option value="*">全部周期</option><option value="1m">1 分钟</option><option value="5m">5 分钟</option><option value="15m">15 分钟</option></select></label>
+      <label class="inline"><input id="override" type="checkbox">统一调整开平阈值</label>
+      <div class="pair"><label>开多阈值<input id="entry-long" type="number" min="0" max="1" step="0.01" value="0.9" required></label><label>开空阈值<input id="entry-short" type="number" min="0" max="1" step="0.01" value="0.1" required></label></div>
+      <div class="pair"><label>退多阈值<input id="exit-long" type="number" min="0" max="1" step="0.01" value="0.3" required></label><label>退空阈值<input id="exit-short" type="number" min="0" max="1" step="0.01" value="0.7" required></label></div>
+      <p class="hint">默认沿用各策略当前阈值。NQ 条件与因子方向保持每条规则的设置。</p>
+      <label>统一单份金额 · USDT<input id="amount" type="number" min="0.01" step="0.01" placeholder="留空沿用各策略金额"></label>
+      <label>单边 taker 手续费 · bps<input id="fee" type="number" min="0" max="100" step="0.1" value="0" required></label>
+      <label>起始时间 · UTC<input id="start" type="datetime-local"></label>
+      <label>截止时间 · UTC<input id="end" type="datetime-local"></label>
+      <div class="actions"><button type="button" id="freeze">固定当前截止</button><button type="button" id="latest">跟随最新</button></div>
+      <p class="hint">从起点空仓开始；入场后冻结原数量。默认手续费为零，显示理论毛收益。</p>
+      <button type="submit" class="primary" id="run">重算理论盈亏</button>
+      <p id="error" class="error" role="alert"></p>
+    </form>
+    <section class="card"><h2>计算口径</h2><p class="hint">信号在 K 线闭合时判断，以之后下一根已闭合 K 线的 VWAP 模拟 taker 成交。</p><p class="hint">VWAP = 成交额 ÷ 成交量。未平仓按最新可用 VWAP 估值；每条规则独立计算后汇总。</p><div id="coverage" class="hint">等待历史载入。</div><p id="source" class="hint"></p></section>
+    </aside>
+    <div>
+      <div class="stats">
+        <div class="stat"><small id="pnl-title">理论毛 PnL · USDT</small><b id="pnl">—</b></div>
+        <div class="stat"><small>已实现 / 浮动 · USDT</small><b id="components">—</b></div>
+        <div class="stat"><small>已平交易 / 胜率</small><b id="wins">—</b></div>
+        <div class="stat"><small>组合最大回撤 · USDT</small><b id="drawdown">—</b></div>
+        <div class="stat"><small>内存重算耗时</small><b id="elapsed">—</b></div>
+      </div>
+      <div id="group-totals" class="pair"></div>
+      <section class="card"><div class="toolbar"><h2 id="chart-title">策略理论收益曲线</h2><button id="save" disabled>保留本次对比</button></div>
+        <p id="result-note" class="hint">历史载入后，汇总每个策略下的全部币种。</p>
+        <div id="chart" role="img" aria-label="Prep01和Prep02全部币种的理论盈亏曲线"></div>
+        <div id="inspector" class="hint">默认沿用当前策略参数，可修改阈值重新回放。</div>
+      </section>
+      <section class="card"><h2>各策略总盈亏 · 全部币种</h2><div class="table-scroll"><table><thead><tr><th>策略组 / 券池 / 周期</th><th>规则就绪</th><th>已平交易</th><th>胜率</th><th>已实现</th><th>浮动</th><th>理论总 PnL</th><th>最大回撤</th></tr></thead><tbody id="strategies"></tbody></table></div></section>
+      <section class="card"><h2>阈值对比</h2><p class="hint">最多保留 8 次；相同策略范围和截止时间便于比较。</p><div class="table-scroll"><table class="compare"><thead><tr><th>参数 / 策略数</th><th>截止 · UTC</th><th>已平交易</th><th>胜率</th><th>理论 PnL</th><th>回撤</th><th>耗时</th></tr></thead><tbody id="comparisons"></tbody></table></div></section>
+    </div>
+  </div>
+</main><script src="assets/echarts.min.js"></script><script src="app.js"></script></body>
+</html>

@@ -191,12 +191,18 @@ impl MultiChannelSubscriber {
     /// 订阅单个频道
     pub fn subscribe_single(&mut self, param: SubscribeParams) -> Result<()> {
         let service_root = param.service_root.as_deref().unwrap_or("dat_pbs");
-        let service_name: String = format!(
-            "{}/{}/{}",
-            service_root,
-            param.topic_prefix,
-            param.channel.as_str()
-        );
+        let merged_channel = (param.channel == ChannelType::AskBidSpread
+            && service_root.starts_with("spread_pbs"))
+            || (matches!(
+                param.channel,
+                ChannelType::Trade | ChannelType::Incremental | ChannelType::Derivatives
+            ) && service_root.starts_with("dat_pbs"));
+        let topic = if merged_channel {
+            runtime_common::symbol_util::market_data_pub_slug(&param.topic_prefix)
+        } else {
+            &param.topic_prefix
+        };
+        let service_name: String = format!("{}/{}/{}", service_root, topic, param.channel.as_str());
 
         let key = subscription_key(service_root, &param.topic_prefix, &param.channel);
 

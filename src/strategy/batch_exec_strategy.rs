@@ -4,6 +4,7 @@ use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimite
 use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
+use crate::strategy::grid_exec::{grid_offset, GridConfig, QUOTE_STALE_MS, VOL_STALE_MS};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::mark_price_lookup_symbol;
 use crate::strategy::hedge_strategy_common::signed_qty_from_side;
@@ -11,6 +12,7 @@ use crate::strategy::manager::{
     ExecOrphanTerminal, OrphanHandoff, OrphanSourceKind, OrphanStrategyRole, Strategy,
 };
 use crate::strategy::order_reconcile::PendingOrderQueryReason;
+use crate::strategy::pov::{ExecAlgorithm, PovConfig, PovLiquidity, PovState};
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
@@ -20,8 +22,10 @@ use order_common::{
     OrderExecutionStatus, OrderManager, OrderStatus, OrderType, OrderUpdate, Side,
     TradeEngineResponse, TradeUpdate, TradingVenue,
 };
-use persist_common::{SignalBbo, SignalBboLeg};
-use quote_plan::common::{align_price_ceil, align_price_floor};
+use persist_common::{
+    SignalBbo, SignalBboLeg, UnifiedOrderRecord, UNIFORM_ORDER_TYPE_INTERNAL_CROSS,
+};
+use quote_plan::common::{align_price_ceil, align_price_floor, Quote};
 use quote_plan::order_align::{align_final_order_qty, min_qty_symbol_key};
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
@@ -33,7 +37,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use trade_signal::MktChannel;
 
 const QTY_EPS: f64 = 1e-12;
-const BBO_MAX_AGE_US: i64 = 2_000_000;
 const POSITION_RECONCILE_SETTLE_US: i64 = 5_000_000;
 const BATCH_EXEC_SIGNAL_KIND: u8 = 0;
 pub const ALLOWED_TARGET_SIGNALS: [i32; 5] = [-2, -1, 0, 1, 2];
@@ -43,6 +46,12 @@ pub const BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME: &str = "SYSTEM_POSITION_CLOSE
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BatchExecConfig {
+    #[serde(default)]
+    pub algorithm: ExecAlgorithm,
+    #[serde(default)]
+    pub pov: PovConfig,
+    #[serde(default)]
+    pub grid: GridConfig,
     pub single_order_usdt: f64,
     pub orders_per_batch: u32,
     #[serde(default = "default_max_batch")]
@@ -58,6 +67,9 @@ pub struct BatchExecConfig {
 impl Default for BatchExecConfig {
     fn default() -> Self {
         Self {
+            algorithm: ExecAlgorithm::Batch,
+            pov: PovConfig::default(),
+            grid: GridConfig::default(),
             single_order_usdt: 100.0,
             orders_per_batch: 3,
             max_batch: default_max_batch(),
@@ -75,16 +87,18 @@ const fn default_max_batch() -> u32 {
     20
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BatchExecTarget {
     pub qty: f64,
     pub signal: i32,
+    pub clear: bool,
 }
 
 impl BatchExecTarget {
     pub const ZERO: Self = Self {
         qty: 0.0,
         signal: 0,
+        clear: false,
     };
 
     pub fn new(qty: f64, signal: i32) -> Result<Self, String> {
@@ -92,11 +106,49 @@ impl BatchExecTarget {
             return Err("qty must be finite".to_string());
         }
         validate_target_signal(signal)?;
-        Ok(Self { qty, signal })
+        Ok(Self {
+            qty,
+            signal,
+            clear: false,
+        })
+    }
+
+    pub fn clear(signal: i32) -> Result<Self, String> {
+        validate_target_signal(signal)?;
+        Ok(Self {
+            qty: 0.0,
+            signal,
+            clear: true,
+        })
+    }
+
+    pub fn tolerance_usdt(self, configured: f64) -> f64 {
+        if self.clear {
+            0.0
+        } else {
+            configured
+        }
     }
 
     pub fn uses_taker_only(self) -> bool {
         self.signal.abs() == 1
+    }
+}
+
+impl Serialize for BatchExecTarget {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut object = serializer.serialize_struct("BatchExecTarget", 2)?;
+        if self.clear {
+            object.serialize_field("qty", "clear")?;
+        } else {
+            object.serialize_field("qty", &self.qty)?;
+        }
+        object.serialize_field("signal", &self.signal)?;
+        object.end()
     }
 }
 
@@ -109,13 +161,21 @@ impl<'de> Deserialize<'de> for BatchExecTarget {
         #[serde(untagged)]
         enum BatchExecTargetDe {
             Qty(f64),
+            Clear(String),
             Object(BatchExecTargetObject),
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Quantity {
+            Qty(f64),
+            Clear(String),
         }
 
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct BatchExecTargetObject {
-            qty: f64,
+            qty: Quantity,
             #[serde(default)]
             signal: Option<i32>,
         }
@@ -124,9 +184,19 @@ impl<'de> Deserialize<'de> for BatchExecTarget {
             BatchExecTargetDe::Qty(qty) => {
                 BatchExecTarget::new(qty, 0).map_err(serde::de::Error::custom)
             }
-            BatchExecTargetDe::Object(value) => {
-                BatchExecTarget::new(value.qty, value.signal.unwrap_or(0))
-                    .map_err(serde::de::Error::custom)
+            BatchExecTargetDe::Object(value) => match value.qty {
+                Quantity::Qty(qty) => BatchExecTarget::new(qty, value.signal.unwrap_or(0)),
+                Quantity::Clear(text) if text == "clear" => {
+                    BatchExecTarget::clear(value.signal.unwrap_or(0))
+                }
+                Quantity::Clear(_) => Err("qty string must be clear".to_string()),
+            }
+            .map_err(serde::de::Error::custom),
+            BatchExecTargetDe::Clear(text) if text == "clear" => {
+                BatchExecTarget::clear(0).map_err(serde::de::Error::custom)
+            }
+            BatchExecTargetDe::Clear(_) => {
+                Err(serde::de::Error::custom("qty string must be clear"))
             }
         }
     }
@@ -147,12 +217,55 @@ pub fn validate_target_signal(signal: i32) -> Result<(), String> {
     }
 }
 
-fn should_use_taker(config: &BatchExecConfig, maker_requotes: u32, signal: i32) -> bool {
+fn should_use_taker(
+    config: &BatchExecConfig,
+    maker_requotes: u32,
+    signal: i32,
+    cash: bool,
+) -> bool {
+    if config.algorithm == ExecAlgorithm::Grid {
+        return signal.abs() == 1
+            || config
+                .grid
+                .max_maker_requotes(cash)
+                .is_some_and(|limit| maker_requotes > limit);
+    }
+    if config.algorithm == ExecAlgorithm::Ctaker {
+        return true;
+    }
+    if config.algorithm == ExecAlgorithm::Pov {
+        match config.pov.liquidity {
+            PovLiquidity::MakerOnly => return false,
+            PovLiquidity::TakerOnly => return true,
+            PovLiquidity::MakerThenTaker => {}
+        }
+    }
     signal.abs() == 1 || maker_requotes > config.max_maker_requotes
 }
 
 impl BatchExecConfig {
+    // Resolve the order's market once at strategy construction/reconfiguration.
+    // Discard the inactive market settings so edits there cannot cancel this market's orders.
+    fn for_market(mut self, cash: bool) -> Self {
+        if self.algorithm == ExecAlgorithm::Grid {
+            if cash {
+                self.orders_per_batch = self.grid.spot.orders_per_batch;
+                self.maker_timeout_ms = self.grid.spot.maker_timeout_ms;
+                self.grid.futures = Default::default();
+            } else {
+                self.orders_per_batch = self.grid.futures.orders_per_batch;
+                self.maker_timeout_ms = self.grid.futures.maker_timeout_ms;
+                self.grid.spot = Default::default();
+            }
+            // Grid uses only its selected market's optional limit, never the Batch field.
+            self.max_maker_requotes = 0;
+        }
+        self
+    }
+
     pub fn validate(&self) -> Result<(), String> {
+        self.pov.validate()?;
+        self.grid.validate()?;
         if !self.single_order_usdt.is_finite() || self.single_order_usdt <= 0.0 {
             return Err("single_order_usdt must be positive".to_string());
         }
@@ -172,6 +285,9 @@ impl BatchExecConfig {
     }
 
     fn effective_single_order_usdt(&self, delta_usdt: f64) -> f64 {
+        if matches!(self.algorithm, ExecAlgorithm::Pov | ExecAlgorithm::Grid) {
+            return self.single_order_usdt;
+        }
         let dynamic_single =
             delta_usdt.abs() / f64::from(self.max_batch) / f64::from(self.orders_per_batch);
         self.single_order_usdt.max(dynamic_single)
@@ -179,6 +295,82 @@ impl BatchExecConfig {
 
     fn batch_capacity_usdt(&self, single_order_usdt: f64) -> f64 {
         single_order_usdt * f64::from(self.orders_per_batch)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchExecConfigOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm: Option<ExecAlgorithm>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pov: Option<PovConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grid: Option<GridConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub single_order_usdt: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orders_per_batch: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_batch: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maker_price_anchor: Option<MakerPriceAnchor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tick_spacing: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch_interval_ms: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maker_timeout_ms: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_maker_requotes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_tolerance_usdt: Option<f64>,
+}
+
+impl BatchExecConfigOverride {
+    pub fn is_empty(&self) -> bool {
+        self.algorithm.is_none()
+            && self.pov.is_none()
+            && self.grid.is_none()
+            && self.single_order_usdt.is_none()
+            && self.orders_per_batch.is_none()
+            && self.max_batch.is_none()
+            && self.maker_price_anchor.is_none()
+            && self.tick_spacing.is_none()
+            && self.batch_interval_ms.is_none()
+            && self.maker_timeout_ms.is_none()
+            && self.max_maker_requotes.is_none()
+            && self.target_tolerance_usdt.is_none()
+    }
+
+    pub fn apply_to(&self, defaults: &BatchExecConfig) -> BatchExecConfig {
+        BatchExecConfig {
+            algorithm: self.algorithm.unwrap_or(defaults.algorithm),
+            pov: self.pov.clone().unwrap_or_else(|| defaults.pov.clone()),
+            grid: self.grid.clone().unwrap_or_else(|| defaults.grid.clone()),
+            single_order_usdt: self.single_order_usdt.unwrap_or(defaults.single_order_usdt),
+            orders_per_batch: self.orders_per_batch.unwrap_or(defaults.orders_per_batch),
+            max_batch: self.max_batch.unwrap_or(defaults.max_batch),
+            maker_price_anchor: self
+                .maker_price_anchor
+                .unwrap_or(defaults.maker_price_anchor),
+            tick_spacing: self.tick_spacing.unwrap_or(defaults.tick_spacing),
+            batch_interval_ms: self.batch_interval_ms.unwrap_or(defaults.batch_interval_ms),
+            maker_timeout_ms: self.maker_timeout_ms.unwrap_or(defaults.maker_timeout_ms),
+            max_maker_requotes: self
+                .max_maker_requotes
+                .unwrap_or(defaults.max_maker_requotes),
+            target_tolerance_usdt: self
+                .target_tolerance_usdt
+                .unwrap_or(defaults.target_tolerance_usdt),
+        }
+    }
+
+    pub fn validate(&self, defaults: &BatchExecConfig) -> Result<(), String> {
+        if self.is_empty() {
+            return Err("symbol override must replace at least one parameter".to_string());
+        }
+        self.apply_to(defaults).validate()
     }
 }
 
@@ -197,7 +389,11 @@ fn estimate_batch_progress(
     }
 
     let single_order_usdt = config.effective_single_order_usdt(delta_usdt);
-    let raw_batches = (delta_usdt.abs() / config.batch_capacity_usdt(single_order_usdt)).ceil();
+    let raw_batches = if config.algorithm == ExecAlgorithm::Ctaker {
+        1.0
+    } else {
+        (delta_usdt.abs() / config.batch_capacity_usdt(single_order_usdt)).ceil()
+    };
     let batch_equivalent = if raw_batches >= f64::from(u32::MAX) {
         u32::MAX
     } else {
@@ -219,7 +415,7 @@ fn estimate_batch_progress(
         let last_batch_start_ts_us = now_ts_us
             .saturating_add(first_batch_delay_us)
             .saturating_add(subsequent_batch_delay_us);
-        let maker_lifecycle_us = if force_taker {
+        let maker_lifecycle_us = if force_taker || config.algorithm == ExecAlgorithm::Ctaker {
             0
         } else {
             // Initial maker order plus max_maker_requotes maker retries, then taker fallback.
@@ -232,6 +428,10 @@ fn estimate_batch_progress(
     };
     let estimated_completion_ts_ms = active_completion_ts_us.max(future_completion_ts_us) / 1_000;
     (remaining_batches, estimated_completion_ts_ms)
+}
+
+fn should_defer_batch_start(now_ts: i64, next_batch_at_us: i64, has_ready_batch: bool) -> bool {
+    now_ts < next_batch_at_us && !(has_ready_batch && next_batch_at_us == i64::MAX)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,10 +459,13 @@ struct BatchState {
     phase: BatchPhase,
     child_order_ids: BTreeSet<i64>,
     remaining_qty_by_level: BTreeMap<u32, f64>,
-    last_quote_ts: i64,
-    require_new_quote: bool,
     expires_at_us: i64,
     from_key: Vec<u8>,
+    saw_open_reject: bool,
+    /// Set when a live batch was pulled by a POV stale-data pause rather than
+    /// a genuine maker requote; that cancellation must not burn
+    /// `maker_requotes` (data staleness is not a liquidity outcome).
+    stale_paused: bool,
 }
 
 fn estimate_active_batch_completion_ts_us(
@@ -315,6 +518,8 @@ struct ChildOrderMeta {
     level_index: u32,
     order_base_qty: f64,
     accounted_fill_base_qty: f64,
+    accounted_fill_notional: f64,
+    qty_multiplier: f64,
     signal_ts: i64,
     price_offset: f64,
     from_key: Vec<u8>,
@@ -342,6 +547,8 @@ enum BatchExecCompletionReason {
     TargetReached,
     TargetTolerance,
     ExchangeMinimum,
+    BorrowUnavailable,
+    SymbolNotTradable,
 }
 
 impl BatchExecCompletionReason {
@@ -350,12 +557,16 @@ impl BatchExecCompletionReason {
             Self::TargetReached => "target_reached",
             Self::TargetTolerance => "target_tolerance",
             Self::ExchangeMinimum => "exchange_minimum",
+            Self::BorrowUnavailable => "borrow_unavailable",
+            Self::SymbolNotTradable => "symbol_not_tradable",
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BatchExecSnapshot {
+    pub algorithm: String,
+    pub pov: Option<viz_common::resample::ExecPovState>,
     pub strategy_name: String,
     pub source_updated_at_ms: i64,
     pub symbol: String,
@@ -371,6 +582,7 @@ pub struct BatchExecSnapshot {
     pub live_order_qty: f64,
     pub active_batches: usize,
     pub remaining_batches: u32,
+    pub has_execution_in_flight: bool,
     pub estimated_completion_ts_ms: i64,
     pub execution_complete: bool,
     pub completion_reason: String,
@@ -397,6 +609,26 @@ struct BatchOrderLimits {
     min_notional: f64,
     qty_multiplier: f64,
     inverse_contract_size: Option<f64>,
+}
+
+// Base quantities for inverse execution are valued at the same mark as the
+// position ledger. Contract face value is independent of the maker limit price.
+#[derive(Clone, Copy)]
+struct ChildPlanContext {
+    value: f64,
+    notional_price: Option<f64>,
+    volatility: Option<f64>,
+    cash: bool,
+}
+impl From<f64> for ChildPlanContext {
+    fn from(value: f64) -> Self {
+        Self {
+            value,
+            notional_price: None,
+            volatility: None,
+            cash: false,
+        }
+    }
 }
 
 impl BatchOrderLimits {
@@ -472,6 +704,22 @@ fn minimum_executable_base_qty(price: f64, limits: BatchOrderLimits) -> Result<f
     Ok(align_child_qty_ceil(required_venue_qty, limits.qty_step) * qty_multiplier)
 }
 
+fn executable_pending_base_qty(
+    signed_base_qty: f64,
+    price: f64,
+    limits: BatchOrderLimits,
+) -> Result<f64, String> {
+    let multiplier = limits.qty_multiplier_at(price)?;
+    let minimum = minimum_executable_base_qty(price, limits)?;
+    let aligned =
+        align_child_qty_floor(signed_base_qty.abs() / multiplier, limits.qty_step) * multiplier;
+    Ok(if aligned + QTY_EPS < minimum {
+        0.0
+    } else {
+        signed_base_qty.signum() * aligned
+    })
+}
+
 fn select_executable_batch_base_qty(
     aggregate_base_qty: f64,
     desired_batch_base_qty: f64,
@@ -513,7 +761,25 @@ fn maker_limit_price(
     bid: f64,
     ask: f64,
     price_tick: f64,
+    volatility: Option<f64>,
+    cash: bool,
 ) -> Result<(f64, f64), String> {
+    if config.algorithm == ExecAlgorithm::Grid {
+        let offset = grid_offset(
+            level_index,
+            config.orders_per_batch,
+            volatility.ok_or("grid volatility is unavailable")?,
+            config.grid.vol_multiplier(cash),
+        )?;
+        let price = match side {
+            Side::Buy => align_price_floor(bid * (1.0 - offset), price_tick),
+            Side::Sell => align_price_ceil(ask * (1.0 + offset), price_tick),
+        };
+        if !price.is_finite() || price <= 0.0 {
+            return Err("invalid grid maker price".into());
+        }
+        return Ok((price, offset));
+    }
     let level_ticks = i64::from(level_index) * i64::from(config.tick_spacing);
     let start_price = match (side, config.maker_price_anchor) {
         (Side::Sell, MakerPriceAnchor::OwnBest) => ask,
@@ -591,8 +857,10 @@ fn build_child_order_plans(
     qty_step: f64,
     min_qty: f64,
     min_notional: f64,
-    qty_multiplier: f64,
+    qty_multiplier: impl Into<ChildPlanContext>,
 ) -> Result<Vec<BatchChildOrderPlan>, String> {
+    let conversion = qty_multiplier.into();
+    let qty_multiplier = conversion.value;
     if !bid.is_finite()
         || !ask.is_finite()
         || bid <= 0.0
@@ -604,7 +872,7 @@ fn build_child_order_plans(
     {
         return Err("invalid BBO, price tick, or qty multiplier".to_string());
     }
-    let use_taker = should_use_taker(config, maker_requotes, signal);
+    let use_taker = should_use_taker(config, maker_requotes, signal, conversion.cash);
     let child_count = if use_taker {
         1
     } else {
@@ -616,8 +884,20 @@ fn build_child_order_plans(
         if unplanned_base_qty <= QTY_EPS {
             break;
         }
-        let (limit_price, price_offset) =
-            maker_limit_price(config, side, level as u32, bid, ask, price_tick)?;
+        let (limit_price, price_offset) = if use_taker {
+            (0.0, 0.0)
+        } else {
+            maker_limit_price(
+                config,
+                side,
+                level as u32,
+                bid,
+                ask,
+                price_tick,
+                conversion.volatility,
+                conversion.cash,
+            )?
+        };
         let sizing_price = if use_taker {
             match side {
                 Side::Buy => ask,
@@ -629,14 +909,15 @@ fn build_child_order_plans(
         if !sizing_price.is_finite() || sizing_price <= 0.0 {
             return Err("invalid sizing price".to_string());
         }
+        let quantity_price = conversion.notional_price.unwrap_or(sizing_price);
         let hand_usdt = if use_taker {
-            unplanned_base_qty * sizing_price
+            unplanned_base_qty * quantity_price
         } else {
             config
                 .single_order_usdt
-                .min(unplanned_base_qty * sizing_price)
+                .min(unplanned_base_qty * quantity_price)
         };
-        let raw_base_qty = (hand_usdt / sizing_price).min(unplanned_base_qty);
+        let raw_base_qty = (hand_usdt / quantity_price).min(unplanned_base_qty);
         let raw_venue_qty = raw_base_qty / qty_multiplier;
         let qty_venue = align_child_qty_floor(raw_venue_qty, qty_step);
         let qty_base = qty_venue * qty_multiplier;
@@ -688,8 +969,10 @@ fn rebuild_child_order_plans_at_preserved_levels(
     qty_step: f64,
     min_qty: f64,
     min_notional: f64,
-    qty_multiplier: f64,
+    qty_multiplier: impl Into<ChildPlanContext>,
 ) -> Result<Vec<BatchChildOrderPlan>, String> {
+    let conversion = qty_multiplier.into();
+    let qty_multiplier = conversion.value;
     if !bid.is_finite()
         || !ask.is_finite()
         || bid <= 0.0
@@ -707,8 +990,16 @@ fn rebuild_child_order_plans_at_preserved_levels(
         if remaining_base_qty <= QTY_EPS {
             continue;
         }
-        let (limit_price, price_offset) =
-            maker_limit_price(config, side, level_index, bid, ask, price_tick)?;
+        let (limit_price, price_offset) = maker_limit_price(
+            config,
+            side,
+            level_index,
+            bid,
+            ask,
+            price_tick,
+            conversion.volatility,
+            conversion.cash,
+        )?;
         let raw_venue_qty = remaining_base_qty / qty_multiplier;
         let qty_venue = align_child_qty_floor(raw_venue_qty, qty_step);
         let qty_base = qty_venue * qty_multiplier;
@@ -742,8 +1033,13 @@ pub struct BatchExecStrategy {
     symbol: String,
     exec_venue: TradingVenue,
     config: BatchExecConfig,
+    pov_state: PovState,
+    config_transition_in_progress: bool,
+    config_transition_pov_started_at_us: Option<i64>,
     source_updated_at_us: i64,
     virtual_position_qty: Option<f64>,
+    inverse_position_notional: Option<f64>,
+    inverse_reference_price: Option<f64>,
     position_allocation_ready: bool,
     last_position_fill_at_us: i64,
     active_target: Option<ActiveTarget>,
@@ -751,12 +1047,18 @@ pub struct BatchExecStrategy {
     batches: BTreeMap<u64, BatchState>,
     child_orders: FastHashMap<i64, ChildOrderMeta>,
     orphaned_child_orders: FastHashMap<i64, ChildOrderMeta>,
+    post_only_retry_levels: BTreeSet<(u64, u32)>,
     batch_seq: u64,
     order_seq: u32,
     next_batch_at_us: i64,
     completion_reason: Option<BatchExecCompletionReason>,
+    borrow_unavailable_generation: Option<i64>,
     reconcile_state: HedgeOrderReconcileState,
     alive_flag: bool,
+}
+
+fn is_exec_rate_limit_error(error: &str) -> bool {
+    error.starts_with("exec ") && error.contains("下单数") && error.contains("达到上限")
 }
 
 impl BatchExecStrategy {
@@ -772,9 +1074,14 @@ impl BatchExecStrategy {
             strategy_name: strategy_name.into(),
             symbol: normalize_symbol_for_internal(&symbol.into()),
             exec_venue,
-            config,
+            config: config.for_market(exec_venue.is_spot()),
+            pov_state: PovState::default(),
+            config_transition_in_progress: false,
+            config_transition_pov_started_at_us: None,
             source_updated_at_us: 0,
             virtual_position_qty: None,
+            inverse_position_notional: None,
+            inverse_reference_price: None,
             position_allocation_ready: false,
             last_position_fill_at_us: 0,
             active_target: None,
@@ -782,17 +1089,126 @@ impl BatchExecStrategy {
             batches: BTreeMap::new(),
             child_orders: fast_hash_map(),
             orphaned_child_orders: fast_hash_map(),
+            post_only_retry_levels: BTreeSet::new(),
             batch_seq: 0,
             order_seq: 0,
             next_batch_at_us: 0,
             completion_reason: None,
+            borrow_unavailable_generation: None,
             reconcile_state: HedgeOrderReconcileState::default(),
             alive_flag: true,
         }
     }
 
+    // Configuration/allocation refreshes may clear completion_reason. Keep the
+    // borrowing constraint attached to the accepted target generation itself.
+    fn borrow_unavailable(&self) -> bool {
+        self.active_target.as_ref().is_some_and(|target| {
+            self.borrow_unavailable_generation == Some(target.generation_time)
+        })
+    }
+
     pub fn exec_venue(&self) -> TradingVenue {
         self.exec_venue
+    }
+
+    fn pov_reserved_qty(&self) -> f64 {
+        self.batches
+            .values()
+            .map(|batch| batch.remaining_base_qty)
+            .sum()
+    }
+
+    fn pov_can_submit(&self, now_us: i64, quote_ts: i64) -> bool {
+        !self.pov_state.expired(&self.config.pov, now_us)
+            && self.pov_state.fresh(&self.config.pov, now_us)
+            && quote_ts > 0
+            && quote_ts <= now_us
+            && now_us - quote_ts <= i64::from(self.config.pov.quote_stale_ms) * 1_000
+    }
+
+    fn grid_volatility(&self, now_us: i64) -> Option<f64> {
+        if self.config.algorithm != ExecAlgorithm::Grid {
+            return None;
+        }
+        crate::pre_trade::exec_volatility_channel::latest(
+            self.exec_venue,
+            &self.symbol,
+            now_us,
+            VOL_STALE_MS,
+        )
+    }
+
+    fn grid_can_submit(&self, now_us: i64, quote_ts: i64) -> bool {
+        self.grid_volatility(now_us).is_some()
+            && quote_ts > 0
+            && quote_ts <= now_us
+            && now_us - quote_ts <= i64::from(QUOTE_STALE_MS) * 1_000
+    }
+
+    fn pause_batches_for_data(&mut self, expired: bool) {
+        let ids: Vec<_> = self.batches.keys().copied().collect();
+        for id in ids {
+            // An unsent batch has no cancel acknowledgement to make it ready again.
+            if expired || !self.batches[&id].child_order_ids.is_empty() {
+                if !expired
+                    && self
+                        .batches
+                        .get(&id)
+                        .is_some_and(|batch| batch.phase == BatchPhase::Live)
+                {
+                    if let Some(batch) = self.batches.get_mut(&id) {
+                        batch.stale_paused = true;
+                    }
+                }
+                self.begin_cancel_batch(
+                    id,
+                    if expired {
+                        BatchPhase::CancellingForTarget
+                    } else {
+                        BatchPhase::CancellingForRequote
+                    },
+                );
+            }
+        }
+        if expired {
+            self.batches.retain(|id, batch| {
+                !batch.child_order_ids.is_empty()
+                    || self
+                        .orphaned_child_orders
+                        .values()
+                        .any(|meta| meta.batch_seq == *id)
+            });
+        }
+    }
+
+    pub fn observe_pov_trade(&mut self, timestamp_us: i64, now_us: i64, base_qty: f64, price: f64) {
+        if self.config.algorithm != ExecAlgorithm::Pov
+            || self.config_transition_in_progress
+            || self.pending_target.is_some()
+            || !self.position_allocation_ready()
+            || self.active_target.is_none()
+        {
+            return;
+        }
+        let (base_qty, price) = if self.exec_venue.is_inverse_futures() {
+            let Some(mark) = self.mark_price() else {
+                return;
+            };
+            self.revalue_inverse_orders(mark, now_us);
+            (base_qty * price / mark, mark)
+        } else {
+            (base_qty, price)
+        };
+        let reserved = self.pov_reserved_qty();
+        self.pov_state.observe(
+            &self.config.pov,
+            timestamp_us,
+            now_us,
+            base_qty,
+            price,
+            reserved,
+        );
     }
 
     pub fn strategy_name(&self) -> &str {
@@ -827,6 +1243,9 @@ impl BatchExecStrategy {
 
     fn mark_price(&self) -> Option<f64> {
         let monitor = MonitorChannel::instance();
+        if self.exec_venue.is_inverse_futures() {
+            return monitor.inverse_position_mark_price(self.exec_venue, &self.symbol);
+        }
         let exchange = monitor.try_mark_price_exchange()?;
         let price_symbol = mark_price_lookup_symbol(&self.symbol, exchange);
         monitor
@@ -838,6 +1257,14 @@ impl BatchExecStrategy {
 
     fn effective_config(&self) -> BatchExecConfig {
         let mut config = self.config.clone();
+        if self.config.algorithm == ExecAlgorithm::Ctaker
+            || self.current_target().is_some_and(|target| target.clear)
+        {
+            config.target_tolerance_usdt = 0.0;
+        }
+        if matches!(config.algorithm, ExecAlgorithm::Pov | ExecAlgorithm::Grid) {
+            return config;
+        }
         if let Some(single_order_usdt) = self
             .active_target
             .as_ref()
@@ -849,11 +1276,63 @@ impl BatchExecStrategy {
     }
 
     pub fn virtual_position_qty(&self) -> Option<f64> {
-        self.virtual_position_qty
+        if self.exec_venue.is_inverse_futures() {
+            let notional = self.inverse_position_notional?;
+            crate::pre_trade::exec_position_ledger::inverse_notional_to_base(
+                self.exec_venue,
+                &self.symbol,
+                notional,
+            )
+        } else {
+            self.virtual_position_qty
+        }
+    }
+
+    fn revalue_inverse_orders(&mut self, price: f64, now_ts: i64) {
+        if let Some(previous) = self.inverse_reference_price {
+            let ratio = previous / price;
+            self.pov_state.market_base_qty *= ratio;
+            self.pov_state.filled_base_qty *= ratio;
+            self.pov_state.credit_base_qty *= ratio;
+            for batch in self.batches.values_mut() {
+                batch.remaining_base_qty *= ratio;
+                for qty in batch.remaining_qty_by_level.values_mut() {
+                    *qty *= ratio;
+                }
+            }
+            for meta in self
+                .child_orders
+                .values_mut()
+                .chain(self.orphaned_child_orders.values_mut())
+            {
+                meta.order_base_qty *= ratio;
+                meta.accounted_fill_base_qty *= ratio;
+                meta.qty_multiplier *= ratio;
+            }
+        }
+        self.inverse_reference_price = Some(price);
+        if self.completion_reason == Some(BatchExecCompletionReason::ExchangeMinimum) {
+            self.next_batch_at_us = now_ts;
+        }
+    }
+
+    fn book_inverse_fill(&mut self, side: Side, notional: f64) {
+        if !self.exec_venue.is_inverse_futures() {
+            return;
+        }
+        if let Some(position) = self.inverse_position_notional.as_mut() {
+            *position += signed_qty_from_side(side, notional);
+            if position.abs() <= QTY_EPS {
+                *position = 0.0;
+            }
+            if notional > 0.0 {
+                self.last_position_fill_at_us = get_timestamp_us();
+            }
+        }
     }
 
     pub fn position_allocation_ready(&self) -> bool {
-        self.position_allocation_ready && self.virtual_position_qty.is_some()
+        self.position_allocation_ready && self.virtual_position_qty().is_some()
     }
 
     pub fn has_execution_in_flight(&self) -> bool {
@@ -913,8 +1392,20 @@ impl BatchExecStrategy {
         if self.has_execution_in_flight() {
             return Err("cannot apply position allocation with orders in flight".to_string());
         }
-        let previous = self.virtual_position_qty;
+        let inverse_notional = if self.exec_venue.is_inverse_futures() {
+            Some(
+                crate::pre_trade::exec_position_ledger::inverse_base_to_notional(
+                    self.exec_venue,
+                    &self.symbol,
+                    position_qty,
+                )?,
+            )
+        } else {
+            None
+        };
+        let previous = self.virtual_position_qty();
         self.virtual_position_qty = Some(position_qty);
+        self.inverse_position_notional = inverse_notional;
         self.position_allocation_ready = true;
         self.next_batch_at_us = now_ts;
         self.completion_reason = None;
@@ -930,6 +1421,231 @@ impl BatchExecStrategy {
         Ok(())
     }
 
+    fn current_from_key(&self) -> Option<Vec<u8>> {
+        self.pending_target
+            .as_ref()
+            .map(|target| target.from_key.clone())
+            .or_else(|| {
+                self.active_target
+                    .as_ref()
+                    .map(|target| target.from_key.clone())
+            })
+    }
+
+    pub fn can_apply_internal_cross_fill(
+        &self,
+        signed_base_qty: f64,
+        quote: &Quote,
+    ) -> Result<(), String> {
+        if !signed_base_qty.is_finite() || signed_base_qty.abs() <= QTY_EPS {
+            return Err("internal cross qty must be finite and non-zero".to_string());
+        }
+        let mid = (quote.bid + quote.ask) / 2.0;
+        if !quote.is_valid() || !mid.is_finite() || mid <= 0.0 {
+            return Err("internal cross requires a valid quote".to_string());
+        }
+        if !self.position_allocation_ready()
+            || self.current_from_key().is_none()
+            || self.virtual_position_qty().is_none()
+        {
+            return Err("internal cross requires an applied target and position".to_string());
+        }
+        let symbol = crate::pre_trade::persist_channel::normalize_symbol_for_venue(
+            self.exec_venue,
+            &self.symbol,
+        );
+        let multiplier = crate::pre_trade::persist_channel::resolve_futures_qty_multiplier(
+            self.exec_venue,
+            &symbol,
+            mid,
+        );
+        let venue_qty = signed_base_qty.abs() / multiplier;
+        if !multiplier.is_finite()
+            || multiplier <= 0.0
+            || !venue_qty.is_finite()
+            || venue_qty <= 0.0
+        {
+            return Err("internal cross invalid venue quantity".to_string());
+        }
+        Ok(())
+    }
+
+    /// Books an internal cross fill: `signed_base_qty` moves this strategy's
+    /// ledger position without touching the shared account position. The
+    /// matching opposite leg is applied to the counterparty strategy by the
+    /// caller, so the group stays zero-sum. Returns the synthetic uniform
+    /// order record for the caller to persist.
+    pub fn apply_internal_cross_fill(
+        &mut self,
+        signed_base_qty: f64,
+        quote: &Quote,
+        now_ts: i64,
+    ) -> Result<UnifiedOrderRecord, String> {
+        if !signed_base_qty.is_finite() || signed_base_qty.abs() <= QTY_EPS {
+            return Err(format!(
+                "internal cross qty must be finite and non-zero: {signed_base_qty}"
+            ));
+        }
+        let mid = (quote.bid + quote.ask) / 2.0;
+        if !quote.is_valid() || !mid.is_finite() || mid <= 0.0 {
+            return Err(format!(
+                "internal cross requires a valid quote: bid={} ask={}",
+                quote.bid, quote.ask
+            ));
+        }
+        if !self.position_allocation_ready() {
+            return Err("internal cross requires an applied position allocation".to_string());
+        }
+        let Some(from_key) = self.current_from_key() else {
+            return Err("internal cross requires a current target".to_string());
+        };
+        let normalized_symbol = crate::pre_trade::persist_channel::normalize_symbol_for_venue(
+            self.exec_venue,
+            &self.symbol,
+        );
+        let qty_multiplier = crate::pre_trade::persist_channel::resolve_futures_qty_multiplier(
+            self.exec_venue,
+            &normalized_symbol,
+            mid,
+        );
+        if !qty_multiplier.is_finite() || qty_multiplier <= 0.0 {
+            return Err(format!(
+                "internal cross invalid qty multiplier={qty_multiplier}"
+            ));
+        }
+        let venue_qty = signed_base_qty.abs() / qty_multiplier;
+        if !venue_qty.is_finite() || venue_qty <= 0.0 {
+            return Err(format!("internal cross invalid venue qty={venue_qty}"));
+        }
+        let valued_position = self.virtual_position_qty();
+        let Some(virtual_position) = self.virtual_position_qty.as_mut() else {
+            return Err("internal cross requires a virtual position".to_string());
+        };
+        *virtual_position = valued_position.unwrap_or(*virtual_position) + signed_base_qty;
+        let virtual_position_qty = *virtual_position;
+        if let Some(notional) = self.inverse_position_notional.as_mut() {
+            *notional += signed_base_qty * mid;
+        }
+        self.last_position_fill_at_us = now_ts;
+        // A terminal state can park scheduling at i64::MAX. The cross changes
+        // the remaining gap, so wake the strategy to recompute that state.
+        if self.next_batch_at_us == i64::MAX {
+            self.next_batch_at_us = now_ts;
+        }
+        self.completion_reason = None;
+        let side = if signed_base_qty > 0.0 {
+            Side::Buy
+        } else {
+            Side::Sell
+        };
+        let signal_bbo = SignalBbo::new(
+            SignalBboLeg::checked(
+                self.exec_venue as u8,
+                quote.ts,
+                quote.bid,
+                quote.bid_qty,
+                quote.ask,
+                quote.ask_qty,
+            ),
+            None,
+        );
+        let mut record = UnifiedOrderRecord {
+            symbol_len: 0,
+            symbol: self.symbol.as_bytes().to_vec(),
+            create_ts: now_ts,
+            update_ts: now_ts,
+            signal_ts: now_ts,
+            submit_ts: now_ts,
+            local_ts: now_ts,
+            mkt_ts: quote.ts,
+            client_order_id: self.next_order_id(),
+            venue: self.exec_venue as u8,
+            ttype: UNIFORM_ORDER_TYPE_INTERNAL_CROSS,
+            side: side.to_u8(),
+            price: mid,
+            price_offset: 0.0,
+            amount_init: venue_qty,
+            amount_update: venue_qty,
+            status: OrderStatus::Filled.to_u8(),
+            from_key_len: 0,
+            from_key,
+            signal_bbo,
+            fill_liquidity: persist_common::FillLiquidity::Unknown,
+        };
+        record.refresh_lengths();
+        info!(
+            "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} internal cross applied signed_base_qty={:.8} mid={:.8} virtual_position_qty={:.8} client_order_id={}",
+            self.strategy_id,
+            self.strategy_name,
+            self.symbol,
+            signed_base_qty,
+            mid,
+            virtual_position_qty,
+            record.client_order_id,
+        );
+        Ok(record)
+    }
+
+    fn record_exchange_minimum(&mut self) {
+        self.completion_reason = self
+            .batches
+            .is_empty()
+            .then_some(BatchExecCompletionReason::ExchangeMinimum);
+        // A live batch must be checked again after its final fill/cancel. Parking
+        // it now would leave no ready batch or completion reason to wake it up.
+        if self.completion_reason.is_some() {
+            self.next_batch_at_us = i64::MAX;
+        }
+    }
+
+    fn settle_idle_execution(&mut self, reference_price: f64, minimum_base_qty: f64) -> bool {
+        if !self.position_allocation_ready()
+            || self.pending_target.is_some()
+            || self.config_transition_in_progress
+            || !self.child_orders.is_empty()
+            || !self.orphaned_child_orders.is_empty()
+            || self
+                .batches
+                .values()
+                .any(|batch| !batch.child_order_ids.is_empty())
+            || !reference_price.is_finite()
+            || reference_price <= 0.0
+            || !minimum_base_qty.is_finite()
+            || minimum_base_qty < 0.0
+        {
+            return false;
+        }
+        let Some(target) = self.active_target.as_ref() else {
+            return false;
+        };
+        let Some(position_qty) = self.virtual_position_qty() else {
+            return false;
+        };
+        // Reservations in unsent/cancelling batches are not fills. Check the
+        // whole target gap before releasing them, never just unallocated_qty.
+        let residual = (target.target.qty - position_qty).abs();
+        let reason = if residual <= QTY_EPS {
+            BatchExecCompletionReason::TargetReached
+        } else if residual * reference_price <= self.effective_config().target_tolerance_usdt {
+            BatchExecCompletionReason::TargetTolerance
+        } else if residual + QTY_EPS < minimum_base_qty {
+            BatchExecCompletionReason::ExchangeMinimum
+        } else {
+            return false;
+        };
+        self.batches.clear();
+        self.post_only_retry_levels.clear();
+        self.completion_reason = Some(reason);
+        self.next_batch_at_us = if reason == BatchExecCompletionReason::ExchangeMinimum {
+            i64::MAX
+        } else {
+            // A previous exchange-minimum completion may have parked the
+            // scheduler. Tolerance must remain recheckable as prices change.
+            0
+        };
+        true
+    }
+
     fn settled_completion_reason(&self, position_qty: f64) -> Option<BatchExecCompletionReason> {
         if !self.position_allocation_ready()
             || self.pending_target.is_some()
@@ -938,6 +1654,9 @@ impl BatchExecStrategy {
             return None;
         }
         let target = self.active_target.as_ref()?;
+        if self.borrow_unavailable() {
+            return Some(BatchExecCompletionReason::BorrowUnavailable);
+        }
         self.completion_reason.or_else(|| {
             ((target.target.qty - position_qty).abs() <= QTY_EPS)
                 .then_some(BatchExecCompletionReason::TargetReached)
@@ -947,16 +1666,39 @@ impl BatchExecStrategy {
     pub fn snapshot(&self, now_ts: i64) -> BatchExecSnapshot {
         let account_position_qty =
             MonitorChannel::instance().get_position_qty(&self.symbol, self.exec_venue);
-        let position_qty = self.virtual_position_qty.unwrap_or(0.0);
+        let position_qty = self.virtual_position_qty().unwrap_or(0.0);
         let effective_position_qty = position_qty;
         let target_qty = self.target_qty();
         let live_order_qty = self.live_order_signed_qty();
-        let pending_qty = target_qty
+        let raw_pending_qty = target_qty
             .map(|target| target - effective_position_qty - live_order_qty)
             .unwrap_or(0.0);
         let completion_reason = self.settled_completion_reason(position_qty);
         let execution_complete = completion_reason.is_some();
-        let (remaining_batches, estimated_completion_ts_ms) = if execution_complete {
+        let pending_qty = if execution_complete {
+            0.0
+        } else {
+            MktChannel::instance()
+                .get_quote(&self.symbol, self.exec_venue)
+                .and_then(|quote| {
+                    let price = self
+                        .inverse_reference_price
+                        .unwrap_or(if raw_pending_qty > 0.0 {
+                            quote.ask
+                        } else {
+                            quote.bid
+                        });
+                    self.load_order_limits(price).ok().and_then(|limits| {
+                        executable_pending_base_qty(raw_pending_qty, price, limits).ok()
+                    })
+                })
+                .unwrap_or(raw_pending_qty)
+        };
+        let (remaining_batches, estimated_completion_ts_ms) = if execution_complete
+            || matches!(
+                self.config.algorithm,
+                ExecAlgorithm::Pov | ExecAlgorithm::Grid
+            ) {
             (0, 0)
         } else {
             target_qty
@@ -979,6 +1721,53 @@ impl BatchExecStrategy {
                 .unwrap_or((0, 0))
         };
         BatchExecSnapshot {
+            algorithm: match self.config.algorithm {
+                ExecAlgorithm::Batch => "batch",
+                ExecAlgorithm::Pov => "pov",
+                ExecAlgorithm::Ctaker => "ctaker",
+                ExecAlgorithm::Grid => "grid",
+            }
+            .into(),
+            pov: (self.config.algorithm == ExecAlgorithm::Pov).then(|| {
+                let quote_ts = MktChannel::instance()
+                    .get_quote(&self.symbol, self.exec_venue)
+                    .map(|q| q.ts)
+                    .unwrap_or(0);
+                let status = if execution_complete {
+                    "complete"
+                } else if self.pending_target.is_some() {
+                    "pending_target"
+                } else if !self.position_allocation_ready() {
+                    "waiting_position"
+                } else if self.pov_state.expired(&self.config.pov, now_ts) {
+                    "expired"
+                } else if !self.pov_state.fresh(&self.config.pov, now_ts) {
+                    "waiting_volume"
+                } else if !self.pov_can_submit(now_ts, quote_ts) {
+                    "stale_quote"
+                } else if self.pov_state.available(self.pov_reserved_qty()) <= QTY_EPS {
+                    "volume_budget"
+                } else {
+                    "running"
+                };
+                viz_common::resample::ExecPovState {
+                    status: status.into(),
+                    participation_rate: self.config.pov.participation_rate,
+                    market_base_qty: self.pov_state.market_base_qty,
+                    filled_base_qty: self.pov_state.filled_base_qty,
+                    reserved_base_qty: self.pov_reserved_qty(),
+                    available_base_qty: self.pov_state.available(self.pov_reserved_qty()),
+                    last_trade_ts_ms: self.pov_state.last_trade_at_us / 1_000,
+                    deadline_ts_ms: if self.pov_state.started_at_us > 0 {
+                        self.pov_state
+                            .started_at_us
+                            .saturating_add(i64::from(self.config.pov.duration_ms) * 1_000)
+                            / 1_000
+                    } else {
+                        0
+                    },
+                }
+            }),
             strategy_name: self.strategy_name.clone(),
             source_updated_at_ms: self.source_updated_at_us / 1_000,
             symbol: self.symbol.clone(),
@@ -992,6 +1781,7 @@ impl BatchExecStrategy {
             live_order_qty,
             active_batches: self.batches.len(),
             remaining_batches,
+            has_execution_in_flight: self.has_execution_in_flight(),
             estimated_completion_ts_ms,
             execution_complete,
             completion_reason: completion_reason
@@ -1078,7 +1868,7 @@ impl BatchExecStrategy {
     }
 
     fn unallocated_qty_for_target(&self, target_qty: f64) -> f64 {
-        let position_qty = self.virtual_position_qty.unwrap_or(0.0);
+        let position_qty = self.virtual_position_qty().unwrap_or(0.0);
         target_qty - position_qty - self.committed_batch_signed_qty()
     }
 
@@ -1108,7 +1898,7 @@ impl BatchExecStrategy {
                 *level_qty += residual_base_qty;
             }
         }
-        info!(
+        debug!(
             "BatchExecStrategy: strategy_id={} symbol={} coalesced residual into ready batch={} residual_base_qty={:.8} batch_base_qty={:.8}",
             self.strategy_id,
             self.symbol,
@@ -1136,15 +1926,62 @@ impl BatchExecStrategy {
 
     pub fn update_config(&mut self, config: BatchExecConfig) -> Result<(), String> {
         config.validate()?;
+        let config = config.for_market(self.exec_venue.is_spot());
         if self.config == config {
             return Ok(());
         }
+        let algorithm_changed = self.config.algorithm != config.algorithm;
+        let pov_changed = self.config.pov != config.pov;
+        let grid_changed = self.config.algorithm == ExecAlgorithm::Grid && self.config != config;
         self.config = config;
+        if algorithm_changed
+            || grid_changed
+            || (pov_changed && self.config.algorithm == ExecAlgorithm::Pov)
+        {
+            if let Some(target) = self.active_target.as_mut() {
+                target.effective_single_order_usdt = None;
+            }
+            if !self.config_transition_in_progress {
+                self.config_transition_pov_started_at_us =
+                    (!algorithm_changed).then_some(self.pov_state.started_at_us);
+            } else if algorithm_changed {
+                self.config_transition_pov_started_at_us = None;
+            }
+            self.config_transition_in_progress = true;
+            // Existing orders retain their reservations until cancellation is confirmed.
+            let ids: Vec<_> = self.batches.keys().copied().collect();
+            for id in ids {
+                self.begin_cancel_batch(id, BatchPhase::CancellingForTarget);
+            }
+            self.batches.retain(|id, batch| {
+                !batch.child_order_ids.is_empty()
+                    || self
+                        .orphaned_child_orders
+                        .values()
+                        .any(|meta| meta.batch_seq == *id)
+            });
+            self.finish_config_transition_if_settled(get_timestamp_us());
+        }
         self.completion_reason = None;
         if self.active_target.is_some() && self.batches.is_empty() {
             self.next_batch_at_us = get_timestamp_us();
         }
         Ok(())
+    }
+
+    fn finish_config_transition_if_settled(&mut self, now_ts: i64) {
+        if !self.config_transition_in_progress || self.has_execution_in_flight() {
+            return;
+        }
+        let preserved_started_at_us = self.config_transition_pov_started_at_us.take();
+        self.pov_state.reset(now_ts);
+        if self.config.algorithm == ExecAlgorithm::Pov {
+            if let Some(started_at_us) = preserved_started_at_us {
+                self.pov_state.started_at_us = started_at_us;
+            }
+        }
+        self.config_transition_in_progress = false;
+        self.next_batch_at_us = now_ts;
     }
 
     pub fn update_target(
@@ -1209,8 +2046,10 @@ impl BatchExecStrategy {
         }
         self.batches.clear();
         let pending = self.pending_target.take().expect("checked above");
-        let position_qty = self.virtual_position_qty.expect("allocation checked above");
-        info!(
+        let position_qty = self
+            .virtual_position_qty()
+            .expect("allocation checked above");
+        debug!(
             "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} target activated target_qty={:.8} signal={} allocated_position_qty={:.8} generation={}",
             self.strategy_id,
             self.strategy_name,
@@ -1220,18 +2059,32 @@ impl BatchExecStrategy {
             position_qty,
             pending.generation_time
         );
+        self.borrow_unavailable_generation = None;
         self.active_target = Some(ActiveTarget {
             target: pending.target,
             generation_time: pending.generation_time,
             from_key: pending.from_key,
             effective_single_order_usdt: None,
         });
+        self.pov_state.reset(now_ts);
         self.next_batch_at_us = now_ts;
         self.completion_reason = None;
     }
 
     fn maybe_start_or_requote_batch(&mut self, now_ts: i64) {
-        if self.pending_target.is_some()
+        self.post_only_retry_levels.retain(|(seq, _)| {
+            self.batches
+                .get(seq)
+                .is_some_and(|batch| batch.phase == BatchPhase::Live)
+        });
+        if self.borrow_unavailable() {
+            return;
+        }
+        if self.exec_venue.is_inverse_futures() && self.mark_price().is_none() {
+            return;
+        }
+        if self.config_transition_in_progress
+            || self.pending_target.is_some()
             || !self.orphaned_child_orders.is_empty()
             || !MonitorChannel::instance().exec_position_snapshot_ready()
             || !self.position_allocation_ready()
@@ -1251,17 +2104,89 @@ impl BatchExecStrategy {
         else {
             return;
         };
+        if let Some(false) = self.symbol_is_tradable() {
+            let batch_ids = self.batches.keys().copied().collect::<Vec<_>>();
+            for batch_seq in batch_ids {
+                self.begin_cancel_batch(batch_seq, BatchPhase::CancellingForTarget);
+            }
+            if self.batches.is_empty() {
+                if self.completion_reason != Some(BatchExecCompletionReason::SymbolNotTradable) {
+                    warn!(
+                        "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} execution blocked because Manager market rules mark the symbol not tradable",
+                        self.strategy_id, self.strategy_name, self.symbol
+                    );
+                }
+                self.completion_reason = Some(BatchExecCompletionReason::SymbolNotTradable);
+                self.next_batch_at_us = i64::MAX;
+            }
+            return;
+        }
+        if self.completion_reason == Some(BatchExecCompletionReason::SymbolNotTradable) {
+            info!(
+                "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} resumed after Manager market rules marked the symbol tradable",
+                self.strategy_id, self.strategy_name, self.symbol
+            );
+            self.completion_reason = None;
+            self.next_batch_at_us = now_ts;
+        }
         let Some(quote) = MktChannel::instance().get_quote(&self.symbol, self.exec_venue) else {
             return;
         };
-        if !Self::quote_is_fresh(quote.ts, now_ts) {
+        if self.config.algorithm == ExecAlgorithm::Grid && !self.grid_can_submit(now_ts, quote.ts) {
+            return;
+        }
+        // Settlement must not wait for a batch/retry deadline, or depend on
+        // reservations left by batches with no exchange orders.
+        if self.child_orders.is_empty() && self.orphaned_child_orders.is_empty() {
+            let Some(position_qty) = self.virtual_position_qty() else {
+                return;
+            };
+            let residual = target_qty - position_qty;
+            let side = if residual > 0.0 {
+                Side::Buy
+            } else {
+                Side::Sell
+            };
+            let reference_price = self.inverse_reference_price.unwrap_or(match side {
+                Side::Buy => quote.bid,
+                Side::Sell => quote.ask,
+            });
+            if let Ok(minimum) = self.load_order_limits(reference_price).and_then(|limits| {
+                // Lot-size dust is independent of maker levels and taker
+                // fallback prices. Keep price-dependent min-notional checks
+                // in the normal batch planning path below.
+                minimum_executable_base_qty(
+                    reference_price,
+                    BatchOrderLimits {
+                        min_notional: 0.0,
+                        ..limits
+                    },
+                )
+            }) {
+                if self.settle_idle_execution(reference_price, minimum) {
+                    return;
+                }
+            }
+        }
+        let ready_batch = self.batches.iter().find_map(|(batch_seq, batch)| {
+            (batch.phase == BatchPhase::ReadyToSubmit).then_some(*batch_seq)
+        });
+        // Exchange-minimum residuals disable new batch creation with i64::MAX,
+        // but an existing batch may still need a maker requote or taker fallback.
+        if should_defer_batch_start(
+            now_ts,
+            self.next_batch_at_us,
+            ready_batch.is_some() || !self.post_only_retry_levels.is_empty(),
+        ) && self.completion_reason != Some(BatchExecCompletionReason::ExchangeMinimum)
+        {
+            return;
+        }
+        if let Some(&(batch_seq, _)) = self.post_only_retry_levels.first() {
+            self.submit_batch(batch_seq, now_ts);
             return;
         }
         let unallocated_qty = self.unallocated_qty_for_target(target_qty);
         let aggregate_base_qty = unallocated_qty.abs();
-        let ready_batch = self.batches.iter().find_map(|(batch_seq, batch)| {
-            (batch.phase == BatchPhase::ReadyToSubmit).then_some(*batch_seq)
-        });
         if aggregate_base_qty <= QTY_EPS {
             if let Some(batch_seq) = ready_batch {
                 self.completion_reason = None;
@@ -1278,10 +2203,10 @@ impl BatchExecStrategy {
         } else {
             Side::Sell
         };
-        let reference_price = match side {
+        let reference_price = self.inverse_reference_price.unwrap_or_else(|| match side {
             Side::Buy => quote.bid,
             Side::Sell => quote.ask,
-        };
+        });
         let limits = match self.load_order_limits(reference_price) {
             Ok(limits) => limits,
             Err(err) => {
@@ -1292,24 +2217,37 @@ impl BatchExecStrategy {
                 return;
             }
         };
-        let minimum_order_price = match maker_limit_price(
-            &self.config,
-            side,
-            0,
-            quote.bid,
-            quote.ask,
-            limits.price_tick,
+        let minimum_order_price =
+            if should_use_taker(&self.config, 0, target_signal, self.exec_venue.is_spot()) {
+                match side {
+                    Side::Buy => quote.ask,
+                    Side::Sell => quote.bid,
+                }
+            } else {
+                match maker_limit_price(
+                    &self.config,
+                    side,
+                    0,
+                    quote.bid,
+                    quote.ask,
+                    limits.price_tick,
+                    self.grid_volatility(now_ts),
+                    self.exec_venue.is_spot(),
+                ) {
+                    Ok((price, _)) => price,
+                    Err(err) => {
+                        warn!(
+                        "BatchExecStrategy: strategy_id={} symbol={} invalid first maker price: {}",
+                        self.strategy_id, self.symbol, err
+                    );
+                        return;
+                    }
+                }
+            };
+        let minimum_base_qty = match minimum_executable_base_qty(
+            self.inverse_reference_price.unwrap_or(minimum_order_price),
+            limits,
         ) {
-            Ok((price, _)) => price,
-            Err(err) => {
-                warn!(
-                    "BatchExecStrategy: strategy_id={} symbol={} invalid first maker price: {}",
-                    self.strategy_id, self.symbol, err
-                );
-                return;
-            }
-        };
-        let minimum_base_qty = match minimum_executable_base_qty(minimum_order_price, limits) {
             Ok(qty) => qty,
             Err(err) => {
                 warn!(
@@ -1319,16 +2257,24 @@ impl BatchExecStrategy {
                 return;
             }
         };
-        let within_target_tolerance =
-            aggregate_base_qty * reference_price <= self.config.target_tolerance_usdt;
+        let target_tolerance = if self.config.algorithm == ExecAlgorithm::Ctaker {
+            0.0
+        } else {
+            self.current_target()
+                .map(|t| t.tolerance_usdt(self.config.target_tolerance_usdt))
+                .unwrap_or(self.config.target_tolerance_usdt)
+        };
+        let within_target_tolerance = aggregate_base_qty * reference_price <= target_tolerance;
         let below_exchange_minimum = aggregate_base_qty + QTY_EPS < minimum_base_qty;
         if let Some(batch_seq) = ready_batch {
-            if residual_should_coalesce(
-                aggregate_base_qty,
-                reference_price,
-                self.config.target_tolerance_usdt,
-                minimum_base_qty,
-            ) {
+            if self.config.algorithm != ExecAlgorithm::Pov
+                && residual_should_coalesce(
+                    aggregate_base_qty,
+                    reference_price,
+                    target_tolerance,
+                    minimum_base_qty,
+                )
+            {
                 self.coalesce_residual_into_ready_batch(
                     batch_seq,
                     target_generation,
@@ -1354,38 +2300,43 @@ impl BatchExecStrategy {
                     self.strategy_id, self.symbol, aggregate_base_qty, minimum_base_qty
                 );
             }
-            self.next_batch_at_us = i64::MAX;
-            self.completion_reason = self
-                .batches
-                .is_empty()
-                .then_some(BatchExecCompletionReason::ExchangeMinimum);
+            self.record_exchange_minimum();
             return;
         }
         self.completion_reason = None;
-        let effective_single_order_usdt = match self
-            .active_target
-            .as_ref()
-            .and_then(|target| target.effective_single_order_usdt)
-        {
-            Some(value) => value,
-            None => {
-                let Some(mark_price) = self.mark_price() else {
-                    debug!(
+        if self.config.algorithm == ExecAlgorithm::Pov && !self.pov_can_submit(now_ts, quote.ts) {
+            return;
+        }
+        let effective_single_order_usdt = if matches!(
+            self.config.algorithm,
+            ExecAlgorithm::Pov | ExecAlgorithm::Grid
+        ) {
+            self.config.single_order_usdt
+        } else {
+            match self
+                .active_target
+                .as_ref()
+                .and_then(|target| target.effective_single_order_usdt)
+            {
+                Some(value) => value,
+                None => {
+                    let Some(mark_price) = self.mark_price() else {
+                        debug!(
                         "BatchExecStrategy: strategy_id={} symbol={} waiting for mark price before sizing target generation={}",
                         self.strategy_id, self.symbol, target_generation
                     );
-                    return;
-                };
-                let delta_usdt = aggregate_base_qty * mark_price;
-                let value = self.config.effective_single_order_usdt(delta_usdt);
-                if let Some(target) = self
-                    .active_target
-                    .as_mut()
-                    .filter(|target| target.generation_time == target_generation)
-                {
-                    target.effective_single_order_usdt = Some(value);
-                }
-                info!(
+                        return;
+                    };
+                    let delta_usdt = aggregate_base_qty * mark_price;
+                    let value = self.config.effective_single_order_usdt(delta_usdt);
+                    if let Some(target) = self
+                        .active_target
+                        .as_mut()
+                        .filter(|target| target.generation_time == target_generation)
+                    {
+                        target.effective_single_order_usdt = Some(value);
+                    }
+                    debug!(
                     "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} target generation={} mark_price={:.8} delta_usdt={:.4} configured_single_usdt={:.4} effective_single_usdt={:.4} max_batch={}",
                     self.strategy_id,
                     self.strategy_name,
@@ -1397,11 +2348,28 @@ impl BatchExecStrategy {
                     value,
                     self.config.max_batch
                 );
-                value
+                    value
+                }
             }
         };
         let batch_capacity_usdt = self.config.batch_capacity_usdt(effective_single_order_usdt);
-        let desired_batch_base_qty = aggregate_base_qty.min(batch_capacity_usdt / reference_price);
+        let mut desired_batch_base_qty =
+            aggregate_base_qty.min(batch_capacity_usdt / reference_price);
+        if self.config.algorithm == ExecAlgorithm::Ctaker {
+            desired_batch_base_qty = aggregate_base_qty;
+        }
+        if self.config.algorithm == ExecAlgorithm::Pov {
+            let Some(qty) = self.pov_state.batch_qty(
+                &self.config.pov,
+                self.pov_reserved_qty(),
+                desired_batch_base_qty,
+                self.inverse_reference_price.unwrap_or(quote.ask),
+                minimum_base_qty,
+            ) else {
+                return;
+            };
+            desired_batch_base_qty = qty;
+        }
         let Some(batch_base_qty) = select_executable_batch_base_qty(
             aggregate_base_qty,
             desired_batch_base_qty,
@@ -1410,7 +2378,7 @@ impl BatchExecStrategy {
             return;
         };
         if self.next_batch_at_us == i64::MAX {
-            info!(
+            debug!(
                 "BatchExecStrategy: strategy_id={} symbol={} aggregate residual became executable aggregate_base_qty={:.8} minimum_base_qty={:.8}",
                 self.strategy_id, self.symbol, aggregate_base_qty, minimum_base_qty
             );
@@ -1427,35 +2395,37 @@ impl BatchExecStrategy {
                 side,
                 remaining_base_qty: batch_base_qty,
                 maker_requotes: 0,
-                use_taker: should_use_taker(&self.config, 0, target_signal),
+                use_taker: should_use_taker(
+                    &self.config,
+                    0,
+                    target_signal,
+                    self.exec_venue.is_spot(),
+                ),
                 phase: BatchPhase::ReadyToSubmit,
                 child_order_ids: BTreeSet::new(),
                 remaining_qty_by_level: BTreeMap::new(),
-                last_quote_ts: 0,
-                require_new_quote: false,
                 expires_at_us: 0,
                 from_key: target_from_key,
+                saw_open_reject: false,
+                stale_paused: false,
             },
         );
         self.submit_batch(batch_seq, now_ts);
     }
 
-    fn quote_is_fresh(quote_ts: i64, now_ts: i64) -> bool {
-        if quote_ts <= 0 {
-            return false;
-        }
-        let quote_ts_us = if quote_ts < 10_000_000_000_000 {
-            quote_ts.saturating_mul(1_000)
-        } else {
-            quote_ts
-        };
-        now_ts.saturating_sub(quote_ts_us) <= BBO_MAX_AGE_US
-    }
-
     fn load_order_limits(&self, reference_price: f64) -> Result<BatchOrderLimits, String> {
+        let reference_price = if self.exec_venue.is_inverse_futures() {
+            self.inverse_reference_price
+                .ok_or_else(|| "missing inverse allocation mark".to_string())?
+        } else {
+            reference_price
+        };
         let table = MonitorChannel::instance()
             .try_venue_min_qty_table(self.exec_venue)
             .ok_or_else(|| format!("missing min qty table venue={:?}", self.exec_venue))?;
+        if table.snapshot_loaded() && !table.is_tradable_symbol(&self.symbol) {
+            return Err(format!("symbol is not tradable symbol={}", self.symbol));
+        }
         let symbol_key = min_qty_symbol_key(self.exec_venue, &self.symbol);
         let price_tick = table
             .price_tick(&symbol_key)
@@ -1476,11 +2446,29 @@ impl BatchExecStrategy {
         Ok(BatchOrderLimits {
             price_tick,
             qty_step: table.step_size(&symbol_key).unwrap_or(0.0),
-            min_qty: table.min_qty(&symbol_key).unwrap_or(0.0),
-            min_notional: table.min_notional(&symbol_key).unwrap_or(0.0),
+            min_qty: if let Some(face) = inverse_contract_size {
+                table
+                    .min_qty(&symbol_key)
+                    .unwrap_or(0.0)
+                    .max(table.min_notional(&symbol_key).unwrap_or(0.0) / face)
+            } else {
+                table.min_qty(&symbol_key).unwrap_or(0.0)
+            },
+            min_notional: if inverse_contract_size.is_some() {
+                0.0
+            } else {
+                table.min_notional(&symbol_key).unwrap_or(0.0)
+            },
             qty_multiplier,
             inverse_contract_size,
         })
+    }
+
+    fn symbol_is_tradable(&self) -> Option<bool> {
+        let table = MonitorChannel::instance().try_venue_min_qty_table(self.exec_venue)?;
+        table
+            .snapshot_loaded()
+            .then(|| table.is_tradable_symbol(&self.symbol))
     }
 
     fn build_child_orders(
@@ -1491,13 +2479,20 @@ impl BatchExecStrategy {
     ) -> Result<Vec<BatchChildOrderPlan>, String> {
         let limits = self.load_order_limits((bid + ask) * 0.5)?;
 
+        let conversion = ChildPlanContext {
+            value: limits.qty_multiplier,
+            notional_price: self.inverse_reference_price,
+            volatility: self.grid_volatility(get_timestamp_us()),
+            cash: self.exec_venue.is_spot(),
+        };
         let effective_config = self.effective_config();
         let use_taker = should_use_taker(
             &effective_config,
             batch.maker_requotes,
             self.active_target_signal(),
+            self.exec_venue.is_spot(),
         );
-        let mut plans = if !use_taker && !batch.remaining_qty_by_level.is_empty() {
+        let plans = if !use_taker && !batch.remaining_qty_by_level.is_empty() {
             rebuild_child_order_plans_at_preserved_levels(
                 &effective_config,
                 batch.side,
@@ -1508,7 +2503,7 @@ impl BatchExecStrategy {
                 limits.qty_step,
                 limits.min_qty,
                 limits.min_notional,
-                limits.qty_multiplier,
+                conversion,
             )?
         } else {
             build_child_order_plans(
@@ -1523,47 +2518,70 @@ impl BatchExecStrategy {
                 limits.qty_step,
                 limits.min_qty,
                 limits.min_notional,
-                limits.qty_multiplier,
+                conversion,
             )?
         };
-        if limits.inverse_contract_size.is_some() {
-            for plan in &mut plans {
-                let target_base_qty = plan.qty_base;
-                let multiplier = limits.qty_multiplier_at(plan.sizing_price)?;
-                let qty_venue =
-                    align_child_qty_floor(target_base_qty / multiplier, limits.qty_step);
-                plan.qty_venue = qty_venue;
-                plan.qty_base = qty_venue * multiplier;
-                plan.qty_multiplier = multiplier;
-            }
-            plans.retain(|plan| {
-                plan.qty_base > QTY_EPS
-                    && child_order_meets_exchange_minimums(
-                        plan,
-                        limits.min_qty,
-                        limits.min_notional,
-                        plan.qty_multiplier,
-                    )
-            });
-        }
         Ok(plans)
     }
 
+    fn post_only_retry_batch(&self, batch_seq: u64) -> Option<BatchState> {
+        let mut batch = self.batches.get(&batch_seq)?.clone();
+        if batch.phase != BatchPhase::Live {
+            return None;
+        }
+        let &(_, level_index) = self
+            .post_only_retry_levels
+            .range((batch_seq, 0)..=(batch_seq, u32::MAX))
+            .next()?;
+        let reserved_qty: f64 = self
+            .child_orders
+            .values()
+            .chain(self.orphaned_child_orders.values())
+            .filter(|meta| meta.batch_seq == batch_seq && meta.level_index == level_index)
+            .map(|meta| (meta.order_base_qty - meta.accounted_fill_base_qty).max(0.0))
+            .sum();
+        // Fills already debit the batch remainder. Retry only the rejected level's
+        // uncovered quantity, without adding it again or resubmitting live siblings.
+        let retry_qty = (batch
+            .remaining_qty_by_level
+            .get(&level_index)
+            .copied()
+            .unwrap_or(0.0)
+            - reserved_qty)
+            .max(0.0);
+        batch.remaining_base_qty = retry_qty;
+        batch.remaining_qty_by_level = BTreeMap::from([(level_index, retry_qty)]);
+        Some(batch)
+    }
+
     fn submit_batch(&mut self, batch_seq: u64, now_ts: i64) {
-        let Some(batch) = self.batches.get(&batch_seq).cloned() else {
+        let Some(mut batch) = self.batches.get(&batch_seq).cloned() else {
             return;
         };
+        let retry_post_only = batch.phase == BatchPhase::Live;
+        if retry_post_only {
+            let Some(retry_batch) = self.post_only_retry_batch(batch_seq) else {
+                return;
+            };
+            batch = retry_batch;
+        }
         if batch.remaining_base_qty <= QTY_EPS {
-            self.batches.remove(&batch_seq);
+            if retry_post_only {
+                for level in batch.remaining_qty_by_level.keys() {
+                    self.post_only_retry_levels.remove(&(batch_seq, *level));
+                }
+            } else {
+                self.batches.remove(&batch_seq);
+            }
             return;
         }
         let Some(quote) = MktChannel::instance().get_quote(&self.symbol, self.exec_venue) else {
             return;
         };
-        if !Self::quote_is_fresh(quote.ts, now_ts) {
+        if self.config.algorithm == ExecAlgorithm::Grid && !self.grid_can_submit(now_ts, quote.ts) {
             return;
         }
-        if batch.require_new_quote && quote.ts <= batch.last_quote_ts {
+        if self.config.algorithm == ExecAlgorithm::Pov && !self.pov_can_submit(now_ts, quote.ts) {
             return;
         }
         if self
@@ -1571,13 +2589,16 @@ impl BatchExecStrategy {
             .as_ref()
             .is_none_or(|target| target.generation_time != batch.target_generation)
         {
-            self.batches.remove(&batch_seq);
+            if !retry_post_only {
+                self.batches.remove(&batch_seq);
+            }
             return;
         }
         let use_taker = should_use_taker(
             &self.config,
             batch.maker_requotes,
             self.active_target_signal(),
+            self.exec_venue.is_spot(),
         );
         let plans = match self.build_child_orders(&batch, quote.bid, quote.ask) {
             Ok(value) => value,
@@ -1589,33 +2610,53 @@ impl BatchExecStrategy {
                 return;
             }
         };
+        if self.config.algorithm == ExecAlgorithm::Pov {
+            if let Some(limit) = self.config.pov.limit_price {
+                if plans.iter().any(|plan| match plan.side {
+                    Side::Buy => plan.price > limit,
+                    Side::Sell => plan.price < limit,
+                }) {
+                    return;
+                }
+            }
+        }
         if plans.is_empty() {
+            if retry_post_only {
+                for level in batch.remaining_qty_by_level.keys() {
+                    self.post_only_retry_levels.remove(&(batch_seq, *level));
+                }
+                return;
+            }
             warn!(
                 "BatchExecStrategy: strategy_id={} symbol={} batch={} has no order quantity satisfying min qty/notional; release residual to aggregate carry",
                 self.strategy_id, self.symbol, batch_seq
             );
             self.batches.remove(&batch_seq);
-            self.next_batch_at_us = now_ts;
+            self.record_exchange_minimum();
             return;
         }
         let planned_base_qty: f64 = plans.iter().map(|plan| plan.qty_base).sum();
-        if let Some(batch) = self.batches.get_mut(&batch_seq) {
+        if let Some(batch) = self
+            .batches
+            .get_mut(&batch_seq)
+            .filter(|_| !retry_post_only)
+        {
             batch.remaining_base_qty = planned_base_qty;
             batch.remaining_qty_by_level = plans
                 .iter()
                 .map(|plan| (plan.level_index, plan.qty_base))
                 .collect();
             batch.use_taker = use_taker;
-            batch.last_quote_ts = quote.ts;
-            batch.require_new_quote = false;
             batch.expires_at_us = if use_taker {
                 0
             } else {
                 now_ts.saturating_add(i64::from(self.config.maker_timeout_ms) * 1_000)
             };
         }
-        self.next_batch_at_us =
-            now_ts.saturating_add(i64::from(self.config.batch_interval_ms).saturating_mul(1_000));
+        if !retry_post_only {
+            self.next_batch_at_us = now_ts
+                .saturating_add(i64::from(self.config.batch_interval_ms).saturating_mul(1_000));
+        }
         let signal_bbo = SignalBbo::new(
             SignalBboLeg::checked(
                 self.exec_venue.to_u8(),
@@ -1640,6 +2681,7 @@ impl BatchExecStrategy {
         let now_ts = get_timestamp_us();
         MonitorChannel::instance().refresh_exec_risk_state();
         let mut sent_ids = Vec::new();
+        let mut rate_limited_retry_at_us = None;
         for plan in plans {
             let qty_multiplier = plan.qty_multiplier;
             if plan.order_type.is_limit()
@@ -1687,6 +2729,8 @@ impl BatchExecStrategy {
                     level_index: plan.level_index,
                     order_base_qty: plan.qty_base,
                     accounted_fill_base_qty: 0.0,
+                    accounted_fill_notional: 0.0,
+                    qty_multiplier,
                     signal_ts: now_ts,
                     signal_bbo,
                     price_offset,
@@ -1700,6 +2744,16 @@ impl BatchExecStrategy {
                     .order_manager()
                     .borrow_mut()
                     .remove(client_order_id);
+                if is_exec_rate_limit_error(&err) {
+                    let params = PreTradeParamsLoader::instance();
+                    rate_limited_retry_at_us = Some(OrderRateLimiter::next_available_at_us(
+                        OrderRateBucket::Exec,
+                        params.exec_order_rate_limit_per_min(),
+                        params.exec_order_rate_limit_10s(),
+                        now_ts,
+                    ));
+                    break;
+                }
                 warn!(
                     "BatchExecStrategy: strategy_id={} send child failed order_id={} err={}",
                     self.strategy_id, client_order_id, err
@@ -1710,7 +2764,19 @@ impl BatchExecStrategy {
                 client_order_id,
                 PendingOrderQueryReason::OrderWatchdog,
             );
+            self.post_only_retry_levels
+                .remove(&(batch_seq, plan.level_index));
             sent_ids.push(client_order_id);
+        }
+
+        if let Some(retry_at_us) = rate_limited_retry_at_us {
+            self.next_batch_at_us = self.next_batch_at_us.max(retry_at_us);
+            warn!(
+                "BatchExecStrategy: strategy_id={} symbol={} deferred after local exec order-rate limit retry_at_us={}",
+                self.strategy_id,
+                self.symbol,
+                self.next_batch_at_us
+            );
         }
 
         let Some(batch) = self.batches.get_mut(&batch_seq) else {
@@ -1764,13 +2830,30 @@ impl BatchExecStrategy {
     fn begin_cancel_batch(&mut self, batch_seq: u64, phase: BatchPhase) {
         let order_ids = match self.batches.get_mut(&batch_seq) {
             Some(batch) => {
-                batch.phase = phase;
+                // Target/config cancellation must never turn back into a funded requote.
+                if batch.phase != BatchPhase::CancellingForTarget {
+                    batch.phase = phase;
+                }
                 batch.child_order_ids.iter().copied().collect::<Vec<_>>()
             }
             None => return,
         };
         for client_order_id in order_ids {
             self.request_cancel(client_order_id);
+        }
+        // An unsent batch will never receive a terminal order callback. Release
+        // target-cancelled reservations now, but preserve unresolved orphans.
+        if self.batches.get(&batch_seq).is_some_and(|batch| {
+            batch.phase == BatchPhase::CancellingForTarget && batch.child_order_ids.is_empty()
+        }) && !self
+            .child_orders
+            .values()
+            .chain(self.orphaned_child_orders.values())
+            .any(|meta| meta.batch_seq == batch_seq)
+        {
+            self.batches.remove(&batch_seq);
+            self.post_only_retry_levels
+                .retain(|(seq, _)| *seq != batch_seq);
         }
     }
 
@@ -1816,6 +2899,37 @@ impl BatchExecStrategy {
         }
     }
 
+    fn retry_cancel_after_live_update(&mut self, client_order_id: i64) {
+        let should_retry = self
+            .child_orders
+            .get(&client_order_id)
+            .is_some_and(|meta| meta.cancel_requested);
+        if !should_retry {
+            return;
+        }
+        if let Some(meta) = self.child_orders.get_mut(&client_order_id) {
+            meta.cancel_requested = false;
+        }
+        self.request_cancel(client_order_id);
+    }
+
+    fn retry_unsent_cancels(&mut self) {
+        let ids: Vec<i64> = self
+            .child_orders
+            .iter()
+            .filter_map(|(client_order_id, meta)| {
+                let cancelling = self
+                    .batches
+                    .get(&meta.batch_seq)
+                    .is_some_and(|batch| batch.phase != BatchPhase::Live);
+                (cancelling && !meta.cancel_requested).then_some(*client_order_id)
+            })
+            .collect();
+        for client_order_id in ids {
+            self.request_cancel(client_order_id);
+        }
+    }
+
     fn handle_batch_timeouts(&mut self, now_ts: i64) {
         let expired: Vec<u64> = self
             .batches
@@ -1843,27 +2957,35 @@ impl BatchExecStrategy {
         let Some(target_qty) = self.active_target.as_ref().map(|target| target.target.qty) else {
             return;
         };
-        let position_qty = self.virtual_position_qty.expect("allocation checked above");
+        let position_qty = self
+            .virtual_position_qty()
+            .expect("allocation checked above");
         let remaining_qty = target_qty - position_qty;
         let committed_qty = self.committed_batch_signed_qty();
 
         let direction_changed = committed_qty.abs() > QTY_EPS
             && (remaining_qty.abs() <= QTY_EPS || remaining_qty.signum() != committed_qty.signum());
         let committed_too_much = committed_qty.abs() > remaining_qty.abs() + QTY_EPS;
-        let within_tolerance = MktChannel::instance()
-            .get_quote(&self.symbol, self.exec_venue)
-            .map(|quote| {
-                let reference_price = if remaining_qty >= 0.0 {
-                    quote.bid
-                } else {
-                    quote.ask
-                };
-                remaining_qty.abs() * reference_price <= self.config.target_tolerance_usdt
-            })
-            .unwrap_or(false);
 
-        if !direction_changed && !committed_too_much && !within_tolerance {
-            return;
+        if !direction_changed && !committed_too_much {
+            let within_tolerance = MktChannel::instance()
+                .get_quote(&self.symbol, self.exec_venue)
+                .map(|quote| {
+                    let reference_price = if remaining_qty >= 0.0 {
+                        quote.bid
+                    } else {
+                        quote.ask
+                    };
+                    let tolerance = self
+                        .current_target()
+                        .map(|t| t.tolerance_usdt(self.config.target_tolerance_usdt))
+                        .unwrap_or(self.config.target_tolerance_usdt);
+                    remaining_qty.abs() * reference_price <= tolerance
+                })
+                .unwrap_or(false);
+            if !within_tolerance {
+                return;
+            }
         }
         let batch_ids: Vec<u64> = self.batches.keys().copied().collect();
         for batch_seq in batch_ids {
@@ -1891,15 +3013,24 @@ impl BatchExecStrategy {
         }
         let Some((batch_seq, level_index, delta_base_qty)) =
             self.child_orders.get_mut(&client_order_id).map(|meta| {
+                let progress = if self.exec_venue.is_inverse_futures() {
+                    delta_venue_qty * meta.qty_multiplier
+                } else {
+                    delta_base_at_fill
+                };
                 let next_accounted =
-                    (meta.accounted_fill_base_qty + delta_base_at_fill).min(meta.order_base_qty);
+                    (meta.accounted_fill_base_qty + progress).min(meta.order_base_qty);
                 let delta_base_qty = next_accounted - meta.accounted_fill_base_qty;
                 meta.accounted_fill_base_qty = next_accounted;
+                meta.accounted_fill_notional += delta_base_at_fill * fill_price;
                 (meta.batch_seq, meta.level_index, delta_base_qty)
             })
         else {
             return;
         };
+        if let Some(side) = self.batches.get(&batch_seq).map(|batch| batch.side) {
+            self.book_inverse_fill(side, delta_base_at_fill * fill_price);
+        }
         self.apply_fill_delta(client_order_id, batch_seq, level_index, delta_base_qty);
     }
 
@@ -1917,6 +3048,9 @@ impl BatchExecStrategy {
             return;
         };
         batch.remaining_base_qty = (batch.remaining_base_qty - delta_base_qty).max(0.0);
+        if self.config.algorithm == ExecAlgorithm::Pov {
+            self.pov_state.fill(delta_base_qty);
+        }
         if let Some(level_remaining) = batch.remaining_qty_by_level.get_mut(&level_index) {
             *level_remaining = (*level_remaining - delta_base_qty).max(0.0);
             if *level_remaining <= QTY_EPS {
@@ -1925,7 +3059,9 @@ impl BatchExecStrategy {
         }
         let signed_fill_qty = signed_qty_from_side(batch.side, delta_base_qty);
         if let Some(position_qty) = self.virtual_position_qty.as_mut() {
-            *position_qty += signed_fill_qty;
+            if !self.exec_venue.is_inverse_futures() {
+                *position_qty += signed_fill_qty;
+            }
             self.last_position_fill_at_us = get_timestamp_us();
         } else {
             warn!(
@@ -1940,14 +3076,27 @@ impl BatchExecStrategy {
     }
 
     fn finish_child_order(&mut self, client_order_id: i64) {
+        self.finish_child_order_with_requote(client_order_id, true);
+    }
+
+    fn finish_child_order_with_requote(
+        &mut self,
+        client_order_id: i64,
+        cancel_siblings_on_unfilled_live: bool,
+    ) {
         self.clear_order_query_state(client_order_id);
         let Some(meta) = self.child_orders.remove(&client_order_id) else {
             return;
         };
-        self.finish_child_order_meta(client_order_id, meta);
+        self.finish_child_order_meta(client_order_id, meta, cancel_siblings_on_unfilled_live);
     }
 
-    fn finish_child_order_meta(&mut self, client_order_id: i64, meta: ChildOrderMeta) {
+    fn finish_child_order_meta(
+        &mut self,
+        client_order_id: i64,
+        meta: ChildOrderMeta,
+        cancel_siblings_on_unfilled_live: bool,
+    ) {
         let batch_seq = meta.batch_seq;
         let has_orphaned_sibling = self
             .orphaned_child_orders
@@ -1958,9 +3107,11 @@ impl BatchExecStrategy {
         if let Some(batch) = self.batches.get_mut(&batch_seq) {
             batch.child_order_ids.remove(&client_order_id);
             let unfilled_qty = (meta.order_base_qty - meta.accounted_fill_base_qty).max(0.0);
-            if batch.phase == BatchPhase::Live && unfilled_qty > QTY_EPS {
+            if cancel_siblings_on_unfilled_live
+                && batch.phase == BatchPhase::Live
+                && unfilled_qty > QTY_EPS
+            {
                 batch.phase = BatchPhase::CancellingForRequote;
-                batch.require_new_quote = true;
                 cancel_siblings_for_requote = !batch.child_order_ids.is_empty();
             }
             if batch.child_order_ids.is_empty() && !has_orphaned_sibling {
@@ -1969,9 +3120,15 @@ impl BatchExecStrategy {
                 {
                     remove_batch = true;
                 } else {
-                    if batch.phase == BatchPhase::CancellingForRequote && !batch.use_taker {
+                    if batch.phase == BatchPhase::CancellingForRequote
+                        && !batch.use_taker
+                        && !batch.saw_open_reject
+                        && !batch.stale_paused
+                    {
                         batch.maker_requotes = batch.maker_requotes.saturating_add(1);
                     }
+                    batch.saw_open_reject = false;
+                    batch.stale_paused = false;
                     batch.phase = BatchPhase::ReadyToSubmit;
                     batch.expires_at_us = 0;
                 }
@@ -1981,6 +3138,14 @@ impl BatchExecStrategy {
             self.batches.remove(&batch_seq);
         } else if cancel_siblings_for_requote {
             self.begin_cancel_batch(batch_seq, BatchPhase::CancellingForRequote);
+        }
+        if self
+            .batches
+            .get(&batch_seq)
+            .is_none_or(|batch| batch.phase != BatchPhase::Live)
+        {
+            self.post_only_retry_levels
+                .retain(|(seq, _)| *seq != batch_seq);
         }
     }
 
@@ -2010,6 +3175,7 @@ impl BatchExecStrategy {
         };
         if OrderManager::should_skip_idempotent_order_update(
             &current,
+            update.execution_type(),
             update.status(),
             update.order_id(),
             update.cumulative_filled_quantity(),
@@ -2026,6 +3192,7 @@ impl BatchExecStrategy {
             .effective_cum;
         let status = update.status();
         let changed = manager.apply_remote_update(client_order_id, |order| {
+            order.apply_replacement_fields(update);
             order.set_exchange_order_id(update.order_id());
             order.cumulative_filled_quantity = effective_fill;
             match status {
@@ -2091,7 +3258,8 @@ impl BatchExecStrategy {
         if status.is_finished() {
             self.finish_child_order(client_order_id);
         } else {
-            self.clear_order_query_state(client_order_id);
+            self.clear_live_order_query_state(client_order_id);
+            self.retry_cancel_after_live_update(client_order_id);
         }
         true
     }
@@ -2126,9 +3294,6 @@ impl BatchExecStrategy {
         let changed = manager.apply_remote_update(client_order_id, |order| {
             order.cumulative_filled_quantity = cumulative_fill;
             order.set_exchange_order_id(trade.order_id());
-            if trade.price() > 0.0 {
-                order.price = trade.price();
-            }
             order.status = if status == OrderStatus::Filled {
                 OrderExecutionStatus::Filled
             } else {
@@ -2165,7 +3330,8 @@ impl BatchExecStrategy {
         if status == OrderStatus::Filled {
             self.finish_child_order(client_order_id);
         } else {
-            self.clear_order_query_state(client_order_id);
+            self.clear_live_order_query_state(client_order_id);
+            self.retry_cancel_after_live_update(client_order_id);
         }
         true
     }
@@ -2234,6 +3400,18 @@ impl HedgeOrderReconcileCommon for BatchExecStrategy {
         code_desc: &str,
         client_order_id: i64,
     ) {
+        let retry_post_only_immediately = response.is_post_only_rejected();
+        let borrow_unavailable = response.is_rapidx_borrow_unavailable()
+            && self.child_orders.contains_key(&client_order_id);
+        if borrow_unavailable {
+            self.borrow_unavailable_generation =
+                self.active_target.as_ref().map(|t| t.generation_time);
+            // Mark before finishing the rejected child so its remainder cannot
+            // become a ready-to-submit batch. Preserve all live/orphan evidence.
+            for batch in self.batches.values_mut() {
+                batch.phase = BatchPhase::CancellingForTarget;
+            }
+        }
         warn!(
             "BatchExecStrategy: strategy_id={} child open failed order_id={} code={}({})",
             self.strategy_id,
@@ -2241,9 +3419,55 @@ impl HedgeOrderReconcileCommon for BatchExecStrategy {
             response.error_code(),
             code_desc
         );
-        self.finish_child_order(client_order_id);
+        if let Some(meta) = self.child_orders.get(&client_order_id) {
+            if let Some(batch) = self.batches.get_mut(&meta.batch_seq) {
+                if retry_post_only_immediately {
+                    if batch.phase == BatchPhase::Live
+                        && meta.order_base_qty - meta.accounted_fill_base_qty > QTY_EPS
+                    {
+                        self.post_only_retry_levels
+                            .insert((meta.batch_seq, meta.level_index));
+                    }
+                } else {
+                    batch.saw_open_reject = true;
+                }
+            }
+        }
+        // A PostOnly reject never rested. Keep live siblings and do not suppress
+        // the maker-requote charge for a later, genuine batch cancellation.
+        self.finish_child_order_with_requote(client_order_id, !retry_post_only_immediately);
+        if borrow_unavailable {
+            let batch_ids = self.batches.keys().copied().collect::<Vec<_>>();
+            for batch_seq in batch_ids {
+                self.begin_cancel_batch(batch_seq, BatchPhase::CancellingForTarget);
+            }
+            self.batches.retain(|seq, batch| {
+                !batch.child_order_ids.is_empty()
+                    || self
+                        .orphaned_child_orders
+                        .values()
+                        .any(|meta| meta.batch_seq == *seq)
+            });
+            self.next_batch_at_us = i64::MAX;
+            self.completion_reason = Some(BatchExecCompletionReason::BorrowUnavailable);
+            warn!("BatchExecStrategy: strategy_id={} symbol={} target execution stopped: borrow_unavailable generation={:?}", self.strategy_id, self.symbol, self.borrow_unavailable_generation);
+        } else if retry_post_only_immediately {
+            self.next_batch_at_us = get_timestamp_us();
+            debug!(
+                "BatchExecStrategy: strategy_id={} symbol={} post-only rejection released for immediate retry order_id={}",
+                self.strategy_id, self.symbol, client_order_id
+            );
+        }
         if let Some(manager) = MonitorChannel::try_order_manager() {
             let _ = manager.borrow_mut().remove(client_order_id);
+        }
+        if retry_post_only_immediately
+            && !self.post_only_retry_levels.is_empty()
+            && self.active_target.is_some()
+        {
+            // Use the normal submission gates; if blocked, the next clock tick
+            // retries this level without needing to cancel the live batch.
+            self.maybe_start_or_requote_batch(get_timestamp_us());
         }
     }
 }
@@ -2294,6 +3518,17 @@ impl Strategy for BatchExecStrategy {
             );
             return false;
         }
+        if self.exec_venue.is_inverse_futures()
+            && (!terminal.price.is_finite()
+                || terminal.price <= 0.0
+                || !(terminal.filled_base_qty * terminal.price).is_finite())
+        {
+            warn!(
+                "inverse orphan terminal has invalid fill price: order_id={}",
+                terminal.client_order_id
+            );
+            return false;
+        }
         if !terminal.filled_base_qty.is_finite() || terminal.filled_base_qty < 0.0 {
             warn!(
                 "BatchExecStrategy: strategy_id={} reject invalid orphan terminal fill order_id={} filled_base_qty={}",
@@ -2307,8 +3542,18 @@ impl Strategy for BatchExecStrategy {
             .remove(&terminal.client_order_id)
             .expect("orphan metadata checked above");
         let previous_accounted = meta.accounted_fill_base_qty;
-        let next_accounted = terminal
-            .filled_base_qty
+        if self.exec_venue.is_inverse_futures() {
+            let delta_notional =
+                (terminal.filled_base_qty * terminal.price - meta.accounted_fill_notional).max(0.0);
+            self.book_inverse_fill(terminal.side, delta_notional);
+            meta.accounted_fill_notional += delta_notional;
+        }
+        let terminal_progress = if self.exec_venue.is_inverse_futures() {
+            meta.accounted_fill_notional / self.inverse_reference_price.unwrap_or(terminal.price)
+        } else {
+            terminal.filled_base_qty
+        };
+        let next_accounted = terminal_progress
             .max(previous_accounted)
             .min(meta.order_base_qty);
         meta.accounted_fill_base_qty = next_accounted;
@@ -2319,7 +3564,7 @@ impl Strategy for BatchExecStrategy {
             next_accounted - previous_accounted,
         );
         let batch_seq = meta.batch_seq;
-        self.finish_child_order_meta(terminal.client_order_id, meta);
+        self.finish_child_order_meta(terminal.client_order_id, meta, true);
         info!(
             "BatchExecStrategy: strategy_id={} applied orphan terminal order_id={} batch_seq={} terminal_ts={} side={:?} source_order_base_qty={:.8} tracked_order_base_qty={:.8} cumulative_filled_base_qty={:.8} newly_accounted_base_qty={:.8} price={:.8}",
             self.strategy_id,
@@ -2354,6 +3599,47 @@ impl Strategy for BatchExecStrategy {
         }
     }
 
+    fn apply_live_order_query(
+        &mut self,
+        update: &dyn OrderUpdate,
+        query_advanced_fill: bool,
+    ) -> bool {
+        let client_order_id = update.client_order_id();
+        if !self.child_orders.contains_key(&client_order_id) {
+            return false;
+        }
+        let retry_cancel = self
+            .order_query_reason(client_order_id)
+            .is_some_and(HedgeOrderReconcileState::is_cancel_reconcile_reason);
+        let cancel_already_retried = retry_cancel
+            && query_advanced_fill
+            && self
+                .child_orders
+                .get(&client_order_id)
+                .is_some_and(|meta| meta.cancel_requested);
+        if retry_cancel {
+            if let Some(meta) = self.child_orders.get_mut(&client_order_id) {
+                meta.cancel_requested = false;
+            }
+        }
+        if cancel_already_retried {
+            self.clear_pending_order_query(client_order_id);
+        } else {
+            self.clear_order_query_state(client_order_id);
+        }
+        if !query_advanced_fill {
+            self.apply_order_update(update);
+        }
+        if cancel_already_retried {
+            if let Some(meta) = self.child_orders.get_mut(&client_order_id) {
+                meta.cancel_requested = true;
+            }
+        } else if retry_cancel {
+            self.request_cancel(client_order_id);
+        }
+        true
+    }
+
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
         if self.apply_trade_update_inner(trade) {
             PersistChannel::with(|channel| channel.publish_trade_update(trade));
@@ -2370,10 +3656,36 @@ impl Strategy for BatchExecStrategy {
         } else {
             get_timestamp_us()
         };
+        if self.exec_venue.is_inverse_futures() {
+            if let Some(price) = self.mark_price() {
+                self.revalue_inverse_orders(price, now_ts);
+            }
+        }
         self.handle_order_query_watchdogs();
         self.cancel_batches_when_target_no_longer_needs_them();
         self.handle_batch_timeouts(now_ts);
+        self.retry_unsent_cancels();
         self.process_pending_target(now_ts);
+        self.finish_config_transition_if_settled(now_ts);
+        if self.config.algorithm == ExecAlgorithm::Pov {
+            let quote_ts = MktChannel::instance()
+                .get_quote(&self.symbol, self.exec_venue)
+                .map(|q| q.ts)
+                .unwrap_or(0);
+            if !self.pov_can_submit(now_ts, quote_ts) {
+                let expired = self.pov_state.expired(&self.config.pov, now_ts);
+                self.pause_batches_for_data(expired);
+            }
+        }
+        if self.config.algorithm == ExecAlgorithm::Grid {
+            let quote_ts = MktChannel::instance()
+                .get_quote(&self.symbol, self.exec_venue)
+                .map(|quote| quote.ts)
+                .unwrap_or(0);
+            if !self.grid_can_submit(now_ts, quote_ts) {
+                self.pause_batches_for_data(false);
+            }
+        }
         self.maybe_start_or_requote_batch(now_ts);
     }
 
@@ -2390,8 +3702,34 @@ impl Strategy for BatchExecStrategy {
 mod tests {
     use super::*;
 
+    #[test]
+    fn clear_quantity_is_explicit_and_ignores_notional_tolerance() {
+        let ordinary: BatchExecTarget = serde_json::from_str("0.1").unwrap();
+        assert_eq!(ordinary.qty, 0.1);
+        assert!(!ordinary.clear);
+        assert_eq!(ordinary.tolerance_usdt(10.0), 10.0);
+        for raw in ["\"clear\"", "{\"qty\":\"clear\",\"signal\":1}"] {
+            let target: BatchExecTarget = serde_json::from_str(raw).unwrap();
+            assert!(target.clear);
+            assert_eq!(target.qty, 0.0);
+            assert_eq!(target.tolerance_usdt(10.0), 0.0);
+            let roundtrip: BatchExecTarget =
+                serde_json::from_str(&serde_json::to_string(&target).unwrap()).unwrap();
+            assert_eq!(target, roundtrip);
+        }
+        assert!(serde_json::from_str::<BatchExecTarget>("\"+max_u_1000\"").is_err());
+        assert!(
+            serde_json::from_str::<BatchExecTarget>("{\"qty\":\"clear\",\"signal\":9}").is_err()
+        );
+    }
+    use order_common::{TradeEngineResponseMessage, TradeRequestType};
+    use symbol_utils::Exchange;
+
     fn config() -> BatchExecConfig {
         BatchExecConfig {
+            algorithm: ExecAlgorithm::Batch,
+            pov: PovConfig::default(),
+            grid: GridConfig::default(),
             single_order_usdt: 100.0,
             orders_per_batch: 3,
             max_batch: 20,
@@ -2415,6 +3753,612 @@ mod tests {
         }
     }
 
+    fn grid_config() -> BatchExecConfig {
+        BatchExecConfig {
+            algorithm: ExecAlgorithm::Grid,
+            ..config()
+        }
+    }
+
+    fn grid_context(cash: bool) -> ChildPlanContext {
+        ChildPlanContext {
+            value: 1.0,
+            notional_price: None,
+            volatility: Some(0.01),
+            cash,
+        }
+    }
+
+    #[test]
+    fn grid_market_parameters_control_independent_plans_and_maker_timeouts() {
+        let mut cfg = grid_config();
+        cfg.orders_per_batch = 99; // Generic Batch settings must not select Grid sizing.
+        cfg.maker_timeout_ms = 99;
+        cfg.grid.spot.orders_per_batch = 2;
+        cfg.grid.spot.maker_timeout_ms = 2000;
+        cfg.grid.spot.max_maker_requotes = Some(4);
+        cfg.grid.futures.orders_per_batch = 5;
+        cfg.grid.futures.maker_timeout_ms = 9000;
+        for (cash, venue, count, timeout) in [
+            (true, TradingVenue::BinanceMargin, 2, 2000),
+            (false, TradingVenue::BinanceFutures, 5, 9000),
+        ] {
+            let mut strategy = BatchExecStrategy::new(1, "grid", "BTCUSDT", venue, cfg.clone());
+            assert_eq!(strategy.config.orders_per_batch, count);
+            assert_eq!(strategy.config.maker_timeout_ms, timeout);
+            assert_eq!(strategy.config.single_order_usdt, 100.0);
+            let effective = strategy.effective_config();
+            assert_eq!(
+                effective.batch_capacity_usdt(100.0),
+                f64::from(count) * 100.0
+            );
+            let plans = build_child_order_plans(
+                &effective,
+                Side::Buy,
+                f64::from(count),
+                0,
+                0,
+                100.0,
+                101.0,
+                0.01,
+                0.001,
+                0.001,
+                5.0,
+                grid_context(cash),
+            )
+            .unwrap();
+            assert_eq!(plans.len(), count as usize);
+            assert_eq!(should_use_taker(&effective, 5, 0, cash), cash);
+            let mut changed = cfg.clone();
+            changed.grid.spot.maker_timeout_ms = 4000;
+            changed.grid.futures.maker_timeout_ms = 12000;
+            strategy.update_config(changed).unwrap();
+            assert_eq!(
+                strategy.config.maker_timeout_ms,
+                if cash { 4000 } else { 12000 }
+            );
+        }
+    }
+
+    #[test]
+    fn grid_other_market_edits_preserve_working_orders() {
+        for cash in [true, false] {
+            let mut strategy = strategy_with_orphan_batch(&[(11, 0, 2.0, 0.0)]);
+            strategy.exec_venue = if cash {
+                TradingVenue::BinanceMargin
+            } else {
+                TradingVenue::BinanceFutures
+            };
+            strategy.config = grid_config().for_market(cash);
+            let before = strategy.batches[&1].phase;
+            let mut changed = grid_config();
+            if cash {
+                changed.grid.futures.orders_per_batch = 7;
+                changed.grid.futures.vol_multiplier = 2.0;
+                changed.grid.futures.max_maker_requotes = Some(0);
+            } else {
+                changed.grid.spot.orders_per_batch = 7;
+                changed.grid.spot.vol_multiplier = 0.5;
+                changed.grid.spot.max_maker_requotes = None;
+            }
+            strategy.update_config(changed).unwrap();
+            assert!(!strategy.config_transition_in_progress);
+            assert_eq!(strategy.batches[&1].phase, before);
+            assert_eq!(strategy.pov_reserved_qty(), 2.0);
+        }
+    }
+
+    #[test]
+    fn grid_both_markets_support_finite_or_unlimited_maker_rounds() {
+        let mut cfg = grid_config();
+        assert!(!should_use_taker(&cfg, 2, 0, true));
+        assert!(should_use_taker(&cfg, 3, 0, true));
+        assert!(!should_use_taker(&cfg, u32::MAX, 0, false));
+        for limit in [Some(0), Some(2), Some(4), None] {
+            cfg.grid.spot.max_maker_requotes = limit;
+            cfg.grid.futures.max_maker_requotes = limit;
+            // Batch's unrelated limit must never override Grid's selected market.
+            cfg.max_maker_requotes = 0;
+            for cash in [true, false] {
+                let effective = cfg.clone().for_market(cash);
+                if let Some(limit) = limit {
+                    for completed in 0..=limit {
+                        assert!(!should_use_taker(&effective, completed, 0, cash));
+                    }
+                    assert!(should_use_taker(&effective, limit + 1, 0, cash));
+                } else {
+                    assert!(!should_use_taker(&effective, u32::MAX, 0, cash));
+                }
+                for signal in [-1, 1] {
+                    assert!(should_use_taker(&effective, 0, signal, cash));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grid_finite_fallback_waits_for_terminals_and_only_takes_unfilled_quantity() {
+        for cash in [true, false] {
+            let mut strategy =
+                strategy_with_orphan_batch(&[(101, 0, 1.0, 0.25), (102, 1, 1.0, 0.0)]);
+            let mut cfg = grid_config();
+            cfg.grid.spot.max_maker_requotes = Some(0);
+            cfg.grid.futures.max_maker_requotes = Some(0);
+            strategy.config = cfg.for_market(cash);
+            assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(101, 0.6)));
+            assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForRequote);
+            assert_eq!(strategy.batches[&1].maker_requotes, 0);
+            assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(102, 0.2)));
+            let batch = &strategy.batches[&1];
+            assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
+            assert_eq!(batch.maker_requotes, 1);
+            assert!((batch.remaining_base_qty - 1.2).abs() < QTY_EPS);
+            let plans = build_child_order_plans(
+                &strategy.config,
+                Side::Buy,
+                batch.remaining_base_qty,
+                batch.maker_requotes,
+                0,
+                100.0,
+                101.0,
+                0.01,
+                0.001,
+                0.001,
+                5.0,
+                grid_context(cash),
+            )
+            .unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(plans[0].order_type, OrderType::Market);
+            assert!((plans[0].qty_base - 1.2).abs() < QTY_EPS);
+        }
+    }
+
+    #[test]
+    fn grid_vol_multiplier_is_market_scoped_for_initial_and_preserved_levels() {
+        let mut cfg = grid_config();
+        cfg.grid.spot.vol_multiplier = 0.5;
+        cfg.grid.futures.vol_multiplier = 2.0;
+        for (cash, outer) in [(true, 0.005), (false, 0.02)] {
+            let effective = cfg.clone().for_market(cash);
+            for side in [Side::Buy, Side::Sell] {
+                let plans = build_child_order_plans(
+                    &effective,
+                    side,
+                    3.0,
+                    0,
+                    0,
+                    100.0,
+                    101.0,
+                    0.01,
+                    0.001,
+                    0.001,
+                    5.0,
+                    grid_context(cash),
+                )
+                .unwrap();
+                let remaining = BTreeMap::from([(2, 0.5)]);
+                let reissued = rebuild_child_order_plans_at_preserved_levels(
+                    &effective,
+                    side,
+                    &remaining,
+                    100.0,
+                    101.0,
+                    0.01,
+                    0.001,
+                    0.001,
+                    5.0,
+                    grid_context(cash),
+                )
+                .unwrap();
+                let expected = match side {
+                    Side::Buy => align_price_floor(100.0 * (1.0 - outer), 0.01),
+                    Side::Sell => align_price_ceil(101.0 * (1.0 + outer), 0.01),
+                };
+                assert_eq!(plans[2].price, expected);
+                assert_eq!(reissued[0].price, expected);
+                assert!((plans[1].price_offset - outer / 2.0).abs() < 1e-12);
+                assert_eq!(plans[0].price_offset, 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn grid_cash_and_futures_share_fixed_hand_pricing_and_taker_merges_remaining_qty() {
+        let cfg = grid_config();
+        assert_eq!(cfg.effective_single_order_usdt(1_000_000.0), 100.0);
+        for side in [Side::Buy, Side::Sell] {
+            for cash in [true, false] {
+                let plans = build_child_order_plans(
+                    &cfg,
+                    side,
+                    3.0,
+                    0,
+                    0,
+                    100.0,
+                    101.0,
+                    0.01,
+                    0.001,
+                    0.001,
+                    5.0,
+                    grid_context(cash),
+                )
+                .unwrap();
+                assert_eq!(plans.len(), 3);
+                for (index, plan) in plans.iter().enumerate() {
+                    let offset = [0.0, 0.005, 0.01][index];
+                    let expected = match side {
+                        Side::Buy => align_price_floor(100.0 * (1.0 - offset), 0.01),
+                        Side::Sell => align_price_ceil(101.0 * (1.0 + offset), 0.01),
+                    };
+                    assert_eq!(plan.price, expected);
+                    assert_eq!(plan.order_type, OrderType::Limit);
+                    if index < 2 {
+                        assert!(plan.qty_base * plan.price <= 100.0 + 1e-9);
+                    }
+                }
+                let reissued = build_child_order_plans(
+                    &cfg,
+                    side,
+                    2.123,
+                    100,
+                    0,
+                    100.0,
+                    101.0,
+                    0.01,
+                    0.001,
+                    0.001,
+                    5.0,
+                    grid_context(cash),
+                )
+                .unwrap();
+                assert_eq!(
+                    reissued[0].order_type,
+                    if cash {
+                        OrderType::Market
+                    } else {
+                        OrderType::Limit
+                    }
+                );
+                if cash {
+                    assert_eq!(reissued.len(), 1);
+                    assert!((reissued[0].qty_base - 2.123).abs() < 1e-9);
+                }
+            }
+        }
+        assert!(build_child_order_plans(
+            &cfg,
+            Side::Buy,
+            3.0,
+            0,
+            0,
+            100.0,
+            101.0,
+            0.01,
+            0.001,
+            0.001,
+            5.0,
+            1.0
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn grid_requotes_preserve_filled_levels_and_merge_only_invalid_tail() {
+        let cfg = grid_config();
+        let remaining = BTreeMap::from([(0, 0.5), (2, 0.01)]);
+        let plans = rebuild_child_order_plans_at_preserved_levels(
+            &cfg,
+            Side::Buy,
+            &remaining,
+            100.0,
+            101.0,
+            0.01,
+            0.001,
+            0.001,
+            5.0,
+            grid_context(true),
+        )
+        .unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].level_index, 0);
+        assert!((plans[0].qty_base - 0.51).abs() < 1e-9);
+        let remaining = BTreeMap::from([(2, 0.5)]);
+        let plans = rebuild_child_order_plans_at_preserved_levels(
+            &cfg,
+            Side::Buy,
+            &remaining,
+            100.0,
+            101.0,
+            0.01,
+            0.001,
+            0.001,
+            5.0,
+            grid_context(false),
+        )
+        .unwrap();
+        assert_eq!(plans[0].level_index, 2);
+        assert_eq!(plans[0].price, 99.0);
+        assert_eq!(plans[0].qty_base, 0.5);
+    }
+
+    #[test]
+    fn grid_config_changes_wait_for_old_fills_before_releasing_reservations() {
+        let mut strategy = strategy_with_orphan_batch(&[(11, 0, 2.0, 0.0)]);
+        strategy.config = grid_config();
+        assert!(!strategy.grid_can_submit(1_000_000, 1_000_000));
+        let mut changed = strategy.config.clone();
+        changed.grid.futures.maker_timeout_ms = 4_000;
+        strategy.update_config(changed).unwrap();
+        assert!(strategy.config_transition_in_progress);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
+        assert_eq!(strategy.pov_reserved_qty(), 2.0);
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(11, 0.5)));
+        assert_eq!(strategy.virtual_position_qty, Some(0.5));
+        strategy.finish_config_transition_if_settled(2_000_000);
+        assert!(!strategy.config_transition_in_progress);
+        assert!(strategy.batches.is_empty());
+    }
+
+    #[test]
+    fn grid_symbol_overrides_roundtrip_all_parameters() {
+        let overrides: BatchExecConfigOverride = serde_json::from_value(serde_json::json!({
+            "algorithm": "grid", "grid": {"spot": {"orders_per_batch": 2, "maker_timeout_ms": 2000}, "futures": {"orders_per_batch": 5, "maker_timeout_ms": 8000}},
+            "single_order_usdt": 50.0, "orders_per_batch": 4
+        })).unwrap();
+        overrides.validate(&config()).unwrap();
+        let cfg = overrides.apply_to(&config());
+        assert_eq!(cfg.algorithm, ExecAlgorithm::Grid);
+        assert_eq!(cfg.grid.spot.orders_per_batch, 2);
+        assert_eq!(cfg.grid.futures.orders_per_batch, 5);
+        assert_eq!(cfg.single_order_usdt, 50.0);
+        assert_eq!(cfg.orders_per_batch, 4);
+        assert_eq!(
+            serde_json::from_value::<BatchExecConfig>(serde_json::to_value(&cfg).unwrap()).unwrap(),
+            cfg
+        );
+    }
+
+    #[test]
+    fn pov_liquidity_policy_and_sizing_override_batch_urgency() {
+        let mut cfg = config();
+        cfg.algorithm = ExecAlgorithm::Pov;
+        cfg.pov.liquidity = PovLiquidity::MakerOnly;
+        assert!(!should_use_taker(&cfg, u32::MAX, 1, false));
+        assert_eq!(cfg.effective_single_order_usdt(1_000_000.0), 100.0);
+        cfg.pov.liquidity = PovLiquidity::TakerOnly;
+        assert!(should_use_taker(&cfg, 0, 0, false));
+        cfg.pov.liquidity = PovLiquidity::MakerThenTaker;
+        assert!(!should_use_taker(&cfg, 0, 0, false));
+        assert!(should_use_taker(&cfg, cfg.max_maker_requotes + 1, 0, false));
+        assert!(should_use_taker(&cfg, 0, -1, false));
+    }
+
+    #[test]
+    fn pov_orphan_partial_fill_debits_volume_once_and_keeps_reservation() {
+        let mut strategy = strategy_with_orphan_batch(&[(11, 0, 2.0, 0.0)]);
+        strategy.config.algorithm = ExecAlgorithm::Pov;
+        strategy.pov_state.reset(1);
+        strategy
+            .pov_state
+            .observe(&strategy.config.pov, 2, 2, 20.0, 100.0, 0.0);
+        assert_eq!(
+            strategy.pov_state.available(strategy.pov_reserved_qty()),
+            0.0
+        );
+        let terminal = orphan_terminal(11, 0.5);
+        assert!(strategy.apply_exec_orphan_terminal(&terminal));
+        assert_eq!(strategy.pov_state.filled_base_qty, 0.5);
+        assert_eq!(strategy.pov_reserved_qty(), 1.5);
+        assert_eq!(
+            strategy.pov_state.available(strategy.pov_reserved_qty()),
+            0.0
+        );
+        assert!(!strategy.apply_exec_orphan_terminal(&terminal));
+        assert_eq!(strategy.pov_state.filled_base_qty, 0.5);
+    }
+
+    #[test]
+    fn pov_config_change_preserves_orphan_tracking_and_deadline() {
+        let mut strategy = strategy_with_orphan_batch(&[(11, 0, 2.0, 0.0)]);
+        strategy.config.algorithm = ExecAlgorithm::Pov;
+        strategy.pov_state.reset(123);
+        let mut cfg = strategy.config.clone();
+        cfg.pov.participation_rate = 0.2;
+        strategy.update_config(cfg).unwrap();
+        assert_eq!(strategy.pov_state.started_at_us, 123);
+        assert!(strategy.config_transition_in_progress);
+        assert_eq!(strategy.batches.len(), 1);
+        assert_eq!(strategy.orphaned_child_orders.len(), 1);
+        strategy.begin_cancel_batch(1, BatchPhase::CancellingForRequote);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
+        assert_eq!(
+            strategy.pov_state.available(strategy.pov_reserved_qty()),
+            0.0
+        );
+    }
+
+    #[test]
+    fn batch_to_pov_waits_for_old_orders_before_collecting_volume() {
+        let mut strategy = strategy_with_orphan_batch(&[(12, 0, 1.0, 0.0)]);
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget::new(10.0, 0).unwrap(),
+            generation_time: 1,
+            from_key: b"cta_alpha".to_vec(),
+            effective_single_order_usdt: Some(100.0),
+        });
+        let mut cfg = strategy.config.clone();
+        cfg.algorithm = ExecAlgorithm::Pov;
+
+        strategy.update_config(cfg).unwrap();
+
+        assert!(strategy.config_transition_in_progress);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
+        strategy.observe_pov_trade(1_000, 1_000, 20.0, 100.0);
+        assert_eq!(strategy.pov_state.market_base_qty, 0.0);
+
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(12, 0.0)));
+        assert!(!strategy.has_execution_in_flight());
+        strategy.finish_config_transition_if_settled(2_000);
+
+        assert!(!strategy.config_transition_in_progress);
+        assert_eq!(strategy.pov_state.started_at_us, 2_000);
+        strategy.observe_pov_trade(2_001, 2_001, 20.0, 100.0);
+        assert_eq!(strategy.pov_state.market_base_qty, 20.0);
+    }
+
+    #[test]
+    fn pov_child_alignment_never_increases_available_quantity() {
+        let mut cfg = config();
+        cfg.algorithm = ExecAlgorithm::Pov;
+        for liquidity in [PovLiquidity::MakerOnly, PovLiquidity::TakerOnly] {
+            cfg.pov.liquidity = liquidity;
+            for raw in [0.01, 0.199, 0.2, 1.199, 2.99, 3.123] {
+                let plans = build_child_order_plans(
+                    &cfg,
+                    Side::Buy,
+                    raw,
+                    0,
+                    0,
+                    99.0,
+                    100.0,
+                    0.1,
+                    0.01,
+                    0.01,
+                    20.0,
+                    1.0,
+                )
+                .unwrap();
+                assert!(plans.iter().map(|plan| plan.qty_base).sum::<f64>() <= raw + QTY_EPS);
+            }
+        }
+    }
+
+    #[test]
+    fn ctaker_uses_one_market_order_for_full_signed_delta() {
+        let mut cfg = config();
+        cfg.algorithm = ExecAlgorithm::Ctaker;
+        cfg.single_order_usdt = 1.0;
+        cfg.orders_per_batch = 1;
+        for side in [Side::Buy, Side::Sell] {
+            let plans = build_child_order_plans(
+                &cfg, side, 7.123, 0, 0, 99.0, 100.0, 0.1, 0.001, 0.001, 5.0, 1.0,
+            )
+            .unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(plans[0].order_type, OrderType::Market);
+            assert!((plans[0].qty_base - 7.123).abs() < 1e-10);
+            assert_eq!(plans[0].price, 0.0);
+        }
+        let mut strategy = strategy_with_orphan_batch(&[]);
+        strategy.config = cfg;
+        strategy.config.target_tolerance_usdt = 1000.0;
+        assert_eq!(strategy.effective_config().target_tolerance_usdt, 0.0);
+    }
+
+    #[test]
+    fn pov_pause_keeps_unsent_batches_ready_and_expiry_keeps_only_unresolved_orders() {
+        let mut strategy = strategy_with_orphan_batch(&[]);
+        strategy.batches.get_mut(&1).unwrap().phase = BatchPhase::ReadyToSubmit;
+        strategy.batches.get_mut(&1).unwrap().remaining_base_qty = 2.0;
+        strategy.pause_batches_for_data(false);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::ReadyToSubmit);
+        strategy.pause_batches_for_data(true);
+        assert!(strategy.batches.is_empty());
+
+        let mut strategy = strategy_with_orphan_batch(&[(11, 0, 2.0, 0.0)]);
+        strategy.pause_batches_for_data(true);
+        assert_eq!(strategy.batches.len(), 1);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(11, 0.0)));
+        assert!(strategy.batches.is_empty());
+    }
+
+    #[test]
+    fn pov_override_roundtrip_and_invalid_price_policy() {
+        let value = serde_json::json!({"algorithm": "pov", "pov": {
+            "participation_rate": 0.07, "liquidity": "maker_only", "limit_price": 50000.0
+        }});
+        let overrides: BatchExecConfigOverride = serde_json::from_value(value).unwrap();
+        let cfg = overrides.apply_to(&config());
+        cfg.validate().unwrap();
+        assert_eq!(cfg.algorithm, ExecAlgorithm::Pov);
+        assert_eq!(cfg.pov.participation_rate, 0.07);
+        let mut invalid = cfg.clone();
+        invalid.pov.liquidity = PovLiquidity::TakerOnly;
+        assert!(invalid.validate().is_err());
+        assert_eq!(
+            serde_json::from_value::<BatchExecConfig>(serde_json::to_value(cfg.clone()).unwrap())
+                .unwrap(),
+            cfg
+        );
+    }
+
+    #[test]
+    fn pov_market_routing_is_scoped_to_venue_symbol_and_active_target() {
+        let mut cfg = config();
+        cfg.algorithm = ExecAlgorithm::Pov;
+        let mut strategy = BatchExecStrategy::new(
+            101,
+            "pov_test",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            cfg,
+        );
+        strategy.virtual_position_qty = Some(0.0);
+        strategy.position_allocation_ready = true;
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget::new(10.0, 0).unwrap(),
+            generation_time: 1,
+            from_key: Vec::new(),
+            effective_single_order_usdt: Some(10000.0),
+        });
+        assert_eq!(strategy.effective_config().single_order_usdt, 100.0);
+        strategy.pov_state.reset(10);
+        let mut manager = crate::strategy::StrategyManager::new();
+        manager.insert(Box::new(strategy));
+        manager.observe_exec_market_trade(
+            TradingVenue::GateFutures,
+            "BTCUSDT",
+            11,
+            11,
+            100.0,
+            100.0,
+        );
+        manager.observe_exec_market_trade(
+            TradingVenue::BinanceFutures,
+            "ETHUSDT",
+            11,
+            11,
+            100.0,
+            100.0,
+        );
+        manager.observe_exec_market_trade(
+            TradingVenue::BinanceFutures,
+            "BTCUSDT",
+            9,
+            11,
+            100.0,
+            100.0,
+        );
+        manager.observe_exec_market_trade(
+            TradingVenue::BinanceFutures,
+            "BTCUSDT",
+            11,
+            11,
+            20.0,
+            100.0,
+        );
+        let strategy = manager
+            .get(101)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BatchExecStrategy>()
+            .unwrap();
+        assert_eq!(strategy.pov_state.market_base_qty, 20.0);
+        assert_eq!(strategy.pov_state.available(0.0), 2.0);
+    }
+
     #[test]
     fn max_batch_raises_single_order_size_only_for_large_targets() {
         let config = config();
@@ -2429,6 +4373,73 @@ mod tests {
         let (remaining_batches, _) =
             estimate_batch_progress(&config(), 12_000.0, 0, 0, now_ts_us, now_ts_us, false);
         assert_eq!(remaining_batches, 20);
+    }
+
+    #[test]
+    fn inverse_plans_use_mark_for_contract_face_and_close_the_last_contract() {
+        let conversion = ChildPlanContext {
+            value: 100.0 / 50000.0,
+            notional_price: Some(50000.0),
+            volatility: None,
+            cash: false,
+        };
+        for side in [Side::Buy, Side::Sell] {
+            let plans = build_child_order_plans(
+                &config(),
+                side,
+                0.002,
+                0,
+                0,
+                49900.0,
+                50100.0,
+                0.1,
+                1.0,
+                1.0,
+                0.0,
+                conversion,
+            )
+            .unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(plans[0].qty_venue, 1.0);
+            assert!((plans[0].qty_base - 0.002).abs() < QTY_EPS);
+            let dust = build_child_order_plans(
+                &config(),
+                side,
+                0.0019,
+                0,
+                0,
+                49900.0,
+                50100.0,
+                0.1,
+                1.0,
+                1.0,
+                0.0,
+                conversion,
+            )
+            .unwrap();
+            assert!(dust.is_empty());
+        }
+    }
+
+    #[test]
+    fn inverse_position_conserves_face_and_minimum_is_rechecked_after_price_change() {
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "coin",
+            "BTCUSD",
+            TradingVenue::BinanceCoinFutures,
+            config(),
+        );
+        strategy.apply_position_allocation(0.0, 1).unwrap();
+        strategy.book_inverse_fill(Side::Buy, 100.0);
+        strategy.revalue_inverse_orders(50000.0, 2);
+        strategy.completion_reason = Some(BatchExecCompletionReason::ExchangeMinimum);
+        strategy.next_batch_at_us = i64::MAX;
+        strategy.revalue_inverse_orders(60000.0, 3);
+        assert_eq!(strategy.inverse_position_notional, Some(100.0));
+        assert_eq!(strategy.next_batch_at_us, 3);
+        strategy.book_inverse_fill(Side::Sell, 100.0);
+        assert_eq!(strategy.virtual_position_qty(), Some(0.0));
     }
 
     #[test]
@@ -2457,6 +4468,7 @@ mod tests {
         );
         strategy.active_target = Some(ActiveTarget {
             target: BatchExecTarget {
+                clear: false,
                 qty: 1.0,
                 signal: 0,
             },
@@ -2467,6 +4479,7 @@ mod tests {
 
         strategy.update_target(
             BatchExecTarget {
+                clear: false,
                 qty: 1.0,
                 signal: 1,
             },
@@ -2511,6 +4524,34 @@ mod tests {
     }
 
     #[test]
+    fn pending_quantity_respects_lots_minimum_quantity_and_notional() {
+        let mut limits = binance_twenty_usdt_limits();
+        limits.qty_step = 1.0;
+        limits.min_qty = 1.0;
+        limits.min_notional = 5.0;
+        // DOGE's sub-lot exit remains a factual position gap, not an order.
+        assert_eq!(
+            executable_pending_base_qty(0.84714119, 0.085, limits).unwrap(),
+            0.0
+        );
+        assert_eq!(
+            executable_pending_base_qty(58.99, 0.085, limits).unwrap(),
+            0.0
+        );
+        assert_eq!(
+            executable_pending_base_qty(-59.99, 0.085, limits).unwrap(),
+            -59.0
+        );
+        limits.qty_step = 0.1;
+        limits.min_qty = 0.3;
+        assert_eq!(
+            executable_pending_base_qty(0.299, 100.0, limits).unwrap(),
+            0.0
+        );
+        assert!((executable_pending_base_qty(0.39, 100.0, limits).unwrap() - 0.3).abs() < QTY_EPS);
+    }
+
+    #[test]
     fn batch_selection_coalesces_across_configured_batch_size() {
         let selected = select_executable_batch_base_qty(0.3, 0.1, 0.2).unwrap();
         assert!((selected - 0.2).abs() < QTY_EPS);
@@ -2522,6 +4563,593 @@ mod tests {
         assert!(residual_should_coalesce(0.1, 100.0, 10.0, 0.2));
         assert!(residual_should_coalesce(0.15, 100.0, 10.0, 0.2));
         assert!(!residual_should_coalesce(0.25, 100.0, 10.0, 0.2));
+    }
+
+    #[test]
+    fn identifies_only_local_exec_rate_limit_errors_for_backoff() {
+        assert!(is_exec_rate_limit_error(
+            "exec 近10秒下单数=200，达到上限 200"
+        ));
+        assert!(is_exec_rate_limit_error(
+            "exec 近60秒下单数=400，达到上限 400"
+        ));
+        assert!(!is_exec_rate_limit_error("Binance rejected position side"));
+    }
+
+    #[test]
+    fn post_only_rejection_releases_batch_for_immediate_retry() {
+        let client_order_id = 101;
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.next_batch_at_us = i64::MAX;
+        strategy.batches.insert(
+            1,
+            BatchState {
+                target_generation: 7,
+                side: Side::Buy,
+                remaining_base_qty: 1.0,
+                maker_requotes: 0,
+                use_taker: false,
+                phase: BatchPhase::Live,
+                child_order_ids: BTreeSet::from([client_order_id]),
+                remaining_qty_by_level: BTreeMap::from([(0, 1.0)]),
+                expires_at_us: 1_000,
+                from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
+                stale_paused: false,
+            },
+        );
+        strategy.child_orders.insert(
+            client_order_id,
+            ChildOrderMeta {
+                batch_seq: 1,
+                level_index: 0,
+                order_base_qty: 1.0,
+                accounted_fill_base_qty: 0.0,
+                accounted_fill_notional: 0.0,
+                qty_multiplier: 1.0,
+                signal_ts: 1,
+                signal_bbo: None,
+                price_offset: 0.0,
+                from_key: b"cta_alpha".to_vec(),
+                cancel_requested: false,
+            },
+        );
+        let response = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BinanceWsNewUMOrder as u32,
+            Exchange::Binance as u32,
+            client_order_id,
+            -5022,
+        );
+
+        let before_retry = get_timestamp_us();
+        strategy.handle_hedge_open_failed(&response, "Post Only rejected", client_order_id);
+        let after_retry = get_timestamp_us();
+
+        let batch = strategy.batches.get(&1).unwrap();
+        assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
+        assert_eq!(batch.maker_requotes, 0);
+        assert!(batch.child_order_ids.is_empty());
+        assert!(strategy.child_orders.is_empty());
+        assert!(strategy.post_only_retry_levels.is_empty());
+        assert!((before_retry..=after_retry).contains(&strategy.next_batch_at_us));
+    }
+
+    fn live_sibling_strategy() -> BatchExecStrategy {
+        let mut strategy = strategy_with_orphan_batch(&[
+            (101, 0, 1.0, 0.25),
+            (102, 1, 2.0, 0.0),
+            (103, 2, 3.0, 0.5),
+        ]);
+        strategy.child_orders = std::mem::take(&mut strategy.orphaned_child_orders);
+        strategy.batches.get_mut(&1).unwrap().child_order_ids = BTreeSet::from([101, 102, 103]);
+        strategy.next_batch_at_us = i64::MAX;
+        strategy
+    }
+
+    #[test]
+    fn post_only_rejection_preserves_live_siblings_and_retries_only_rejected_level() {
+        for (exchange, error_code) in [
+            (Exchange::Binance, -5022),
+            (Exchange::Bybit, 170218),
+            (
+                Exchange::Gate,
+                order_common::trade_error_code::gate::ORDER_POC,
+            ),
+        ] {
+            let mut strategy = live_sibling_strategy();
+            let original_batch = strategy.batches[&1].clone();
+            let response = TradeEngineResponseMessage::new(
+                400,
+                TradeRequestType::BinanceWsNewUMOrder as u32,
+                exchange as u32,
+                102,
+                error_code,
+            );
+            let before_retry = get_timestamp_us();
+            strategy.handle_hedge_open_failed(&response, "Post Only rejected", 102);
+            let after_retry = get_timestamp_us();
+
+            let batch = &strategy.batches[&1];
+            assert_eq!(batch.phase, BatchPhase::Live);
+            assert_eq!(batch.child_order_ids, BTreeSet::from([101, 103]));
+            assert_eq!(batch.remaining_base_qty, original_batch.remaining_base_qty);
+            assert_eq!(
+                batch.remaining_qty_by_level,
+                original_batch.remaining_qty_by_level
+            );
+            assert_eq!(batch.expires_at_us, original_batch.expires_at_us);
+            assert_eq!(batch.maker_requotes, 0);
+            assert!(!batch.saw_open_reject);
+            assert!(!strategy.child_orders.contains_key(&102));
+            for sibling in [101, 103] {
+                assert!(!strategy.child_orders[&sibling].cancel_requested);
+            }
+            assert!((before_retry..=after_retry).contains(&strategy.next_batch_at_us));
+
+            // Without runtime channels the retry remains queued. This is the same
+            // batch slice submit_batch uses when the submission gates permit it.
+            assert_eq!(strategy.post_only_retry_levels, BTreeSet::from([(1, 1)]));
+            let retry = strategy.post_only_retry_batch(1).unwrap();
+            assert_eq!(retry.remaining_base_qty, 2.0);
+            assert_eq!(retry.remaining_qty_by_level, BTreeMap::from([(1, 2.0)]));
+            let plans = rebuild_child_order_plans_at_preserved_levels(
+                &strategy.config,
+                retry.side,
+                &retry.remaining_qty_by_level,
+                100.0,
+                101.0,
+                1.0,
+                0.01,
+                0.01,
+                5.0,
+                1.0,
+            )
+            .unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(plans[0].level_index, 1);
+            assert_eq!(plans[0].qty_base, 2.0);
+            assert_eq!(plans[0].price, 98.0);
+        }
+    }
+
+    #[test]
+    fn post_only_rejection_does_not_suppress_later_maker_timeout() {
+        let mut strategy = live_sibling_strategy();
+        let response = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BinanceWsNewUMOrder as u32,
+            Exchange::Binance as u32,
+            102,
+            -5022,
+        );
+        strategy.handle_hedge_open_failed(&response, "Post Only rejected", 102);
+
+        // Model cancels already in flight so this test needs no execution IPC.
+        for meta in strategy.child_orders.values_mut() {
+            meta.cancel_requested = true;
+        }
+        strategy.handle_batch_timeouts(strategy.batches[&1].expires_at_us);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForRequote);
+        assert!(strategy.post_only_retry_batch(1).is_none());
+        strategy.finish_child_order(101);
+        strategy.finish_child_order(103);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::ReadyToSubmit);
+        assert_eq!(strategy.batches[&1].maker_requotes, 1);
+        assert!(strategy.post_only_retry_levels.is_empty());
+    }
+
+    #[test]
+    fn non_post_only_rejection_still_cancels_batch_for_requote() {
+        let mut strategy = live_sibling_strategy();
+        for meta in strategy.child_orders.values_mut() {
+            meta.cancel_requested = true;
+        }
+        let response = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BinanceWsNewUMOrder as u32,
+            Exchange::Binance as u32,
+            102,
+            -2019,
+        );
+        strategy.handle_hedge_open_failed(&response, "Margin insufficient", 102);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForRequote);
+        assert!(strategy.batches[&1].saw_open_reject);
+        assert!(strategy.post_only_retry_levels.is_empty());
+        strategy.finish_child_order(101);
+        strategy.finish_child_order(103);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::ReadyToSubmit);
+        assert_eq!(strategy.batches[&1].maker_requotes, 0);
+    }
+
+    #[test]
+    fn post_only_rejection_does_not_revive_cancelling_target() {
+        let mut strategy = live_sibling_strategy();
+        strategy.batches.get_mut(&1).unwrap().phase = BatchPhase::CancellingForTarget;
+        let response = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BinanceWsNewUMOrder as u32,
+            Exchange::Binance as u32,
+            102,
+            -5022,
+        );
+        strategy.handle_hedge_open_failed(&response, "Post Only rejected", 102);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
+        assert_eq!(
+            strategy.batches[&1].child_order_ids,
+            BTreeSet::from([101, 103])
+        );
+        assert!(strategy.post_only_retry_levels.is_empty());
+        strategy.finish_child_order(101);
+        strategy.finish_child_order(103);
+        assert!(strategy.batches.is_empty());
+    }
+
+    fn borrowing_reject_strategy() -> BatchExecStrategy {
+        let mut strategy = strategy_with_orphan_batch(&[(101, 0, 1.0, 0.25)]);
+        let meta = strategy.orphaned_child_orders.remove(&101).unwrap();
+        strategy.child_orders.insert(101, meta);
+        strategy
+            .batches
+            .get_mut(&1)
+            .unwrap()
+            .child_order_ids
+            .insert(101);
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget {
+                clear: false,
+                qty: 2.0,
+                signal: 0,
+            },
+            generation_time: 1,
+            from_key: b"cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
+        });
+        strategy
+    }
+
+    #[test]
+    fn borrowing_rejection_abandons_batches_without_losing_fills_or_retrying() {
+        for code in [401126, 406017] {
+            let mut strategy = borrowing_reject_strategy();
+            let mut ready = strategy.batches.get(&1).unwrap().clone();
+            ready.phase = BatchPhase::ReadyToSubmit;
+            ready.child_order_ids.clear();
+            strategy.batches.insert(2, ready);
+            let response = TradeEngineResponseMessage::new(
+                200,
+                TradeRequestType::BinanceLtpNewSpotOrder as u32,
+                Exchange::Binance as u32,
+                101,
+                code,
+            );
+            strategy.handle_hedge_open_failed(&response, "insufficient lending pool", 101);
+
+            assert_eq!(strategy.virtual_position_qty, Some(0.25));
+            assert!(!strategy.has_execution_in_flight());
+            assert_eq!(
+                strategy.settled_completion_reason(0.25),
+                Some(BatchExecCompletionReason::BorrowUnavailable)
+            );
+            assert_eq!(strategy.next_batch_at_us, i64::MAX);
+            // Allocation/config refreshes must not release the rejected target.
+            strategy.completion_reason = None;
+            strategy.next_batch_at_us = 0;
+            strategy.maybe_start_or_requote_batch(get_timestamp_us());
+            assert!(strategy.batches.is_empty());
+            assert!(strategy.borrow_unavailable());
+            strategy.update_target(
+                BatchExecTarget {
+                    clear: false,
+                    qty: 3.0,
+                    signal: 0,
+                },
+                1,
+                vec![],
+            );
+            assert!(strategy.pending_target.is_none());
+            assert!(strategy.borrow_unavailable());
+        }
+    }
+
+    #[test]
+    fn borrowing_rejection_waits_for_orphans_and_preserves_late_fills() {
+        let mut strategy = borrowing_reject_strategy();
+        let mut orphan = strategy.child_orders.get(&101).unwrap().clone();
+        orphan.accounted_fill_base_qty = 0.0;
+        strategy.orphaned_child_orders.insert(102, orphan);
+        let response = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BinanceLtpNewSpotOrder as u32,
+            Exchange::Binance as u32,
+            101,
+            401126,
+        );
+        strategy.handle_hedge_open_failed(&response, "insufficient lending pool", 101);
+        assert!(strategy.has_execution_in_flight());
+        assert_eq!(strategy.settled_completion_reason(0.25), None);
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(102, 0.2)));
+        assert!((strategy.virtual_position_qty.unwrap() - 0.45).abs() < QTY_EPS);
+        assert!(!strategy.has_execution_in_flight());
+        assert_eq!(
+            strategy.settled_completion_reason(0.45),
+            Some(BatchExecCompletionReason::BorrowUnavailable)
+        );
+    }
+
+    #[test]
+    fn rate_limit_rejection_keeps_batch_retryable() {
+        let mut strategy = borrowing_reject_strategy();
+        let response = TradeEngineResponseMessage::new(
+            429,
+            TradeRequestType::BinanceLtpNewSpotOrder as u32,
+            Exchange::Binance as u32,
+            101,
+            429,
+        );
+        strategy.handle_hedge_open_failed(&response, "rate limited", 101);
+        assert!(!strategy.borrow_unavailable());
+        assert_eq!(
+            strategy.batches.get(&1).unwrap().phase,
+            BatchPhase::ReadyToSubmit
+        );
+    }
+
+    #[test]
+    fn open_failed_rejection_does_not_burn_maker_requotes() {
+        let client_order_id = 101;
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.next_batch_at_us = i64::MAX;
+        strategy.batches.insert(
+            1,
+            BatchState {
+                target_generation: 7,
+                side: Side::Buy,
+                remaining_base_qty: 1.0,
+                maker_requotes: 0,
+                use_taker: false,
+                phase: BatchPhase::ReadyToSubmit,
+                child_order_ids: BTreeSet::new(),
+                remaining_qty_by_level: BTreeMap::from([(0, 1.0)]),
+                expires_at_us: 0,
+                from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
+                stale_paused: false,
+            },
+        );
+        for attempt in 0..10 {
+            let order_id = client_order_id + attempt;
+            {
+                let batch = strategy.batches.get_mut(&1).unwrap();
+                assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
+                batch.phase = BatchPhase::Live;
+                batch.child_order_ids.insert(order_id);
+            }
+            strategy.child_orders.insert(
+                order_id,
+                ChildOrderMeta {
+                    batch_seq: 1,
+                    level_index: 0,
+                    order_base_qty: 1.0,
+                    accounted_fill_base_qty: 0.0,
+                    accounted_fill_notional: 0.0,
+                    qty_multiplier: 1.0,
+                    signal_ts: 1,
+                    signal_bbo: None,
+                    price_offset: 0.0,
+                    from_key: b"cta_alpha".to_vec(),
+                    cancel_requested: false,
+                },
+            );
+            let response = TradeEngineResponseMessage::new(
+                400,
+                TradeRequestType::BinanceWsNewUMOrder as u32,
+                Exchange::Binance as u32,
+                order_id,
+                -2019,
+            );
+            strategy.handle_hedge_open_failed(&response, "Margin insufficient", order_id);
+        }
+
+        let batch = strategy.batches.get(&1).unwrap();
+        assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
+        assert_eq!(batch.maker_requotes, 0);
+        assert!(!batch.saw_open_reject);
+    }
+
+    #[test]
+    fn maker_timeout_requote_still_counts_toward_taker_fallback() {
+        let client_order_id = 101;
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.next_batch_at_us = i64::MAX;
+        strategy.batches.insert(
+            1,
+            BatchState {
+                target_generation: 7,
+                side: Side::Buy,
+                remaining_base_qty: 1.0,
+                maker_requotes: 0,
+                use_taker: false,
+                phase: BatchPhase::Live,
+                child_order_ids: BTreeSet::from([client_order_id]),
+                remaining_qty_by_level: BTreeMap::from([(0, 1.0)]),
+                expires_at_us: 1_000,
+                from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
+                stale_paused: false,
+            },
+        );
+        strategy.child_orders.insert(
+            client_order_id,
+            ChildOrderMeta {
+                batch_seq: 1,
+                level_index: 0,
+                order_base_qty: 1.0,
+                accounted_fill_base_qty: 0.0,
+                accounted_fill_notional: 0.0,
+                qty_multiplier: 1.0,
+                signal_ts: 1,
+                signal_bbo: None,
+                price_offset: 0.0,
+                from_key: b"cta_alpha".to_vec(),
+                cancel_requested: false,
+            },
+        );
+
+        strategy.finish_child_order(client_order_id);
+
+        let batch = strategy.batches.get(&1).unwrap();
+        assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
+        assert_eq!(batch.maker_requotes, 1);
+    }
+
+    #[test]
+    fn pov_stale_pause_requote_does_not_burn_maker_requotes() {
+        let client_order_id = 101;
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.batches.insert(
+            1,
+            BatchState {
+                target_generation: 7,
+                side: Side::Buy,
+                remaining_base_qty: 1.0,
+                maker_requotes: 0,
+                use_taker: false,
+                phase: BatchPhase::CancellingForRequote,
+                child_order_ids: BTreeSet::from([client_order_id]),
+                remaining_qty_by_level: BTreeMap::from([(0, 1.0)]),
+                expires_at_us: 0,
+                from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
+                stale_paused: true,
+            },
+        );
+        strategy.child_orders.insert(
+            client_order_id,
+            ChildOrderMeta {
+                batch_seq: 1,
+                level_index: 0,
+                order_base_qty: 1.0,
+                accounted_fill_base_qty: 0.0,
+                accounted_fill_notional: 0.0,
+                qty_multiplier: 1.0,
+                signal_ts: 1,
+                signal_bbo: None,
+                price_offset: 0.0,
+                from_key: b"cta_alpha".to_vec(),
+                cancel_requested: false,
+            },
+        );
+
+        strategy.finish_child_order(client_order_id);
+
+        // A stale-data pause is not a genuine maker attempt: it must not
+        // consume the requote budget that drives maker_then_taker escalation.
+        let batch = strategy.batches.get(&1).unwrap();
+        assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
+        assert_eq!(batch.maker_requotes, 0);
+        assert!(!batch.stale_paused);
+    }
+
+    #[test]
+    fn minimum_residual_waits_for_final_fill_without_parking_live_batch() {
+        for algorithm in [
+            ExecAlgorithm::Ctaker,
+            ExecAlgorithm::Batch,
+            ExecAlgorithm::Pov,
+        ] {
+            let mut strategy = strategy_with_orphan_batch(&[(101, 0, 1.0, 0.0)]);
+            strategy.config.algorithm = algorithm;
+            strategy.active_target = Some(ActiveTarget {
+                target: BatchExecTarget {
+                    clear: false,
+                    qty: 1.001,
+                    signal: 0,
+                },
+                generation_time: 1,
+                from_key: b"cta_alpha".to_vec(),
+                effective_single_order_usdt: None,
+            });
+            let meta = strategy.orphaned_child_orders.remove(&101).unwrap();
+            strategy.child_orders.insert(101, meta);
+            strategy
+                .batches
+                .get_mut(&1)
+                .unwrap()
+                .child_order_ids
+                .insert(101);
+            strategy.next_batch_at_us = 100;
+
+            // The rounded order owns 1.0; the unallocated 0.001 cannot be sent.
+            strategy.record_exchange_minimum();
+            assert_eq!(strategy.settled_completion_reason(0.0), None);
+            assert_eq!(strategy.next_batch_at_us, 100);
+
+            // The actual final fill removes the live batch, with no new target
+            // or account allocation to wake the scheduler.
+            strategy.apply_fill_delta(101, 1, 0, 1.0);
+            strategy
+                .child_orders
+                .get_mut(&101)
+                .unwrap()
+                .accounted_fill_base_qty = 1.0;
+            strategy.finish_child_order(101);
+            assert!(strategy.batches.is_empty());
+            assert!(!should_defer_batch_start(
+                101,
+                strategy.next_batch_at_us,
+                false
+            ));
+            strategy.record_exchange_minimum();
+            assert_eq!(
+                strategy.settled_completion_reason(1.0),
+                Some(BatchExecCompletionReason::ExchangeMinimum)
+            );
+        }
+    }
+
+    #[test]
+    fn empty_order_plan_does_not_park_other_live_batches() {
+        let mut strategy = strategy_with_orphan_batch(&[(101, 0, 1.0, 0.0)]);
+        let mut exhausted_batch = strategy.batches.get(&1).unwrap().clone();
+        exhausted_batch.phase = BatchPhase::ReadyToSubmit;
+        exhausted_batch.remaining_base_qty = 0.001;
+        strategy.batches.insert(2, exhausted_batch);
+        strategy.next_batch_at_us = 100;
+
+        // submit_batch releases an empty rounded plan while batch 1 is live.
+        strategy.batches.remove(&2);
+        strategy.record_exchange_minimum();
+        assert_eq!(strategy.completion_reason, None);
+        assert!(!should_defer_batch_start(
+            101,
+            strategy.next_batch_at_us,
+            false
+        ));
     }
 
     #[test]
@@ -2537,6 +5165,7 @@ mod tests {
         strategy.position_allocation_ready = true;
         strategy.active_target = Some(ActiveTarget {
             target: BatchExecTarget {
+                clear: false,
                 qty: 1.0,
                 signal: 0,
             },
@@ -2562,10 +5191,10 @@ mod tests {
                 phase: BatchPhase::ReadyToSubmit,
                 child_order_ids: BTreeSet::new(),
                 remaining_qty_by_level: BTreeMap::new(),
-                last_quote_ts: 0,
-                require_new_quote: false,
                 expires_at_us: 0,
                 from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
+                stale_paused: false,
             },
         );
         assert_eq!(strategy.settled_completion_reason(0.9), None);
@@ -2576,6 +5205,223 @@ mod tests {
             strategy.settled_completion_reason(1.0),
             Some(BatchExecCompletionReason::TargetReached)
         );
+    }
+
+    fn idle_residual_strategy(residual: f64) -> BatchExecStrategy {
+        let mut strategy = strategy_with_orphan_batch(&[(101, 0, 0.001, 0.0)]);
+        strategy.orphaned_child_orders.clear();
+        strategy.virtual_position_qty = Some(1.0 - residual);
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget::new(1.0, 0).unwrap(),
+            generation_time: 1,
+            from_key: b"cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
+        });
+        strategy.batches.insert(2, strategy.batches[&1].clone());
+        strategy.next_batch_at_us = i64::MAX;
+        strategy
+    }
+
+    #[test]
+    fn idle_dust_settles_all_batches_below_exchange_minimum() {
+        let price = 100_000.0;
+        let limits = BatchOrderLimits {
+            price_tick: 0.1,
+            qty_step: 0.001,
+            min_qty: 0.001,
+            min_notional: 20.0,
+            qty_multiplier: 1.0,
+            inverse_contract_size: None,
+        };
+        let minimum = minimum_executable_base_qty(price, limits).unwrap();
+        for residual in [0.000799, -0.000799] {
+            for phase in [
+                BatchPhase::ReadyToSubmit,
+                BatchPhase::Live,
+                BatchPhase::CancellingForRequote,
+                BatchPhase::CancellingForTarget,
+            ] {
+                let mut strategy = idle_residual_strategy(residual);
+                for batch in strategy.batches.values_mut() {
+                    batch.phase = phase;
+                }
+                strategy.post_only_retry_levels.insert((1, 0));
+                let position = strategy.virtual_position_qty().unwrap();
+                assert_eq!(
+                    executable_pending_base_qty(residual, price, limits),
+                    Ok(0.0)
+                );
+                assert_eq!(strategy.batches.len(), 2);
+                assert_eq!(strategy.settled_completion_reason(position), None);
+
+                assert!(strategy.settle_idle_execution(price, minimum));
+                assert!(strategy.batches.is_empty());
+                assert!(strategy.post_only_retry_levels.is_empty());
+                assert!(!strategy.has_execution_in_flight());
+                assert_eq!(strategy.virtual_position_qty(), Some(position));
+                assert_eq!(strategy.target_qty(), Some(1.0));
+                assert_eq!(
+                    strategy.settled_completion_reason(position),
+                    Some(BatchExecCompletionReason::ExchangeMinimum)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn idle_residual_uses_existing_target_tolerance_and_clear_policy() {
+        let mut strategy = idle_residual_strategy(0.0012);
+        // Executable quantity, but within the existing 10 USDT target tolerance.
+        assert!(strategy.settle_idle_execution(5_000.0, 0.001));
+        assert!(strategy.batches.is_empty());
+        assert_eq!(
+            strategy.settled_completion_reason(0.9988),
+            Some(BatchExecCompletionReason::TargetTolerance)
+        );
+        assert!(!should_defer_batch_start(
+            1,
+            strategy.next_batch_at_us,
+            false
+        ));
+
+        let mut ctaker = idle_residual_strategy(0.0012);
+        ctaker.config.algorithm = ExecAlgorithm::Ctaker;
+        assert!(!ctaker.settle_idle_execution(5_000.0, 0.001));
+        assert_eq!(ctaker.settled_completion_reason(0.9988), None);
+
+        let mut clear = idle_residual_strategy(0.0012);
+        clear.active_target.as_mut().unwrap().target = BatchExecTarget::clear(0).unwrap();
+        clear.virtual_position_qty = Some(-0.0012);
+        assert!(!clear.settle_idle_execution(5_000.0, 0.001));
+        assert_eq!(clear.settled_completion_reason(-0.0012), None);
+
+        let mut reached = idle_residual_strategy(0.0);
+        assert!(reached.settle_idle_execution(100_000.0, 0.001));
+        assert!(!reached.has_execution_in_flight());
+        assert_eq!(
+            reached.settled_completion_reason(1.0),
+            Some(BatchExecCompletionReason::TargetReached)
+        );
+    }
+
+    #[test]
+    fn idle_settlement_keeps_executable_total_even_when_unallocated_is_dust() {
+        for residual in [0.001, -0.001, 0.0012, -0.0012, 0.002799, -0.002799] {
+            let mut strategy = idle_residual_strategy(residual);
+            for batch in strategy.batches.values_mut() {
+                batch.side = if residual > 0.0 {
+                    Side::Buy
+                } else {
+                    Side::Sell
+                };
+                batch.remaining_base_qty = residual.abs().min(0.002) / 2.0;
+            }
+            assert!(strategy.unallocated_qty_for_target(1.0).abs() < 0.001);
+            assert!(!strategy.settle_idle_execution(100_000.0, 0.001));
+            assert_eq!(strategy.batches.len(), 2);
+            assert!(strategy.has_execution_in_flight());
+            assert_eq!(strategy.settled_completion_reason(1.0 - residual), None);
+        }
+    }
+
+    #[test]
+    fn idle_settlement_waits_for_children_orphans_and_batch_order_ids() {
+        for accounted_fill in [0.0, 0.001] {
+            // Even a fully accounted fill must wait for its terminal acknowledgement.
+            let meta = strategy_with_orphan_batch(&[(101, 0, 0.001, accounted_fill)])
+                .orphaned_child_orders
+                .remove(&101)
+                .unwrap();
+            for tracker in 0..3 {
+                let mut strategy = idle_residual_strategy(0.000799);
+                match tracker {
+                    0 => {
+                        strategy.child_orders.insert(101, meta.clone());
+                    }
+                    1 => {
+                        strategy.orphaned_child_orders.insert(101, meta.clone());
+                    }
+                    _ => {
+                        strategy
+                            .batches
+                            .get_mut(&1)
+                            .unwrap()
+                            .child_order_ids
+                            .insert(101);
+                    }
+                }
+                if tracker < 2 {
+                    assert_eq!(strategy.live_order_signed_qty(), 0.001 - accounted_fill);
+                }
+                assert!(!strategy.settle_idle_execution(100_000.0, 0.001));
+                assert_eq!(strategy.batches.len(), 2);
+                assert_eq!(strategy.completion_reason, None);
+                assert_eq!(strategy.settled_completion_reason(0.999201), None);
+            }
+        }
+    }
+
+    #[test]
+    fn idle_settlement_requires_current_allocation_target_and_valid_limits() {
+        for gate in 0..4 {
+            let mut strategy = idle_residual_strategy(0.000799);
+            match gate {
+                0 => strategy.position_allocation_ready = false,
+                1 => strategy.active_target = None,
+                2 => strategy.config_transition_in_progress = true,
+                _ => {
+                    strategy.pending_target = Some(PendingTarget {
+                        target: BatchExecTarget::new(2.0, 0).unwrap(),
+                        generation_time: 2,
+                        from_key: b"cta_alpha".to_vec(),
+                    })
+                }
+            }
+            assert!(!strategy.settle_idle_execution(100_000.0, 0.001));
+            assert_eq!(strategy.batches.len(), 2);
+            assert_eq!(strategy.completion_reason, None);
+        }
+        for (price, minimum) in [
+            (0.0, 0.001),
+            (f64::NAN, 0.001),
+            (100_000.0, f64::NAN),
+            (100_000.0, f64::INFINITY),
+            (100_000.0, -0.001),
+        ] {
+            let mut strategy = idle_residual_strategy(0.000799);
+            assert!(!strategy.settle_idle_execution(price, minimum));
+            assert_eq!(strategy.batches.len(), 2);
+        }
+    }
+
+    #[test]
+    fn target_cancel_releases_unsent_batches_without_terminal_callback() {
+        let mut strategy = idle_residual_strategy(0.000799);
+        for batch in strategy.batches.values_mut() {
+            batch.phase = BatchPhase::ReadyToSubmit;
+        }
+        strategy.post_only_retry_levels.insert((1, 0));
+        // The 0.002 reservation exceeds the factual gap, triggering target cancel.
+        strategy.cancel_batches_when_target_no_longer_needs_them();
+        assert!(strategy.batches.is_empty());
+        assert!(strategy.post_only_retry_levels.is_empty());
+        assert!(strategy.settle_idle_execution(100_000.0, 0.001));
+        assert_eq!(
+            strategy.settled_completion_reason(0.999201),
+            Some(BatchExecCompletionReason::ExchangeMinimum)
+        );
+    }
+
+    #[test]
+    fn target_cancel_preserves_orphan_reservation_until_terminal() {
+        let mut strategy = strategy_with_orphan_batch(&[(101, 0, 0.001, 0.0)]);
+        strategy.begin_cancel_batch(1, BatchPhase::CancellingForTarget);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
+        assert!(strategy.has_execution_in_flight());
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(101, 0.0002)));
+        assert!(strategy.batches.is_empty());
+        assert!(strategy.orphaned_child_orders.is_empty());
+        assert!((strategy.virtual_position_qty().unwrap() - 0.0002).abs() < QTY_EPS);
     }
 
     #[test]
@@ -2600,10 +5446,10 @@ mod tests {
                 phase: BatchPhase::ReadyToSubmit,
                 child_order_ids: BTreeSet::new(),
                 remaining_qty_by_level: BTreeMap::from([(0, 1.0)]),
-                last_quote_ts: 10,
-                require_new_quote: true,
                 expires_at_us: 0,
                 from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
+                stale_paused: false,
             },
         );
 
@@ -2668,6 +5514,14 @@ mod tests {
     }
 
     #[test]
+    fn ready_batch_bypasses_disabled_new_batch_schedule() {
+        assert!(should_defer_batch_start(10, i64::MAX, false));
+        assert!(!should_defer_batch_start(10, i64::MAX, true));
+        assert!(should_defer_batch_start(10, 20, true));
+        assert!(!should_defer_batch_start(10, 10, false));
+    }
+
+    #[test]
     fn active_batch_estimate_uses_current_expiry_and_remaining_requotes() {
         let now_ts_us = 10_000_000;
         let batch = BatchState {
@@ -2679,10 +5533,10 @@ mod tests {
             phase: BatchPhase::Live,
             child_order_ids: BTreeSet::new(),
             remaining_qty_by_level: BTreeMap::new(),
-            last_quote_ts: 0,
-            require_new_quote: false,
             expires_at_us: now_ts_us + 400_000,
             from_key: Vec::new(),
+            saw_open_reject: false,
+            stale_paused: false,
         };
 
         assert_eq!(
@@ -2721,10 +5575,10 @@ mod tests {
                 phase: BatchPhase::Live,
                 child_order_ids: BTreeSet::new(),
                 remaining_qty_by_level,
-                last_quote_ts: 10,
-                require_new_quote: false,
                 expires_at_us: 100,
                 from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
+                stale_paused: false,
             },
         );
         for (client_order_id, level_index, order_base_qty, accounted_fill_base_qty) in entries {
@@ -2735,6 +5589,8 @@ mod tests {
                     level_index: *level_index,
                     order_base_qty: *order_base_qty,
                     accounted_fill_base_qty: *accounted_fill_base_qty,
+                    accounted_fill_notional: 0.0,
+                    qty_multiplier: 1.0,
                     signal_ts: 1,
                     signal_bbo: None,
                     price_offset: f64::from(*level_index),
@@ -2770,7 +5626,6 @@ mod tests {
         assert!((batch.remaining_base_qty - 0.4).abs() < QTY_EPS);
         assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
         assert_eq!(batch.maker_requotes, 1);
-        assert!(batch.require_new_quote);
 
         assert!(!strategy.apply_exec_orphan_terminal(&orphan_terminal(101, 0.6)));
         assert!((strategy.virtual_position_qty().unwrap() - 0.6).abs() < QTY_EPS);
@@ -2824,6 +5679,7 @@ mod tests {
         let mut strategy = strategy_with_orphan_batch(&[(105, 0, 1.0, 0.0)]);
         strategy.pending_target = Some(PendingTarget {
             target: BatchExecTarget {
+                clear: false,
                 qty: 2.0,
                 signal: 0,
             },
@@ -2879,6 +5735,7 @@ mod tests {
         strategy.apply_position_allocation(0.6, 100).unwrap();
         strategy.active_target = Some(ActiveTarget {
             target: BatchExecTarget {
+                clear: false,
                 qty: 1.0,
                 signal: 0,
             },
@@ -2897,10 +5754,10 @@ mod tests {
                 phase: BatchPhase::ReadyToSubmit,
                 child_order_ids: BTreeSet::new(),
                 remaining_qty_by_level: BTreeMap::new(),
-                last_quote_ts: 0,
-                require_new_quote: false,
                 expires_at_us: 0,
                 from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
+                stale_paused: false,
             },
         );
 
@@ -3244,5 +6101,180 @@ mod tests {
             .unwrap();
             assert!(plans.iter().all(|plan| plan.order_type == OrderType::Limit));
         }
+    }
+
+    #[test]
+    fn internal_cross_fill_moves_virtual_position_and_builds_fill_record() {
+        let mut strategy = BatchExecStrategy::new(
+            7,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.virtual_position_qty = Some(0.6);
+        strategy.position_allocation_ready = true;
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget::new(1.0, 0).unwrap(),
+            generation_time: 1,
+            from_key: b"batch_exec:cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
+        });
+        let quote = Quote {
+            bid: 99.0,
+            bid_qty: 2.0,
+            ask: 101.0,
+            ask_qty: 3.0,
+            ts: 500,
+        };
+        let record = strategy
+            .apply_internal_cross_fill(0.4, &quote, 1_000)
+            .unwrap();
+        assert_eq!(strategy.virtual_position_qty, Some(1.0));
+        assert_eq!(strategy.last_position_fill_at_us, 1_000);
+        assert_eq!(record.ttype, UNIFORM_ORDER_TYPE_INTERNAL_CROSS);
+        assert_eq!(record.side, Side::Buy.to_u8());
+        assert_eq!(record.status, OrderStatus::Filled.to_u8());
+        assert_eq!(record.price, 100.0);
+        assert_eq!(record.amount_init, 0.4);
+        assert_eq!(record.amount_update, 0.4);
+        assert_eq!(record.symbol, b"BTCUSDT".to_vec());
+        assert_eq!(record.from_key, b"batch_exec:cta_alpha".to_vec());
+        assert_eq!(record.mkt_ts, 500);
+        assert!(record.signal_bbo.is_some());
+        assert_eq!(record.symbol_len as usize, record.symbol.len());
+        assert_eq!(record.from_key_len as usize, record.from_key.len());
+
+        let record = strategy
+            .apply_internal_cross_fill(-0.25, &quote, 1_001)
+            .unwrap();
+        assert_eq!(strategy.virtual_position_qty, Some(0.75));
+        assert_eq!(record.side, Side::Sell.to_u8());
+        assert_eq!(record.amount_update, 0.25);
+    }
+
+    #[test]
+    fn internal_cross_fill_wakes_exchange_minimum_recheck() {
+        let mut strategy = BatchExecStrategy::new(
+            7,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.virtual_position_qty = Some(0.6);
+        strategy.position_allocation_ready = true;
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget::new(1.0, 0).unwrap(),
+            generation_time: 1,
+            from_key: b"batch_exec:cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
+        });
+        strategy.next_batch_at_us = i64::MAX;
+        strategy.completion_reason = Some(BatchExecCompletionReason::ExchangeMinimum);
+        let quote = Quote {
+            bid: 99.0,
+            bid_qty: 2.0,
+            ask: 101.0,
+            ask_qty: 3.0,
+            ts: 500,
+        };
+
+        strategy
+            .apply_internal_cross_fill(0.1, &quote, 1_000)
+            .unwrap();
+
+        assert_eq!(strategy.next_batch_at_us, 1_000);
+        assert_eq!(strategy.completion_reason, None);
+    }
+
+    #[test]
+    fn internal_cross_fill_rejects_invalid_inputs_without_moving_position() {
+        let mut strategy = BatchExecStrategy::new(
+            7,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        let quote = Quote {
+            bid: 99.0,
+            bid_qty: 2.0,
+            ask: 101.0,
+            ask_qty: 3.0,
+            ts: 500,
+        };
+        // No applied allocation yet.
+        assert!(strategy
+            .apply_internal_cross_fill(0.4, &quote, 1_000)
+            .is_err());
+        strategy.virtual_position_qty = Some(0.0);
+        strategy.position_allocation_ready = true;
+        // Allocation applied but no target exists to attribute the fill.
+        assert!(strategy
+            .apply_internal_cross_fill(0.4, &quote, 1_000)
+            .is_err());
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget::new(1.0, 0).unwrap(),
+            generation_time: 1,
+            from_key: b"batch_exec:cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
+        });
+        assert!(strategy
+            .apply_internal_cross_fill(0.0, &quote, 1_000)
+            .is_err());
+        assert!(strategy
+            .apply_internal_cross_fill(f64::NAN, &quote, 1_000)
+            .is_err());
+        let mut invalid = quote;
+        invalid.bid = 0.0;
+        assert!(strategy
+            .apply_internal_cross_fill(0.4, &invalid, 1_000)
+            .is_err());
+        assert_eq!(strategy.virtual_position_qty, Some(0.0));
+    }
+
+    #[test]
+    fn internal_cross_closing_gap_marks_committed_batches_for_target_cancel() {
+        // 0.4 buy is committed in a live batch; the cross fills the whole gap
+        // so the next clock must cancel rather than requote it.
+        let mut strategy = strategy_with_orphan_batch(&[(101, 0, 0.4, 0.0)]);
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget::new(1.0, 0).unwrap(),
+            generation_time: 1,
+            from_key: b"batch_exec:cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
+        });
+        let quote = Quote {
+            bid: 99.0,
+            bid_qty: 2.0,
+            ask: 101.0,
+            ask_qty: 3.0,
+            ts: 500,
+        };
+        strategy
+            .apply_internal_cross_fill(1.0, &quote, 1_000)
+            .unwrap();
+        strategy.cancel_batches_when_target_no_longer_needs_them();
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
+    }
+
+    #[test]
+    fn symbol_config_override_inherits_unspecified_global_fields() {
+        let defaults = config();
+        let override_config = BatchExecConfigOverride {
+            single_order_usdt: Some(250.0),
+            max_maker_requotes: Some(0),
+            ..Default::default()
+        };
+        let effective = override_config.apply_to(&defaults);
+        assert_eq!(effective.single_order_usdt, 250.0);
+        assert_eq!(effective.max_maker_requotes, 0);
+        assert_eq!(effective.orders_per_batch, defaults.orders_per_batch);
+        assert_eq!(effective.maker_price_anchor, defaults.maker_price_anchor);
+        assert!(override_config.validate(&defaults).is_ok());
+        assert!(BatchExecConfigOverride::default()
+            .validate(&defaults)
+            .is_err());
     }
 }

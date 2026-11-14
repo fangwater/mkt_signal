@@ -1,0 +1,16 @@
+{
+  "enabled": false,
+  "max_pos_u": 200,
+  "entry": {
+    "factor_long_quantile": 0.9,
+    "factor_short_quantile": 0.1,
+    "nq_change_enabled": true,
+    "nq_long_quantile": 0.5,
+    "nq_short_quantile": 0.5
+  },
+  "execution": {
+    "factor_exit_quantile_long": 0.3,
+    "factor_exit_quantile_short": 0.7
+  },
+  "bar_interval": "5m"
+}

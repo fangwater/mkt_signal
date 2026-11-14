@@ -1,0 +1,262 @@
+{
+  "verified_at": "2026-10-13T06:28:15.752478+00:00",
+  "release": {
+    "commit": "456be04492891f6371438a54f0cb4a2deaa7f0ce",
+    "publication_enabled": false,
+    "env_name": "binance-cta-spread-rx01",
+    "assets_commit": "470af607"
+  },
+  "env": "binance-cta-spread-rx01",
+  "venue": "binance-futures + binance-margin",
+  "symbols": 19,
+  "factors": 5,
+  "pairs": 57,
+  "enabled": false,
+  "signal_process_state": "online",
+  "status_age_ms": 696,
+  "score_ready": 0,
+  "spread_ready": 0,
+  "publication_error": null,
+  "history": [
+    {
+      "file": "20261011.jsonl",
+      "bytes": 4498153,
+      "latest_model_ts_ms": 1791726900000
+    }
+  ],
+  "processes": [
+    {
+      "pid": 140816,
+      "cwd": "/home/ubuntu/binance-cta-special-rx02",
+      "exe": "cta_special_signal",
+      "scripts": [],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 147320,
+      "cwd": "/home/ubuntu/binance-cta-special-rx02",
+      "exe": "python3.12",
+      "scripts": [
+        "/home/ubuntu/binance-cta-special-rx02/scripts/cta_special_config_server.py"
+      ],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 945585,
+      "cwd": "/home/ubuntu/binance-cta-special-rx02",
+      "exe": "python3.12",
+      "scripts": [
+        "/home/ubuntu/binance-cta-special-rx02/scripts/cta_special_dashboard.py"
+      ],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 1975542,
+      "cwd": "/home/ubuntu/binance-cta-special-rx02",
+      "exe": "cta_special_factor_model_1m_pub",
+      "scripts": [],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 2392640,
+      "cwd": "/home/ubuntu/binance-cta-rx01",
+      "exe": "persist_manager",
+      "scripts": [],
+      "cpus": [
+        15
+      ]
+    },
+    {
+      "pid": 2394028,
+      "cwd": "/home/ubuntu/binance-cta-rx01",
+      "exe": "account_monitor_binance",
+      "scripts": [],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3028399,
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "python3.12",
+      "scripts": [
+        "/home/ubuntu/binance_exec_trade05/scripts/exec_config_server.py"
+      ],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3036362,
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "persist_manager",
+      "scripts": [],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3038156,
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "rapidx_account_monitor",
+      "scripts": [],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3150153,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "exe": "cta_spread_factor_model_1m_pub",
+      "scripts": [],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3175453,
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "trade_engine",
+      "scripts": [],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3183433,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "exe": "python3.12",
+      "scripts": [
+        "/home/ubuntu/binance-cta-spread-rx01/scripts/cta_spread_config_server.py"
+      ],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3190607,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "exe": "python3.12",
+      "scripts": [
+        "/home/ubuntu/binance-cta-spread-rx01/scripts/cta_spread_dashboard.py"
+      ],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3199322,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "exe": "cta_spread_signal",
+      "scripts": [],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3477383,
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "viz_server",
+      "scripts": [],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3477503,
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "exec-pre-trade",
+      "scripts": [],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    }
+  ],
+  "old_env_files_unchanged": true,
+  "page_path": "/cta/binance-cta-spread-rx01/",
+  "config_path": "/cta/binance-cta-spread-rx01/config/",
+  "old_rx01_redirects": true
+}

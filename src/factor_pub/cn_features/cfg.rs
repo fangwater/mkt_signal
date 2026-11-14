@@ -40,10 +40,8 @@ impl CnFactorVersion {
     }
 
     pub fn amount_threshold_config_type(self) -> &'static str {
-        match self {
-            Self::Default => "amount_thresholds",
-            Self::OneMinute => "amount_thresholds_1m",
-        }
+        // Trade-notional boundaries are independent of the factor bar interval.
+        "amount_thresholds"
     }
 
     pub fn output_service_path(self, venue_slug: &str) -> String {
@@ -167,15 +165,16 @@ mod tests {
     use super::CnFactorVersion;
 
     #[test]
-    fn one_minute_version_uses_isolated_resources() {
+    fn bar_intervals_share_trade_thresholds_and_keep_factor_resources_isolated() {
         let version = CnFactorVersion::OneMinute;
         assert_eq!(version.trade_flow_channel(), "trade_flow_feature_1m");
         assert_eq!(version.factor_plan_config_type(), "factor_plan_1m");
         assert_eq!(version.zscore_config_type(), "zscore_1m");
         assert_eq!(
             version.amount_threshold_config_type(),
-            "amount_thresholds_1m"
+            CnFactorVersion::Default.amount_threshold_config_type()
         );
+        assert_eq!(version.amount_threshold_config_type(), "amount_thresholds");
         assert_eq!(
             version.output_service_path("binance-futures"),
             "fusion_factor_1m/binance-futures"

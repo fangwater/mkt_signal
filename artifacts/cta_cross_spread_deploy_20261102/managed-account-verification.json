@@ -1,0 +1,19 @@
+{
+  "account_id": "cta_cross_spread_rx01",
+  "public_account_count": 1,
+  "execution_sources": [
+    "okex_exec_trade01",
+    "binance_exec_spread01"
+  ],
+  "trading_nav": 0,
+  "order_count": 0,
+  "initial_snapshots": 0,
+  "bindings": 0,
+  "risk_unchanged": true,
+  "protected_processes_unchanged": 93,
+  "protected_configs_unchanged": true,
+  "prc_forbidden": 4,
+  "manager_pid": 1537702,
+  "trading_enabled": false,
+  "physical_binance_residual": "IOTAUSDT -0.1 (previous signed observation; not seeded or closed)"
+}

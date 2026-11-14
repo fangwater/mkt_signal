@@ -68,6 +68,7 @@ impl IceOryxForwarder {
     pub fn new(config: &Config) -> Result<Self> {
         let exchange = config.get_exchange();
         let venue_slug = config.venue.data_pub_slug();
+        let market_data_slug = config.venue.market_data_pub_slug();
 
         info!(
             "Creating IceOryx forwarder for exchange: {} (venue={})",
@@ -96,7 +97,7 @@ impl IceOryxForwarder {
             let service = node
                 .service_builder(&ServiceName::new(&format!(
                     "dat_pbs/{}/incremental",
-                    venue_slug
+                    market_data_slug
                 ))?)
                 .publish_subscribe::<[u8; INC_CHANNEL_MAX_BYTES]>()
                 .max_publishers(1)
@@ -112,7 +113,10 @@ impl IceOryxForwarder {
 
         let trade_publisher = if config.data_types.enable_trade {
             let service = node
-                .service_builder(&ServiceName::new(&format!("dat_pbs/{}/trade", venue_slug))?)
+                .service_builder(&ServiceName::new(&format!(
+                    "dat_pbs/{}/trade",
+                    market_data_slug
+                ))?)
                 .publish_subscribe::<[u8; TRADE_MAX_BYTES]>()
                 .max_publishers(1)
                 .max_subscribers(TRADE_MAX_SUBSCRIBERS)
@@ -145,7 +149,7 @@ impl IceOryxForwarder {
             let service = node
                 .service_builder(&ServiceName::new(&format!(
                     "dat_pbs/{}/derivatives",
-                    venue_slug
+                    market_data_slug
                 ))?)
                 .publish_subscribe::<[u8; DERIVATIVES_MAX_BYTES]>()
                 .max_publishers(1)

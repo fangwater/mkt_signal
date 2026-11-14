@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 · 下架风险</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f7f8fa; color: #1f2933; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; }
+    main { width: min(380px, calc(100% - 40px)); margin: 15vh auto; padding: 28px; background: white; border: 1px solid #dfe4ea; border-radius: 6px; }
+    h1 { margin: 0 0 6px; font-size: 23px; }
+    p { margin: 0 0 24px; color: #637083; }
+    label { display: block; margin: 16px 0 5px; }
+    input, button { width: 100%; min-height: 42px; padding: 9px 11px; border: 1px solid #cbd3dc; border-radius: 4px; font: inherit; }
+    button { margin-top: 22px; background: #17714e; color: white; border-color: #17714e; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: wait; }
+    #error { margin-top: 12px; color: #b33a35; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>下架风险</h1>
+    <p>登录后查看公告、账户净值及配置面板。</p>
+    <form id="login" action="/delist/login" method="post">
+      <label for="username">账户</label>
+      <input id="username" name="username" autocomplete="username" required autofocus maxlength="128">
+      <label for="password">密码</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+      <button type="submit">登录</button>
+      <div id="error" role="alert"></div>
+    </form>
+  </main>
+  <script>
+    document.getElementById('login').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = form.querySelector('button');
+      const error = document.getElementById('error');
+      button.disabled = true;
+      error.textContent = '';
+      try {
+        const response = await fetch(form.action, { method: 'POST', body: new URLSearchParams(new FormData(form)), cache: 'no-store' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '登录失败');
+        location.replace('/delist/');
+      } catch (err) { error.textContent = err.message || '登录失败，请重试'; }
+      finally { button.disabled = false; }
+    });
+  </script>
+</body>
+</html>

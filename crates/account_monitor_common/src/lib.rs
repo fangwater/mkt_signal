@@ -4,6 +4,7 @@ pub mod bitget_user_stream;
 pub mod bybit_user_stream;
 pub mod gate_rest;
 pub mod gate_user_stream;
+pub mod hyperliquid_account;
 pub mod listen_key;
 pub mod okex_rest;
 pub mod okex_user_stream;

@@ -1,12 +1,15 @@
+use crate::pre_trade::hyperliquid_account_hash_from_env;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use order_common::{gate_text_from_client_order_id, Order, TradingVenue};
+use order_common::{
+    gate_text_from_client_order_id, hyperliquid_cloid_from_client_order_id, Order, TradingVenue,
+};
 use runtime_common::time_util::get_timestamp_us;
 use std::fmt::Write as _;
 use symbol_utils::symbol_util::{
     binance_coin_futures_symbol, bitget_coin_futures_symbol, gate_currency_pair_from_symbol,
     normalize_symbol_for_internal, okex_inst_id_from_symbol,
 };
-use trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
+use trade_engine::query_request::{GenericQueryRequest, HyperliquidQueryParams, QueryRequestType};
 
 pub fn build_order_query_request(
     order: &Order,
@@ -59,6 +62,8 @@ pub fn build_order_query_request(
         TradingVenue::BitgetCoinFutures => QueryRequestType::BitgetCoinFuturesQuery,
         TradingVenue::GateMargin => QueryRequestType::GateUnifiedOrderQuery,
         TradingVenue::GateFutures => QueryRequestType::GateFuturesOrderQuery,
+        TradingVenue::HyperliquidMargin => QueryRequestType::HyperliquidMarginQuery,
+        TradingVenue::HyperliquidFutures => QueryRequestType::HyperliquidUMQuery,
         _ => return Err(format!("unsupported venue for query: {:?}", order.venue)),
     };
 
@@ -136,11 +141,32 @@ pub fn build_order_query_request(
                 .unwrap_or_else(|| gate_text_from_client_order_id(lookup_client_order_id));
             gate_futures_query_json_bytes(&order_id)
         }
+        TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => {
+            let body =
+                hyperliquid_order_status_query_bytes(exchange_order_id, lookup_client_order_id)?;
+            HyperliquidQueryParams::create(hyperliquid_account_hash_from_env()?, body).to_bytes()
+        }
         _ => bytes::Bytes::new(),
     };
 
     let req = GenericQueryRequest::create(req_type, get_timestamp_us(), request_query_id, params);
     Ok((exchange, req.to_bytes()))
+}
+
+fn hyperliquid_order_status_query_bytes(
+    exchange_order_id: Option<i64>,
+    client_order_id: i64,
+) -> Result<bytes::Bytes, String> {
+    let value = if let Some(order_id) = exchange_order_id.filter(|order_id| *order_id > 0) {
+        serde_json::json!({"oid": order_id})
+    } else {
+        let cloid = hyperliquid_cloid_from_client_order_id(client_order_id)
+            .ok_or_else(|| format!("invalid Hyperliquid client order id {client_order_id}"))?;
+        serde_json::json!({"oid": cloid})
+    };
+    serde_json::to_vec(&value)
+        .map(bytes::Bytes::from)
+        .map_err(|err| format!("encode Hyperliquid order query: {err}"))
 }
 
 fn bitget_query_bytes(
@@ -230,9 +256,18 @@ fn push_json_string(out: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mkt_parsers::msg::hyperliquid_account_msg::hyperliquid_account_identity_hash;
     use order_common::{OrderManager, OrderType, Side};
     use serde_json::Value;
-    use trade_engine::query_request::{QueryRequestMsg, QueryRequestType};
+    use trade_engine::query_request::{HyperliquidQueryParams, QueryRequestMsg, QueryRequestType};
+
+    const HYPERLIQUID_TEST_ACCOUNT: &str = "0x1111111111111111111111111111111111111111";
+
+    fn configure_hyperliquid_test_account() -> [u8; 32] {
+        std::env::set_var("HYPERLIQUID_ACCOUNT_ADDRESS", HYPERLIQUID_TEST_ACCOUNT);
+        std::env::set_var("HYPERLIQUID_TESTNET", "0");
+        hyperliquid_account_identity_hash(HYPERLIQUID_TEST_ACCOUNT, false).unwrap()
+    }
 
     fn order_from_manager(
         venue: TradingVenue,
@@ -383,5 +418,48 @@ mod tests {
             params.get("order_id").and_then(Value::as_str),
             Some("t-1133736985207242753")
         );
+    }
+
+    #[test]
+    fn hyperliquid_order_query_prefers_exchange_oid() {
+        let expected_account_hash = configure_hyperliquid_test_account();
+        let client_order_id = 1133736985207242753;
+        let order = order_from_manager(
+            TradingVenue::HyperliquidFutures,
+            client_order_id,
+            "BTCUSDC",
+            Some(998877),
+        );
+
+        let (exchange, bytes) = build_order_query_request(&order, 99, client_order_id).unwrap();
+        let msg = QueryRequestMsg::parse(bytes.as_ref()).unwrap();
+        let params = HyperliquidQueryParams::from_bytes(msg.params.as_ref()).unwrap();
+        assert_eq!(params.account_hash, expected_account_hash);
+        let body: Value = serde_json::from_slice(params.body.as_ref()).unwrap();
+
+        assert_eq!(exchange, "hyperliquid");
+        assert_eq!(msg.req_type, QueryRequestType::HyperliquidUMQuery);
+        assert_eq!(body["oid"], serde_json::json!(998877));
+    }
+
+    #[test]
+    fn hyperliquid_order_query_falls_back_to_internal_cloid() {
+        let expected_account_hash = configure_hyperliquid_test_account();
+        let client_order_id = 42;
+        let order = order_from_manager(
+            TradingVenue::HyperliquidMargin,
+            client_order_id,
+            "HYPEUSDC",
+            None,
+        );
+
+        let (_, bytes) = build_order_query_request(&order, 99, client_order_id).unwrap();
+        let msg = QueryRequestMsg::parse(bytes.as_ref()).unwrap();
+        let params = HyperliquidQueryParams::from_bytes(msg.params.as_ref()).unwrap();
+        assert_eq!(params.account_hash, expected_account_hash);
+        let body: Value = serde_json::from_slice(params.body.as_ref()).unwrap();
+
+        assert_eq!(msg.req_type, QueryRequestType::HyperliquidMarginQuery);
+        assert_eq!(body["oid"], "0x6d6b745f73696731000000000000002a");
     }
 }

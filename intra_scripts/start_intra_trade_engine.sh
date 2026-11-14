@@ -67,18 +67,21 @@ dir_lc="${dir_name,,}"
 
 EXCHANGE=""
 ENV_TAG="intra"
-if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+MODE="intra"
+if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
-  ENV_TAG="${BASH_REMATCH[2]//-/_}"
-elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra$ ]]; then
+  MODE="${BASH_REMATCH[2]}"
+  ENV_TAG="${BASH_REMATCH[3]//-/_}"
+elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
+  MODE="${BASH_REMATCH[2]}"
 fi
 if [[ "$EXCHANGE" == "okx" ]]; then
   EXCHANGE="okex"
 fi
 
 case "$EXCHANGE" in
-  binance|okex|bybit|bitget|gate) ;;
+  binance|okex|bybit|bitget|gate|hyperliquid) ;;
   *)
     echo "[ERROR] 无法从目录名推断 exchange (dir=$dir_name)，期望 <exchange>-intra-<tag>"
     exit 1
@@ -87,7 +90,7 @@ esac
 
 RUST_LOG="${RUST_LOG:-info}"
 IPC_NS="${IPC_NAMESPACE:-}"
-PROC_NAME="intra_te_${EXCHANGE}_${ENV_TAG}"
+PROC_NAME="${MODE}_te_${EXCHANGE}_${ENV_TAG}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 # 绑核来源：env.sh 里 export TRADE_ENGINE_CORE；未设置则不绑。

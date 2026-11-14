@@ -13,8 +13,9 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::rolling_metrics::config::{
-    FactorConfig, RollingConfig, DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKBID, FACTOR_BIDASK,
-    FACTOR_HEDGE_PREMIUM_RATE, FACTOR_OPEN_PREMIUM_RATE, FACTOR_SPREAD, FACTOR_SPREAD_FR,
+    FactorConfig, RollingConfig, DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKASK_OH, FACTOR_ASKBID,
+    FACTOR_BIDASK, FACTOR_BIDBID_HO, FACTOR_HEDGE_PREMIUM_RATE, FACTOR_OPEN_PREMIUM_RATE,
+    FACTOR_SPREAD, FACTOR_SPREAD_FR,
 };
 use crate::rolling_metrics::ring::RingBuffer;
 
@@ -363,6 +364,8 @@ fn build_entries(
 
     let latest_bidask = series.ring(FACTOR_BIDASK).and_then(|ring| ring.last());
     let latest_askbid = series.ring(FACTOR_ASKBID).and_then(|ring| ring.last());
+    let latest_bidbid_ho = series.ring(FACTOR_BIDBID_HO).and_then(|ring| ring.last());
+    let latest_askask_oh = series.ring(FACTOR_ASKASK_OH).and_then(|ring| ring.last());
     let spread_rate = series.spread_rate();
     let latest_open_premium_rate = series.open_premium_rate_latest();
     let latest_hedge_premium_rate = series.hedge_premium_rate_latest();
@@ -370,6 +373,8 @@ fn build_entries(
 
     let mut bidask_quantiles: Vec<QuantilePoint> = Vec::new();
     let mut askbid_quantiles: Vec<QuantilePoint> = Vec::new();
+    let mut bidbid_ho_quantiles: Vec<QuantilePoint> = Vec::new();
+    let mut askask_oh_quantiles: Vec<QuantilePoint> = Vec::new();
     let mut spread_quantiles: Vec<QuantilePoint> = Vec::new();
     let mut open_premium_rate_quantiles: Vec<QuantilePoint> = Vec::new();
     let mut hedge_premium_rate_quantiles: Vec<QuantilePoint> = Vec::new();
@@ -388,6 +393,8 @@ fn build_entries(
         let (count, points, ready) = match factor_name {
             FACTOR_BIDASK
             | FACTOR_ASKBID
+            | FACTOR_BIDBID_HO
+            | FACTOR_ASKASK_OH
             | FACTOR_SPREAD
             | FACTOR_OPEN_PREMIUM_RATE
             | FACTOR_HEDGE_PREMIUM_RATE
@@ -410,6 +417,8 @@ fn build_entries(
         match factor_name {
             FACTOR_BIDASK => bidask_quantiles = points,
             FACTOR_ASKBID => askbid_quantiles = points,
+            FACTOR_BIDBID_HO => bidbid_ho_quantiles = points,
+            FACTOR_ASKASK_OH => askask_oh_quantiles = points,
             FACTOR_SPREAD => spread_quantiles = points,
             FACTOR_OPEN_PREMIUM_RATE => open_premium_rate_quantiles = points,
             FACTOR_HEDGE_PREMIUM_RATE => hedge_premium_rate_quantiles = points,
@@ -486,10 +495,30 @@ fn build_entries(
         "askbid_sr",
         latest_askbid.and_then(to_option_f64),
     );
+    insert_optional_f64(
+        &mut pair_payload,
+        "bidbid_ho",
+        latest_bidbid_ho.and_then(to_option_f64),
+    );
+    insert_optional_f64(
+        &mut pair_payload,
+        "askask_oh",
+        latest_askask_oh.and_then(to_option_f64),
+    );
     insert_optional_f64(&mut pair_payload, "spread_rate", spread_rate);
     insert_optional_f64(&mut pair_payload, "spread_fr", latest_spread_fr);
     insert_quantiles(&mut pair_payload, "bidask_quantiles", &bidask_quantiles);
     insert_quantiles(&mut pair_payload, "askbid_quantiles", &askbid_quantiles);
+    insert_quantiles(
+        &mut pair_payload,
+        "bidbid_ho_quantiles",
+        &bidbid_ho_quantiles,
+    );
+    insert_quantiles(
+        &mut pair_payload,
+        "askask_oh_quantiles",
+        &askask_oh_quantiles,
+    );
     insert_quantiles(&mut pair_payload, "spread_quantiles", &spread_quantiles);
     insert_quantiles(
         &mut pair_payload,
@@ -727,6 +756,11 @@ fn factor_ready_counts(series: &SymbolSeries, config: &RollingConfig) -> (usize,
                 .and_then(|ring| ring.last())
                 .and_then(to_option_f64)
                 .is_some(),
+            FACTOR_BIDBID_HO | FACTOR_ASKASK_OH => series
+                .ring(factor_name)
+                .and_then(|ring| ring.last())
+                .and_then(to_option_f64)
+                .is_some(),
             FACTOR_SPREAD => series.spread_rate().is_some(),
             FACTOR_OPEN_PREMIUM_RATE => series.open_premium_rate_latest().is_some(),
             FACTOR_HEDGE_PREMIUM_RATE => series.hedge_premium_rate_latest().is_some(),
@@ -839,5 +873,77 @@ fn sleep_until(period: Duration, started: Instant) {
         }
         let remaining = deadline - now;
         thread::sleep(remaining.min(Duration::from_secs(1)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_entries, SymbolSeries};
+    use crate::rolling_metrics::config::{
+        FactorConfig, RollingConfig, FACTOR_ASKASK_OH, FACTOR_BIDBID_HO,
+    };
+    use std::sync::Arc;
+
+    #[test]
+    fn pair_payload_includes_same_side_latest_values_and_quantiles() {
+        let mut config = RollingConfig::default();
+        config.factors.clear();
+        for factor in [FACTOR_BIDBID_HO, FACTOR_ASKASK_OH] {
+            config.factors.insert(
+                factor.to_string(),
+                FactorConfig {
+                    resample_interval_ms: 1_000,
+                    rolling_window: 4,
+                    min_periods: 2,
+                    quantiles: vec![0.5],
+                },
+            );
+        }
+        let series = Arc::new(SymbolSeries::new(4));
+        for (factor, samples) in [
+            (FACTOR_BIDBID_HO, [0.01, 0.02]),
+            (FACTOR_ASKASK_OH, [0.03, 0.04]),
+        ] {
+            let ring = series.ensure_ring(factor);
+            for sample in samples {
+                ring.push(sample);
+            }
+        }
+        let mut processed = 0;
+        let mut skipped = 0;
+        let entries = build_entries(
+            "binance-margin_binance-futures::BTCUSDT",
+            &config,
+            &series,
+            1_000,
+            &mut processed,
+            &mut skipped,
+            "pair",
+            "open",
+            "hedge",
+            "binance-margin",
+            "binance-futures",
+        );
+        let pair = entries.iter().find(|(key, _, _)| key == "pair").unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&pair.2).unwrap();
+        assert!((payload["bidbid_ho"].as_f64().unwrap() - 0.02).abs() < 1e-7);
+        assert!((payload["askask_oh"].as_f64().unwrap() - 0.04).abs() < 1e-7);
+        assert!(
+            (payload["bidbid_ho_quantiles"][0]["threshold"]
+                .as_f64()
+                .unwrap()
+                - 0.015)
+                .abs()
+                < 1e-7
+        );
+        assert!(
+            (payload["askask_oh_quantiles"][0]["threshold"]
+                .as_f64()
+                .unwrap()
+                - 0.035)
+                .abs()
+                < 1e-7
+        );
+        assert_eq!((processed, skipped), (1, 0));
     }
 }

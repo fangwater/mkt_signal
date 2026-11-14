@@ -1,0 +1,15 @@
+[package]
+name = "cn_futures_state"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bincode = "1.3"
+crossbeam-channel = "0.5"
+iceoryx2 = "0.8.1"
+persist_common = { path = "../persist_common" }
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+serde_json.workspace = true

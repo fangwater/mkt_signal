@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>币本位 Exec · 执行监控</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, "PingFang SC", sans-serif; background: #0b1318; color: #e5edf0; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header, main { max-width: 1560px; margin: auto; padding: 24px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; border-bottom: 1px solid #263740; }
+    h1 { margin: 6px 0; font-size: 24px; } h2 { margin: 0; font-size: 17px; }
+    .eyebrow { color: #e7b763; font-size: 12px; letter-spacing: .14em; }
+    .muted, .note { color: #9aaeb7; font-size: 13px; line-height: 1.7; }
+    .connection { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: #9aaeb7; }
+    #connection[data-status="online"], .positive { color: #70d4b1; }
+    #connection[data-status="error"], .negative { color: #ff929e; }
+    .actions, .filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    button, input, select, a.button { color: inherit; background: #15242c; border: 1px solid #344953; border-radius: 8px; padding: 9px 12px; font: inherit; font-size: 13px; }
+    button, a.button { cursor: pointer; } a { color: #86d6d0; text-decoration: none; }
+    button:hover, a.button:hover { border-color: #86d6d0; }
+    input { width: 180px; } select { max-width: 260px; }
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .metric { background: #122029; border: 1px solid #263740; border-radius: 12px; padding: 18px; }
+    .metric label { display: block; color: #9aaeb7; font-size: 12px; margin-bottom: 10px; }
+    .metric strong { font-size: 23px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin: 28px 0 14px; }
+    .table-wrap { overflow-x: auto; border: 1px solid #263740; border-radius: 12px; }
+    .asset-table { max-height: 360px; overflow: auto; }
+    .asset-table th { position: sticky; top: 0; z-index: 1; }
+    table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 13px; font-variant-numeric: tabular-nums; }
+    th, td { padding: 13px 15px; border-bottom: 1px solid #263740; text-align: right; }
+    th { background: #15242c; color: #9aaeb7; font-size: 12px; font-weight: 500; }
+    th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+    tbody tr:last-child td { border-bottom: 0; } tbody tr:hover { background: #122029; }
+    .empty { display: none; padding: 28px; text-align: center; color: #9aaeb7; }
+    .status { display: inline-block; padding: 4px 7px; border-radius: 5px; background: #20333a; font-size: 11px; }
+    .status.wait { color: #e7b763; } .status.done { color: #70d4b1; }
+    .note { margin: 0; padding: 14px 18px; border-left: 3px solid #e7b763; background: #152029; }
+    @media (max-width: 760px) { header, main { padding: 16px; } .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 430px) { .metric { padding: 12px; } .metric strong { font-size: 19px; } .filters { width: 100%; } .filters select, .filters input { width: 100%; max-width: none; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <span class="eyebrow">COIN-M · 独立执行实例</span>
+      <h1>币本位执行监控</h1>
+      <div class="connection"><span id="connection">连接中</span><span id="namespace">--</span><span id="updated">--</span></div>
+    </div>
+    <div class="actions"><button id="refresh" type="button">刷新</button><a class="button" href="./config/">查看配置</a></div>
+  </header>
+  <main>
+    <section class="metrics" aria-label="币本位账户监控">
+      <div class="metric"><label>账户数据</label><strong id="account-status">等待数据</strong></div>
+      <div class="metric"><label>非零资产币种</label><strong id="asset-count">--</strong></div>
+      <div class="metric"><label>实际持仓记录</label><strong id="position-count">--</strong></div>
+      <div class="metric"><label>账户更新时间</label><strong id="account-time">--</strong></div>
+    </section>
+    <p class="note">权益、盈亏和保证金按结算币分别展示，BTC 与 ETH 不相加。账户权益来自交易所，包含抵押币余额；策略成交盈亏与账户净值是不同口径。</p>
+    <section>
+      <div class="section-head"><h2>账户资产 · 原币单位</h2><label class="muted"><input id="show-zero" type="checkbox" checked style="width:auto"> 显示零余额币种</label></div>
+      <p id="asset-meta" class="muted">等待交易所账户快照</p>
+      <div class="table-wrap asset-table"><table><thead><tr><th>结算币</th><th>钱包余额</th><th>未实现盈亏</th><th>账户权益</th><th>可用余额</th><th>初始保证金</th><th>维持保证金</th></tr></thead><tbody id="asset-rows"></tbody></table><div id="asset-empty" class="empty">等待账户数据</div></div>
+    </section>
+    <section>
+      <div class="section-head"><h2>账户实际持仓</h2></div>
+      <p class="muted">张数是固定面值合约数量；币名义数量采用交易所当前估值。持仓按合约和方向分别列出。</p>
+      <div class="table-wrap"><table><thead><tr><th>合约</th><th>结算币</th><th>方向</th><th>持仓 · 张</th><th>开仓均价 · USD</th><th>名义数量 · 币</th><th>未实现盈亏 · 币</th><th>保证金模式</th></tr></thead><tbody id="position-rows"></tbody></table><div id="position-empty" class="empty">等待账户数据</div></div>
+    </section>
+    <section>
+      <div class="section-head"><h2>币本位目标与执行</h2><div class="filters">
+        <select id="strategy" aria-label="策略筛选"><option value="">全部策略</option></select>
+        <input id="symbol" aria-label="品种筛选" placeholder="BTCUSD / ETHUSD">
+      </div></div>
+      <p id="state-meta" class="muted">暂无策略执行数据</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>品种 / 结算币</th><th>策略</th><th>状态</th><th>目标 · 币</th><th>实际 · 币</th><th>活动挂单 · 币</th><th>待下单 · 币</th><th>仓位差 · USD</th><th>剩余批次</th><th>预计完成</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table><div id="empty" class="empty">当前筛选没有币本位仓位</div></div>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const MARKET = "binance-coin-futures";
+      const state = { account: null, exec: null, risk: null, strategy: "", symbol: "", ws: null, retry: null, stopped: false, received: 0 };
+      const byId = (id) => document.getElementById(id);
+      const finite = (value) => typeof value === "number" && Number.isFinite(value);
+      const number = (value, digits = 8) => finite(value) ? value.toLocaleString("en-US", { maximumFractionDigits: digits }) : "--";
+      const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+      const sign = (value) => !finite(value) || value === 0 ? "" : value > 0 ? "positive" : "negative";
+      function coinSymbol(symbol) { return /^[A-Z0-9]+USD$/.test(String(symbol || "")); }
+      function connection(status, text) { byId("connection").dataset.status = status; byId("connection").textContent = text; }
+      function updateConnection() {
+        if (state.ws?.readyState !== WebSocket.OPEN) return;
+        if (!state.account) connection("checking", "等待账户数据");
+        else if (Date.now() - state.account.ts_ms > 30000) connection("error", "账户数据延迟");
+        else connection("online", "账户监控正常");
+        byId("account-status").textContent = !state.account ? "等待数据" : Date.now() - state.account.ts_ms > 30000 ? "数据延迟" : "已更新";
+      }
+      function applyMessage(message) {
+        if (!message || message.venue !== MARKET || !message.entry || !finite(message.ts_ms)) return;
+        if (message.type === "coin_account_snapshot") {
+          if (message.entry.venue !== MARKET || message.entry.account_mode !== "STANDARD" || !Array.isArray(message.entry.assets) || !Array.isArray(message.entry.positions)) return;
+          if (state.account && message.ts_ms < state.account.ts_ms) return;
+          state.account = message;
+        } else if (message.type === "exec_pre_trade_state") {
+          if (!Array.isArray(message.entry.rows) || message.entry.rows.some((row) => !coinSymbol(row.symbol))) {
+            connection("error", "收到非币本位仓位，已拒绝"); return;
+          }
+          if (state.exec && message.ts_ms < state.exec.ts_ms) return;
+          state.exec = message;
+        } else if (message.type === "exec_pre_trade_risk" && message.entry.venue === MARKET) {
+          if (state.risk && message.ts_ms < state.risk.ts_ms) return;
+          state.risk = message;
+        } else return;
+        state.received = Math.max(state.received, message.ts_ms); render(); updateConnection();
+      }
+      function rowStatus(row, ready) {
+        if (!ready || row.position_allocated === false) return ["等待仓位", "wait"];
+        if (row.execution_complete) return ["已完成", "done"];
+        if (finite(row.live_order_qty) && row.live_order_qty !== 0) return ["执行中", ""];
+        return ["等待执行", "wait"];
+      }
+      function render() {
+        const account = state.account?.entry;
+        const nonzero = (a) => [a.wallet_balance, a.unrealized_pnl, a.equity, a.available_balance, a.initial_margin, a.maintenance_margin].some((v) => finite(v) && v !== 0);
+        const rank = (a) => nonzero(a) ? 0 : a.asset === "BTC" ? 1 : a.asset === "ETH" ? 2 : 3;
+        const assets = (account?.assets || []).filter((a) => byId("show-zero").checked || nonzero(a)).sort((a, b) => rank(a) - rank(b) || a.asset.localeCompare(b.asset));
+        byId("asset-meta").textContent = account ? `已收到交易所 ${account.assets.length} 个币种的余额，${account.assets.filter(nonzero).length} 个非零；当前显示 ${assets.length} 个币种` : "等待交易所账户快照";
+        byId("asset-count").textContent = account ? account.assets.filter(nonzero).length : "--";
+        byId("position-count").textContent = account ? account.positions.length : "--";
+        byId("account-time").textContent = state.account ? new Date(state.account.ts_ms).toLocaleTimeString() : "--";
+        byId("asset-rows").innerHTML = assets.map((a) => `<tr><td>${escape(a.asset)}</td><td>${number(a.wallet_balance)}</td><td class="${sign(a.unrealized_pnl)}">${number(a.unrealized_pnl)}</td><td>${number(a.equity)}</td><td>${number(a.available_balance)}</td><td>${number(a.initial_margin)}</td><td>${number(a.maintenance_margin)}</td></tr>`).join("");
+        byId("asset-empty").style.display = assets.length ? "none" : "block";
+        byId("asset-empty").textContent = !account ? "等待账户数据" : account.assets.length ? "零余额币种已隐藏；勾选显示零余额币种可查看" : "交易所账户快照未返回资产记录";
+        byId("position-rows").innerHTML = (account?.positions || []).map((p) => `<tr><td>${escape(p.symbol)}</td><td>${escape(p.settlement_asset)}</td><td>${p.side === "LONG" ? "多头" : p.side === "SHORT" ? "空头" : p.contracts < 0 ? "净空头" : "净多头"}</td><td>${number(p.contracts, 0)}</td><td>${number(p.entry_price)}</td><td>${number(p.notional_coin)}</td><td class="${sign(p.unrealized_pnl)}">${number(p.unrealized_pnl)}</td><td>${p.isolated ? "逐仓" : "全仓"}</td></tr>`).join("");
+        byId("position-empty").style.display = account?.positions.length ? "none" : "block";
+        byId("position-empty").textContent = account ? "当前账户无持仓" : "等待账户数据";
+        const entry = state.exec?.entry;
+        const allRows = entry?.rows || [];
+        const names = [...new Set(allRows.map((row) => row.strategy_name))].sort();
+        byId("strategy").innerHTML = '<option value="">全部策略</option>' + names.map((name) => `<option value="${escape(name)}">${escape(name)}</option>`).join("");
+        if (!names.includes(state.strategy)) state.strategy = "";
+        byId("strategy").value = state.strategy;
+        const rows = allRows.filter((row) => (!state.strategy || row.strategy_name === state.strategy) && (!state.symbol || row.symbol.includes(state.symbol)));
+        byId("rows").innerHTML = rows.map((row) => {
+          const [status, statusClass] = rowStatus(row, entry.position_ready);
+          const asset = row.symbol.slice(0, -3);
+          const eta = row.estimated_completion_ts_ms > 0 ? new Date(row.estimated_completion_ts_ms).toLocaleTimeString("zh-CN", { hour12: false }) : "--";
+          return `<tr><td>${escape(row.symbol)} <span class="muted">${escape(asset)}</span></td><td>${escape(row.strategy_name)}</td><td><span class="status ${statusClass}">${status}</span></td>` +
+            [row.target_qty, row.current_qty, row.live_order_qty, row.pending_qty].map((value) => `<td class="${sign(value)}">${number(value)}</td>`).join("") +
+            `<td class="${sign(row.delta_usdt)}">${number(row.delta_usdt, 2)}</td><td>${escape(row.remaining_batches ?? 0)}</td><td>${escape(eta)}</td></tr>`;
+        }).join("");
+        byId("empty").style.display = rows.length ? "none" : "block";
+        byId("state-meta").textContent = `${entry?.position_ready ? "币本位仓位已就绪" : "暂无策略执行数据"} · ${names.length} 个策略 · ${rows.length} 条执行记录`;
+        byId("namespace").textContent = state.account?.namespace || state.exec?.namespace || state.risk?.namespace || "--";
+        byId("updated").textContent = state.received ? new Date(state.received).toLocaleTimeString("zh-CN", { hour12: false }) : "--";
+      }
+      async function loadSnapshot() {
+        try {
+          const response = await fetch(new URL("./snapshot", location.href), { cache: "no-store" });
+          if (!response.ok) throw new Error(String(response.status));
+          const snapshot = await response.json();
+          (snapshot.entries || []).forEach(applyMessage);
+        } catch (_) { if (!state.received) connection("error", "快照读取失败"); }
+      }
+      function connect() {
+        clearTimeout(state.retry);
+        if (state.ws) { state.ws.onclose = null; state.ws.close(); }
+        const url = new URL("./ws", location.href); url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        const ws = new WebSocket(url); state.ws = ws;
+        connection("checking", "连接中");
+        ws.onopen = () => { updateConnection(); void loadSnapshot(); };
+        ws.onmessage = (event) => { try { applyMessage(JSON.parse(event.data)); } catch (_) {} };
+        ws.onerror = () => connection("error", "连接错误");
+        ws.onclose = () => { connection("error", "已断开"); if (!state.stopped) state.retry = setTimeout(connect, 2000); };
+      }
+      byId("show-zero").onchange = render;
+      byId("strategy").onchange = (event) => { state.strategy = event.target.value; render(); };
+      byId("symbol").oninput = (event) => { state.symbol = event.target.value.trim().toUpperCase(); render(); };
+      byId("refresh").onclick = () => { void loadSnapshot(); connect(); };
+      const staleTimer = setInterval(updateConnection, 1000);
+      window.addEventListener("pagehide", () => { state.stopped = true; clearTimeout(state.retry); clearInterval(staleTimer); if (state.ws) { state.ws.onclose = null; state.ws.close(); } });
+      render(); void loadSnapshot(); connect();
+    })();
+  </script>
+</body>
+</html>

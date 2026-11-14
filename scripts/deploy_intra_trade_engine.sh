@@ -45,7 +45,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -n "$ENV_NAME" && -z "$EXCHANGE" ]]; then
-  if [[ "${ENV_NAME,,}" =~ ^([a-z0-9]+)[-_]intra[-_][a-z0-9][a-z0-9_-]*$ ]]; then
+  if [[ "${ENV_NAME,,}" =~ ^([a-z0-9]+)[-_](intra)[-_][a-z0-9][a-z0-9_-]*$ ]]; then
     EXCHANGE="${BASH_REMATCH[1]}"
   fi
 fi
@@ -60,6 +60,12 @@ EXCHANGE="$(intra_ensure_exchange "$EXCHANGE")"
 if [[ -z "$ENV_NAME" ]]; then
   ENV_NAME="${EXCHANGE}-${ENV_SUFFIX}"
 fi
+
+if [[ "${ENV_NAME,,}" =~ (^|[-_])cta([-_]|$) ]]; then
+  echo "[ERROR] Legacy CTA execution is retired; use CTA target publishers with Exec" >&2
+  exit 1
+fi
+
 TARGET_DIR="$HOME/${ENV_NAME}"
 
 echo "[INFO] 部署 $BIN_NAME 到 $TARGET_DIR"

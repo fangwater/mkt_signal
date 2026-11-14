@@ -1,0 +1,28 @@
+[
+  {
+    "account": "rx02",
+    "url": "http://13.115.227.29:4191/cta/binance-cta-special-rx02/signals/",
+    "selected_factor": "factor_036",
+    "trade_rows": 0,
+    "markers": 0,
+    "paired_connectors": 0,
+    "nq_preserved": true,
+    "trading_enabled": false,
+    "no_aggregate_option": true,
+    "desktop_mobile_no_overflow": true,
+    "javascript_errors": []
+  },
+  {
+    "account": "rx03",
+    "url": "http://13.115.227.29:4191/cta/binance-cta-special-rx03/signals/",
+    "selected_factor": "factor_036",
+    "trade_rows": 5,
+    "markers": 10,
+    "paired_connectors": 5,
+    "nq_preserved": true,
+    "trading_enabled": false,
+    "no_aggregate_option": true,
+    "desktop_mobile_no_overflow": true,
+    "javascript_errors": []
+  }
+]

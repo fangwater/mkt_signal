@@ -1,0 +1,20 @@
+{
+  "rust_publisher_tests": 13,
+  "rust_factor_channel_tests": 4,
+  "python_config_server_tests": 21,
+  "python_5m_regression_tests": 5,
+  "cargo_fmt_check": "passed",
+  "cargo_check_publisher": "passed",
+  "release_build": "passed",
+  "bash_syntax_start_wrapper": "passed",
+  "live_activation_performed": false,
+  "requested_table_exact_match_except_baseline_047": true,
+  "kafka_replay_exit_code": 0,
+  "kafka_replay_duration_seconds": 848.041,
+  "ready_pairs": 67,
+  "total_pairs": 69,
+  "ready_symbols": 21,
+  "total_symbols": 23,
+  "nq_ready_symbols": 23,
+  "live_files_and_process_identities_unchanged": true
+}

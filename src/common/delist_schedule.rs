@@ -6,6 +6,7 @@ use order_common::TradingVenue;
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use signal_common::public_api::bitget_public_api_url;
 use std::fmt;
 use std::time::Duration;
 
@@ -378,71 +379,18 @@ struct OkxSwapDelistProvider;
 #[derive(Default)]
 struct OkxSpotDelistProvider;
 
-#[derive(Debug, Deserialize)]
-struct OkxResponse<T> {
-    code: String,
-    msg: String,
-    data: Vec<T>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OkxInstrument {
-    #[serde(rename = "instId")]
-    inst_id: String,
-    #[serde(rename = "instType")]
-    inst_type: String,
-    #[serde(rename = "ctType")]
-    #[serde(default)]
-    ct_type: String,
-    #[serde(rename = "settleCcy")]
-    #[serde(default)]
-    settle_ccy: String,
-    #[serde(rename = "expTime")]
-    exp_time: String,
-    state: String,
-}
-
 async fn fetch_okx_delists(
     venue: TradingVenue,
     market: DelistMarket,
     inst_type: &'static str,
     query: &DelistScheduleQuery,
 ) -> Result<Vec<DelistEvent>> {
-    let url = format!("https://www.okx.com/api/v5/public/instruments?instType={inst_type}");
-    let response = http_client()?
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("request OKX instruments failed: instType={inst_type}"))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .context("read OKX instruments response failed")?;
-    if !status.is_success() {
-        anyhow::bail!(
-            "OKX instruments request failed: status={} body={}",
-            status,
-            body
-        );
-    }
-    let parsed: OkxResponse<OkxInstrument> =
-        serde_json::from_str(&body).context("parse OKX instruments JSON failed")?;
-    if parsed.code != "0" {
-        anyhow::bail!(
-            "OKX instruments API error: code={} msg={}",
-            parsed.code,
-            parsed.msg
-        );
-    }
+    let instruments =
+        crate::common::okx_public::fetch_instruments(&http_client()?, inst_type).await?;
 
     let mut events = Vec::new();
-    for item in parsed.data {
-        if item.inst_type != inst_type {
-            continue;
-        }
-        if inst_type == "SWAP" && (item.ct_type != "linear" || item.settle_ccy != "USDT") {
+    for item in instruments {
+        if !item.target_market() {
             continue;
         }
         let Some(delist_time) = parse_millis_str(&item.exp_time, "expTime")? else {
@@ -508,13 +456,78 @@ struct BybitInstrumentsResult {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BybitInstrument {
-    symbol: String,
-    status: String,
+pub(crate) struct BybitInstrument {
+    pub symbol: String,
+    pub status: String,
     #[serde(default)]
-    contract_type: Option<String>,
+    pub quote_coin: String,
     #[serde(default)]
-    delivery_time: String,
+    pub contract_type: Option<String>,
+    #[serde(default)]
+    pub delivery_time: String,
+}
+
+pub(crate) async fn fetch_bybit_instruments(
+    client: &Client,
+    category: &str,
+) -> Result<Vec<BybitInstrument>> {
+    fetch_bybit_instruments_at(
+        client,
+        category,
+        "https://api.bybit.com/v5/market/instruments-info",
+    )
+    .await
+}
+
+async fn fetch_bybit_instruments_at(
+    client: &Client,
+    category: &str,
+    url: &str,
+) -> Result<Vec<BybitInstrument>> {
+    let mut cursor = String::new();
+    let mut cursors = std::collections::BTreeSet::new();
+    let mut items = Vec::new();
+    loop {
+        let mut request = client.get(url).query(&[("category", category)]);
+        if category != "spot" {
+            request = request.query(&[("limit", "1000")]);
+        }
+        if !cursor.is_empty() {
+            request = request.query(&[("cursor", cursor.as_str())]);
+        }
+        let parsed: BybitInstrumentsResponse = request
+            .send()
+            .await
+            .with_context(|| format!("request Bybit {category} instruments-info"))?
+            .error_for_status()
+            .context("Bybit instruments-info HTTP status")?
+            .json()
+            .await
+            .context("parse Bybit instruments-info JSON")?;
+        if parsed.ret_code != 0 {
+            anyhow::bail!(
+                "Bybit instruments-info API error: code={} msg={}",
+                parsed.ret_code,
+                parsed.ret_msg
+            );
+        }
+        let result = parsed
+            .result
+            .context("Bybit instruments-info missing result")?;
+        items.extend(result.list);
+        let next = result.next_page_cursor.trim();
+        if next.is_empty() || category == "spot" {
+            break;
+        }
+        if !cursors.insert(next.to_string()) {
+            anyhow::bail!("Bybit instruments-info cursor repeated: {next}");
+        }
+        cursor = next.to_string();
+    }
+    if items.is_empty() {
+        anyhow::bail!("Bybit {category} instruments-info returned an empty catalog");
+    }
+    Ok(items)
 }
 
 #[async_trait]
@@ -524,77 +537,28 @@ impl DelistScheduleProvider for BybitLinearDelistProvider {
     }
 
     async fn future_delist_events(&self, query: &DelistScheduleQuery) -> Result<Vec<DelistEvent>> {
-        const URL: &str = "https://api.bybit.com/v5/market/instruments-info";
-        let client = http_client()?;
-        let mut cursor = String::new();
+        let items = fetch_bybit_instruments(&http_client()?, "linear").await?;
         let mut events = Vec::new();
-
-        loop {
-            let mut request = client
-                .get(URL)
-                .query(&[("category", "linear"), ("limit", "1000")]);
-            if !cursor.is_empty() {
-                request = request.query(&[("cursor", cursor.as_str())]);
+        for item in items {
+            if item.contract_type.as_deref() != Some("LinearPerpetual") || item.quote_coin != "USDT"
+            {
+                continue;
             }
-            let response = request
-                .send()
-                .await
-                .context("request Bybit instruments-info failed")?;
-            let status = response.status();
-            let body = response
-                .text()
-                .await
-                .context("read Bybit instruments-info response failed")?;
-            if !status.is_success() {
-                anyhow::bail!(
-                    "Bybit instruments-info request failed: status={} body={}",
-                    status,
-                    body
-                );
-            }
-            let parsed: BybitInstrumentsResponse =
-                serde_json::from_str(&body).context("parse Bybit instruments-info JSON failed")?;
-            if parsed.ret_code != 0 {
-                anyhow::bail!(
-                    "Bybit instruments-info API error: code={} msg={}",
-                    parsed.ret_code,
-                    parsed.ret_msg
-                );
-            }
-
-            let Some(result) = parsed.result else {
-                break;
+            let Some(delist_time) = parse_millis_str(&item.delivery_time, "deliveryTime")? else {
+                continue;
             };
-            for item in result.list {
-                if item.contract_type.as_deref() != Some("LinearPerpetual") {
-                    continue;
-                }
-                let Some(delist_time) = parse_millis_str(&item.delivery_time, "deliveryTime")?
-                else {
-                    continue;
-                };
-                if query.contains(delist_time) {
-                    events.push(DelistEvent {
-                        venue: self.venue(),
-                        market: DelistMarket::Futures,
-                        symbol: item.symbol,
-                        delist_time: Some(delist_time),
-                        risk_type: "scheduled_delist",
-                        source: "bybit_instruments_info",
-                        status: Some(item.status),
-                        detail: None,
-                    });
-                }
+            if query.contains(delist_time) {
+                events.push(DelistEvent {
+                    venue: self.venue(),
+                    market: DelistMarket::Futures,
+                    symbol: item.symbol,
+                    delist_time: Some(delist_time),
+                    risk_type: "scheduled_delist",
+                    source: "bybit_instruments_info",
+                    status: Some(item.status),
+                    detail: None,
+                });
             }
-
-            let next_cursor = result.next_page_cursor.trim().to_string();
-            if next_cursor.is_empty() {
-                break;
-            }
-            if next_cursor == cursor {
-                anyhow::bail!("Bybit instruments-info cursor did not advance: {cursor}");
-            }
-            cursor = next_cursor;
         }
         Ok(events)
     }
@@ -652,9 +616,9 @@ async fn bitget_futures_delist_events(
     venue: TradingVenue,
     category: &str,
 ) -> Result<Vec<DelistEvent>> {
-    let url = "https://api.bitget.com/api/v3/market/instruments";
+    let url = bitget_public_api_url("/api/v3/market/instruments");
     let response = http_client()?
-        .get(url)
+        .get(&url)
         .query(&[("category", category)])
         .send()
         .await
@@ -729,9 +693,9 @@ impl DelistScheduleProvider for BitgetSpotDelistProvider {
     }
 
     async fn future_delist_events(&self, query: &DelistScheduleQuery) -> Result<Vec<DelistEvent>> {
-        let url = "https://api.bitget.com/api/v2/spot/public/symbols";
+        let url = bitget_public_api_url("/api/v2/spot/public/symbols");
         let response = http_client()?
-            .get(url)
+            .get(&url)
             .send()
             .await
             .context("request Bitget spot symbols failed")?;
@@ -991,6 +955,37 @@ impl DelistScheduleProvider for GateFuturesDelistProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bybit_catalog_follows_pages_and_rejects_cursor_cycles() {
+        use axum::{extract::Query, routing::get, Json, Router};
+        use std::collections::HashMap;
+        let app = Router::new().route("/instruments", get(|Query(q): Query<HashMap<String, String>>| async move {
+            let cursor = q.get("cursor").map(String::as_str).unwrap_or("");
+            let cycle = q.get("category").is_some_and(|s| s == "cycle");
+            let next = if cycle || cursor.is_empty() { "page2" } else { "" };
+            Json(serde_json::json!({"retCode":0,"retMsg":"OK","result":{
+                "list":[{"symbol":if cursor.is_empty(){"BTCUSDT"}else{"ETHUSDT"},"status":"Trading"}],
+                "nextPageCursor":next
+            }}))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/instruments", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = Client::builder().no_proxy().build().unwrap();
+        let items = fetch_bybit_instruments_at(&client, "linear", &url)
+            .await
+            .unwrap();
+        assert_eq!(
+            items.iter().map(|i| i.symbol.as_str()).collect::<Vec<_>>(),
+            ["BTCUSDT", "ETHUSDT"]
+        );
+        let error = fetch_bybit_instruments_at(&client, "cycle", &url)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("cursor repeated"));
+        server.abort();
+    }
     use chrono::TimeZone;
 
     #[test]

@@ -1,0 +1,215 @@
+{
+  "commit": "293f63523f551984ac0f356c844f1f4b52acbe2e",
+  "branch": "arbmm",
+  "source": "git archive of synchronized committed arbmm inside active local worktree",
+  "uncommitted_changes_included": false,
+  "built_at": "2026-11-12T10:05:13.220031+00:00",
+  "binaries": {
+    "pre_trade": "3351318bf02d219073056f8ea4bbbc503dc73e2f8e5b4b9449b4b9af6f85b1e8",
+    "gate_account_monitor": "5d9f4cc91bd4c320522da121a43565247f6b0cb6b9c2f3845a7ee2f6fc12010c",
+    "trade_engine": "99557009f4053e68fee895ebee4512a4c325133574698370bbe844a5b21bb02d",
+    "trade_signal": "cc9e5bbcdc3b5ca2b0fac97d09649a7125d1e6e923c4ad930988a4ac47e3f8b1",
+    "persist_manager": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf",
+    "viz_server": "069a4483143829ec50aee0cadf148d74897b6abcffafbf1a036ab9e4fc1193ae",
+    "fr_signal_dashboard": "31cc401ddd204c9d44e143cfbbaa53b7267d068777dc34110487283d7830726b"
+  },
+  "trade_signal_started": false,
+  "installation": [
+    {
+      "env": "gate_fr_arb01",
+      "binary": "pre_trade",
+      "before_sha256": "431d35ad227282c1a84879b03d503cbb0ee693d4cc14788b81cf0987b845346c",
+      "after_sha256": "3351318bf02d219073056f8ea4bbbc503dc73e2f8e5b4b9449b4b9af6f85b1e8",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb01",
+      "binary": "account_monitor",
+      "before_sha256": "53455636cb7dac4dd92fcc1758d4d73c8c56fb0f77132d8aa0ed0acd79745d3b",
+      "after_sha256": "5d9f4cc91bd4c320522da121a43565247f6b0cb6b9c2f3845a7ee2f6fc12010c",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb01",
+      "binary": "trade_engine",
+      "before_sha256": "98f3133a0107cd2fd0fa0d04bbadd5540b40e7bc339eaa058ff41c6d5b626eec",
+      "after_sha256": "99557009f4053e68fee895ebee4512a4c325133574698370bbe844a5b21bb02d",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb01",
+      "binary": "trade_signal",
+      "before_sha256": "8cfa76874e7a17aa20f2e829900665f4137b8e59cedbe4866fda17c4ec648350",
+      "after_sha256": "cc9e5bbcdc3b5ca2b0fac97d09649a7125d1e6e923c4ad930988a4ac47e3f8b1",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb01",
+      "binary": "persist_manager",
+      "before_sha256": "34b89982c74d713ca30068a4e5f0463b850a2bd2764b56e348c2f34cd5220c88",
+      "after_sha256": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb01",
+      "binary": "viz_server",
+      "before_sha256": "8d68516e7b4277d9a8ad659923c01675c2db1deca7231124379bd5c7929e536e",
+      "after_sha256": "069a4483143829ec50aee0cadf148d74897b6abcffafbf1a036ab9e4fc1193ae",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb01",
+      "binary": "fr_signal_dashboard",
+      "before_sha256": "d76f07cdd78c94bd20fe89f7e6c923ac904fc3e399ed63ef590e9d63dae399b6",
+      "after_sha256": "31cc401ddd204c9d44e143cfbbaa53b7267d068777dc34110487283d7830726b",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb02",
+      "binary": "pre_trade",
+      "before_sha256": "431d35ad227282c1a84879b03d503cbb0ee693d4cc14788b81cf0987b845346c",
+      "after_sha256": "3351318bf02d219073056f8ea4bbbc503dc73e2f8e5b4b9449b4b9af6f85b1e8",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb02",
+      "binary": "account_monitor",
+      "before_sha256": "53455636cb7dac4dd92fcc1758d4d73c8c56fb0f77132d8aa0ed0acd79745d3b",
+      "after_sha256": "5d9f4cc91bd4c320522da121a43565247f6b0cb6b9c2f3845a7ee2f6fc12010c",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb02",
+      "binary": "trade_engine",
+      "before_sha256": "98f3133a0107cd2fd0fa0d04bbadd5540b40e7bc339eaa058ff41c6d5b626eec",
+      "after_sha256": "99557009f4053e68fee895ebee4512a4c325133574698370bbe844a5b21bb02d",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb02",
+      "binary": "trade_signal",
+      "before_sha256": "8cfa76874e7a17aa20f2e829900665f4137b8e59cedbe4866fda17c4ec648350",
+      "after_sha256": "cc9e5bbcdc3b5ca2b0fac97d09649a7125d1e6e923c4ad930988a4ac47e3f8b1",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb02",
+      "binary": "persist_manager",
+      "before_sha256": "34b89982c74d713ca30068a4e5f0463b850a2bd2764b56e348c2f34cd5220c88",
+      "after_sha256": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb02",
+      "binary": "viz_server",
+      "before_sha256": "8d68516e7b4277d9a8ad659923c01675c2db1deca7231124379bd5c7929e536e",
+      "after_sha256": "069a4483143829ec50aee0cadf148d74897b6abcffafbf1a036ab9e4fc1193ae",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb02",
+      "binary": "fr_signal_dashboard",
+      "before_sha256": "d76f07cdd78c94bd20fe89f7e6c923ac904fc3e399ed63ef590e9d63dae399b6",
+      "after_sha256": "31cc401ddd204c9d44e143cfbbaa53b7267d068777dc34110487283d7830726b",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb03",
+      "binary": "pre_trade",
+      "before_sha256": "431d35ad227282c1a84879b03d503cbb0ee693d4cc14788b81cf0987b845346c",
+      "after_sha256": "3351318bf02d219073056f8ea4bbbc503dc73e2f8e5b4b9449b4b9af6f85b1e8",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb03",
+      "binary": "account_monitor",
+      "before_sha256": "53455636cb7dac4dd92fcc1758d4d73c8c56fb0f77132d8aa0ed0acd79745d3b",
+      "after_sha256": "5d9f4cc91bd4c320522da121a43565247f6b0cb6b9c2f3845a7ee2f6fc12010c",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb03",
+      "binary": "trade_engine",
+      "before_sha256": "98f3133a0107cd2fd0fa0d04bbadd5540b40e7bc339eaa058ff41c6d5b626eec",
+      "after_sha256": "99557009f4053e68fee895ebee4512a4c325133574698370bbe844a5b21bb02d",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb03",
+      "binary": "trade_signal",
+      "before_sha256": "8cfa76874e7a17aa20f2e829900665f4137b8e59cedbe4866fda17c4ec648350",
+      "after_sha256": "cc9e5bbcdc3b5ca2b0fac97d09649a7125d1e6e923c4ad930988a4ac47e3f8b1",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb03",
+      "binary": "persist_manager",
+      "before_sha256": "34b89982c74d713ca30068a4e5f0463b850a2bd2764b56e348c2f34cd5220c88",
+      "after_sha256": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb03",
+      "binary": "viz_server",
+      "before_sha256": "8d68516e7b4277d9a8ad659923c01675c2db1deca7231124379bd5c7929e536e",
+      "after_sha256": "069a4483143829ec50aee0cadf148d74897b6abcffafbf1a036ab9e4fc1193ae",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb03",
+      "binary": "fr_signal_dashboard",
+      "before_sha256": "d76f07cdd78c94bd20fe89f7e6c923ac904fc3e399ed63ef590e9d63dae399b6",
+      "after_sha256": "31cc401ddd204c9d44e143cfbbaa53b7267d068777dc34110487283d7830726b",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb04",
+      "binary": "pre_trade",
+      "before_sha256": "431d35ad227282c1a84879b03d503cbb0ee693d4cc14788b81cf0987b845346c",
+      "after_sha256": "3351318bf02d219073056f8ea4bbbc503dc73e2f8e5b4b9449b4b9af6f85b1e8",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb04",
+      "binary": "account_monitor",
+      "before_sha256": "53455636cb7dac4dd92fcc1758d4d73c8c56fb0f77132d8aa0ed0acd79745d3b",
+      "after_sha256": "5d9f4cc91bd4c320522da121a43565247f6b0cb6b9c2f3845a7ee2f6fc12010c",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb04",
+      "binary": "trade_engine",
+      "before_sha256": "98f3133a0107cd2fd0fa0d04bbadd5540b40e7bc339eaa058ff41c6d5b626eec",
+      "after_sha256": "99557009f4053e68fee895ebee4512a4c325133574698370bbe844a5b21bb02d",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb04",
+      "binary": "trade_signal",
+      "before_sha256": "8cfa76874e7a17aa20f2e829900665f4137b8e59cedbe4866fda17c4ec648350",
+      "after_sha256": "cc9e5bbcdc3b5ca2b0fac97d09649a7125d1e6e923c4ad930988a4ac47e3f8b1",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb04",
+      "binary": "persist_manager",
+      "before_sha256": "34b89982c74d713ca30068a4e5f0463b850a2bd2764b56e348c2f34cd5220c88",
+      "after_sha256": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb04",
+      "binary": "viz_server",
+      "before_sha256": "8d68516e7b4277d9a8ad659923c01675c2db1deca7231124379bd5c7929e536e",
+      "after_sha256": "069a4483143829ec50aee0cadf148d74897b6abcffafbf1a036ab9e4fc1193ae",
+      "changed": true
+    },
+    {
+      "env": "gate_fr_arb04",
+      "binary": "fr_signal_dashboard",
+      "before_sha256": "d76f07cdd78c94bd20fe89f7e6c923ac904fc3e399ed63ef590e9d63dae399b6",
+      "after_sha256": "31cc401ddd204c9d44e143cfbbaa53b7267d068777dc34110487283d7830726b",
+      "changed": true
+    }
+  ]
+}

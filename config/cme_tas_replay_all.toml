@@ -1,0 +1,41 @@
+# All-product TAS replay. New RocksDB. Does not touch cme_tas_rocksdb.
+# Unmatched product: original CSV line to unmatched_path, continue.
+# Settlement Price, implied vol, TOT volume, and price prints are written with the other persist kinds.
+# Quotes compress updates within one 1s bucket; a new second inherits no side.
+# Missing Exch Time falls back to Date-Time; contracts go to quote_fallback_path.
+data_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/future/normalised"
+shard_root = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_zstd_shards"
+period = "2010-01-01_2011-01-01"
+periods = [
+    "2010-01-01_2011-01-01",
+    "2011-01-01_2012-01-01",
+]
+rocksdb_dir = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_rocksdb_all_products"
+
+# Empty = every RIC whose product can be parsed from the #RIC.
+rics = []
+
+# workers > 1: every zstd shard of every period, this many at a time.
+# workers = 1: shard 0 of part_index in the first period (diagnostic mode).
+workers = 10
+part_index = 0
+
+# Rows inside each independent shard are parsed in bounded chunks on this pool.
+# Stateful seq/BBO/RocksDB commit remains ordered within the shard.
+parse_workers = 80
+parse_chunk_rows = 32768
+
+column_rules = "../preprocess/lseg/tas_column_rules.json"
+
+# 0 = no session cap. Do not use a per-worker tradeday window on a full run.
+max_tradedays = 0
+
+# Diagnostic cap. Omit for the whole first gzip.
+# max_source_rows = 20000
+
+progress_every = 1000000
+
+log_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/cme_tas_replay_all.log"
+unparsed_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/cme_tas_replay_all_unparsed.log"
+unmatched_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/cme_tas_replay_all_unmatched.log"
+quote_fallback_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/cme_tas_replay_all_quote_exch_fallback.log"

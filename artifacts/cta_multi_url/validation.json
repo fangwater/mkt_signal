@@ -1,0 +1,34 @@
+{
+  "validated_at_utc": "2026-10-19T09:05:09.884973+00:00",
+  "branch": "arbmm",
+  "source_commit": "b425123630f602e5c52e4e4f861d17164438d40e",
+  "built_from_worktree_with_existing_local_changes": true,
+  "task_file_sha256": {
+    "src/cta_position_publisher.rs": "df85642a660c574f4c137cd011ba3ba63dd238dfd1665f9fe6ad96b87d6cc99d",
+    "src/cta_perp/signal.rs": "17c9f02138f5f227aab109964afdbe6ccefbd3ae83128c2de6e06f5f6ea1b607",
+    "src/cta_spread/signal.rs": "d4ef20453f4852d756b4d0fbd527735d6bc95b7c973fac9d7398e717983c88ed",
+    "src/lib.rs": "db0cdcbf8166e8a68b013a6dfe92fc6353da0df215d3c45ec013064c9454c63d",
+    "scripts/start_cta_perp.sh": "9ddf227a9b5ae4d3162958339a39627d196ce87db12bbb5f72f4502efe009a59",
+    "scripts/start_cta_spread.sh": "704afea3fea39839db3ec03a0460f2055ca1bde764f270eb2521e5580dfe58a7",
+    "scripts/deploy_cta_signal.sh": "0e99c4044ff553ab26820281d030813a03b72852d6951444443e843c2a5a95f8"
+  },
+  "binaries": {
+    "cta_perp_signal": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/mkt_signal/release/cta_perp_signal",
+      "sha256": "dc09fce1c0d9f11166c1b6b6cf4704c68b95a4e30512afcd3593bbfb7c8bd41d"
+    },
+    "cta_spread_signal": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/mkt_signal/release/cta_spread_signal",
+      "sha256": "1e769b23f443d1aeadee61f46ba53e715f0d9be1e73c752a8b0f843d489e1df3"
+    }
+  },
+  "rust_tests_passed": 1306,
+  "rust_tests_ignored": 3,
+  "multi_url_tests": 8,
+  "python_tests_passed": 26,
+  "scoped_rustfmt_check": true,
+  "shell_syntax_check": true,
+  "git_diff_check": true,
+  "deployed_to_production": false,
+  "production_url_configuration_changed": false
+}

@@ -1,0 +1,84 @@
+{
+  "verified_at_ms": 1793182522569,
+  "enabled": false,
+  "open_orders": 0,
+  "algo_orders": 0,
+  "nonzero_perpetual_positions": 11,
+  "bound_trading_ip": "172.31.35.228",
+  "rules": 45,
+  "symbols": 16,
+  "factors": 26,
+  "nq_ready_symbols": 16,
+  "ready_pairs": 43,
+  "waiting_pairs": [
+    {
+      "symbol": "ALGOUSDT",
+      "factor": "buy_avg_price"
+    },
+    {
+      "symbol": "ZRXUSDT",
+      "factor": "buy_avg_price"
+    }
+  ],
+  "factor_generation": "0081f858-13ff-482b-b411-64fff2c6e43d",
+  "factor_latest_min_ms": 1793182500000,
+  "factor_latest_max_ms": 1793182500000,
+  "factor_caught_up": true,
+  "processes": {
+    "105323": {
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "comm": "persist_manager",
+      "start": "233435"
+    },
+    "105844": {
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "comm": "trade_engine",
+      "start": "233835"
+    },
+    "106116": {
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "comm": "rapidx_account_",
+      "start": "234315"
+    },
+    "106434": {
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "comm": "viz_server",
+      "start": "235085"
+    },
+    "166080": {
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "comm": "python3",
+      "start": "24986565"
+    },
+    "2288047": {
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "comm": "python3",
+      "start": "87016028"
+    },
+    "2307925": {
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "comm": "cta_perp_factor",
+      "start": "87067249"
+    },
+    "2326926": {
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "comm": "python3",
+      "start": "87115997"
+    },
+    "2344374": {
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "comm": "bash",
+      "start": "87159564"
+    },
+    "2344375": {
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "comm": "python3",
+      "start": "87159568"
+    }
+  },
+  "config_revision": "c44611f341f0b40a561bf1d39d05e4079d30546113c7320ba6d204f7ba5f8508",
+  "manifest_verified_files": 8,
+  "config_gateway_ok": true,
+  "panel_gateway_ok": true,
+  "protected_exec07_processes_preserved": true
+}

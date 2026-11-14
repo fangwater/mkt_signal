@@ -1,0 +1,111 @@
+{
+  "accounts": [
+    {
+      "label": "查看配置",
+      "href": "/manager/account/?source=binance_exec_trade01"
+    },
+    {
+      "label": "查看配置",
+      "href": "/manager/account/?source=binance_exec_trade02"
+    },
+    {
+      "label": "查看配置",
+      "href": "/manager/account/?source=binance_exec_trade06"
+    },
+    {
+      "label": "查看配置",
+      "href": "/manager/account/?source=okex_exec_trade01"
+    },
+    {
+      "label": "查看配置",
+      "href": "/manager/account/?source=binance_exec_spread01"
+    }
+  ],
+  "old_aggregate_removed": true,
+  "group": "cross01",
+  "native_frames": [
+    {
+      "title": "okex_exec_cross01 执行 Viz",
+      "src": "/exec_okex01/",
+      "header": "U 本位 Exec 执行监控",
+      "connection": "实时",
+      "rect": {
+        "x": 33,
+        "y": 280.25,
+        "width": 1839
+      }
+    },
+    {
+      "title": "binance_exec_cross01 执行 Viz",
+      "src": "/exec_binance_spread01/",
+      "header": "U 本位 Exec 执行监控",
+      "connection": "实时",
+      "rect": {
+        "x": 33,
+        "y": 1275.25,
+        "width": 1839
+      }
+    }
+  ],
+  "websocket_upgrades": [
+    {
+      "url": "ws://127.0.0.1:2149/exec_okex01/ws",
+      "status": 101
+    },
+    {
+      "url": "ws://127.0.0.1:2149/exec_binance_spread01/ws",
+      "status": 101
+    },
+    {
+      "url": "ws://127.0.0.1:2149/exec_okex01/ws",
+      "status": 101
+    },
+    {
+      "url": "ws://127.0.0.1:2149/exec_binance_spread01/ws",
+      "status": 101
+    },
+    {
+      "url": "ws://127.0.0.1:2149/exec_okex01/ws",
+      "status": 101
+    },
+    {
+      "url": "ws://127.0.0.1:2149/exec_binance_spread01/ws",
+      "status": 101
+    }
+  ],
+  "frames_stable_on_refresh": true,
+  "desktop_columns": [
+    {
+      "x": 33,
+      "y": 280.25,
+      "width": 908.5
+    },
+    {
+      "x": 963.5,
+      "y": 280.25,
+      "width": 908.5
+    }
+  ],
+  "mobile": {
+    "width": 390,
+    "scroll": 390,
+    "frames": [
+      {
+        "x": 17,
+        "y": 367.25,
+        "width": 356
+      },
+      {
+        "x": 17,
+        "y": 1406.25,
+        "width": 356
+      }
+    ]
+  },
+  "combined_pnl": 0,
+  "estimated_funding": 0,
+  "empty_strategies": true,
+  "actual_funding_controls_hidden": true,
+  "hidden_user_denied": true,
+  "page_errors": []
+}

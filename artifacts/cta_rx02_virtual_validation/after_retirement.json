@@ -1,0 +1,135 @@
+{
+  "utc": "2026-10-13T09:14:40.970373+00:00",
+  "virtual_id": "virtual02",
+  "virtual_name": "lgq_cta",
+  "follower": "binance_exec_trade05",
+  "multiplier": 1,
+  "pending_publishes": 0,
+  "effective_bindings_match": true,
+  "active_factors": 5,
+  "active_pairs": 24,
+  "bindings": [
+    {
+      "strategy": "lgq_cta_TD_TI_002",
+      "shares": 0,
+      "exec_target_count": 4,
+      "targets_match": true
+    },
+    {
+      "strategy": "lgq_cta_baseline_004",
+      "shares": 0,
+      "exec_target_count": 2,
+      "targets_match": true
+    },
+    {
+      "strategy": "lgq_cta_factor_036",
+      "shares": 1,
+      "exec_target_count": 10,
+      "targets_match": true
+    },
+    {
+      "strategy": "lgq_cta_factor_051",
+      "shares": 0,
+      "exec_target_count": 8,
+      "targets_match": true
+    },
+    {
+      "strategy": "lgq_cta_factor_170",
+      "shares": 0,
+      "exec_target_count": 8,
+      "targets_match": true
+    },
+    {
+      "strategy": "lgq_cta_TD_TI_024",
+      "shares": 1,
+      "exec_target_count": 6,
+      "targets_match": true
+    },
+    {
+      "strategy": "lgq_cta_baseline_141",
+      "shares": 1,
+      "exec_target_count": 8,
+      "targets_match": true
+    },
+    {
+      "strategy": "lgq_cta_baseline_164",
+      "shares": 1,
+      "exec_target_count": 3,
+      "targets_match": true
+    },
+    {
+      "strategy": "lgq_cta_baseline_200",
+      "shares": 1,
+      "exec_target_count": 6,
+      "targets_match": true
+    }
+  ],
+  "signal_enabled": true,
+  "ready_pairs": 24,
+  "model_ts_ms": 1791882840000,
+  "legacy_publisher_pids": [],
+  "processes": {
+    "binance-cta-perp-rx02": [
+      {
+        "pid": 406886,
+        "exe": "python3.12"
+      },
+      {
+        "pid": 411079,
+        "exe": "python3.12"
+      },
+      {
+        "pid": 421006,
+        "exe": "cta_perp_signal"
+      },
+      {
+        "pid": 4133794,
+        "exe": "cta_perp_factor_model_1m_pub"
+      }
+    ],
+    "binance_exec_trade05": [
+      {
+        "pid": 3028399,
+        "exe": "python3.12"
+      },
+      {
+        "pid": 3036362,
+        "exe": "persist_manager"
+      },
+      {
+        "pid": 3038156,
+        "exe": "rapidx_account_monitor"
+      },
+      {
+        "pid": 3175453,
+        "exe": "trade_engine"
+      },
+      {
+        "pid": 3477383,
+        "exe": "viz_server"
+      },
+      {
+        "pid": 3477503,
+        "exe": "exec-pre-trade"
+      }
+    ],
+    "binance-cta-spread-rx01": [
+      {
+        "pid": 3150153,
+        "exe": "cta_spread_factor_model_1m_pub"
+      },
+      {
+        "pid": 3183433,
+        "exe": "python3.12"
+      },
+      {
+        "pid": 3199322,
+        "exe": "cta_spread_signal"
+      },
+      {
+        "pid": 3390010,
+        "exe": "python3.12"
+      }
+    ]
+  }
+}

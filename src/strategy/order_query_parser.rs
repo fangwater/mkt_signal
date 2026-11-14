@@ -15,6 +15,9 @@ pub fn parse_compact_order_query_resp(body: &bytes::Bytes) -> Option<CompactOrde
     if !parsed.response_price.is_finite() || parsed.response_price < 0.0 {
         return None;
     }
+    if !parsed.order_price.is_finite() || parsed.order_price < 0.0 {
+        return None;
+    }
     if parsed.status_u8 == 0 {
         return None;
     }

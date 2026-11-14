@@ -1,0 +1,299 @@
+{
+  "verified_at": "2026-10-30T10:12:13.925104+00:00",
+  "scope": "BTC/ETH validation only; operator universe configured separately",
+  "probe_exit_code": 0,
+  "no_ipc_publishers": true,
+  "bars_per_symbol": {
+    "ETHUSDT": 194,
+    "BTCUSDT": 194
+  },
+  "first_all_23_ready_bar": {
+    "ETHUSDT": 162,
+    "BTCUSDT": 162
+  },
+  "latest": {
+    "ETHUSDT": {
+      "bar_interval": "15m",
+      "bar_start_ms": 1793353500000,
+      "generation": "e47395ac-d3e5-4e61-b909-31bc3dc8519b",
+      "inputs": {
+        "depth_far_share_ask": {
+          "quantile": 0.33984375,
+          "ready": true,
+          "score": 0.10412127716342658
+        },
+        "depth_far_share_bid": {
+          "quantile": 0.12109375,
+          "ready": true,
+          "score": -0.6744957120429714
+        },
+        "depth_flow_add_imb": {
+          "quantile": 0.51953125,
+          "ready": true,
+          "score": 0.6410019111245392
+        },
+        "depth_flow_net": {
+          "quantile": 0.40234375,
+          "ready": true,
+          "score": -0.24620021073546053
+        },
+        "depth_flow_sub_imb": {
+          "quantile": 0.51953125,
+          "ready": true,
+          "score": 0.6418473612066866
+        },
+        "depth_gap_bps_100k": {
+          "quantile": 0.18359375,
+          "ready": true,
+          "score": -0.3946716040264958
+        },
+        "depth_gap_bps_10k": {
+          "quantile": 0.10546875,
+          "ready": true,
+          "score": 0.1124002756425777
+        },
+        "depth_gap_bps_50k": {
+          "quantile": 0.23828125,
+          "ready": true,
+          "score": 0.021193114951603885
+        },
+        "depth_imb_all": {
+          "quantile": 0.84765625,
+          "ready": true,
+          "score": -0.5713425183030615
+        },
+        "depth_imb_bps1": {
+          "quantile": 0.20703125,
+          "ready": true,
+          "score": -0.883798302344971
+        },
+        "depth_imb_bps10": {
+          "quantile": 0.66015625,
+          "ready": true,
+          "score": 0.2819174249848709
+        },
+        "depth_imb_bps100": {
+          "quantile": 0.35546875,
+          "ready": true,
+          "score": -0.4304621023691157
+        },
+        "depth_imb_bps20": {
+          "quantile": 0.40234375,
+          "ready": true,
+          "score": -0.3348787148361327
+        },
+        "depth_imb_bps5": {
+          "quantile": 0.67578125,
+          "ready": true,
+          "score": 0.3364073261245625
+        },
+        "depth_imb_bps50": {
+          "quantile": 0.44140625,
+          "ready": true,
+          "score": -0.29352842587597044
+        },
+        "depth_level_imb": {
+          "quantile": 0.47265625,
+          "ready": true,
+          "score": -0.808280995986861
+        },
+        "depth_log_ba_bps100": {
+          "quantile": 0.35546875,
+          "ready": true,
+          "score": -0.4290201967105941
+        },
+        "depth_log_ba_bps20": {
+          "quantile": 0.40234375,
+          "ready": true,
+          "score": -0.32827346054137885
+        },
+        "depth_log_ba_bps5": {
+          "quantile": 0.67578125,
+          "ready": true,
+          "score": 0.3277396059442648
+        },
+        "depth_near_far_ask": {
+          "quantile": 0.79296875,
+          "ready": true,
+          "score": 0.4905802101544086
+        },
+        "depth_near_far_bid": {
+          "quantile": 0.92578125,
+          "ready": true,
+          "score": 1.0804010957523977
+        },
+        "depth_touch_add_imb": {
+          "quantile": 0.05859375,
+          "ready": true,
+          "score": -1.4871774090234058
+        },
+        "depth_touch_net": {
+          "quantile": 0.46484375,
+          "ready": true,
+          "score": -0.1243489798695708
+        }
+      },
+      "model_ts_ms": 1793354400000,
+      "nq": {
+        "execution_ask": 2228.43,
+        "execution_bid": 2228.42,
+        "execution_ts_ms": 1793354400020,
+        "long_quantile": 0.6958333333333333,
+        "long_threshold": 0.011218978138450842,
+        "long_value": 0.015364251687584552,
+        "ready": true,
+        "short_quantile": 0.15416666666666667,
+        "short_threshold": -0.025676151296031277,
+        "short_value": -0.058948106325340054
+      },
+      "symbol": "ETHUSDT"
+    },
+    "BTCUSDT": {
+      "bar_interval": "15m",
+      "bar_start_ms": 1793353500000,
+      "generation": "e47395ac-d3e5-4e61-b909-31bc3dc8519b",
+      "inputs": {
+        "depth_far_share_ask": {
+          "quantile": 0.48046875,
+          "ready": true,
+          "score": 0.20874012114733087
+        },
+        "depth_far_share_bid": {
+          "quantile": 0.72265625,
+          "ready": true,
+          "score": 0.9642038552332075
+        },
+        "depth_flow_add_imb": {
+          "quantile": 0.15234375,
+          "ready": true,
+          "score": -0.7188588042892747
+        },
+        "depth_flow_net": {
+          "quantile": 0.80078125,
+          "ready": true,
+          "score": 1.2669693323282352
+        },
+        "depth_flow_sub_imb": {
+          "quantile": 0.15234375,
+          "ready": true,
+          "score": -0.7195011998751394
+        },
+        "depth_gap_bps_100k": {
+          "quantile": 0.41796875,
+          "ready": true,
+          "score": 0.04791706924456722
+        },
+        "depth_gap_bps_10k": {
+          "quantile": 0.65234375,
+          "ready": true,
+          "score": 0.16987493633241968
+        },
+        "depth_gap_bps_50k": {
+          "quantile": 0.36328125,
+          "ready": true,
+          "score": -0.005457808034672244
+        },
+        "depth_imb_all": {
+          "quantile": 0.47265625,
+          "ready": true,
+          "score": 0.5695475019337555
+        },
+        "depth_imb_bps1": {
+          "quantile": 0.44140625,
+          "ready": true,
+          "score": -0.2407633045247844
+        },
+        "depth_imb_bps10": {
+          "quantile": 0.34765625,
+          "ready": true,
+          "score": -0.5033432288393636
+        },
+        "depth_imb_bps100": {
+          "quantile": 0.50390625,
+          "ready": true,
+          "score": 0.3561557880067934
+        },
+        "depth_imb_bps20": {
+          "quantile": 0.62890625,
+          "ready": true,
+          "score": 0.23749985863416176
+        },
+        "depth_imb_bps5": {
+          "quantile": 0.26171875,
+          "ready": true,
+          "score": -0.7601313709379666
+        },
+        "depth_imb_bps50": {
+          "quantile": 0.66796875,
+          "ready": true,
+          "score": 0.49782465771053347
+        },
+        "depth_level_imb": {
+          "quantile": 0.42578125,
+          "ready": true,
+          "score": -0.7007661384659031
+        },
+        "depth_log_ba_bps100": {
+          "quantile": 0.49609375,
+          "ready": true,
+          "score": 0.344806131501897
+        },
+        "depth_log_ba_bps20": {
+          "quantile": 0.62890625,
+          "ready": true,
+          "score": 0.23229420578593163
+        },
+        "depth_log_ba_bps5": {
+          "quantile": 0.26171875,
+          "ready": true,
+          "score": -0.7390849852499337
+        },
+        "depth_near_far_ask": {
+          "quantile": 0.92578125,
+          "ready": true,
+          "score": 1.0735901380969057
+        },
+        "depth_near_far_bid": {
+          "quantile": 0.41796875,
+          "ready": true,
+          "score": -0.5200971625385454
+        },
+        "depth_touch_add_imb": {
+          "quantile": 0.55078125,
+          "ready": true,
+          "score": 0.12267876121971294
+        },
+        "depth_touch_net": {
+          "quantile": 0.46484375,
+          "ready": true,
+          "score": -0.1348965652200932
+        }
+      },
+      "model_ts_ms": 1793354400000,
+      "nq": {
+        "execution_ask": 77654.8,
+        "execution_bid": 77654.7,
+        "execution_ts_ms": 1793354400007,
+        "long_quantile": 0.6041666666666666,
+        "long_threshold": 0.007224170186914601,
+        "long_value": 0.011177614561108622,
+        "ready": true,
+        "short_quantile": 0.1125,
+        "short_threshold": -0.020110454824442736,
+        "short_value": -0.05003379421920062
+      },
+      "symbol": "BTCUSDT"
+    }
+  },
+  "publisher_sha256": "bc4442d34d83d88ed5ecec8c38ec591223a8be92b11c276549153ff3984c807d",
+  "account_observed_at_ms": 1793353737923,
+  "account": {
+    "open_orders": 0,
+    "algo_orders": 0,
+    "nonzero_perpetuals": 0,
+    "nonzero_asset_debts": 0,
+    "cash_residual_assets": 55,
+    "cash_rounded_order_qty_nonzero": 0,
+    "cash_residual_notional_usdt": "3.58245851562887362083484188"
+  }
+}

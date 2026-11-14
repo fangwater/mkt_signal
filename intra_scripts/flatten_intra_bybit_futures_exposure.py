@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+from requests.adapters import HTTPAdapter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "lib"))
 from bybit_external_order_link import make_external_order_link_id  # noqa: E402
@@ -36,6 +37,21 @@ DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "4191"))
 
 HOST = os.environ.get("BYBIT_API_BASE", "https://api.bybit.com").rstrip("/")
 RECV_WINDOW_MS = "5000"
+HTTP_SESSION = requests.Session()
+
+
+class SourceAddressAdapter(HTTPAdapter):
+    def __init__(self, source_address: str, **kwargs):
+        self._source_address = (source_address, 0)
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        pool_kwargs["source_address"] = self._source_address
+        return super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
+
+    def proxy_manager_for(self, proxy, **proxy_kwargs):
+        proxy_kwargs["source_address"] = self._source_address
+        return super().proxy_manager_for(proxy, **proxy_kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +103,7 @@ def request(
         "X-BAPI-RECV-WINDOW": RECV_WINDOW_MS,
         "Content-Type": "application/json",
     }
-    resp = requests.request(method.upper(), url, headers=headers, data=body)
+    resp = HTTP_SESSION.request(method.upper(), url, headers=headers, data=body)
     try:
         data = resp.json()
     except ValueError:
@@ -118,7 +134,7 @@ def fetch_linear_specs() -> Dict[str, LinearSpec]:
             params.append(("cursor", cursor))
         query = "&".join(f"{k}={v}" for k, v in params)
         url = f"{HOST}/v5/market/instruments-info?{query}"
-        resp = requests.get(url, timeout=15)
+        resp = HTTP_SESSION.get(url, timeout=15)
         data = resp.json()
         if data.get("retCode") not in (0, "0", None):
             raise RuntimeError(f"Bybit instruments-info failed: {data}")
@@ -255,7 +271,7 @@ def fetch_exposure_rows(args: argparse.Namespace) -> List[ExposureRow]:
 # ---------------------------------------------------------------------------
 
 def _install_rest_source_bind() -> None:
-    """Bind Bybit REST sockets to trade_engine.toml local_ips[0] (dual-ENI)."""
+    """Bind Bybit REST clients to trade_engine.toml local_ips[0] (dual-ENI)."""
     local_ip = os.environ.get("BYBIT_REST_BIND_IP", "").strip()
     if not local_ip:
         toml_path = Path(__file__).resolve().parents[1] / "trade_engine.toml"
@@ -275,6 +291,9 @@ def _install_rest_source_bind() -> None:
         return _orig(address, timeout, src)
 
     socket.create_connection = _create_connection  # type: ignore[assignment]
+    adapter = SourceAddressAdapter(local_ip, max_retries=0)
+    HTTP_SESSION.mount("https://", adapter)
+    HTTP_SESSION.mount("http://", adapter)
     print(f"[info] binding REST source address to {local_ip}")
 
 

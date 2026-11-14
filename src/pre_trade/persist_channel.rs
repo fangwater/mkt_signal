@@ -1,18 +1,25 @@
 use bytes::{BufMut, Bytes, BytesMut};
+use iceoryx2::port::subscriber::Subscriber;
+use iceoryx2::prelude::*;
+use iceoryx2::service::ipc;
 use log::warn;
 use std::cell::OnceCell;
 
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use ipc_common::iceoryx_publisher::{
-    OrderUpdatePublisher, TradeUpdatePublisher, UniformOrderPublisher,
+    HyperliquidAccountFactPublisher, OrderUpdatePublisher, TradeUpdatePublisher,
+    UniformOrderPublisher,
 };
 use order_common::TradingVenue;
 use order_common::{OrderUpdate, TradeUpdate};
 use persist_common::{
-    SignalBbo, UnifiedOrderRecord, ORDER_UPDATE_RECORD_CHANNEL,
-    ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL, TRADE_UPDATE_RECORD_CHANNEL,
-    TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL, UNIFORM_ORDER_RECORD_CHANNEL,
+    HyperliquidAccountFactAck, UnifiedOrderRecord, HYPERLIQUID_ACCOUNT_FACT_ACK_CHANNEL,
+    HYPERLIQUID_ACCOUNT_FACT_ACK_MAX_BYTES, HYPERLIQUID_ACCOUNT_FACT_RECORD_CHANNEL,
+    ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL,
+    TRADE_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL,
+    UNIFORM_ORDER_RECORD_CHANNEL,
 };
+use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
 
@@ -27,6 +34,7 @@ thread_local! {
 /// - Order Update: `persist_manager::OrderUpdatePersistor` -> RocksDB (`order_update_record`)
 /// - Unmatched Trade Update: `persist_manager::TradeUpdateUnmatchedPersistor` -> RocksDB (`trade_updates_unmatched`)
 /// - Unmatched Order Update: `persist_manager::OrderUpdateUnmatchedPersistor` -> RocksDB (`order_updates_unmatched`)
+/// - Hyperliquid Account Fact: `persist_manager::HyperliquidAccountFactPersistor` -> RocksDB (`hyperliquid_account_facts`)
 ///
 /// 采用直接发布模式（无中间队列），优先保证低延迟
 ///
@@ -39,6 +47,9 @@ pub struct PersistChannel {
     trade_update_unmatched_pub: Option<TradeUpdatePublisher>,
     order_update_unmatched_pub: Option<OrderUpdatePublisher>,
     uniform_order_record_pub: Option<UniformOrderPublisher>,
+    hyperliquid_account_fact_record_pub: Option<HyperliquidAccountFactPublisher>,
+    hyperliquid_account_fact_ack_sub:
+        Option<Subscriber<ipc::Service, [u8; HYPERLIQUID_ACCOUNT_FACT_ACK_MAX_BYTES], ()>>,
 }
 
 impl PersistChannel {
@@ -103,12 +114,26 @@ impl PersistChannel {
                 .map_err(|e| warn!("PersistChannel uniform_order_record_pub failed: {e:#}"))
                 .ok();
 
+        let hyperliquid_account_fact_record_pub = HyperliquidAccountFactPublisher::new_with_prefix(
+            "persist_pubs",
+            HYPERLIQUID_ACCOUNT_FACT_RECORD_CHANNEL,
+        )
+        .map_err(|e| warn!("PersistChannel hyperliquid account fact publisher failed: {e:#}"))
+        .ok();
+        let hyperliquid_account_fact_ack_sub = create_hyperliquid_account_fact_ack_subscriber()
+            .map_err(|e| {
+                warn!("PersistChannel hyperliquid account fact ACK subscriber failed: {e:#}")
+            })
+            .ok();
+
         Self {
             trade_update_record_pub,
             order_update_record_pub,
             trade_update_unmatched_pub,
             order_update_unmatched_pub,
             uniform_order_record_pub,
+            hyperliquid_account_fact_record_pub,
+            hyperliquid_account_fact_ack_sub,
         }
     }
 
@@ -196,19 +221,50 @@ impl PersistChannel {
 
     /// 发布统一订单记录（二进制格式）
     pub fn publish_uniform_order(&self, record: &UnifiedOrderRecord) {
+        if let Err(err) = self.try_publish_uniform_order(record) {
+            warn!(
+                "failed to publish uniform order update client_order_id={} symbol_len={} from_key_len={}: {err}",
+                record.client_order_id, record.symbol_len, record.from_key_len
+            );
+        }
+    }
+
+    /// 发布统一订单记录，并将通道或发布错误返回给调用方。
+    pub fn try_publish_uniform_order(&self, record: &UnifiedOrderRecord) -> Result<(), String> {
         let Some(publisher) = &self.uniform_order_record_pub else {
-            return;
+            return Err("uniform order publisher is unavailable".to_string());
         };
 
         let payload = serialize_uniform_order(record);
-        if let Err(err) = publisher.publish(payload.as_ref()) {
-            warn!(
-                "failed to publish uniform order update client_order_id={} symbol_len={} from_key_len={}: {err:#}",
-                record.client_order_id,
-                record.symbol_len,
-                record.from_key_len
-            );
-        }
+        publisher
+            .publish(payload.as_ref())
+            .map_err(|err| format!("{err:#}"))
+    }
+
+    /// Send one retained Hyperliquid fact persistence request. The caller must
+    /// keep retrying the same bytes until `receive_hyperliquid_account_fact_ack`
+    /// returns a matching durable ACK.
+    pub fn try_publish_hyperliquid_account_fact(&self, payload: &[u8]) -> Result<(), String> {
+        let publisher = self
+            .hyperliquid_account_fact_record_pub
+            .as_ref()
+            .ok_or_else(|| "Hyperliquid account fact publisher is unavailable".to_string())?;
+        publisher.publish(payload).map_err(|err| format!("{err:#}"))
+    }
+
+    pub fn receive_hyperliquid_account_fact_ack(
+        &self,
+    ) -> Result<Option<HyperliquidAccountFactAck>, String> {
+        let subscriber = self
+            .hyperliquid_account_fact_ack_sub
+            .as_ref()
+            .ok_or_else(|| "Hyperliquid account fact ACK subscriber is unavailable".to_string())?;
+        let Some(sample) = subscriber.receive().map_err(|err| err.to_string())? else {
+            return Ok(None);
+        };
+        HyperliquidAccountFactAck::from_ipc_payload(sample.payload())
+            .map(Some)
+            .map_err(str::to_string)
     }
 
     /// 检查交易更新记录发布器是否可用
@@ -220,13 +276,37 @@ impl PersistChannel {
     pub fn is_order_update_publisher_available(&self) -> bool {
         self.order_update_record_pub.is_some()
     }
+
+    /// 检查统一订单记录发布器是否可用。
+    pub fn is_uniform_order_publisher_available(&self) -> bool {
+        self.uniform_order_record_pub.is_some()
+    }
+}
+
+fn create_hyperliquid_account_fact_ack_subscriber(
+) -> anyhow::Result<Subscriber<ipc::Service, [u8; HYPERLIQUID_ACCOUNT_FACT_ACK_MAX_BYTES], ()>> {
+    let node = NodeBuilder::new()
+        .name(&NodeName::new("pre_trade_hyperliquid_fact_ack")?)
+        .create::<ipc::Service>()?;
+    let service_name = build_service_name(&format!(
+        "persist_acks/{HYPERLIQUID_ACCOUNT_FACT_ACK_CHANNEL}"
+    ));
+    let service = node
+        .service_builder(&ServiceName::new(&service_name)?)
+        .publish_subscribe::<[u8; HYPERLIQUID_ACCOUNT_FACT_ACK_MAX_BYTES]>()
+        .max_publishers(1)
+        .max_subscribers(32)
+        .history_size(128)
+        .subscriber_max_buffer_size(256)
+        .open_or_create()?;
+    Ok(service.subscriber_builder().create()?)
 }
 
 // 不实现 Default trait，鼓励使用 PersistChannel::global() 单例模式
 
 // ==================== 序列化辅助函数 ====================
 
-fn normalize_symbol_for_venue(venue: TradingVenue, symbol: &str) -> String {
+pub(crate) fn normalize_symbol_for_venue(venue: TradingVenue, symbol: &str) -> String {
     let upper = normalize_symbol_for_internal(symbol);
     match venue {
         TradingVenue::OkexMargin
@@ -237,7 +317,11 @@ fn normalize_symbol_for_venue(venue: TradingVenue, symbol: &str) -> String {
     }
 }
 
-fn resolve_futures_qty_multiplier(venue: TradingVenue, normalized_symbol: &str, price: f64) -> f64 {
+pub(crate) fn resolve_futures_qty_multiplier(
+    venue: TradingVenue,
+    normalized_symbol: &str,
+    price: f64,
+) -> f64 {
     if !venue.is_futures() {
         return 1.0;
     }
@@ -292,53 +376,14 @@ fn normalize_symbol_and_qty(
 /// - cumulative_filled_quantity: f64 (8 bytes)
 /// - order_status: u8 (1 byte) + Option flag
 fn serialize_trade_update(trade: &dyn TradeUpdate) -> Bytes {
-    let mut buf = BytesMut::with_capacity(512);
     let venue = trade.trading_venue();
-    let (normalized_symbol, normalized_cum_qty) = normalize_symbol_and_qty(
+    let (symbol, qty) = normalize_symbol_and_qty(
         venue,
         trade.symbol(),
         trade.cumulative_filled_quantity(),
         trade.price(),
     );
-
-    // 接收时间戳（在发布时记录）
-    buf.put_i64_le(get_timestamp_us());
-
-    // 基础时间戳
-    buf.put_i64_le(trade.event_time());
-    buf.put_i64_le(trade.trade_time());
-
-    // 交易对符号
-    put_string(&mut buf, normalized_symbol.as_str());
-
-    // ID 字段
-    buf.put_i64_le(trade.order_id());
-    buf.put_i64_le(trade.client_order_id());
-
-    // 方向
-    buf.put_u8(trade.side() as u8);
-
-    // 价格
-    buf.put_f64_le(trade.price());
-
-    // Maker/Taker
-    buf.put_u8(trade.is_maker() as u8);
-
-    // 交易所类型
-    buf.put_u8(venue as u8);
-
-    // 累计成交量
-    buf.put_f64_le(normalized_cum_qty);
-
-    // 订单状态（可选）
-    if let Some(status) = trade.order_status() {
-        buf.put_u8(1); // has value
-        buf.put_u8(status as u8);
-    } else {
-        buf.put_u8(0); // no value
-    }
-
-    buf.freeze()
+    persist_common::native_codec::serialize_trade_update(trade, get_timestamp_us(), &symbol, qty)
 }
 
 /// 将 OrderUpdate trait object 序列化为字节流
@@ -450,9 +495,8 @@ fn put_opt_string(buf: &mut BytesMut, value: Option<&str>) {
 /// - from_key_len: u32
 /// - from_key: [u8; from_key_len]
 /// - signal_bbo: [u8; 83]
+/// - fill_liquidity: u8 (0=unknown, 1=maker, 2=taker)
 fn serialize_uniform_order(record: &UnifiedOrderRecord) -> Bytes {
-    let mut buf = BytesMut::with_capacity(512);
-
     let venue = TradingVenue::from_u8(record.venue).unwrap_or(TradingVenue::BinanceMargin);
     let raw_symbol = String::from_utf8_lossy(&record.symbol);
     let (normalized_symbol, normalized_amount_init) =
@@ -464,39 +508,75 @@ fn serialize_uniform_order(record: &UnifiedOrderRecord) -> Bytes {
         record.price,
     );
 
-    buf.put_i64_le(get_timestamp_us());
-
-    let symbol_len = normalized_symbol.len() as u16;
-    buf.put_u16_le(symbol_len);
-    buf.put_slice(normalized_symbol.as_bytes());
-
-    buf.put_i64_le(record.create_ts);
-    buf.put_i64_le(record.update_ts);
-    buf.put_i64_le(record.signal_ts);
-    buf.put_i64_le(record.submit_ts);
-    buf.put_i64_le(record.local_ts);
-    buf.put_i64_le(record.mkt_ts);
-
-    buf.put_i64_le(record.client_order_id);
-
-    buf.put_u8(record.venue);
-    buf.put_u8(record.ttype);
-    buf.put_u8(record.side);
-
-    buf.put_f64_le(record.price);
-    buf.put_f64_le(record.price_offset);
-    buf.put_f64_le(normalized_amount_init);
-    buf.put_f64_le(normalized_amount_update);
-
-    buf.put_u8(record.status);
-
-    let from_key_len = record.from_key.len() as u32;
-    buf.put_u32_le(from_key_len);
-    buf.put_slice(&record.from_key);
-
-    buf.put_slice(&SignalBbo::encode_optional(record.signal_bbo));
-
-    buf.freeze()
+    persist_common::native_codec::serialize_uniform_order(
+        record,
+        get_timestamp_us(),
+        &normalized_symbol,
+        normalized_amount_init,
+        normalized_amount_update,
+    )
 }
 
-// NOTE: persist-channel unit tests removed per repo usage (requires IceOryx runtime/namespace).
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+    use crate::strategy::uniform_order_helper::build_uniform_order_record;
+    use bytes::Buf;
+    use order_common::{Order, OrderStatus, OrderType, Side};
+    use persist_common::{FillLiquidity, SignalBbo};
+
+    // Exercise only the offline codec; never initialize Iceoryx publishers.
+    #[test]
+    fn uniform_wire_keeps_incremental_qty_and_appends_fill_role_after_signal_bbo() {
+        let order = Order::new(
+            TradingVenue::BinanceFutures,
+            42,
+            OrderType::Limit,
+            "BTCUSDT".to_string(),
+            Side::Buy,
+            10.0,
+            100.0,
+            false,
+            1.0,
+            None,
+            true,
+        );
+        for (quantity, role, expected_role) in [
+            (2.0, FillLiquidity::Maker, FillLiquidity::Maker),
+            (2.0, FillLiquidity::Taker, FillLiquidity::Taker),
+            (2.0, FillLiquidity::Unknown, FillLiquidity::Unknown),
+            (0.0, FillLiquidity::Maker, FillLiquidity::Unknown),
+        ] {
+            let record = build_uniform_order_record(
+                &order,
+                10,
+                20,
+                OrderStatus::Canceled,
+                15,
+                b"batch_exec:alpha".to_vec(),
+                None,
+                101.0,
+                0.0,
+                quantity,
+                role,
+            );
+            let mut wire = serialize_uniform_order(&record);
+            wire.advance(8);
+            let symbol_len = wire.get_u16_le() as usize;
+            assert_eq!(&wire[..symbol_len], b"BTCUSDT");
+            wire.advance(symbol_len + 7 * 8 + 3);
+            assert_eq!(wire.get_f64_le(), 101.0);
+            assert_eq!(wire.get_f64_le(), 0.0);
+            assert_eq!(wire.get_f64_le(), 10.0);
+            assert_eq!(wire.get_f64_le(), quantity);
+            assert_eq!(wire.get_u8(), OrderStatus::Canceled.to_u8());
+            let from_key_len = wire.get_u32_le() as usize;
+            assert_eq!(&wire[..from_key_len], b"batch_exec:alpha");
+            wire.advance(from_key_len);
+            assert_eq!(&wire[..83], &SignalBbo::encode_optional(None));
+            wire.advance(83);
+            assert_eq!(wire.get_u8(), expected_role as u8);
+            assert!(!wire.has_remaining());
+        }
+    }
+}

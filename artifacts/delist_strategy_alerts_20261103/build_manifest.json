@@ -1,0 +1,13 @@
+{
+  "branch": "arbmm",
+  "head": "6ee63160771cebecf807efd263d92ff465f31b22",
+  "dirty_worktree": true,
+  "binary_sha256": "a3096488dfad952bfc06f049731ba222ee8f3bd3edfb0688f29764bf0bfa97f5",
+  "source_sha256": {
+    "src/bin/delist_risk_server.rs": "fcb4adf2d7f8476ab68567e97a3808584842023b73a846dcbd2466ed1ce2e178",
+    "src/bin/delist_risk_server/cta_mapping.rs": "cfeb1c2fc5c547c4b0d668704a9b705c059d6f3d2e33cb4ff1864aaa399bee42",
+    "src/bin/delist_risk_server/cta_factors.rs": "8decac17a7c34edb1d94a4472adad97ea12777fec5204555ce479dd07db9662e",
+    "web/delist_risk/index.html": "07def370514238118662d350cc7ad173f408f78149ee697a2de95c0811b1c80e"
+  },
+  "note": "Built in active local arbmm worktree with existing unrelated operator changes retained. Only delist binary and web page will be published; no trading binary is part of this publish."
+}

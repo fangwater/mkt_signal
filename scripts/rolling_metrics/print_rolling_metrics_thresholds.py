@@ -435,6 +435,20 @@ def main() -> int:
             "quantile_prefix": "askbid",
         },
         {
+            "label": "bidbid_ho",
+            "value_field": "bidbid_ho",
+            "value_header": "bidbid_ho",
+            "quantile_key": "bidbid_ho_quantiles",
+            "quantile_prefix": "bidbid_ho",
+        },
+        {
+            "label": "askask_oh",
+            "value_field": "askask_oh",
+            "value_header": "askask_oh",
+            "quantile_key": "askask_oh_quantiles",
+            "quantile_prefix": "askask_oh",
+        },
+        {
             "label": "open_premium_rate",
             "value_field": "open_premium_rate",
             "value_header": "open_premium_rate",

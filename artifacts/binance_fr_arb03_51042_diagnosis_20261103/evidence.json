@@ -1,0 +1,1219 @@
+{
+  "utc": "2026-11-03T15:16:29Z",
+  "env": "binance_fr_arb03",
+  "mode": "read-only",
+  "exchange": [
+    {
+      "path": "/papi/v1/balance",
+      "params": {
+        "asset": "USDT"
+      },
+      "status": 200,
+      "data": {
+        "asset": "USDT",
+        "totalWalletBalance": "0.0",
+        "crossMarginAsset": "0.0",
+        "crossMarginBorrowed": "44203.79858322",
+        "crossMarginFree": "0.0",
+        "crossMarginInterest": "0.0",
+        "crossMarginLocked": "0.0",
+        "umWalletBalance": "0.0",
+        "umUnrealizedPNL": "235596.45312023",
+        "cmWalletBalance": "0.0",
+        "cmUnrealizedPNL": "0.0",
+        "updateTime": 1793717700502,
+        "negativeBalance": "0.0"
+      }
+    },
+    {
+      "path": "/papi/v1/margin/maxBorrowable",
+      "params": {
+        "asset": "USDT"
+      },
+      "status": 200,
+      "data": {
+        "amount": "0",
+        "borrowLimit": "0"
+      }
+    },
+    {
+      "path": "/papi/v1/account",
+      "params": {},
+      "status": 200,
+      "data": {
+        "uniMMR": "5.57562163",
+        "accountEquity": "316533.33830251",
+        "actualEquity": "1137029.67896723",
+        "accountInitialMargin": "194052.76474836",
+        "accountMaintMargin": "56770.95031802",
+        "accountStatus": "NORMAL",
+        "totalAvailableBalance": "122417.0387055",
+        "updateTime": 1793718989483
+      }
+    },
+    {
+      "path": "/papi/v1/rateLimit/order",
+      "params": {},
+      "status": 200,
+      "data": [
+        {
+          "rateLimitType": "ORDERS",
+          "interval": "MINUTE",
+          "intervalNum": 1,
+          "limit": 1200
+        }
+      ]
+    }
+  ],
+  "first_35_dispatch_errors_after_publish": [
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961242386071553",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 1,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "636",
+        "price": "0.157"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961246681038849",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 2,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "637",
+        "price": "0.1569"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961250976006145",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 3,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "637",
+        "price": "0.1569"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961255270973441",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 4,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "637",
+        "price": "0.1569"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961259565940737",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 5,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "638",
+        "price": "0.1567"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961263860908033",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 6,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "638",
+        "price": "0.1567"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961268155875329",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 7,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "638",
+        "price": "0.1567"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961272450842625",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 8,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "638",
+        "price": "0.1567"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961276745809921",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 9,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "638",
+        "price": "0.1567"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961281040777217",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 10,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "638",
+        "price": "0.1567"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961289630711809",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 11,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1626",
+        "price": "0.0615"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961293925679105",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 12,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961298220646401",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 13,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961302515613697",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 14,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961306810580993",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 15,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961311105548289",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 16,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961315400515585",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 17,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961319695482881",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 18,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961323990450177",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 19,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961328285417473",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 20,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961384119992321",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 21,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "616",
+        "price": "0.1622"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961388414959617",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 22,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961392709926913",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 23,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961397004894209",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 24,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961401299861505",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 25,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961405594828801",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 26,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961409889796097",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 27,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961414184763393",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 28,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961418479730689",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 29,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961422774697985",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 30,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961431364632577",
+      "symbol": "ALPINEUSDT",
+      "status": 400,
+      "code": 51042,
+      "message": "Operation performed too frequently.",
+      "order_count_1m": 31,
+      "order": {
+        "symbol": "ALPINEUSDT",
+        "side": "Buy",
+        "quantity": "330",
+        "price": "0.303"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961435659599873",
+      "symbol": "ALPINEUSDT",
+      "status": 400,
+      "code": 51042,
+      "message": "Operation performed too frequently.",
+      "order_count_1m": 32,
+      "order": {
+        "symbol": "ALPINEUSDT",
+        "side": "Buy",
+        "quantity": "331.1",
+        "price": "0.302"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961439954567169",
+      "symbol": "ALPINEUSDT",
+      "status": 400,
+      "code": 51042,
+      "message": "Operation performed too frequently.",
+      "order_count_1m": 33,
+      "order": {
+        "symbol": "ALPINEUSDT",
+        "side": "Buy",
+        "quantity": "331.1",
+        "price": "0.302"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961444249534465",
+      "symbol": "ALPINEUSDT",
+      "status": 400,
+      "code": 51042,
+      "message": "Operation performed too frequently.",
+      "order_count_1m": 34,
+      "order": {
+        "symbol": "ALPINEUSDT",
+        "side": "Buy",
+        "quantity": "331.1",
+        "price": "0.302"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961448544501761",
+      "symbol": "ALPINEUSDT",
+      "status": 400,
+      "code": 51042,
+      "message": "Operation performed too frequently.",
+      "order_count_1m": 35,
+      "order": {
+        "symbol": "ALPINEUSDT",
+        "side": "Buy",
+        "quantity": "331.1",
+        "price": "0.302"
+      }
+    }
+  ],
+  "reproduction_window": {
+    "count": 970,
+    "symbols": [
+      "AEVOUSDT",
+      "ALLOUSDT",
+      "ALPINEUSDT",
+      "AVAUSDT",
+      "BANANAS31USDT",
+      "BICOUSDT",
+      "BREVUSDT",
+      "BROCCOLI714USDT",
+      "CATIUSDT",
+      "COTIUSDT",
+      "CTSIUSDT",
+      "DOLOUSDT",
+      "EULUSDT",
+      "FFUSDT",
+      "FLOWUSDT",
+      "FORMUSDT",
+      "GPSUSDT",
+      "HEIUSDT",
+      "IDUSDT",
+      "KITEUSDT",
+      "MANTAUSDT",
+      "ONEUSDT",
+      "OPENUSDT",
+      "RIFUSDT",
+      "RVNUSDT",
+      "SANTOSUSDT",
+      "SAPIENUSDT",
+      "SOMIUSDT",
+      "SYRUPUSDT",
+      "TRBUSDT",
+      "TUTUSDT"
+    ],
+    "sides": {
+      "Buy": 970
+    }
+  },
+  "all_51014_after_publish": [
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961242386071553",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 1,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "636",
+        "price": "0.157"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961246681038849",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 2,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "637",
+        "price": "0.1569"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961250976006145",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 3,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "637",
+        "price": "0.1569"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961255270973441",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 4,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "637",
+        "price": "0.1569"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961259565940737",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 5,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "638",
+        "price": "0.1567"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961263860908033",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 6,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "638",
+        "price": "0.1567"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961268155875329",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 7,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "638",
+        "price": "0.1567"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961272450842625",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 8,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "638",
+        "price": "0.1567"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961276745809921",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 9,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "638",
+        "price": "0.1567"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961281040777217",
+      "symbol": "SYRUPUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 10,
+      "order": {
+        "symbol": "SYRUPUSDT",
+        "side": "Buy",
+        "quantity": "638",
+        "price": "0.1567"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961289630711809",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 11,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1626",
+        "price": "0.0615"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961293925679105",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 12,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961298220646401",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 13,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961302515613697",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 14,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961306810580993",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 15,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961311105548289",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 16,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961315400515585",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 17,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961319695482881",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 18,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961323990450177",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 19,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961328285417473",
+      "symbol": "RIFUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 20,
+      "order": {
+        "symbol": "RIFUSDT",
+        "side": "Buy",
+        "quantity": "1628",
+        "price": "0.0614"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961384119992321",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 21,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "616",
+        "price": "0.1622"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961388414959617",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 22,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961392709926913",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 23,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961397004894209",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 24,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961401299861505",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 25,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961405594828801",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 26,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961409889796097",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 27,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961414184763393",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 28,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961418479730689",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 29,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    },
+    {
+      "time": "2026-11-03T14:59:40Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218961422774697985",
+      "symbol": "ALLOUSDT",
+      "status": 400,
+      "code": 51014,
+      "message": "This asset is currently not available for borrowing.",
+      "order_count_1m": 30,
+      "order": {
+        "symbol": "ALLOUSDT",
+        "side": "Buy",
+        "quantity": "617",
+        "price": "0.162"
+      }
+    }
+  ],
+  "latest_51042": [
+    {
+      "time": "2026-11-03T15:16:21Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "219167924802289665",
+      "symbol": "DOLOUSDT",
+      "status": 400,
+      "code": 51042,
+      "message": "Operation performed too frequently.",
+      "order_count_1m": 640,
+      "order": {
+        "symbol": "DOLOUSDT",
+        "side": "Buy",
+        "quantity": "4284",
+        "price": "0.02334"
+      }
+    }
+  ],
+  "minute_count_one_examples": [
+    {
+      "time": "2026-11-03T15:00:00Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218964356237361153",
+      "symbol": "AEVOUSDT",
+      "status": 400,
+      "code": 51042,
+      "message": "Operation performed too frequently.",
+      "order_count_1m": 1,
+      "order": {
+        "symbol": "AEVOUSDT",
+        "side": "Buy",
+        "quantity": "5000",
+        "price": "0.02"
+      }
+    },
+    {
+      "time": "2026-11-03T15:01:00Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218977146649968641",
+      "symbol": "ONEUSDT",
+      "status": 400,
+      "code": 51042,
+      "message": "Operation performed too frequently.",
+      "order_count_1m": 1,
+      "order": {
+        "symbol": "ONEUSDT",
+        "side": "Buy",
+        "quantity": "89525",
+        "price": "0.001117"
+      }
+    },
+    {
+      "time": "2026-11-03T15:02:00Z",
+      "request_type": "BinanceNewMarginOrder",
+      "client_order_id": "218991461775966209",
+      "symbol": "FORMUSDT",
+      "status": 400,
+      "code": 51042,
+      "message": "Operation performed too frequently.",
+      "order_count_1m": 1,
+      "order": {
+        "symbol": "FORMUSDT",
+        "side": "Buy",
+        "quantity": "493.5",
+        "price": "0.2026"
+      }
+    }
+  ]
+}

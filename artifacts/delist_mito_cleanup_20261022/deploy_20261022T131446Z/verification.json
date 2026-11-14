@@ -1,0 +1,28 @@
+{
+  "checked_ms": 1792675215030,
+  "accounts": {
+    "binance_fr_arb02": {
+      "dump_symbols": 0,
+      "pos_dump_symbols": 0,
+      "fwd_trade_symbols": 67,
+      "bwd_trade_symbols": 0,
+      "unimmr_close_symbols": 67
+    },
+    "binance_fr_arb03": {
+      "dump_symbols": 0,
+      "pos_dump_symbols": 0,
+      "fwd_trade_symbols": 69,
+      "bwd_trade_symbols": 0,
+      "unimmr_close_symbols": 70
+    }
+  },
+  "post_cleanup_scans": 3,
+  "scan_logs": [
+    "2026-10-22T13:17:59: [2026-10-22T13:17:59Z INFO  delist_risk_server] FR positioned-delist scan candidates=0 flatten_candidates=0 changes=0",
+    "2026-10-22T13:18:59: [2026-10-22T13:18:59Z INFO  delist_risk_server] FR positioned-delist scan candidates=0 flatten_candidates=0 changes=0",
+    "2026-10-22T13:19:59: [2026-10-22T13:19:59Z INFO  delist_risk_server] FR positioned-delist scan candidates=0 flatten_candidates=0 changes=0"
+  ],
+  "release_sha256": "5ef488a32e3a2f1a313c8f861779291a4e23c9f0c0592a83cbfa6cde44dbb44b",
+  "trading_pids_unchanged": 72,
+  "preserved_files_unchanged": true
+}

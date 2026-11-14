@@ -225,12 +225,12 @@ fn compute_factor_013(depth: &DepthDerived) -> Option<f64> {
 }
 
 fn compute_factor_015(depth: &DepthDerived) -> Option<f64> {
-    let total_bid_price = (0..20)
+    let total_bid_price = (0..depth.levels(20))
         .map(|i| depth_level_price(&depth.bids, i))
         .filter(|v| v.is_finite())
         .sum::<f64>();
     finite_opt(Some(
-        (0..20)
+        (0..depth.levels(20))
             .map(|i| depth_level_amount(&depth.bids, i) * depth_level_price(&depth.bids, i))
             .filter(|v| v.is_finite())
             .sum::<f64>()
@@ -251,12 +251,16 @@ fn compute_factor_039(series: &SymbolSeries<'_>) -> Option<f64> {
 }
 
 fn compute_factor_044(depth: &DepthDerived) -> Option<f64> {
+    let levels = depth.levels(15);
+    if levels == 0 {
+        return None;
+    }
     finite_opt(Some(
-        (0..15)
+        (0..levels)
             .map(|i| depth_level_price(&depth.asks, i) - depth_level_price(&depth.bids, i))
             .filter(|v| v.is_finite())
             .sum::<f64>()
-            / 15.0,
+            / levels as f64,
     ))
 }
 
@@ -353,7 +357,9 @@ fn compute_factor_092(depth: &DepthDerived) -> Option<f64> {
 }
 
 fn compute_factor_098(depth: &DepthDerived) -> Option<f64> {
-    let vals: Vec<f64> = (0..15).map(|i| depth_level_price(&depth.bids, i)).collect();
+    let vals: Vec<f64> = (0..depth.levels(15))
+        .map(|i| depth_level_price(&depth.bids, i))
+        .collect();
     let min = vals
         .iter()
         .copied()
@@ -368,7 +374,9 @@ fn compute_factor_098(depth: &DepthDerived) -> Option<f64> {
 }
 
 fn compute_factor_099(depth: &DepthDerived) -> Option<f64> {
-    let vals: Vec<f64> = (0..15).map(|i| depth_level_price(&depth.asks, i)).collect();
+    let vals: Vec<f64> = (0..depth.levels(15))
+        .map(|i| depth_level_price(&depth.asks, i))
+        .collect();
     let min = vals
         .iter()
         .copied()
@@ -404,19 +412,23 @@ fn compute_factor_104(depth: &DepthDerived) -> Option<f64> {
 }
 
 fn compute_factor_105(depth: &DepthDerived) -> Option<f64> {
+    let levels = depth.levels(20);
+    if levels == 0 {
+        return None;
+    }
     finite_opt(Some(
-        (0..20)
+        (0..levels)
             .map(|i| depth_level_price(&depth.asks, i) - depth_level_price(&depth.bids, i))
             .sum::<f64>()
-            / 20.0,
+            / levels as f64,
     ))
 }
 
 fn compute_factor_106(depth: &DepthDerived) -> Option<f64> {
-    let max_bid = (0..20)
+    let max_bid = (0..depth.levels(20))
         .map(|i| depth_level_price(&depth.bids, i))
         .max_by(|a, b| a.total_cmp(b))?;
-    let min_ask = (0..20)
+    let min_ask = (0..depth.levels(20))
         .map(|i| depth_level_price(&depth.asks, i))
         .min_by(|a, b| a.total_cmp(b))?;
     finite_opt(Some(max_bid - min_ask))
@@ -496,7 +508,7 @@ fn compute_factor_138(depth: &DepthDerived) -> Option<f64> {
 }
 
 fn compute_factor_140(depth: &DepthDerived) -> Option<f64> {
-    let ratios: Vec<Option<f64>> = (0..15)
+    let ratios: Vec<Option<f64>> = (0..depth.levels(15))
         .map(|i| {
             let b = depth_level_amount(&depth.bids, i);
             let a = depth_level_amount(&depth.asks, i);
@@ -567,24 +579,24 @@ fn compute_factor_148(depth: &DepthDerived) -> Option<f64> {
 }
 
 fn compute_factor_149(depth: &DepthDerived) -> Option<f64> {
-    let vals: Vec<f64> = (1..20)
+    let vals: Vec<f64> = (1..depth.levels(20))
         .map(|i| depth_level_price(&depth.bids, i) - depth_level_price(&depth.asks, i))
         .collect();
     finite_opt(Some(vals.iter().sum::<f64>() / vals.len() as f64))
 }
 
 fn compute_factor_150(depth: &DepthDerived) -> Option<f64> {
-    let vals: Vec<f64> = (0..15)
+    let vals: Vec<f64> = (0..depth.levels(15))
         .map(|i| depth_level_amount(&depth.bids, i) + depth_level_amount(&depth.asks, i))
         .collect();
     cross_sectional_skew(&vals, false)
 }
 
 fn compute_factor_153(depth: &DepthDerived) -> Option<f64> {
-    let bid: Vec<f64> = (0..20)
+    let bid: Vec<f64> = (0..depth.levels(20))
         .map(|i| depth_level_amount(&depth.bids, i))
         .collect();
-    let ask: Vec<f64> = (0..20)
+    let ask: Vec<f64> = (0..depth.levels(20))
         .map(|i| depth_level_amount(&depth.asks, i))
         .collect();
     finite_opt(Some(pop_std(&bid)? - pop_std(&ask)?))
@@ -598,7 +610,7 @@ fn compute_factor_154(depth: &DepthDerived) -> Option<f64> {
 }
 
 fn compute_factor_155(depth: &DepthDerived) -> Option<f64> {
-    let ratios: Vec<f64> = (0..15)
+    let ratios: Vec<f64> = (0..depth.levels(15))
         .filter_map(|i| {
             let b = depth_level_amount(&depth.bids, i);
             let a = depth_level_amount(&depth.asks, i);
@@ -613,15 +625,19 @@ fn compute_factor_157(series: &SymbolSeries<'_>) -> Option<f64> {
 }
 
 fn compute_factor_158(depth: &DepthDerived) -> Option<f64> {
+    let levels = depth.levels(20);
+    if levels == 0 {
+        return None;
+    }
     finite_opt(Some(
-        (0..20)
+        (0..levels)
             .map(|i| {
                 let b = (depth_level_amount(&depth.bids, i) + 1.0).ln();
                 let a = (depth_level_amount(&depth.asks, i) + 1.0).ln();
                 b - a
             })
             .sum::<f64>()
-            / 20.0,
+            / levels as f64,
     ))
 }
 

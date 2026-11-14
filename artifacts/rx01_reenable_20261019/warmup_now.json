@@ -1,0 +1,358 @@
+{
+  "observed_utc": "2026-10-19T09:47:14.939240+00:00",
+  "caught_up": true,
+  "generation": "9389c457-cff7-4fce-a392-90f8f9ea438d",
+  "records": 125295,
+  "heartbeat_age_ms": 549,
+  "decode_errors": 0,
+  "evaluation_errors": 0,
+  "publish_failed": 0,
+  "first_minute": 1792215480000,
+  "latest_minute": 1792403220000,
+  "symbols_with_history": 48,
+  "missing_history": [],
+  "enabled": false,
+  "journal_healthy": true,
+  "publication_error": null,
+  "combinations": 794,
+  "missing_threshold_symbols": [
+    "1INCHUSDT",
+    "ALGOUSDT",
+    "BANDUSDT",
+    "BATUSDT",
+    "BELUSDT",
+    "COMPUSDT",
+    "EGLDUSDT",
+    "ENJUSDT",
+    "GRTUSDT",
+    "IOSTUSDT",
+    "IOTAUSDT",
+    "KAVAUSDT",
+    "KNCUSDT",
+    "KSMUSDT",
+    "NEOUSDT",
+    "QTUMUSDT",
+    "RLCUSDT",
+    "RUNEUSDT",
+    "SKLUSDT",
+    "SNXUSDT",
+    "SUSHIUSDT",
+    "THETAUSDT",
+    "TRBUSDT",
+    "VETUSDT",
+    "XTZUSDT",
+    "YFIUSDT",
+    "ZRXUSDT"
+  ],
+  "expected_blank_combinations": [
+    [
+      "1INCHUSDT",
+      "baseline_046"
+    ],
+    [
+      "1INCHUSDT",
+      "net_buy_small"
+    ],
+    [
+      "ALGOUSDT",
+      "baseline_046"
+    ],
+    [
+      "BATUSDT",
+      "net_buy_small"
+    ],
+    [
+      "BELUSDT",
+      "baseline_046"
+    ],
+    [
+      "BELUSDT",
+      "net_buy_small"
+    ],
+    [
+      "COMPUSDT",
+      "baseline_046"
+    ],
+    [
+      "COMPUSDT",
+      "net_buy_small"
+    ],
+    [
+      "ENJUSDT",
+      "net_buy_small"
+    ],
+    [
+      "IOSTUSDT",
+      "baseline_046"
+    ],
+    [
+      "IOSTUSDT",
+      "net_buy_small"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_046"
+    ],
+    [
+      "IOTAUSDT",
+      "net_buy_small"
+    ],
+    [
+      "KAVAUSDT",
+      "baseline_046"
+    ],
+    [
+      "KNCUSDT",
+      "net_buy_small"
+    ],
+    [
+      "KSMUSDT",
+      "net_buy_small"
+    ],
+    [
+      "QTUMUSDT",
+      "net_buy_small"
+    ],
+    [
+      "SKLUSDT",
+      "baseline_046"
+    ],
+    [
+      "SKLUSDT",
+      "net_buy_small"
+    ],
+    [
+      "SNXUSDT",
+      "net_buy_small"
+    ],
+    [
+      "ZRXUSDT",
+      "baseline_046"
+    ]
+  ],
+  "ready_combinations": 773,
+  "ready_with_both_filters": 736,
+  "ready_without_both_filters": [
+    [
+      "ATOMUSDT",
+      "TD_MT_016"
+    ],
+    [
+      "ATOMUSDT",
+      "TD_TI_024"
+    ],
+    [
+      "ATOMUSDT",
+      "TD_TI_027"
+    ],
+    [
+      "ATOMUSDT",
+      "baseline_141"
+    ],
+    [
+      "ATOMUSDT",
+      "baseline_164"
+    ],
+    [
+      "IOSTUSDT",
+      "TD_MT_016"
+    ],
+    [
+      "IOSTUSDT",
+      "TD_MT_022"
+    ],
+    [
+      "IOSTUSDT",
+      "TD_PR_008"
+    ],
+    [
+      "IOSTUSDT",
+      "TD_TI_024"
+    ],
+    [
+      "IOSTUSDT",
+      "TD_TI_026"
+    ],
+    [
+      "IOSTUSDT",
+      "TP_VPI_003"
+    ],
+    [
+      "IOSTUSDT",
+      "TP_VPI_017"
+    ],
+    [
+      "IOSTUSDT",
+      "baseline_005"
+    ],
+    [
+      "IOSTUSDT",
+      "baseline_019"
+    ],
+    [
+      "IOSTUSDT",
+      "baseline_105"
+    ],
+    [
+      "IOSTUSDT",
+      "baseline_140"
+    ],
+    [
+      "IOSTUSDT",
+      "baseline_164"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_022"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_023"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_114"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_164"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_165"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_169_negative"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_169_positive"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_171"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_trades_008"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_trades_025"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_trades_050"
+    ],
+    [
+      "YFIUSDT",
+      "TD_MT_022"
+    ],
+    [
+      "YFIUSDT",
+      "TD_PR_008"
+    ],
+    [
+      "YFIUSDT",
+      "baseline_019"
+    ],
+    [
+      "YFIUSDT",
+      "baseline_077"
+    ],
+    [
+      "YFIUSDT",
+      "baseline_105"
+    ],
+    [
+      "YFIUSDT",
+      "baseline_164"
+    ],
+    [
+      "YFIUSDT",
+      "baseline_195"
+    ],
+    [
+      "YFIUSDT",
+      "factor_171"
+    ],
+    [
+      "YFIUSDT",
+      "factor_trades_008"
+    ]
+  ],
+  "latest_by_symbol": {
+    "1INCHUSDT": 1792403220000,
+    "AAVEUSDT": 1792403160000,
+    "ADAUSDT": 1792403160000,
+    "ALGOUSDT": 1792403220000,
+    "ATOMUSDT": 1792403160000,
+    "AXSUSDT": 1792403160000,
+    "BANDUSDT": 1792403160000,
+    "BATUSDT": 1792403160000,
+    "BELUSDT": 1792403160000,
+    "BNBUSDT": 1792403160000,
+    "COMPUSDT": 1792403220000,
+    "CRVUSDT": 1792403220000,
+    "DASHUSDT": 1792403220000,
+    "DOTUSDT": 1792403220000,
+    "EGLDUSDT": 1792403220000,
+    "ENJUSDT": 1792403220000,
+    "ETCUSDT": 1792403160000,
+    "FILUSDT": 1792403220000,
+    "GRTUSDT": 1792403160000,
+    "IOSTUSDT": 1792403160000,
+    "IOTAUSDT": 1792403220000,
+    "KAVAUSDT": 1792403220000,
+    "KNCUSDT": 1792403160000,
+    "KSMUSDT": 1792403220000,
+    "NEARUSDT": 1792403220000,
+    "NEOUSDT": 1792403160000,
+    "ONTUSDT": 1792403160000,
+    "QTUMUSDT": 1792403220000,
+    "RLCUSDT": 1792403160000,
+    "RSRUSDT": 1792403160000,
+    "RUNEUSDT": 1792403160000,
+    "SKLUSDT": 1792403160000,
+    "SNXUSDT": 1792403220000,
+    "SOLUSDT": 1792403220000,
+    "SUSHIUSDT": 1792403220000,
+    "THETAUSDT": 1792403220000,
+    "TRBUSDT": 1792403160000,
+    "TRXUSDT": 1792403160000,
+    "UNIUSDT": 1792403160000,
+    "VETUSDT": 1792403220000,
+    "XLMUSDT": 1792403220000,
+    "XRPUSDT": 1792403220000,
+    "XTZUSDT": 1792403220000,
+    "YFIUSDT": 1792403160000,
+    "ZECUSDT": 1792403160000,
+    "ZENUSDT": 1792403160000,
+    "ZILUSDT": 1792403160000,
+    "ZRXUSDT": 1792403160000
+  },
+  "other_unready": [],
+  "processes": [
+    {
+      "pid": 2798755,
+      "comm": "cta_spread_fact",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "cpus": "17"
+    },
+    {
+      "pid": 2879569,
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 2879622,
+      "comm": "cta_spread_sign",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "cpus": "0-5,48-95"
+    }
+  ],
+  "positions_zero": true,
+  "state_combinations": 794
+}

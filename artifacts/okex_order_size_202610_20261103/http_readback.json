@@ -1,0 +1,48 @@
+{
+  "health": {
+    "status": "ok",
+    "service": "tlen_config_server",
+    "port": 6322,
+    "redis": "127.0.0.1:6379/0"
+  },
+  "thresholds": {
+    "redis_key": "okex-futures:amount-thresholds",
+    "venue": "okex-futures",
+    "config_type": "amount_thresholds",
+    "count": 8,
+    "thresholds": {
+      "ADA-USDT-SWAP": {
+        "medium_notional_threshold": 14.621999999999998,
+        "large_notional_threshold": 753.786
+      },
+      "ATOM-USDT-SWAP": {
+        "medium_notional_threshold": 11.544,
+        "large_notional_threshold": 262.78599999999994
+      },
+      "CRV-USDT-SWAP": {
+        "medium_notional_threshold": 2.3954,
+        "large_notional_threshold": 200.3904
+      },
+      "DOGE-USDT-SWAP": {
+        "medium_notional_threshold": 5.2578,
+        "large_notional_threshold": 859.0416
+      },
+      "DOT-USDT-SWAP": {
+        "medium_notional_threshold": 4.6668,
+        "large_notional_threshold": 170.952
+      },
+      "ETC-USDT-SWAP": {
+        "medium_notional_threshold": 5.297999999999999,
+        "large_notional_threshold": 145.86299999999997
+      },
+      "NEAR-USDT-SWAP": {
+        "medium_notional_threshold": 10.232,
+        "large_notional_threshold": 916.0900000000001
+      },
+      "TRB-USDT-SWAP": {
+        "medium_notional_threshold": 16.688,
+        "large_notional_threshold": 213.8
+      }
+    }
+  }
+}

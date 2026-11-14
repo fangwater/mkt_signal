@@ -127,6 +127,7 @@ pub fn parse_okex_order_query_json(json: &str) -> OkexOrderQueryParseResult {
         update_time_ms: parse_i64_str(first.u_time.as_str()),
         time_in_force_u8: tif_to_u8(first.ord_type.as_str()),
         response_price,
+        order_price: px,
     })
 }
 
@@ -145,6 +146,7 @@ mod tests {
                 assert_eq!(resp.order_id, 123456);
                 assert_eq!(resp.executed_qty, 12.44);
                 assert_eq!(resp.response_price, 0.09560074);
+                assert_eq!(resp.order_price, 0.09560074);
             }
             other => panic!("unexpected parse result: {:?}", other),
         }
@@ -159,6 +161,18 @@ mod tests {
                 assert_eq!(kind, OkexOrderQueryParseErrorKind::OrderNotFound);
                 assert_eq!(code, "51603");
                 assert_eq!(msg, "Order does not exist");
+            }
+            other => panic!("unexpected parse result: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn partial_fill_keeps_execution_and_limit_prices_separate() {
+        let json = r#"{"code":"0","msg":"","data":[{"accFillSz":"1","fillPx":"70000","px":"70100","ordId":"123456","ordType":"post_only","state":"partially_filled","uTime":"1776211388000"}]}"#;
+        match parse_okex_order_query_json(json) {
+            OkexOrderQueryParseResult::Success(resp) => {
+                assert_eq!(resp.response_price, 70_000.0);
+                assert_eq!(resp.order_price, 70_100.0);
             }
             other => panic!("unexpected parse result: {:?}", other),
         }

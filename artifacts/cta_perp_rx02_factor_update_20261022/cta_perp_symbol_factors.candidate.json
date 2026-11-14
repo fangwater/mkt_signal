@@ -1,0 +1,117 @@
+{
+  "1INCHUSDT": {
+    "baseline_200": -1.0
+  },
+  "ALGOUSDT": {
+    "baseline_140": 1.0,
+    "baseline_200": -1.0,
+    "factor_051": -1.0
+  },
+  "ATOMUSDT": {
+    "baseline_141": 1.0,
+    "baseline_200": -1.0
+  },
+  "AXSUSDT": {
+    "baseline_141": 1.0,
+    "baseline_200": -1.0
+  },
+  "BELUSDT": {
+    "TD_PR_013": -1.0,
+    "baseline_200": -1.0,
+    "sell_avg_price": -1.0
+  },
+  "COMPUSDT": {
+    "TD_TI_033": -1.0,
+    "baseline_200": -1.0
+  },
+  "DASHUSDT": {
+    "baseline_028": -1.0,
+    "baseline_141": 1.0,
+    "baseline_200": -1.0
+  },
+  "DOGEUSDT": {
+    "TD_TI_008": 1.0,
+    "TD_TI_013": 1.0,
+    "baseline_195": -1.0,
+    "baseline_200": -1.0
+  },
+  "EGLDUSDT": {
+    "baseline_028": -1.0,
+    "baseline_200": -1.0
+  },
+  "ETCUSDT": {
+    "baseline_141": 1.0,
+    "baseline_200": -1.0
+  },
+  "IOTAUSDT": {
+    "baseline_005": -1.0,
+    "baseline_141": 1.0,
+    "baseline_200": -1.0
+  },
+  "KAVAUSDT": {
+    "TD_TI_008": -1.0,
+    "baseline_200": -1.0
+  },
+  "KNCUSDT": {
+    "baseline_141": 1.0,
+    "baseline_200": -1.0
+  },
+  "NEARUSDT": {
+    "TD_TI_018": -1.0,
+    "baseline_005": -1.0,
+    "baseline_028": -1.0,
+    "baseline_141": 1.0,
+    "baseline_200": -1.0,
+    "factor_051": -1.0
+  },
+  "QTUMUSDT": {
+    "baseline_028": -1.0,
+    "baseline_200": -1.0
+  },
+  "RLCUSDT": {
+    "baseline_005": -1.0,
+    "baseline_200": -1.0,
+    "factor_114": -1.0
+  },
+  "RSRUSDT": {
+    "TD_TI_027": -1.0,
+    "baseline_141": 1.0,
+    "baseline_195": -1.0,
+    "baseline_200": -1.0
+  },
+  "SKLUSDT": {
+    "baseline_005": -1.0,
+    "baseline_028": -1.0,
+    "baseline_091": -1.0,
+    "baseline_200": -1.0
+  },
+  "SUSHIUSDT": {
+    "baseline_028": -1.0,
+    "baseline_200": -1.0
+  },
+  "XTZUSDT": {
+    "baseline_091": -1.0,
+    "baseline_160": 1.0,
+    "baseline_200": -1.0
+  },
+  "ZECUSDT": {
+    "TD_PR_013": -1.0,
+    "TD_TI_027": -1.0,
+    "baseline_020": -1.0,
+    "baseline_028": -1.0,
+    "baseline_169": -1.0,
+    "baseline_195": -1.0,
+    "baseline_200": -1.0
+  },
+  "ZENUSDT": {
+    "TP_VPI_006": -1.0,
+    "baseline_005": -1.0,
+    "baseline_141": 1.0,
+    "baseline_200": -1.0
+  },
+  "ZRXUSDT": {
+    "baseline_200": -1.0,
+    "buy_avg_price": -1.0,
+    "factor_128": -1.0
+  }
+}

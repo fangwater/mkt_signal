@@ -1,0 +1,20 @@
+{
+  "KAVA": {"TD_TI_024": -1, "baseline_005": -1, "baseline_028": -1, "baseline_105": -1, "baseline_140": 1, "baseline_164": 1},
+  "ONT": {"TD_TI_024": -1, "baseline_005": -1, "baseline_028": -1, "baseline_105": -1, "baseline_140": 1, "baseline_164": 1},
+  "AXS": {"TD_PR_011": 1, "TD_TI_024": -1, "baseline_005": -1, "baseline_105": -1, "baseline_164": 1},
+  "IOTA": {"TD_PR_011": 1, "TD_TI_024": -1, "baseline_005": -1, "baseline_140": 1, "baseline_164": 1},
+  "ICX": {"TD_TI_024": -1, "baseline_028": -1, "baseline_140": 1, "baseline_164": 1},
+  "NEAR": {"TD_TI_024": -1, "baseline_005": -1, "baseline_028": -1, "baseline_164": 1},
+  "SKL": {"TD_TI_024": -1, "baseline_028": -1, "baseline_105": -1, "baseline_164": 1},
+  "IOST": {"TD_TI_024": -1, "baseline_005": -1, "baseline_140": 1},
+  "QTUM": {"TD_TI_024": -1, "baseline_140": 1, "baseline_164": 1},
+  "ZRX": {"TD_PR_011": 1, "TD_TI_024": -1, "baseline_164": 1},
+  "BEL": {"TD_TI_024": -1, "baseline_105": -1},
+  "DASH": {"TD_TI_024": -1, "baseline_164": 1},
+  "ENJ": {"TD_TI_024": -1, "baseline_140": 1},
+  "RUNE": {"TD_PR_011": 1, "baseline_140": 1},
+  "SOL": {"baseline_005": -1, "baseline_164": 1},
+  "TRB": {"TD_PR_011": 1, "baseline_005": -1},
+  "VET": {"TD_TI_024": -1, "baseline_164": 1},
+  "ZEN": {"TD_TI_024": -1, "baseline_164": 1}
+}

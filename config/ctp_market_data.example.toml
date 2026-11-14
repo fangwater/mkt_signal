@@ -1,0 +1,27 @@
+# Official CTP 6.7.11 MdApi. Place real credentials/config outside the repository.
+sdk_library = "/opt/ctp/6.7.11/libthostmduserapi_se.so"
+flow_directory = "/tmp/mkt_ctp_md/flow"
+journal = "/tmp/mkt_ctp_md/market_data.jsonl"
+fronts = ["tcp://127.0.0.1:1"]
+broker_id = "REPLACE"
+production_mode = false
+user_id_env = "CTP_USER_ID"
+password_env = "CTP_PASSWORD"
+event_capacity = 8192
+response_timeout_ms = 30000
+reconnect_backoff_ms = 5000
+
+[[symbols]]
+venue = "CFFEX"
+symbol = "IF2612"
+
+[[symbols]]
+venue = "SHFE"
+symbol = "rb2701"
+
+# Required: replace these example CPU IDs/node with the authorized external host topology.
+[placement]
+numa_node = 0
+business_cpu = 0
+sdk_cpus = [2]
+background_cpus = [3]

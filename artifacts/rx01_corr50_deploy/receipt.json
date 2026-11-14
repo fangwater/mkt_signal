@@ -1,0 +1,10 @@
+{
+  "files_verified": 15,
+  "symbols": 50,
+  "strategies": 57,
+  "combinations": 873,
+  "enabled": false,
+  "max_pos_u": 100.0,
+  "backup": "/home/ubuntu/binance-cta-spread-rx01/run/corr50_publish_20261019T055900Z/backup",
+  "state_preserved": true
+}

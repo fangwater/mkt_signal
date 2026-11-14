@@ -149,6 +149,7 @@ SCRIPTS_TO_SYNC=(
   "stop_fr_persist_manager.sh"
   "process_match_lib.sh"
   "configure_persist_sync_source.sh"
+  "setup_nginx_stream_4190.sh"
 )
 
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then

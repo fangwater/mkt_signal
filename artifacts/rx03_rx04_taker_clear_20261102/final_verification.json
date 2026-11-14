@@ -1,0 +1,124 @@
+[
+  {
+    "source": "binance_exec_trade07",
+    "signal_env": "binance-cta-perp-rx03",
+    "signal_enabled": false,
+    "submitters_stopped": true,
+    "removed_manager_bindings": 28,
+    "follows": 0,
+    "active_exec_strategies": 0,
+    "positions": 0,
+    "open_orders": 0,
+    "algo_orders": 0,
+    "tail_market_orders_filled": 12,
+    "checked_at_ms": 1793631930321,
+    "processes": [
+      {
+        "env": "binance_exec_trade07",
+        "pid": 105323,
+        "comm": "persist_manager",
+        "cpu_affinity": "0-5,48-95"
+      },
+      {
+        "env": "binance_exec_trade07",
+        "pid": 106116,
+        "comm": "rapidx_account_",
+        "cpu_affinity": "0-5,48-95"
+      },
+      {
+        "env": "binance_exec_trade07",
+        "pid": 106434,
+        "comm": "viz_server",
+        "cpu_affinity": "0-5,48-95"
+      },
+      {
+        "env": "binance_exec_trade07",
+        "pid": 166080,
+        "comm": "python3",
+        "cpu_affinity": "0-5,48-95"
+      },
+      {
+        "env": "binance-cta-perp-rx03",
+        "pid": 2288047,
+        "comm": "python3",
+        "cpu_affinity": "0-5,48-95"
+      },
+      {
+        "env": "binance-cta-perp-rx03",
+        "pid": 2307925,
+        "comm": "cta_perp_factor",
+        "cpu_affinity": "19"
+      },
+      {
+        "env": "binance-cta-perp-rx03",
+        "pid": 2326926,
+        "comm": "python3",
+        "cpu_affinity": "0-5,48-95"
+      }
+    ],
+    "local_ips": [
+      "172.31.35.228"
+    ]
+  },
+  {
+    "source": "binance_exec_rx04_5m05",
+    "signal_env": "binance-cta-perp-rx04",
+    "signal_enabled": false,
+    "submitters_stopped": true,
+    "removed_manager_bindings": 35,
+    "follows": 0,
+    "active_exec_strategies": 0,
+    "positions": 0,
+    "open_orders": 0,
+    "algo_orders": 0,
+    "tail_market_orders_filled": 8,
+    "checked_at_ms": 1793631930547,
+    "processes": [
+      {
+        "env": "binance-cta-perp-rx04",
+        "pid": 620503,
+        "comm": "python3",
+        "cpu_affinity": "0-5,48-95"
+      },
+      {
+        "env": "binance-cta-perp-rx04",
+        "pid": 620577,
+        "comm": "python3",
+        "cpu_affinity": "0-5,48-95"
+      },
+      {
+        "env": "binance-cta-perp-rx04",
+        "pid": 705737,
+        "comm": "cta_perp_factor",
+        "cpu_affinity": "28"
+      },
+      {
+        "env": "binance_exec_rx04_5m05",
+        "pid": 2011312,
+        "comm": "persist_manager",
+        "cpu_affinity": "0-5,48-95"
+      },
+      {
+        "env": "binance_exec_rx04_5m05",
+        "pid": 2011864,
+        "comm": "rapidx_account_",
+        "cpu_affinity": "0-5,48-95"
+      },
+      {
+        "env": "binance_exec_rx04_5m05",
+        "pid": 2012588,
+        "comm": "viz_server",
+        "cpu_affinity": "0-5,48-95"
+      },
+      {
+        "env": "binance_exec_rx04_5m05",
+        "pid": 2012847,
+        "comm": "python3",
+        "cpu_affinity": "0-5,48-95"
+      }
+    ],
+    "local_ips": [
+      "172.31.35.228"
+    ]
+  }
+]

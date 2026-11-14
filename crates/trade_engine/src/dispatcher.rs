@@ -9,7 +9,6 @@ use serde_json::Value;
 use sha2::Sha256;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
-use tokio_util::sync::CancellationToken;
 
 type HmacSha256 = Hmac<Sha256>;
 #[derive(Debug)]
@@ -71,7 +70,6 @@ pub struct Dispatcher {
     ip_clients: Vec<IpClient>,
     binance_um_whitelist_ip: Option<IpAddr>,
     accounts: Vec<AccountState>,
-    shutdown: CancellationToken,
 }
 
 fn hot_symbol(params: &[(String, String)]) -> String {
@@ -81,6 +79,29 @@ fn hot_symbol(params: &[(String, String)]) -> String {
         .filter(|v| !v.is_empty())
         .unwrap_or("-")
         .to_string()
+}
+
+fn binance_pm_action_error_body(evt: &OrderRequestEvent, status: u16, body: String) -> String {
+    let is_order_action = matches!(evt.method.as_str(), "POST" | "PUT" | "DELETE")
+        && matches!(
+            evt.endpoint.as_str(),
+            "/papi/v1/margin/order" | "/papi/v1/um/order" | "/papi/v1/um/conditional/order"
+        );
+    let unknown_server_result = status == 503
+        && parse_top_level_error_msg(&body).is_some_and(|msg| {
+            msg.eq_ignore_ascii_case("Unknown error, please check your request or try again later.")
+        });
+    if is_order_action && (status == 0 || unknown_server_result) {
+        // The exchange may have accepted the action. Keep its local owner until
+        // an order query or account-stream update establishes the actual state.
+        serde_json::json!({
+            "code": order_common::trade_error_code::ACTION_RESULT_UNKNOWN,
+            "msg": body,
+        })
+        .to_string()
+    } else {
+        body
+    }
 }
 
 fn build_signed_query(params: &[(String, String)], recv_window: &str, timestamp: &str) -> String {
@@ -157,7 +178,6 @@ impl Dispatcher {
     pub fn new(
         local_ips: &[IpAddr],
         account_keys: &[ApiKey],
-        shutdown: CancellationToken,
         binance_um_ip_whitelist_mode: bool,
         binance_um_whitelist_ip: Option<IpAddr>,
     ) -> Result<Self> {
@@ -243,7 +263,6 @@ impl Dispatcher {
             ip_clients,
             binance_um_whitelist_ip,
             accounts,
-            shutdown,
         })
     }
 
@@ -317,45 +336,25 @@ impl Dispatcher {
         best.map(|(i, _)| i)
     }
 
-    fn should_shutdown_on_rate_limit(&self) -> bool {
-        self.ip_clients.len() <= 1
-    }
-
     fn handle_limit_status(&mut self, ip_idx: usize, status: u16) {
         let ip = self.ip_clients[ip_idx].ip;
         match status {
             429 => {
-                warn!("429 Too Many Requests from IP {}. Cooling down.", ip);
                 self.ip_clients[ip_idx].cooldown_until =
                     Some(Instant::now() + Duration::from_millis(LimitConstants::COOLDOWN_MS_429));
-                if self.should_shutdown_on_rate_limit() {
-                    warn!(
-                        "trade_engine fuse tripped by Binance REST 429; shutting down request processing"
-                    );
-                    self.shutdown.cancel();
-                } else {
-                    warn!(
-                        "trade_engine REST 429 on IP {} in multi-ip mode; cooling down endpoint without global shutdown",
-                        ip
-                    );
-                }
+                warn!(
+                    "trade_engine REST 429 on IP {}; cooling down endpoint without global shutdown cooldown_ms={}",
+                    ip, LimitConstants::COOLDOWN_MS_429
+                );
             }
             418 => {
-                warn!("418 Banned for IP {}. Backing off.", ip);
                 self.ip_clients[ip_idx].banned_until = Some(
                     Instant::now() + Duration::from_millis(LimitConstants::BAN_BACKOFF_MS_418),
                 );
-                if self.should_shutdown_on_rate_limit() {
-                    warn!(
-                        "trade_engine fuse tripped by Binance REST 418; shutting down request processing"
-                    );
-                    self.shutdown.cancel();
-                } else {
-                    warn!(
-                        "trade_engine REST 418 on IP {} in multi-ip mode; backing off endpoint without global shutdown",
-                        ip
-                    );
-                }
+                warn!(
+                    "trade_engine REST 418 on IP {}; backing off endpoint without global shutdown cooldown_ms={}",
+                    ip, LimitConstants::BAN_BACKOFF_MS_418
+                );
             }
             _ => {}
         }
@@ -475,6 +474,7 @@ impl Dispatcher {
 
         let request_builder = match evt.method.as_str() {
             "POST" => client.post(&full_url),
+            "PUT" => client.put(&full_url),
             "DELETE" => client.delete(&full_url),
             "GET" => client.get(&full_url),
             other => return Err(anyhow!("unsupported method: {}", other)),
@@ -491,11 +491,34 @@ impl Dispatcher {
                     ip_idx,
                     acc_idx,
                     r.headers(),
+                    evt.weight(),
                     evt.counts_toward_order_limit,
                 );
 
                 let status = r.status();
-                let text = r.text().await.unwrap_or_default();
+                let text = match r.text().await {
+                    Ok(text) => text,
+                    Err(error) => {
+                        let error = error.without_url();
+                        warn!(
+                            "rest dispatch response body error: req_type={} req_id={:?} endpoint={} status={} err={}",
+                            req_type, evt.req_id, evt.endpoint, status.as_u16(), error
+                        );
+                        return Ok(DispatchResponse {
+                            status: 0,
+                            body: binance_pm_action_error_body(
+                                &evt,
+                                0,
+                                format!("response body error: {error}"),
+                            ),
+                            ip,
+                            account: account_name,
+                            ip_used_weight_1m: ip_used_1m,
+                            order_count_1m: acc_used_1m,
+                        });
+                    }
+                };
+                let text = binance_pm_action_error_body(&evt, status.as_u16(), text);
                 if is_duplicate_order_sent(status.as_u16(), &text) {
                     panic!(
                         "binance duplicate order detected: endpoint={} account={} ip={} req_id={:?} body={}",
@@ -552,6 +575,7 @@ impl Dispatcher {
                 })
             }
             Err(e) => {
+                let e = e.without_url();
                 warn!(
                     "rest dispatch network error: req_type={} req_id={:?} method={} endpoint={} account={} ip={} symbol={} weight={} counts_toward_order_limit={} ip_used_weight_1m={} order_count_1m={} err={}",
                     req_type,
@@ -569,7 +593,7 @@ impl Dispatcher {
                 );
                 Ok(DispatchResponse {
                     status: 0,
-                    body: format!("request error: {}", e),
+                    body: binance_pm_action_error_body(&evt, 0, format!("request error: {e}")),
                     ip,
                     account: account_name,
                     ip_used_weight_1m: Some(self.ip_clients[ip_idx].used_weight_1m),
@@ -584,6 +608,7 @@ impl Dispatcher {
         ip_idx: usize,
         acc_idx: usize,
         headers: &HeaderMap,
+        fallback_ip_weight: u32,
         fallback_increment_order_count: bool,
     ) -> (Option<u32>, Option<u32>) {
         self.refresh_limit_windows();
@@ -628,8 +653,9 @@ impl Dispatcher {
         if let Some(x) = ip_final {
             self.ip_clients[ip_idx].used_weight_1m = x;
         } else {
-            self.ip_clients[ip_idx].used_weight_1m =
-                self.ip_clients[ip_idx].used_weight_1m.saturating_add(1);
+            self.ip_clients[ip_idx].used_weight_1m = self.ip_clients[ip_idx]
+                .used_weight_1m
+                .saturating_add(fallback_ip_weight);
         }
 
         if let Some(x) = acc_final {
@@ -650,6 +676,7 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use order_common::{TradeEngineResponse, TradeEngineResponseMessage, TradeRequestType};
     use reqwest::header::{HeaderName, HeaderValue};
     use std::net::{IpAddr, Ipv4Addr};
 
@@ -661,7 +688,6 @@ mod tests {
                 key: "key".to_string(),
                 secret: "secret".to_string(),
             }],
-            CancellationToken::new(),
             false,
             None,
         )
@@ -679,11 +705,143 @@ mod tests {
                 key: "key".to_string(),
                 secret: "secret".to_string(),
             }],
-            CancellationToken::new(),
             false,
             None,
         )
         .expect("dispatcher")
+    }
+
+    async fn dispatch_pm_test_response(response: Option<&'static str>) -> DispatchResponse {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let n = socket.read(&mut request).await.unwrap();
+            assert!(std::str::from_utf8(&request[..n])
+                .unwrap()
+                .starts_with("POST /papi/v1/margin/order?"));
+            if let Some(response) = response {
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let mut dispatcher = test_dispatcher();
+        dispatcher.base_url_papi = format!("http://{address}");
+        let out = dispatcher
+            .dispatch(OrderRequestEvent {
+                req_type: Some("BinanceNewMarginOrder".into()),
+                endpoint: "/papi/v1/margin/order".into(),
+                method: "POST".into(),
+                params: vec![("symbol".into(), "PARTIUSDT".into())],
+                weight: Some(1),
+                account: None,
+                req_id: Some("42".into()),
+                counts_toward_order_limit: true,
+                recv_window_ms: None,
+            })
+            .await
+            .unwrap();
+        server.await.unwrap();
+        out
+    }
+
+    #[tokio::test]
+    async fn binance_pm_accepted_request_disconnect_requires_order_query() {
+        let out = dispatch_pm_test_response(None).await;
+        assert_eq!(out.status, 0);
+        let code = parse_top_level_error_code(&out.body).unwrap();
+        assert_eq!(code, order_common::trade_error_code::ACTION_RESULT_UNKNOWN);
+        let response = TradeEngineResponseMessage::new(
+            out.status,
+            TradeRequestType::BinanceNewMarginOrder as u32,
+            symbol_utils::Exchange::Binance as u32,
+            42,
+            code,
+        );
+        assert!(response.is_action_result_unknown());
+        assert!(!response.is_request_success());
+        assert!(!out.body.contains("signature="));
+    }
+
+    #[tokio::test]
+    async fn binance_pm_truncated_success_response_requires_order_query() {
+        let out = dispatch_pm_test_response(Some(
+            "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{}",
+        ))
+        .await;
+        assert_eq!(out.status, 0);
+        assert_eq!(
+            parse_top_level_error_code(&out.body),
+            Some(order_common::trade_error_code::ACTION_RESULT_UNKNOWN)
+        );
+    }
+
+    #[test]
+    fn binance_pm_unknown_result_preserves_definite_rejections_and_queries() {
+        let mut evt = OrderRequestEvent {
+            req_type: Some("BinanceNewUMOrder".into()),
+            endpoint: "/papi/v1/um/order".into(),
+            method: "POST".into(),
+            params: Vec::new(),
+            weight: None,
+            account: None,
+            req_id: None,
+            counts_toward_order_limit: true,
+            recv_window_ms: None,
+        };
+        let unknown = r#"{"code":-1000,"msg":"Unknown error, please check your request or try again later."}"#;
+        for method in ["POST", "PUT", "DELETE"] {
+            evt.method = method.into();
+            assert_eq!(
+                parse_top_level_error_code(&binance_pm_action_error_body(
+                    &evt,
+                    503,
+                    unknown.into()
+                )),
+                Some(order_common::trade_error_code::ACTION_RESULT_UNKNOWN)
+            );
+        }
+        for (status, body) in [
+            (400, r#"{"code":-2010,"msg":"New order rejected"}"#),
+            (
+                400,
+                r#"{"code":-2027,"msg":"Exceeded maximum allowable position"}"#,
+            ),
+            (
+                503,
+                r#"{"code":-1008,"msg":"Request throttled by system-level protection."}"#,
+            ),
+            (503, r#"{"code":-1000,"msg":"Service Unavailable."}"#),
+            (
+                503,
+                r#"{"code":-1001,"msg":"Internal error; unable to process your request. Please try again."}"#,
+            ),
+        ] {
+            assert_eq!(
+                binance_pm_action_error_body(&evt, status, body.into()),
+                body
+            );
+        }
+        evt.method = "GET".into();
+        assert_eq!(
+            binance_pm_action_error_body(&evt, 0, "request error".into()),
+            "request error"
+        );
+        evt.method = "POST".into();
+        evt.endpoint = "/papi/v1/um/leverage".into();
+        assert_eq!(
+            binance_pm_action_error_body(&evt, 0, "request error".into()),
+            "request error"
+        );
+        evt.endpoint = "/fapi/v1/order".into();
+        assert_eq!(
+            binance_pm_action_error_body(&evt, 0, "request error".into()),
+            "request error"
+        );
     }
 
     #[test]
@@ -725,7 +883,7 @@ mod tests {
         dispatcher.accounts[0].used_orders_1m = 99;
         let headers = HeaderMap::new();
 
-        let (_ip_used, acc_used) = dispatcher.update_limits_from_headers(0, 0, &headers, false);
+        let (_ip_used, acc_used) = dispatcher.update_limits_from_headers(0, 0, &headers, 1, false);
 
         assert_eq!(acc_used, None);
         assert_eq!(dispatcher.accounts[0].used_orders_1m, 99);
@@ -742,10 +900,24 @@ mod tests {
             HeaderValue::from_static("12"),
         );
 
-        let (_ip_used, acc_used) = dispatcher.update_limits_from_headers(0, 0, &headers, true);
+        let (_ip_used, acc_used) = dispatcher.update_limits_from_headers(0, 0, &headers, 1, true);
 
         assert_eq!(acc_used, Some(12));
         assert_eq!(dispatcher.accounts[0].used_orders_1m, 12);
+    }
+
+    #[test]
+    fn fallback_uses_request_ip_weight_and_one_order_count() {
+        let mut dispatcher = test_dispatcher();
+        let headers = HeaderMap::new();
+
+        dispatcher.update_limits_from_headers(0, 0, &headers, 0, true);
+        assert_eq!(dispatcher.ip_clients[0].used_weight_1m, 0);
+        assert_eq!(dispatcher.accounts[0].used_orders_1m, 1);
+
+        dispatcher.update_limits_from_headers(0, 0, &headers, 5, true);
+        assert_eq!(dispatcher.ip_clients[0].used_weight_1m, 5);
+        assert_eq!(dispatcher.accounts[0].used_orders_1m, 2);
     }
 
     #[test]
@@ -774,24 +946,41 @@ mod tests {
     }
 
     #[test]
-    fn single_ip_429_triggers_shutdown() {
-        let mut dispatcher = test_dispatcher();
+    fn single_ip_rate_limits_cool_for_five_minutes_without_shutdown() {
+        for status in [429, 418] {
+            let mut dispatcher = test_dispatcher();
+            let before = Instant::now();
 
-        dispatcher.handle_limit_status(0, 429);
+            dispatcher.handle_limit_status(0, status);
 
-        assert!(dispatcher.shutdown.is_cancelled());
-        assert!(dispatcher.ip_clients[0].cooldown_until.is_some());
+            let until = if status == 429 {
+                dispatcher.ip_clients[0].cooldown_until.unwrap()
+            } else {
+                dispatcher.ip_clients[0].banned_until.unwrap()
+            };
+            assert!(until >= before + Duration::from_secs(300));
+            assert!(until <= Instant::now() + Duration::from_secs(300));
+            assert_eq!(dispatcher.select_ip(1), None);
+
+            let expired = Instant::now() - Duration::from_secs(1);
+            dispatcher.ip_clients[0].cooldown_until = Some(expired);
+            dispatcher.ip_clients[0].banned_until = Some(expired);
+            assert_eq!(dispatcher.select_ip(1), Some(0));
+        }
     }
 
     #[test]
-    fn multi_ip_429_only_cools_down_current_ip() {
-        let mut dispatcher = test_dispatcher_multi_ip();
+    fn multi_ip_rate_limits_only_cool_down_current_ip() {
+        for status in [429, 418] {
+            let mut dispatcher = test_dispatcher_multi_ip();
 
-        dispatcher.handle_limit_status(0, 429);
+            dispatcher.handle_limit_status(0, status);
 
-        assert!(!dispatcher.shutdown.is_cancelled());
-        assert!(dispatcher.ip_clients[0].cooldown_until.is_some());
-        assert!(dispatcher.ip_clients[1].cooldown_until.is_none());
+            assert!(!dispatcher.ip_clients[0].is_available());
+            assert!(dispatcher.ip_clients[1].cooldown_until.is_none());
+            assert!(dispatcher.ip_clients[1].banned_until.is_none());
+            assert_eq!(dispatcher.select_ip(1), Some(1));
+        }
     }
 }
 

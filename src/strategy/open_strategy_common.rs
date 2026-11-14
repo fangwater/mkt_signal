@@ -17,8 +17,8 @@ use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyR
 use crate::strategy::order_query_builder::build_order_query_request;
 pub use crate::strategy::order_reconcile::PendingOrderQueryReason;
 use crate::strategy::order_reconcile::{
-    order_query_watchdog_delay_us, order_query_watchdog_delay_us_for_venue, qv_decimal_or_fallback,
-    ORDER_QUERY_WATCHDOG_DELAY_US,
+    ambiguous_action_query_reason, order_query_watchdog_delay_us,
+    order_query_watchdog_delay_us_for_venue, qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US,
 };
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
@@ -32,7 +32,9 @@ use order_common::trade_error_code::describe_trade_error_code;
 use order_common::OrderUpdate;
 use order_common::TradeUpdate;
 use order_common::TradeUpdateLite;
-use order_common::{OrderExecutionStatus, OrderManager, OrderQuantizedValue, OrderType, Side};
+use order_common::{
+    ExecutionType, OrderExecutionStatus, OrderManager, OrderQuantizedValue, OrderType, Side,
+};
 use order_common::{OrderStatus, TradingVenue};
 use order_common::{TradeEngineResponse, TradeRequestKind};
 use persist_common::SignalBbo;
@@ -328,6 +330,14 @@ fn should_promote_open_pending_query_reason(
     )
 }
 
+fn should_record_open_fill_hedge(
+    status: OrderStatus,
+    hedge_on_incremental_open_fill: bool,
+) -> bool {
+    status.is_finished()
+        || (hedge_on_incremental_open_fill && status == OrderStatus::PartiallyFilled)
+}
+
 fn order_qv_from_quantized_value(qv: QuantizedValue) -> OrderQuantizedValue {
     let (tick_i64, tick_exp) = qv.get_tick_parts();
     OrderQuantizedValue::new(tick_i64, tick_exp, qv.get_count())
@@ -512,10 +522,6 @@ pub trait OpenStrategyCommon {
         false
     }
 
-    fn skip_open_total_exposure_risk_check(&self) -> bool {
-        false
-    }
-
     fn skip_open_position_risk_checks(&self) -> bool {
         false
     }
@@ -609,6 +615,7 @@ pub trait OpenStrategyCommon {
             return false;
         }
         let close_ts = self.open_terminal_close_ts();
+        let open_from_key = self.open_state().from_key.clone();
         let strategy_mgr = MonitorChannel::instance().strategy_mgr();
         let mut strategy_mgr = strategy_mgr.borrow_mut();
         if self.force_taker_taker_hedge()
@@ -631,6 +638,7 @@ pub trait OpenStrategyCommon {
             price,
             close_ts,
             open_client_order_id,
+            &open_from_key,
         );
         drop(strategy_mgr);
         if updated {
@@ -1090,7 +1098,16 @@ pub trait OpenStrategyCommon {
         let skip_position_risk_checks = self.skip_open_position_risk_checks();
         let symbol_ref = symbol.as_ref();
         let current_open_base_qty = monitor.get_position_qty(symbol_ref, venue);
-        if !skip_position_risk_checks {
+        let paired_close = self.record_terminal_as_arb_close()
+            && !self.force_taker_taker_hedge()
+            && input
+                .client_order_id
+                .is_some_and(|id| monitor.is_paired_close(id));
+        // Paired exits have already reserved bounded unfinished work and both-leg inventory.
+        // The current-account opening gate would otherwise disable every exit once over limit.
+        // ForceArbClose already caps its quantity to factual reducing inventory.
+        // Existing net imbalance must not prohibit this emergency deleveraging.
+        if !skip_position_risk_checks && !paired_close && !self.force_taker_taker_hedge() {
             if let Err(err) = monitor.check_open_exposure(symbol_ref) {
                 match err {
                     OpenExposureRiskError::Symbol(e) => {
@@ -1117,16 +1134,6 @@ pub trait OpenStrategyCommon {
                             e
                         ));
                         return None;
-                    }
-                    OpenExposureRiskError::Total(e)
-                        if self.skip_open_total_exposure_risk_check() =>
-                    {
-                        debug!(
-                            "{}: strategy_id={} Force Close ignores total exposure risk: {}",
-                            self.strategy_name(),
-                            self.strategy_id(),
-                            e
-                        );
                     }
                     OpenExposureRiskError::Total(e) => {
                         self.log_open_deleveraging_risk_reject(
@@ -1264,6 +1271,17 @@ pub trait OpenStrategyCommon {
         // - Binance STANDARD 在 FR / Cross arb 等非 intra 场景仍独立兜底。
         // - FR / Cross arb（非 intra）下不受此白名单影响。
         let binance_is_standard = order_manager.borrow().binance_is_standard();
+        if is_arb_open && !input.reduce_only && !skip_position_risk_checks {
+            if let Err(reason) = crate::pre_trade::binance_pm_buy_capacity::check_open(
+                venue,
+                side,
+                &symbol,
+                order_qty * order_price,
+            ) {
+                self.mark_open_strategy_inactive(reason.to_string());
+                return None;
+            }
+        }
         let order_query_watchdog_delay_us =
             order_query_watchdog_delay_us_for_venue(venue, binance_is_standard);
         let venue_is_margin = matches!(
@@ -1357,6 +1375,26 @@ pub trait OpenStrategyCommon {
             }
         };
         let next_base_qty = current_open_base_qty + add_base_qty;
+        if paired_close
+            && !monitor.check_paired_close_first(
+                input.client_order_id.unwrap_or(0),
+                venue,
+                side,
+                add_base_qty.abs(),
+            )
+        {
+            self.mark_open_strategy_inactive("paired-close order exceeds its reservation".into());
+            return None;
+        }
+        if is_arb_open && !skip_position_risk_checks {
+            if let Err(reason) = monitor.check_arb_order_exposure_risk(&symbol, venue, add_base_qty)
+            {
+                self.mark_open_strategy_inactive(format!(
+                    "projected exposure risk failed: {reason}"
+                ));
+                return None;
+            }
+        }
         if !skip_position_risk_checks
             && next_base_qty.abs() > current_open_base_qty.abs() + 1e-12_f64
         {
@@ -1683,6 +1721,12 @@ pub trait OpenStrategyCommon {
             );
         }
         if is_arb_open {
+            crate::pre_trade::binance_pm_buy_capacity::record_submission(
+                venue,
+                side,
+                &symbol,
+                order_qty * order_price,
+            );
             record_arb_open_latency(
                 "pt_open_publish_request",
                 get_timestamp_us().saturating_sub(publish_start_us),
@@ -2015,6 +2059,27 @@ pub trait OpenStrategyCommon {
             .and_then(|ex| describe_trade_error_code(ex, response.error_code()))
             .unwrap_or("unknown");
 
+        if let Some(reason) =
+            ambiguous_action_query_reason(response, PendingOrderQueryReason::CancelWatchdog)
+        {
+            warn!(
+                "{}: strategy_id={} action result unknown: req_type={} client_order_id={} query_reason={:?}",
+                self.strategy_name(),
+                self.strategy_id(),
+                response.req_type(),
+                client_order_id,
+                reason
+            );
+            self.clear_query_watchdogs(client_order_id);
+            if !self.send_order_query(client_order_id, reason) {
+                self.handoff_open_order_after_query_failure(
+                    client_order_id,
+                    reason.query_send_failed_trigger(),
+                );
+            }
+            return;
+        }
+
         match response.request_kind() {
             TradeRequestKind::Open => {
                 if !suppress_pre_submit_hot_path_logs() {
@@ -2059,6 +2124,18 @@ pub trait OpenStrategyCommon {
                     self.handoff_open_order_after_query_failure(client_order_id, marker);
                 }
             }
+            TradeRequestKind::Modify => {
+                warn!(
+                    "{}: strategy_id={} modify_failed: req_type={} status={} code={}({}) client_order_id={}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    response.req_type(),
+                    response.status(),
+                    response.error_code(),
+                    code_desc,
+                    client_order_id
+                );
+            }
             TradeRequestKind::Other => {
                 warn!(
                     "{}: strategy_id={} other_failed(TODO): req_type={} status={} code={}({}) client_order_id={}",
@@ -2100,6 +2177,7 @@ pub trait OpenStrategyCommon {
 
         if OrderManager::should_skip_idempotent_order_update(
             &current_order,
+            order_update.execution_type(),
             order_update.status(),
             order_update.order_id(),
             order_update.cumulative_filled_quantity(),
@@ -2130,7 +2208,15 @@ pub trait OpenStrategyCommon {
         }
         let effective_cumulative_filled_qty = protected_cumulative_fill.effective_cum;
 
-        let updated = order_manager.apply_remote_update(client_order_id, |order| match order_update.status() {
+        if order_update.execution_type() == ExecutionType::Replaced {
+            if let Some(price_qv) = QuantizedValue::from_decimal(order_update.price()) {
+                self.open_state_mut().price_qv = price_qv;
+            }
+        }
+
+        let updated = order_manager.apply_remote_update(client_order_id, |order| {
+            order.apply_replacement_fields(order_update);
+            match order_update.status() {
             OrderStatus::New => {
                 if !self.open_state().alive {
                     warn!(
@@ -2235,6 +2321,7 @@ pub trait OpenStrategyCommon {
                     order.symbol
                 );
             }
+            }
         });
 
         if !updated {
@@ -2269,16 +2356,13 @@ pub trait OpenStrategyCommon {
             self.clear_live_order_query_state(client_order_id);
         }
 
-        let record_open_fill_hedge = matches!(
+        let terminal_update = order_update.status().is_finished();
+        let record_open_fill_hedge = should_record_open_fill_hedge(
             order_update.status(),
-            OrderStatus::Canceled | OrderStatus::Filled
-        ) || (self.hedge_on_incremental_open_fill()
-            && matches!(order_update.status(), OrderStatus::PartiallyFilled));
+            self.hedge_on_incremental_open_fill(),
+        );
         if record_open_fill_hedge {
-            let update_detail = if matches!(
-                order_update.status(),
-                OrderStatus::Canceled | OrderStatus::Filled
-            ) {
+            let update_detail = if terminal_update {
                 "order_update_terminal"
             } else {
                 "order_update_partial_fill"
@@ -2797,6 +2881,15 @@ pub trait OpenStrategyCommon {
             return;
         };
 
+        if let Some(venue) = self.open_state().open_venue {
+            crate::pre_trade::binance_pm_buy_capacity::record_rejection(
+                venue,
+                side,
+                &symbol,
+                response.error_code(),
+            );
+        }
+
         if register_signal_throttle_for_mode(
             &symbol,
             side,
@@ -3111,12 +3204,14 @@ pub trait OpenStrategyCommon {
 mod tests {
     use super::{
         build_open_order_request_bytes_scoped, build_open_order_request_prepared_scoped,
-        should_promote_open_pending_query_reason, OpenStrategyCommon, OpenStrategyState,
-        PendingOrderQueryReason, QueryWatchdog,
+        should_promote_open_pending_query_reason, should_record_open_fill_hedge,
+        OpenStrategyCommon, OpenStrategyState, PendingOrderQueryReason, QueryWatchdog,
     };
     use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
     use crate::strategy::manager::OrphanStrategyRole;
-    use order_common::{BinanceAccountMode, OrderManager, OrderType, Side, TradingVenue};
+    use order_common::{
+        BinanceAccountMode, OrderManager, OrderStatus, OrderType, Side, TradingVenue,
+    };
     use std::cell::RefCell;
 
     struct TestOpenStrategy {
@@ -3174,6 +3269,28 @@ mod tests {
         ) -> Result<f64, String> {
             Ok(1.0)
         }
+    }
+
+    #[test]
+    fn terminal_order_updates_record_open_fill_hedge() {
+        for status in [
+            OrderStatus::Filled,
+            OrderStatus::Canceled,
+            OrderStatus::Expired,
+            OrderStatus::ExpiredInMatch,
+        ] {
+            assert!(should_record_open_fill_hedge(status, false), "{status:?}");
+        }
+
+        assert!(!should_record_open_fill_hedge(
+            OrderStatus::PartiallyFilled,
+            false
+        ));
+        assert!(should_record_open_fill_hedge(
+            OrderStatus::PartiallyFilled,
+            true
+        ));
+        assert!(!should_record_open_fill_hedge(OrderStatus::New, true));
     }
 
     #[test]

@@ -6,7 +6,107 @@ use polars::prelude::*;
 
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use order_common::{OrderType, Side};
-use persist_common::{OrderQueuePositionRecord, SignalBbo, SIGNAL_BBO_BINARY_LEN};
+use persist_common::{
+    FillLiquidity, OrderQueuePositionRecord, SignalBbo, SIGNAL_BBO_BINARY_LEN,
+    UNIFORM_ORDER_TAIL_BINARY_LEN,
+};
+
+/// Minimal factual order observation for read-only health checks. Uses the same
+/// persisted codecs as exports, including terminal unmatched exchange evidence.
+#[derive(Debug, Clone)]
+pub struct OrderHealthObservation {
+    pub venue: String,
+    pub symbol: String,
+    pub client_order_id: i64,
+    pub observed_us: i64,
+    pub status: Option<String>,
+    pub uniform: bool,
+}
+
+/// Reopens read-only on every scan so live WAL updates are visible. A capped
+/// scan is an error, never an apparently healthy incomplete order history.
+pub fn read_order_health_observations(
+    path: &std::path::Path,
+    since_us: i64,
+    max_records_per_cf: usize,
+) -> Result<Vec<OrderHealthObservation>> {
+    use rocksdb::{Direction, IteratorMode, Options, DB};
+    anyhow::ensure!(path.is_dir(), "order store is not a directory");
+    anyhow::ensure!(
+        since_us >= 0 && max_records_per_cf > 0,
+        "invalid order scan bounds"
+    );
+    let options = Options::default();
+    let names = DB::list_cf(&options, path).context("list order store column families")?;
+    let requested = [
+        "uniform_orders",
+        "order_updates",
+        "trade_updates",
+        "order_updates_unmatched",
+        "trade_updates_unmatched",
+    ];
+    for name in requested {
+        anyhow::ensure!(
+            names.iter().any(|n| n == name),
+            "missing order column family {name}"
+        );
+    }
+    let db = DB::open_cf_for_read_only(&options, path, names, false)
+        .context("open order store read-only")?;
+    let start = format!("{since_us:020}");
+    let mut observations = Vec::new();
+    for name in requested {
+        let cf = db
+            .cf_handle(name)
+            .context("order column family disappeared")?;
+        for (index, item) in db
+            .iterator_cf(cf, IteratorMode::From(start.as_bytes(), Direction::Forward))
+            .enumerate()
+        {
+            anyhow::ensure!(index < max_records_per_cf, "order scan limit reached in {name}; increase max_order_records or shorten lookback");
+            let (key, value) = item.context("read order event")?;
+            let ts = i64::try_from(parse_simple_key(std::str::from_utf8(&key)?)?)?;
+            let observation = match name {
+                "uniform_orders" => {
+                    let r = decode_uniform_order_record(&value)
+                        .context("decode uniform order health record")?;
+                    OrderHealthObservation {
+                        venue: r.trading_venue,
+                        symbol: r.symbol,
+                        client_order_id: r.client_order_id,
+                        observed_us: ts.max(r.recv_ts_us).max(r.update_ts),
+                        status: Some(r.status),
+                        uniform: true,
+                    }
+                }
+                "order_updates" | "order_updates_unmatched" => {
+                    let r = decode_order_record(&value).context("decode order health update")?;
+                    OrderHealthObservation {
+                        venue: r.trading_venue,
+                        symbol: r.symbol,
+                        client_order_id: r.client_order_id,
+                        observed_us: ts,
+                        status: Some(r.status),
+                        uniform: false,
+                    }
+                }
+                _ => {
+                    let r = decode_trade_record(&value).context("decode trade health update")?;
+                    OrderHealthObservation {
+                        venue: r.trading_venue,
+                        symbol: r.symbol,
+                        client_order_id: r.client_order_id,
+                        observed_us: ts,
+                        status: r.order_status,
+                        uniform: false,
+                    }
+                }
+            };
+            observations.push(observation);
+        }
+    }
+    Ok(observations)
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct RangeFilter {
@@ -353,6 +453,7 @@ pub fn build_uniform_orders_df_with_options(
     let mut status_col = Vec::with_capacity(entries.len());
     let mut from_key_col = Vec::with_capacity(entries.len());
     let mut from_key_hex_col = Vec::with_capacity(entries.len());
+    let mut fill_liquidity_col = Vec::with_capacity(entries.len());
     let mut signal_open_venue_col: Vec<Option<String>> = Vec::with_capacity(entries.len());
     let mut signal_open_ts_col = Vec::with_capacity(entries.len());
     let mut signal_open_bid_price_col = Vec::with_capacity(entries.len());
@@ -421,6 +522,7 @@ pub fn build_uniform_orders_df_with_options(
             from_key,
             from_key_hex,
             signal_bbo,
+            fill_liquidity,
             bbo_spread,
         } = record;
 
@@ -445,6 +547,7 @@ pub fn build_uniform_orders_df_with_options(
         status_col.push(status);
         from_key_col.push(from_key);
         from_key_hex_col.push(from_key_hex);
+        fill_liquidity_col.push(fill_liquidity.map(FillLiquidity::as_str));
         let signal_open = signal_bbo.and_then(|value| value.open);
         signal_open_venue_col.push(signal_open.map(|leg| venue_name(leg.venue)));
         signal_open_ts_col.push(signal_open.map(|leg| leg.ts));
@@ -489,6 +592,7 @@ pub fn build_uniform_orders_df_with_options(
         Series::new("status".into(), status_col),
         Series::new("from_key".into(), from_key_col),
         Series::new("from_key_hex".into(), from_key_hex_col),
+        Series::new("fill_liquidity".into(), fill_liquidity_col),
         Series::new("bbo_spread".into(), bbo_spread_col),
         Series::new("signal_open_venue".into(), signal_open_venue_col.as_slice()),
         Series::new("signal_open_ts".into(), signal_open_ts_col.as_slice()),
@@ -570,66 +674,67 @@ fn dataframe_to_parquet_bytes(df: &mut DataFrame) -> Result<Vec<u8>> {
 }
 
 #[derive(Debug)]
-struct DecodedTradeRecord {
-    event_time: i64,
-    trade_time: i64,
-    symbol: String,
-    order_id: i64,
-    client_order_id: i64,
-    side: String,
-    price: f64,
-    is_maker: bool,
-    trading_venue: String,
-    cumulative_filled_quantity: f64,
-    order_status: Option<String>,
+pub(crate) struct DecodedTradeRecord {
+    pub(crate) event_time: i64,
+    pub(crate) trade_time: i64,
+    pub(crate) symbol: String,
+    pub(crate) order_id: i64,
+    pub(crate) client_order_id: i64,
+    pub(crate) side: String,
+    pub(crate) price: f64,
+    pub(crate) is_maker: bool,
+    pub(crate) trading_venue: String,
+    pub(crate) cumulative_filled_quantity: f64,
+    pub(crate) order_status: Option<String>,
 }
 
 #[derive(Debug)]
-struct DecodedOrderRecord {
-    event_time: i64,
-    symbol: String,
-    order_id: i64,
-    client_order_id: i64,
-    client_order_id_str: Option<String>,
-    side: String,
-    order_type: String,
-    time_in_force: String,
-    price: f64,
-    quantity: f64,
-    cumulative_filled_quantity: f64,
-    status: String,
-    raw_status: String,
-    execution_type: String,
-    raw_execution_type: String,
-    trading_venue: String,
+pub(crate) struct DecodedOrderRecord {
+    pub(crate) event_time: i64,
+    pub(crate) symbol: String,
+    pub(crate) order_id: i64,
+    pub(crate) client_order_id: i64,
+    pub(crate) client_order_id_str: Option<String>,
+    pub(crate) side: String,
+    pub(crate) order_type: String,
+    pub(crate) time_in_force: String,
+    pub(crate) price: f64,
+    pub(crate) quantity: f64,
+    pub(crate) cumulative_filled_quantity: f64,
+    pub(crate) status: String,
+    pub(crate) raw_status: String,
+    pub(crate) execution_type: String,
+    pub(crate) raw_execution_type: String,
+    pub(crate) trading_venue: String,
 }
 
 #[derive(Debug)]
-struct DecodedUniformOrderRecord {
-    recv_ts_us: i64,
-    symbol: String,
-    create_ts: i64,
-    update_ts: i64,
-    signal_ts: i64,
-    submit_ts: i64,
-    local_ts: i64,
-    mkt_ts: i64,
-    client_order_id: i64,
-    trading_venue: String,
-    order_type: String,
-    side: String,
-    price: f64,
-    price_offset: f64,
-    amount_init: f64,
-    amount_update: f64,
-    status: String,
-    from_key: String,
-    from_key_hex: String,
-    signal_bbo: Option<SignalBbo>,
-    bbo_spread: String,
+pub(crate) struct DecodedUniformOrderRecord {
+    pub(crate) recv_ts_us: i64,
+    pub(crate) symbol: String,
+    pub(crate) create_ts: i64,
+    pub(crate) update_ts: i64,
+    pub(crate) signal_ts: i64,
+    pub(crate) submit_ts: i64,
+    pub(crate) local_ts: i64,
+    pub(crate) mkt_ts: i64,
+    pub(crate) client_order_id: i64,
+    pub(crate) trading_venue: String,
+    pub(crate) order_type: String,
+    pub(crate) side: String,
+    pub(crate) price: f64,
+    pub(crate) price_offset: f64,
+    pub(crate) amount_init: f64,
+    pub(crate) amount_update: f64,
+    pub(crate) status: String,
+    pub(crate) from_key: String,
+    pub(crate) from_key_hex: String,
+    pub(crate) signal_bbo: Option<SignalBbo>,
+    pub(crate) fill_liquidity: Option<FillLiquidity>,
+    pub(crate) bbo_spread: String,
 }
 
-fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
+pub(crate) fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
     let mut cursor = Bytes::copy_from_slice(bytes);
     let _recv_ts_us = read_i64(&mut cursor, "trade update recv_ts_us")?;
     let event_time = read_i64(&mut cursor, "trade update event_time")?;
@@ -672,7 +777,7 @@ fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
     })
 }
 
-fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
+pub(crate) fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
     let mut cursor = Bytes::copy_from_slice(bytes);
     let _recv_ts_us = read_i64(&mut cursor, "order update recv_ts_us")?;
     let event_time = read_i64(&mut cursor, "order update event_time")?;
@@ -731,7 +836,7 @@ fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
     })
 }
 
-fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord> {
+pub(crate) fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord> {
     let mut cursor = Bytes::copy_from_slice(bytes);
     let recv_ts_us = read_i64(&mut cursor, "uniform order recv_ts_us")?;
 
@@ -742,8 +847,7 @@ fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord
     let update_ts = read_i64(&mut cursor, "uniform order update_ts")?;
     let signal_ts = read_i64(&mut cursor, "uniform order signal_ts")?;
 
-    // 强制按 v2 layout 解码（含 submit_ts/local_ts/mkt_ts）。
-    // v1 残留记录会在下游字段读取时报错，由调用方 drop。
+    // The current base layout includes submit_ts/local_ts/mkt_ts.
     let submit_ts = read_i64(&mut cursor, "uniform order submit_ts")?;
     let local_ts = read_i64(&mut cursor, "uniform order local_ts")?;
     let mkt_ts = read_i64(&mut cursor, "uniform order mkt_ts")?;
@@ -780,14 +884,27 @@ fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord
     };
 
     let signal_bbo = if cursor.has_remaining() {
-        if cursor.remaining() != SIGNAL_BBO_BINARY_LEN {
+        if !matches!(
+            cursor.remaining(),
+            SIGNAL_BBO_BINARY_LEN | UNIFORM_ORDER_TAIL_BINARY_LEN
+        ) {
             return Err(anyhow!(
-                "uniform order signal_bbo must be {SIGNAL_BBO_BINARY_LEN} bytes, got {}",
+                "uniform order tail must contain signal_bbo and optional fill_liquidity, got {} bytes",
                 cursor.remaining()
             ));
         }
         let bytes = cursor.copy_to_bytes(SIGNAL_BBO_BINARY_LEN);
         SignalBbo::decode_optional(bytes.as_ref()).map_err(|err| anyhow!(err))?
+    } else {
+        None
+    };
+
+    let fill_liquidity = if cursor.has_remaining() {
+        let code = read_u8(&mut cursor, "uniform order fill_liquidity")?;
+        Some(
+            FillLiquidity::from_u8(code)
+                .ok_or_else(|| anyhow!("invalid fill_liquidity: {code}"))?,
+        )
     } else {
         None
     };
@@ -833,6 +950,7 @@ fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord
         from_key,
         from_key_hex,
         signal_bbo,
+        fill_liquidity,
         bbo_spread,
     })
 }
@@ -1058,6 +1176,56 @@ mod tests {
     }
 
     #[test]
+    fn order_health_reader_sees_live_wal_without_writing_primary_and_rejects_caps() {
+        use rocksdb::{Options, DB};
+        let path = std::env::temp_dir().join(format!(
+            "fr-health-reader-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut options = Options::default();
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
+        let names = [
+            "uniform_orders",
+            "order_updates",
+            "trade_updates",
+            "order_updates_unmatched",
+            "trade_updates_unmatched",
+        ];
+        let db = DB::open_cf(&options, &path, names).unwrap();
+        let cf = db.cf_handle("uniform_orders").unwrap();
+        db.put_cf(cf, format!("{:020}", 1000), uniform_payload(None))
+            .unwrap();
+        let sequence = db.latest_sequence_number();
+        let observations = read_order_health_observations(&path, 0, 100).unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].client_order_id, 17);
+        assert_eq!(observations[0].status.as_deref(), Some("NEW"));
+        assert_eq!(db.latest_sequence_number(), sequence);
+        db.put_cf(cf, format!("{:020}", 2000), uniform_payload(None))
+            .unwrap();
+        assert_eq!(
+            read_order_health_observations(&path, 0, 100).unwrap().len(),
+            2
+        );
+        assert!(read_order_health_observations(&path, 0, 1).is_err());
+        assert_eq!(
+            read_order_health_observations(&path, 1500, 100)
+                .unwrap()
+                .len(),
+            1
+        );
+        db.put_cf(cf, format!("{:020}", 3000), b"corrupt").unwrap();
+        assert!(read_order_health_observations(&path, 0, 100).is_err());
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn uniform_orders_df_decodes_signal_bbo_and_falls_back_to_null() {
         let open_venue = TradingVenue::BinanceMargin;
         let hedge_venue = TradingVenue::BinanceFutures;
@@ -1113,7 +1281,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(df.height(), 1);
-        assert_eq!(df.width(), 28);
+        assert_eq!(df.width(), 29);
         assert!(df.column("signal_open_venue").is_ok());
         for column in [
             "signal_hedge_venue",
@@ -1125,5 +1293,38 @@ mod tests {
         ] {
             assert!(df.column(column).is_err(), "{column} should be omitted");
         }
+    }
+
+    #[test]
+    fn uniform_export_preserves_each_fill_role_and_historical_absence() {
+        let mut entries = vec![(b"1000".to_vec(), uniform_payload(None))];
+        for (offset, role) in [
+            FillLiquidity::Unknown,
+            FillLiquidity::Maker,
+            FillLiquidity::Taker,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut payload = uniform_payload(Some(None));
+            payload.push(role as u8);
+            let decoded = decode_uniform_order_record(&payload).unwrap();
+            assert_eq!(decoded.fill_liquidity, Some(role));
+            assert_eq!(decoded.amount_update, 1.0);
+            entries.push(((1001 + offset).to_string().into_bytes(), payload));
+        }
+        let df = build_uniform_orders_df(entries, &RangeFilter::all()).unwrap();
+        assert_eq!(df.height(), 4);
+        let roles = df.column("fill_liquidity").unwrap().str().unwrap();
+        assert_eq!(roles.get(0), None);
+        assert_eq!(roles.get(1), Some("unknown"));
+        assert_eq!(roles.get(2), Some("maker"));
+        assert_eq!(roles.get(3), Some("taker"));
+
+        let mut invalid = uniform_payload(Some(None));
+        invalid.push(3);
+        assert!(decode_uniform_order_record(&invalid).is_err());
+        invalid.push(0);
+        assert!(decode_uniform_order_record(&invalid).is_err());
     }
 }

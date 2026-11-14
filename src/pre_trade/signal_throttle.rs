@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 
 use log::{debug, info, warn};
-use order_common::trade_error_code::{bitget, bybit, gate};
+use order_common::trade_error_code::{binance, bitget, bybit, gate, hyperliquid};
 use runtime_common::exchange::Exchange;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::time_util::get_timestamp_us;
@@ -12,6 +12,7 @@ use trade_signal::ArbMode;
 pub const SIGNAL_THROTTLE_TTL_US: i64 = 2 * 60 * 60 * 1_000_000;
 pub const INTRA_SIGNAL_THROTTLE_TTL_US: i64 = SIGNAL_THROTTLE_TTL_US;
 pub const GATE_SIGNAL_THROTTLE_TTL_US: i64 = 30 * 60 * 1_000_000;
+pub const GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US: i64 = 5 * 60 * 1_000_000;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BALANCE_INSUFFICIENT: i32 = -2018;
 pub const SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT: i32 = 51169;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT: i32 = -2019;
@@ -19,6 +20,8 @@ pub const SIGNAL_THROTTLE_ERROR_CODE_MAX_BORROWABLE_EXCEEDED: i32 = 51006;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BITGET_LENDING_LIMIT: i32 = 25116;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT: i32 =
     bitget::POSITION_TIER_LIMIT_EXCEEDED;
+// -2027: Binance UM 当前杠杆下仓位名义价值超限，对冲腿被拒时同向开仓也需锁定
+pub const SIGNAL_THROTTLE_ERROR_CODE_BINANCE_MAX_LEVERAGE_RATIO: i32 = binance::MAX_LEVERAGE_RATIO;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_LIABILITY_OVERFLOW: i32 =
     bybit::LIABILITY_OVERFLOW_SPOT_LEVERAGE;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED: i32 =
@@ -51,6 +54,7 @@ struct SignalThrottleEntry {
 enum SignalThrottleSource {
     ExchangeError,
     BinanceFuturesInsufficientMargin,
+    GateInsufficientMargin,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +100,7 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
         SIGNAL_THROTTLE_ERROR_CODE_MAX_BORROWABLE_EXCEEDED => {
             matches!(exchange, Some(Exchange::Binance))
         }
+        binance::ASSET_NOT_BORROWABLE => matches!(exchange, Some(Exchange::Binance)),
         SIGNAL_THROTTLE_ERROR_CODE_LOANABLE_ASSET_UNAVAILABLE => {
             matches!(exchange, Some(Exchange::Binance))
         }
@@ -104,6 +109,9 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
         }
         SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT => {
             matches!(exchange, Some(Exchange::Bitget))
+        }
+        SIGNAL_THROTTLE_ERROR_CODE_BINANCE_MAX_LEVERAGE_RATIO => {
+            matches!(exchange, Some(Exchange::Binance))
         }
         SIGNAL_THROTTLE_ERROR_CODE_BYBIT_LIABILITY_OVERFLOW
         | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED
@@ -120,6 +128,9 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
         | gate::AUTO_BORROW_TOO_MUCH
         | gate::INITIAL_MARGIN_TOO_LOW
         | gate::RISK_CHECK_MARKET_FORBIDDEN => matches!(exchange, Some(Exchange::Gate)),
+        hyperliquid::INSUFFICIENT_MARGIN
+        | hyperliquid::INSUFFICIENT_SPOT_BALANCE
+        | hyperliquid::POSITION_LIMIT_EXCEEDED => matches!(exchange, Some(Exchange::Hyperliquid)),
         _ => false,
     }
 }
@@ -129,11 +140,18 @@ fn is_account_wide_reduce_only_error_code(exchange: Option<Exchange>, error_code
         (exchange, error_code),
         (
             Some(Exchange::Gate),
-            gate::INITIAL_MARGIN_TOO_LOW
-                | gate::MARGIN_NOT_ENOUGH
-                | gate::POSITION_MARGIN_TOO_LOW
-                | gate::RISK_CHECK_MARKET_FORBIDDEN
+            gate::INITIAL_MARGIN_TOO_LOW | gate::MARGIN_NOT_ENOUGH | gate::POSITION_MARGIN_TOO_LOW
+        ) | (
+            Some(Exchange::Hyperliquid),
+            hyperliquid::INSUFFICIENT_MARGIN
         )
+    )
+}
+
+fn is_gate_market_forbidden_error(exchange: Option<Exchange>, error_code: i32) -> bool {
+    matches!(
+        (exchange, error_code),
+        (Some(Exchange::Gate), gate::RISK_CHECK_MARKET_FORBIDDEN)
     )
 }
 
@@ -142,6 +160,16 @@ fn signal_throttle_ttl_us(exchange: Option<Exchange>) -> i64 {
         GATE_SIGNAL_THROTTLE_TTL_US
     } else {
         SIGNAL_THROTTLE_TTL_US
+    }
+}
+
+fn signal_throttle_ttl_us_for_error(exchange: Option<Exchange>, error_code: i32) -> i64 {
+    if exchange == Some(Exchange::Binance) && error_code == binance::ASSET_NOT_BORROWABLE {
+        60_000_000
+    } else if is_gate_market_forbidden_error(exchange, error_code) {
+        GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US
+    } else {
+        signal_throttle_ttl_us(exchange)
     }
 }
 
@@ -166,7 +194,7 @@ pub fn register_signal_throttle(
         exchange,
         error_code,
         now_us,
-        signal_throttle_ttl_us(exchange),
+        signal_throttle_ttl_us_for_error(exchange, error_code),
     )
 }
 
@@ -184,7 +212,13 @@ pub fn register_signal_throttle_for_mode(
         exchange,
         error_code,
         now_us,
-        signal_throttle_ttl_us_for_mode(exchange, arb_mode),
+        if is_gate_market_forbidden_error(exchange, error_code)
+            || (exchange == Some(Exchange::Binance) && error_code == binance::ASSET_NOT_BORROWABLE)
+        {
+            signal_throttle_ttl_us_for_error(exchange, error_code)
+        } else {
+            signal_throttle_ttl_us_for_mode(exchange, arb_mode)
+        },
     )
 }
 
@@ -215,6 +249,37 @@ pub fn clear_binance_futures_margin_signal_throttles() -> usize {
         });
         before.saturating_sub(guard.len())
     })
+}
+
+/// Recover only Gate account-margin errors confirmed by a newer margin snapshot.
+pub(super) fn clear_gate_margin_signal_throttles(snapshot_us: i64, now_us: i64) {
+    let recovered = |entry: &SignalThrottleEntry| {
+        entry.source == SignalThrottleSource::GateInsufficientMargin
+            && snapshot_us > entry.updated_at_us
+    };
+    let cleared_account = ACCOUNT_SIGNAL_THROTTLE.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        cleanup_account_expired(&mut guard, now_us);
+        if guard.as_ref().is_some_and(recovered) {
+            *guard = None;
+            true
+        } else {
+            false
+        }
+    });
+    let cleared_symbols = SIGNAL_THROTTLE_MAP.with(|map| {
+        let mut guard = map.borrow_mut();
+        cleanup_expired(&mut guard, now_us);
+        let before = guard.len();
+        guard.retain(|_, entry| !recovered(entry));
+        before - guard.len()
+    });
+    if cleared_account || cleared_symbols > 0 {
+        info!(
+            "SignalThrottle: Gate margin recovered snapshot_us={} clear_account={} clear_symbol_locks={}",
+            snapshot_us, cleared_account, cleared_symbols
+        );
+    }
 }
 
 pub fn check_signal_throttle(symbol: &str, dir: Side) -> Option<SignalThrottleHit> {
@@ -302,7 +367,13 @@ fn register_signal_throttle_at(
         error_code,
         now_us,
         ttl_us,
-        SignalThrottleSource::ExchangeError,
+        if is_account_wide_reduce_only_error_code(exchange, error_code)
+            && exchange == Some(Exchange::Gate)
+        {
+            SignalThrottleSource::GateInsufficientMargin
+        } else {
+            SignalThrottleSource::ExchangeError
+        },
     )
 }
 
@@ -347,36 +418,46 @@ fn register_signal_throttle_at_with_source(
         false
     };
 
-    let key = SignalThrottleKey::new(symbol, dir);
+    let pair_sides = [Side::Buy, Side::Sell];
+    let blocked_sides: &[Side] = if is_gate_market_forbidden_error(exchange, error_code) {
+        &pair_sides
+    } else {
+        std::slice::from_ref(&dir)
+    };
     SIGNAL_THROTTLE_MAP.with(|map| {
         let mut guard = map.borrow_mut();
         cleanup_expired(&mut guard, now_us);
-        guard
-            .entry(key.clone())
-            .and_modify(|entry| {
-                entry.ban_until_us = entry.ban_until_us.max(ban_until_us);
-                entry.last_error_code = error_code;
-                entry.updated_at_us = now_us;
-                if source == SignalThrottleSource::ExchangeError {
-                    entry.source = source;
-                }
-            })
-            .or_insert(SignalThrottleEntry {
-                ban_until_us,
-                last_error_code: error_code,
-                updated_at_us: now_us,
-                source,
-            });
+        for &blocked_side in blocked_sides {
+            let key = SignalThrottleKey::new(symbol, blocked_side);
+            guard
+                .entry(key)
+                .and_modify(|entry| {
+                    entry.ban_until_us = entry.ban_until_us.max(ban_until_us);
+                    entry.last_error_code = error_code;
+                    entry.updated_at_us = now_us;
+                    if source == SignalThrottleSource::ExchangeError {
+                        entry.source = source;
+                    }
+                })
+                .or_insert(SignalThrottleEntry {
+                    ban_until_us,
+                    last_error_code: error_code,
+                    updated_at_us: now_us,
+                    source,
+                });
+        }
     });
 
-    warn!(
-        "SignalThrottle: register block symbol={} dir={} code={} block_for={}s until_us={}",
-        key.symbol,
-        dir.as_str(),
-        error_code,
-        ttl_us / 1_000_000,
-        ban_until_us
-    );
+    for &blocked_side in blocked_sides {
+        warn!(
+            "SignalThrottle: register block symbol={} dir={} code={} block_for={}s until_us={}",
+            symbol.trim().to_ascii_uppercase(),
+            blocked_side.as_str(),
+            error_code,
+            ttl_us / 1_000_000,
+            ban_until_us
+        );
+    }
     if registered_account_block {
         warn!(
             "SignalThrottle: register account-wide reduce-only block code={} block_for={}s until_us={}",
@@ -446,6 +527,27 @@ mod tests {
     }
 
     #[test]
+    fn binance_borrow_unavailable_uses_short_symbol_cooldown_in_fr() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        assert!(!is_throttle_error_code(
+            Some(Exchange::Okex),
+            binance::ASSET_NOT_BORROWABLE
+        ));
+        assert!(register_signal_throttle_for_mode(
+            "SYRUPUSDT",
+            Side::Buy,
+            Some(Exchange::Binance),
+            binance::ASSET_NOT_BORROWABLE,
+            ArbMode::FundingArb,
+        ));
+        let hit = check_signal_throttle("SYRUPUSDT", Side::Buy).unwrap();
+        assert!(hit.remaining_us > 0 && hit.remaining_us <= 60_000_000);
+        assert!(check_signal_throttle("SYRUPUSDT", Side::Sell).is_none());
+        clear_all();
+    }
+
+    #[test]
     fn gate_throttle_ttl_is_shorter_than_default() {
         let _guard = TEST_LOCK.lock();
         assert_eq!(
@@ -453,6 +555,17 @@ mod tests {
             GATE_SIGNAL_THROTTLE_TTL_US
         );
         assert_eq!(GATE_SIGNAL_THROTTLE_TTL_US, 30 * 60 * 1_000_000);
+        assert_eq!(
+            signal_throttle_ttl_us_for_error(
+                Some(Exchange::Gate),
+                gate::RISK_CHECK_MARKET_FORBIDDEN,
+            ),
+            GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US
+        );
+        assert_eq!(
+            GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US,
+            5 * 60 * 1_000_000
+        );
         assert_eq!(
             signal_throttle_ttl_us(Some(Exchange::Binance)),
             SIGNAL_THROTTLE_TTL_US
@@ -501,6 +614,9 @@ mod tests {
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51006));
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51061));
         assert!(is_throttle_error_code(Some(Exchange::Bitget), 25116));
+        assert!(is_throttle_error_code(Some(Exchange::Binance), -2027));
+        assert!(!is_throttle_error_code(Some(Exchange::Okex), -2027));
+        assert!(!is_throttle_error_code(Some(Exchange::Bitget), -2027));
         assert!(is_throttle_error_code(
             Some(Exchange::Bitget),
             bitget::POSITION_TIER_LIMIT_EXCEEDED
@@ -546,7 +662,7 @@ mod tests {
             Some(Exchange::Gate),
             gate::RISK_CHECK_MARKET_FORBIDDEN
         ));
-        assert!(is_account_wide_reduce_only_error_code(
+        assert!(!is_account_wide_reduce_only_error_code(
             Some(Exchange::Gate),
             gate::RISK_CHECK_MARKET_FORBIDDEN
         ));
@@ -654,7 +770,149 @@ mod tests {
     }
 
     #[test]
-    fn registers_gate_market_forbidden_as_account_reduce_only_throttle() {
+    fn gate_recovery_requires_snapshot_after_each_margin_error() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        for (symbol, error_us) in [("BTCUSDT", 2_000_000), ("ETHUSDT", 3_000_000)] {
+            assert!(register_signal_throttle_at(
+                symbol,
+                Side::Buy,
+                Some(Exchange::Gate),
+                gate::INITIAL_MARGIN_TOO_LOW,
+                error_us,
+                GATE_SIGNAL_THROTTLE_TTL_US
+            ));
+        }
+        clear_gate_margin_signal_throttles(2_000_000, 4_000_000);
+        assert!(check_signal_throttle_at("BTCUSDT", Side::Buy, 4_000_000).is_some());
+        clear_gate_margin_signal_throttles(2_500_000, 4_000_000);
+        assert!(check_signal_throttle_at("BTCUSDT", Side::Buy, 4_000_000).is_none());
+        assert!(check_signal_throttle_at("ETHUSDT", Side::Buy, 4_000_000).is_some());
+        assert!(check_account_signal_throttle_at(4_000_000).is_some());
+        clear_gate_margin_signal_throttles(3_000_001, 4_000_000);
+        assert!(check_signal_throttle_at("ETHUSDT", Side::Buy, 4_000_000).is_none());
+        assert!(check_account_signal_throttle_at(4_000_000).is_none());
+        clear_all();
+    }
+
+    #[test]
+    fn gate_recovery_preserves_other_rejection_causes_and_venues() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        for (symbol, exchange, code) in [
+            ("BTCUSDT", Exchange::Gate, gate::INITIAL_MARGIN_TOO_LOW),
+            ("ETHUSDT", Exchange::Gate, gate::AUTO_BORROW_TOO_MUCH),
+            ("SOLUSDT", Exchange::Gate, gate::RISK_CHECK_MARKET_FORBIDDEN),
+            (
+                "BNBUSDT",
+                Exchange::Binance,
+                SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT,
+            ),
+            (
+                "HYPEUSDC",
+                Exchange::Hyperliquid,
+                hyperliquid::INSUFFICIENT_MARGIN,
+            ),
+        ] {
+            register_signal_throttle_at(
+                symbol,
+                Side::Buy,
+                Some(exchange),
+                code,
+                2_000_000,
+                GATE_SIGNAL_THROTTLE_TTL_US,
+            );
+        }
+        clear_gate_margin_signal_throttles(3_000_000, 4_000_000);
+        assert!(check_signal_throttle_at("BTCUSDT", Side::Buy, 4_000_000).is_none());
+        for symbol in ["ETHUSDT", "SOLUSDT", "BNBUSDT", "HYPEUSDC"] {
+            assert!(
+                check_signal_throttle_at(symbol, Side::Buy, 4_000_000).is_some(),
+                "{symbol}"
+            );
+        }
+        assert_eq!(
+            check_account_signal_throttle_at(4_000_000)
+                .unwrap()
+                .last_error_code,
+            hyperliquid::INSUFFICIENT_MARGIN
+        );
+        clear_all();
+    }
+
+    #[test]
+    fn later_non_margin_error_on_same_pair_survives_gate_recovery() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        register_signal_throttle_at(
+            "ETHUSDT",
+            Side::Buy,
+            Some(Exchange::Gate),
+            gate::INITIAL_MARGIN_TOO_LOW,
+            2_000_000,
+            GATE_SIGNAL_THROTTLE_TTL_US,
+        );
+        register_signal_throttle_at(
+            "ETHUSDT",
+            Side::Buy,
+            Some(Exchange::Gate),
+            gate::RISK_CHECK_MARKET_FORBIDDEN,
+            3_000_000,
+            GATE_SIGNAL_THROTTLE_TTL_US,
+        );
+        clear_gate_margin_signal_throttles(4_000_000, 4_000_000);
+        assert!(check_account_signal_throttle_at(4_000_000).is_none());
+        assert!(check_signal_throttle_at("ETHUSDT", Side::Buy, 4_000_000).is_some());
+        assert!(check_signal_throttle_at("ETHUSDT", Side::Sell, 4_000_000).is_some());
+        clear_all();
+    }
+
+    #[test]
+    fn hyperliquid_throttles_keep_margin_and_symbol_capacity_scopes_distinct() {
+        let _guard = TEST_LOCK.lock();
+        for code in [
+            hyperliquid::INSUFFICIENT_MARGIN,
+            hyperliquid::INSUFFICIENT_SPOT_BALANCE,
+            hyperliquid::POSITION_LIMIT_EXCEEDED,
+        ] {
+            clear_all();
+            assert!(!is_throttle_error_code(Some(Exchange::Okex), code));
+            assert!(register_signal_throttle_at(
+                "hypeusdc",
+                Side::Buy,
+                Some(Exchange::Hyperliquid),
+                code,
+                1_000,
+                50,
+            ));
+            assert!(check_signal_throttle_at("HYPEUSDC", Side::Buy, 1_001).is_some());
+            assert!(check_signal_throttle_at("HYPEUSDC", Side::Sell, 1_001).is_none());
+            assert!(check_signal_throttle_at("BTCUSDC", Side::Buy, 1_001).is_none());
+            assert_eq!(
+                check_account_signal_throttle_at(1_001).is_some(),
+                code == hyperliquid::INSUFFICIENT_MARGIN
+            );
+            assert!(check_signal_throttle_at("HYPEUSDC", Side::Buy, 1_050).is_none());
+            assert!(check_account_signal_throttle_at(1_050).is_none());
+        }
+        for code in [
+            hyperliquid::POST_ONLY_REJECTED,
+            hyperliquid::PRICE_LIMIT_REJECTED,
+            hyperliquid::NO_LIQUIDITY,
+            hyperliquid::ACTION_AMBIGUOUS,
+            hyperliquid::ACTION_REJECTED,
+        ] {
+            assert!(!is_throttle_error_code(Some(Exchange::Hyperliquid), code));
+        }
+        assert_eq!(
+            signal_throttle_ttl_us(Some(Exchange::Hyperliquid)),
+            SIGNAL_THROTTLE_TTL_US
+        );
+        clear_all();
+    }
+
+    #[test]
+    fn registers_gate_market_forbidden_as_pair_throttle() {
         let _guard = TEST_LOCK.lock();
         clear_all();
         let now_us = 2_000_000;
@@ -665,25 +923,27 @@ mod tests {
             Some(Exchange::Gate),
             gate::RISK_CHECK_MARKET_FORBIDDEN,
             now_us,
-            GATE_SIGNAL_THROTTLE_TTL_US,
+            GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US,
         ));
 
-        let symbol_hit = check_signal_throttle_at("DRIFTUSDT", Side::Buy, now_us + 1)
-            .expect("symbol-side throttle must be hit");
-        assert_eq!(
-            symbol_hit.last_error_code,
-            gate::RISK_CHECK_MARKET_FORBIDDEN
-        );
-        let account_hit = check_account_signal_throttle_at(now_us + 1)
-            .expect("account reduce-only throttle must be hit");
-        assert_eq!(
-            account_hit.last_error_code,
-            gate::RISK_CHECK_MARKET_FORBIDDEN
-        );
-        assert_eq!(account_hit.remaining_us, GATE_SIGNAL_THROTTLE_TTL_US - 1);
+        for side in [Side::Buy, Side::Sell] {
+            let symbol_hit = check_signal_throttle_at("DRIFTUSDT", side, now_us + 1)
+                .expect("both pair directions must be throttled");
+            assert_eq!(
+                symbol_hit.last_error_code,
+                gate::RISK_CHECK_MARKET_FORBIDDEN
+            );
+            assert_eq!(
+                symbol_hit.remaining_us,
+                GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US - 1
+            );
+        }
+        assert!(check_signal_throttle_at("BTCUSDT", Side::Buy, now_us + 1).is_none());
+        assert!(check_account_signal_throttle_at(now_us + 1).is_none());
 
-        let expires_at_us = now_us + GATE_SIGNAL_THROTTLE_TTL_US;
+        let expires_at_us = now_us + GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US;
         assert!(check_signal_throttle_at("DRIFTUSDT", Side::Buy, expires_at_us).is_none());
+        assert!(check_signal_throttle_at("DRIFTUSDT", Side::Sell, expires_at_us).is_none());
         assert!(check_account_signal_throttle_at(expires_at_us).is_none());
         clear_all();
     }

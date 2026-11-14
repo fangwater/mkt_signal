@@ -1,0 +1,21 @@
+{
+  "checked_at": "2026-10-14T07:30:01.323255+00:00",
+  "environment": "binance-cta-perp-rx03",
+  "host": "jp-meta-elvpn",
+  "mode": "observation",
+  "symbols": 14,
+  "factors": 5,
+  "bindings": 34,
+  "max_pos_u": 100,
+  "enabled": false,
+  "live_ready_pairs": 34,
+  "nq_ready_symbols": 14,
+  "continuous_minutes": [
+    "07:27",
+    "07:28",
+    "07:29"
+  ],
+  "protected_processes": 50,
+  "protected_configs": 55,
+  "url": "http://13.115.227.29:4191/cta/binance-cta-perp-rx03/"
+}

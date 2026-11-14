@@ -1,0 +1,31 @@
+{
+  "symbols": 17,
+  "factors": 7,
+  "combinations": 55,
+  "excluded_symbols": [
+    "ICXUSDT"
+  ],
+  "removed_combinations": 133,
+  "removed_directional": 22,
+  "new_strategies": [],
+  "config": {
+    "enabled": true,
+    "max_pos_u": 10.0,
+    "entry": {
+      "factor_long_quantile": 0.9,
+      "factor_short_quantile": 0.1,
+      "spread_long_quantile": 0.3,
+      "spread_short_quantile": 0.7,
+      "nq_long_quantile": 0.5,
+      "nq_short_quantile": 0.5
+    },
+    "execution": {
+      "factor_exit_quantile_long": 0.3,
+      "factor_exit_quantile_short": 0.7
+    }
+  },
+  "old_publisher_pid": 3973994,
+  "release_sha256": "693b9277c42dfed0ba39e1c5c7f6aff0cc8855ccbf2a49af8094538443f0d023",
+  "reuse_verified_release": true,
+  "execute": true
+}

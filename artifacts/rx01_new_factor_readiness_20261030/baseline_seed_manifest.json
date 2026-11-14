@@ -1,0 +1,3162 @@
+{
+  "bar_interval": "15m",
+  "end": "2026-10-28",
+  "start": "2026-10-22",
+  "symbols": {
+    "1INCHUSDT": {
+      "bars": 672,
+      "book_rows": 6949818,
+      "bytes": 783566,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 15.958738106,
+      "sha256": "d4b08d00b9c4e681b201dda0dda4c609b1e06e9c132968079950566167284d78",
+      "sources": [
+        {
+          "bytes": 496454,
+          "modified": "SystemTime { tv_sec: 1792720443, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_1inchusdt/trades/binance-futures_trades_2026-10-22_1INCHUSDT.csv.gz"
+        },
+        {
+          "bytes": 9243741,
+          "modified": "SystemTime { tv_sec: 1792720838, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_1inchusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_1INCHUSDT.csv.gz"
+        },
+        {
+          "bytes": 515229,
+          "modified": "SystemTime { tv_sec: 1792807404, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_1inchusdt/trades/binance-futures_trades_2026-10-23_1INCHUSDT.csv.gz"
+        },
+        {
+          "bytes": 8887888,
+          "modified": "SystemTime { tv_sec: 1792806800, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_1inchusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_1INCHUSDT.csv.gz"
+        },
+        {
+          "bytes": 485902,
+          "modified": "SystemTime { tv_sec: 1792893560, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_1inchusdt/trades/binance-futures_trades_2026-10-24_1INCHUSDT.csv.gz"
+        },
+        {
+          "bytes": 7923165,
+          "modified": "SystemTime { tv_sec: 1792893457, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_1inchusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_1INCHUSDT.csv.gz"
+        },
+        {
+          "bytes": 352002,
+          "modified": "SystemTime { tv_sec: 1792978368, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_1inchusdt/trades/binance-futures_trades_2026-10-25_1INCHUSDT.csv.gz"
+        },
+        {
+          "bytes": 6585171,
+          "modified": "SystemTime { tv_sec: 1792977363, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_1inchusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_1INCHUSDT.csv.gz"
+        },
+        {
+          "bytes": 494811,
+          "modified": "SystemTime { tv_sec: 1793065801, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_1inchusdt/trades/binance-futures_trades_2026-10-26_1INCHUSDT.csv.gz"
+        },
+        {
+          "bytes": 8751123,
+          "modified": "SystemTime { tv_sec: 1793065651, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_1inchusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_1INCHUSDT.csv.gz"
+        },
+        {
+          "bytes": 338523,
+          "modified": "SystemTime { tv_sec: 1793153174, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_1inchusdt/trades/binance-futures_trades_2026-10-27_1INCHUSDT.csv.gz"
+        },
+        {
+          "bytes": 6683109,
+          "modified": "SystemTime { tv_sec: 1793152970, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_1inchusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_1INCHUSDT.csv.gz"
+        },
+        {
+          "bytes": 412191,
+          "modified": "SystemTime { tv_sec: 1793238171, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_1inchusdt/trades/binance-futures_trades_2026-10-28_1INCHUSDT.csv.gz"
+        },
+        {
+          "bytes": 9426701,
+          "modified": "SystemTime { tv_sec: 1793238194, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_1inchusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_1INCHUSDT.csv.gz"
+        }
+      ],
+      "symbol": "1INCHUSDT",
+      "trade_rows": 310678
+    },
+    "AAVEUSDT": {
+      "bars": 672,
+      "book_rows": 85842860,
+      "bytes": 782893,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 141.092346397,
+      "sha256": "7845845c297a90b0d8e11969a366cef41f80e2474fbf4901a5c389e64843bcbe",
+      "sources": [
+        {
+          "bytes": 4062103,
+          "modified": "SystemTime { tv_sec: 1792718863, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/trades/binance-futures_trades_2026-10-22_AAVEUSDT.csv.gz"
+        },
+        {
+          "bytes": 81775937,
+          "modified": "SystemTime { tv_sec: 1792720422, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_AAVEUSDT.csv.gz"
+        },
+        {
+          "bytes": 3481495,
+          "modified": "SystemTime { tv_sec: 1792805424, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/trades/binance-futures_trades_2026-10-23_AAVEUSDT.csv.gz"
+        },
+        {
+          "bytes": 81108061,
+          "modified": "SystemTime { tv_sec: 1792806858, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_AAVEUSDT.csv.gz"
+        },
+        {
+          "bytes": 3615572,
+          "modified": "SystemTime { tv_sec: 1792891115, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/trades/binance-futures_trades_2026-10-24_AAVEUSDT.csv.gz"
+        },
+        {
+          "bytes": 67805208,
+          "modified": "SystemTime { tv_sec: 1792893314, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_AAVEUSDT.csv.gz"
+        },
+        {
+          "bytes": 2447492,
+          "modified": "SystemTime { tv_sec: 1792975636, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/trades/binance-futures_trades_2026-10-25_AAVEUSDT.csv.gz"
+        },
+        {
+          "bytes": 53048004,
+          "modified": "SystemTime { tv_sec: 1792977179, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_AAVEUSDT.csv.gz"
+        },
+        {
+          "bytes": 3679549,
+          "modified": "SystemTime { tv_sec: 1793062009, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/trades/binance-futures_trades_2026-10-26_AAVEUSDT.csv.gz"
+        },
+        {
+          "bytes": 82894299,
+          "modified": "SystemTime { tv_sec: 1793065845, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_AAVEUSDT.csv.gz"
+        },
+        {
+          "bytes": 4082345,
+          "modified": "SystemTime { tv_sec: 1793150866, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/trades/binance-futures_trades_2026-10-27_AAVEUSDT.csv.gz"
+        },
+        {
+          "bytes": 81109302,
+          "modified": "SystemTime { tv_sec: 1793152009, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_AAVEUSDT.csv.gz"
+        },
+        {
+          "bytes": 4355205,
+          "modified": "SystemTime { tv_sec: 1793235300, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/trades/binance-futures_trades_2026-10-28_AAVEUSDT.csv.gz"
+        },
+        {
+          "bytes": 96619601,
+          "modified": "SystemTime { tv_sec: 1793236490, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_AAVEUSDT.csv.gz"
+        }
+      ],
+      "symbol": "AAVEUSDT",
+      "trade_rows": 3310526
+    },
+    "ADAUSDT": {
+      "bars": 672,
+      "book_rows": 62366852,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 104.056497487,
+      "sha256": "9f4a1e1e698387215f46d0756befc70d0c58a6b67b1c0310c9cd40c68187e7a0",
+      "sources": [
+        {
+          "bytes": 3680754,
+          "modified": "SystemTime { tv_sec: 1792718672, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/trades/binance-futures_trades_2026-10-22_ADAUSDT.csv.gz"
+        },
+        {
+          "bytes": 74017212,
+          "modified": "SystemTime { tv_sec: 1792719846, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_ADAUSDT.csv.gz"
+        },
+        {
+          "bytes": 3480894,
+          "modified": "SystemTime { tv_sec: 1792805147, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/trades/binance-futures_trades_2026-10-23_ADAUSDT.csv.gz"
+        },
+        {
+          "bytes": 73718547,
+          "modified": "SystemTime { tv_sec: 1792806543, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_ADAUSDT.csv.gz"
+        },
+        {
+          "bytes": 3407657,
+          "modified": "SystemTime { tv_sec: 1792891208, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/trades/binance-futures_trades_2026-10-24_ADAUSDT.csv.gz"
+        },
+        {
+          "bytes": 69872568,
+          "modified": "SystemTime { tv_sec: 1792892397, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_ADAUSDT.csv.gz"
+        },
+        {
+          "bytes": 2470641,
+          "modified": "SystemTime { tv_sec: 1792975291, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/trades/binance-futures_trades_2026-10-25_ADAUSDT.csv.gz"
+        },
+        {
+          "bytes": 57420562,
+          "modified": "SystemTime { tv_sec: 1792976337, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_ADAUSDT.csv.gz"
+        },
+        {
+          "bytes": 3140774,
+          "modified": "SystemTime { tv_sec: 1793061998, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/trades/binance-futures_trades_2026-10-26_ADAUSDT.csv.gz"
+        },
+        {
+          "bytes": 78348405,
+          "modified": "SystemTime { tv_sec: 1793064349, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_ADAUSDT.csv.gz"
+        },
+        {
+          "bytes": 2428712,
+          "modified": "SystemTime { tv_sec: 1793150967, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/trades/binance-futures_trades_2026-10-27_ADAUSDT.csv.gz"
+        },
+        {
+          "bytes": 64729600,
+          "modified": "SystemTime { tv_sec: 1793152287, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_ADAUSDT.csv.gz"
+        },
+        {
+          "bytes": 3230253,
+          "modified": "SystemTime { tv_sec: 1793235194, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/trades/binance-futures_trades_2026-10-28_ADAUSDT.csv.gz"
+        },
+        {
+          "bytes": 65715685,
+          "modified": "SystemTime { tv_sec: 1793237341, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_ADAUSDT.csv.gz"
+        }
+      ],
+      "symbol": "ADAUSDT",
+      "trade_rows": 2555932
+    },
+    "ALGOUSDT": {
+      "bars": 672,
+      "book_rows": 24696786,
+      "bytes": 782893,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 42.970475093,
+      "sha256": "7e3c459a3cb7d62eadf31924d7c232cb26f600a3727f956ddd22bc16ff4f9903",
+      "sources": [
+        {
+          "bytes": 1789178,
+          "modified": "SystemTime { tv_sec: 1792718663, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_algousdt/trades/binance-futures_trades_2026-10-22_ALGOUSDT.csv.gz"
+        },
+        {
+          "bytes": 33351721,
+          "modified": "SystemTime { tv_sec: 1792720685, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_algousdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_ALGOUSDT.csv.gz"
+        },
+        {
+          "bytes": 1534808,
+          "modified": "SystemTime { tv_sec: 1792805364, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_algousdt/trades/binance-futures_trades_2026-10-23_ALGOUSDT.csv.gz"
+        },
+        {
+          "bytes": 30603234,
+          "modified": "SystemTime { tv_sec: 1792806213, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_algousdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_ALGOUSDT.csv.gz"
+        },
+        {
+          "bytes": 1464903,
+          "modified": "SystemTime { tv_sec: 1792891190, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_algousdt/trades/binance-futures_trades_2026-10-24_ALGOUSDT.csv.gz"
+        },
+        {
+          "bytes": 26477093,
+          "modified": "SystemTime { tv_sec: 1792892542, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_algousdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_ALGOUSDT.csv.gz"
+        },
+        {
+          "bytes": 1264313,
+          "modified": "SystemTime { tv_sec: 1792975474, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_algousdt/trades/binance-futures_trades_2026-10-25_ALGOUSDT.csv.gz"
+        },
+        {
+          "bytes": 22702601,
+          "modified": "SystemTime { tv_sec: 1792977810, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_algousdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_ALGOUSDT.csv.gz"
+        },
+        {
+          "bytes": 1643308,
+          "modified": "SystemTime { tv_sec: 1793062030, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_algousdt/trades/binance-futures_trades_2026-10-26_ALGOUSDT.csv.gz"
+        },
+        {
+          "bytes": 30678430,
+          "modified": "SystemTime { tv_sec: 1793064333, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_algousdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_ALGOUSDT.csv.gz"
+        },
+        {
+          "bytes": 1531935,
+          "modified": "SystemTime { tv_sec: 1793150907, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_algousdt/trades/binance-futures_trades_2026-10-27_ALGOUSDT.csv.gz"
+        },
+        {
+          "bytes": 27055211,
+          "modified": "SystemTime { tv_sec: 1793152569, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_algousdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_ALGOUSDT.csv.gz"
+        },
+        {
+          "bytes": 1824984,
+          "modified": "SystemTime { tv_sec: 1793235263, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_algousdt/trades/binance-futures_trades_2026-10-28_ALGOUSDT.csv.gz"
+        },
+        {
+          "bytes": 32918664,
+          "modified": "SystemTime { tv_sec: 1793237729, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_algousdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_ALGOUSDT.csv.gz"
+        }
+      ],
+      "symbol": "ALGOUSDT",
+      "trade_rows": 1052254
+    },
+    "ATOMUSDT": {
+      "bars": 672,
+      "book_rows": 16140613,
+      "bytes": 782893,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 32.585056664,
+      "sha256": "d550e21460ff391a09b1ffb0ba5c74a6e96914fb59d2369e1598530bac78c006",
+      "sources": [
+        {
+          "bytes": 1418381,
+          "modified": "SystemTime { tv_sec: 1792718995, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/trades/binance-futures_trades_2026-10-22_ATOMUSDT.csv.gz"
+        },
+        {
+          "bytes": 21221722,
+          "modified": "SystemTime { tv_sec: 1792720414, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_ATOMUSDT.csv.gz"
+        },
+        {
+          "bytes": 2097662,
+          "modified": "SystemTime { tv_sec: 1792805488, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/trades/binance-futures_trades_2026-10-23_ATOMUSDT.csv.gz"
+        },
+        {
+          "bytes": 28678867,
+          "modified": "SystemTime { tv_sec: 1792806365, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_ATOMUSDT.csv.gz"
+        },
+        {
+          "bytes": 1519826,
+          "modified": "SystemTime { tv_sec: 1792891101, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/trades/binance-futures_trades_2026-10-24_ATOMUSDT.csv.gz"
+        },
+        {
+          "bytes": 22535023,
+          "modified": "SystemTime { tv_sec: 1792892379, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_ATOMUSDT.csv.gz"
+        },
+        {
+          "bytes": 1001738,
+          "modified": "SystemTime { tv_sec: 1792977768, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/trades/binance-futures_trades_2026-10-25_ATOMUSDT.csv.gz"
+        },
+        {
+          "bytes": 18061573,
+          "modified": "SystemTime { tv_sec: 1792977499, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_ATOMUSDT.csv.gz"
+        },
+        {
+          "bytes": 1135674,
+          "modified": "SystemTime { tv_sec: 1793062145, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/trades/binance-futures_trades_2026-10-26_ATOMUSDT.csv.gz"
+        },
+        {
+          "bytes": 22999935,
+          "modified": "SystemTime { tv_sec: 1793064102, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_ATOMUSDT.csv.gz"
+        },
+        {
+          "bytes": 960029,
+          "modified": "SystemTime { tv_sec: 1793150720, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/trades/binance-futures_trades_2026-10-27_ATOMUSDT.csv.gz"
+        },
+        {
+          "bytes": 19230283,
+          "modified": "SystemTime { tv_sec: 1793152241, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_ATOMUSDT.csv.gz"
+        },
+        {
+          "bytes": 1065569,
+          "modified": "SystemTime { tv_sec: 1793235212, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/trades/binance-futures_trades_2026-10-28_ATOMUSDT.csv.gz"
+        },
+        {
+          "bytes": 20256718,
+          "modified": "SystemTime { tv_sec: 1793237339, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_ATOMUSDT.csv.gz"
+        }
+      ],
+      "symbol": "ATOMUSDT",
+      "trade_rows": 874935
+    },
+    "AXSUSDT": {
+      "bars": 672,
+      "book_rows": 19846703,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 31.668709037,
+      "sha256": "dcd7a8e6e41b4b56db28b0db14fdbee49ed1ecfff8ca662e4bcf898e4bcd894e",
+      "sources": [
+        {
+          "bytes": 1253308,
+          "modified": "SystemTime { tv_sec: 1792718673, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_axsusdt/trades/binance-futures_trades_2026-10-22_AXSUSDT.csv.gz"
+        },
+        {
+          "bytes": 22372450,
+          "modified": "SystemTime { tv_sec: 1792719812, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_axsusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_AXSUSDT.csv.gz"
+        },
+        {
+          "bytes": 1258471,
+          "modified": "SystemTime { tv_sec: 1792805506, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_axsusdt/trades/binance-futures_trades_2026-10-23_AXSUSDT.csv.gz"
+        },
+        {
+          "bytes": 21905135,
+          "modified": "SystemTime { tv_sec: 1792806297, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_axsusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_AXSUSDT.csv.gz"
+        },
+        {
+          "bytes": 1278926,
+          "modified": "SystemTime { tv_sec: 1792891187, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_axsusdt/trades/binance-futures_trades_2026-10-24_AXSUSDT.csv.gz"
+        },
+        {
+          "bytes": 21360775,
+          "modified": "SystemTime { tv_sec: 1792892670, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_axsusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_AXSUSDT.csv.gz"
+        },
+        {
+          "bytes": 928294,
+          "modified": "SystemTime { tv_sec: 1792975365, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_axsusdt/trades/binance-futures_trades_2026-10-25_AXSUSDT.csv.gz"
+        },
+        {
+          "bytes": 17259081,
+          "modified": "SystemTime { tv_sec: 1792976721, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_axsusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_AXSUSDT.csv.gz"
+        },
+        {
+          "bytes": 1030241,
+          "modified": "SystemTime { tv_sec: 1793062061, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_axsusdt/trades/binance-futures_trades_2026-10-26_AXSUSDT.csv.gz"
+        },
+        {
+          "bytes": 22349354,
+          "modified": "SystemTime { tv_sec: 1793062842, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_axsusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_AXSUSDT.csv.gz"
+        },
+        {
+          "bytes": 676997,
+          "modified": "SystemTime { tv_sec: 1793150924, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_axsusdt/trades/binance-futures_trades_2026-10-27_AXSUSDT.csv.gz"
+        },
+        {
+          "bytes": 17921132,
+          "modified": "SystemTime { tv_sec: 1793152669, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_axsusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_AXSUSDT.csv.gz"
+        },
+        {
+          "bytes": 868535,
+          "modified": "SystemTime { tv_sec: 1793235536, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_axsusdt/trades/binance-futures_trades_2026-10-28_AXSUSDT.csv.gz"
+        },
+        {
+          "bytes": 19876381,
+          "modified": "SystemTime { tv_sec: 1793237778, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_axsusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_AXSUSDT.csv.gz"
+        }
+      ],
+      "symbol": "AXSUSDT",
+      "trade_rows": 761118
+    },
+    "BELUSDT": {
+      "bars": 672,
+      "book_rows": 16345655,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 28.991636885,
+      "sha256": "7ef6e521249c067deadb55a531b2e60fdfa5aaa3465be0e06280940d15c4f7e0",
+      "sources": [
+        {
+          "bytes": 394677,
+          "modified": "SystemTime { tv_sec: 1792720766, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_belusdt/trades/binance-futures_trades_2026-10-22_BELUSDT.csv.gz"
+        },
+        {
+          "bytes": 12511648,
+          "modified": "SystemTime { tv_sec: 1792720448, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_belusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_BELUSDT.csv.gz"
+        },
+        {
+          "bytes": 413881,
+          "modified": "SystemTime { tv_sec: 1792807253, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_belusdt/trades/binance-futures_trades_2026-10-23_BELUSDT.csv.gz"
+        },
+        {
+          "bytes": 14336883,
+          "modified": "SystemTime { tv_sec: 1792805828, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_belusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_BELUSDT.csv.gz"
+        },
+        {
+          "bytes": 493587,
+          "modified": "SystemTime { tv_sec: 1792893369, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_belusdt/trades/binance-futures_trades_2026-10-24_BELUSDT.csv.gz"
+        },
+        {
+          "bytes": 6347293,
+          "modified": "SystemTime { tv_sec: 1792893480, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_belusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_BELUSDT.csv.gz"
+        },
+        {
+          "bytes": 363754,
+          "modified": "SystemTime { tv_sec: 1792977844, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_belusdt/trades/binance-futures_trades_2026-10-25_BELUSDT.csv.gz"
+        },
+        {
+          "bytes": 15285773,
+          "modified": "SystemTime { tv_sec: 1792978254, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_belusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_BELUSDT.csv.gz"
+        },
+        {
+          "bytes": 354235,
+          "modified": "SystemTime { tv_sec: 1793065689, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_belusdt/trades/binance-futures_trades_2026-10-26_BELUSDT.csv.gz"
+        },
+        {
+          "bytes": 30181025,
+          "modified": "SystemTime { tv_sec: 1793065632, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_belusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_BELUSDT.csv.gz"
+        },
+        {
+          "bytes": 328219,
+          "modified": "SystemTime { tv_sec: 1793151724, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_belusdt/trades/binance-futures_trades_2026-10-27_BELUSDT.csv.gz"
+        },
+        {
+          "bytes": 22241566,
+          "modified": "SystemTime { tv_sec: 1793152711, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_belusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_BELUSDT.csv.gz"
+        },
+        {
+          "bytes": 302725,
+          "modified": "SystemTime { tv_sec: 1793238352, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_belusdt/trades/binance-futures_trades_2026-10-28_BELUSDT.csv.gz"
+        },
+        {
+          "bytes": 10780767,
+          "modified": "SystemTime { tv_sec: 1793237389, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_belusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_BELUSDT.csv.gz"
+        }
+      ],
+      "symbol": "BELUSDT",
+      "trade_rows": 231335
+    },
+    "BNBUSDT": {
+      "bars": 672,
+      "book_rows": 164550520,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 268.560777492,
+      "sha256": "7288918f81f26965bb900fc986c83d7572789fa73d3ac11523508a1916ed66b7",
+      "sources": [
+        {
+          "bytes": 5499505,
+          "modified": "SystemTime { tv_sec: 1792718858, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bnbusdt/trades/binance-futures_trades_2026-10-22_BNBUSDT.csv.gz"
+        },
+        {
+          "bytes": 124810798,
+          "modified": "SystemTime { tv_sec: 1792720723, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bnbusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_BNBUSDT.csv.gz"
+        },
+        {
+          "bytes": 6591025,
+          "modified": "SystemTime { tv_sec: 1792805246, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bnbusdt/trades/binance-futures_trades_2026-10-23_BNBUSDT.csv.gz"
+        },
+        {
+          "bytes": 137430935,
+          "modified": "SystemTime { tv_sec: 1792807431, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bnbusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_BNBUSDT.csv.gz"
+        },
+        {
+          "bytes": 6103704,
+          "modified": "SystemTime { tv_sec: 1792891204, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bnbusdt/trades/binance-futures_trades_2026-10-24_BNBUSDT.csv.gz"
+        },
+        {
+          "bytes": 122935438,
+          "modified": "SystemTime { tv_sec: 1792891456, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bnbusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_BNBUSDT.csv.gz"
+        },
+        {
+          "bytes": 5794348,
+          "modified": "SystemTime { tv_sec: 1792975545, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bnbusdt/trades/binance-futures_trades_2026-10-25_BNBUSDT.csv.gz"
+        },
+        {
+          "bytes": 117998276,
+          "modified": "SystemTime { tv_sec: 1792977530, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bnbusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_BNBUSDT.csv.gz"
+        },
+        {
+          "bytes": 8034691,
+          "modified": "SystemTime { tv_sec: 1793062001, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bnbusdt/trades/binance-futures_trades_2026-10-26_BNBUSDT.csv.gz"
+        },
+        {
+          "bytes": 187156569,
+          "modified": "SystemTime { tv_sec: 1793063895, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bnbusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_BNBUSDT.csv.gz"
+        },
+        {
+          "bytes": 6758434,
+          "modified": "SystemTime { tv_sec: 1793150724, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bnbusdt/trades/binance-futures_trades_2026-10-27_BNBUSDT.csv.gz"
+        },
+        {
+          "bytes": 164216158,
+          "modified": "SystemTime { tv_sec: 1793151927, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bnbusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_BNBUSDT.csv.gz"
+        },
+        {
+          "bytes": 7622563,
+          "modified": "SystemTime { tv_sec: 1793235799, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bnbusdt/trades/binance-futures_trades_2026-10-28_BNBUSDT.csv.gz"
+        },
+        {
+          "bytes": 167580836,
+          "modified": "SystemTime { tv_sec: 1793237932, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bnbusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_BNBUSDT.csv.gz"
+        }
+      ],
+      "symbol": "BNBUSDT",
+      "trade_rows": 6021682
+    },
+    "CRVUSDT": {
+      "bars": 672,
+      "book_rows": 22788444,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 47.093253274,
+      "sha256": "d18f4b6a4ae306d99152079a0f798044fee5eb7479e00b65a63b37719908f5b3",
+      "sources": [
+        {
+          "bytes": 3414045,
+          "modified": "SystemTime { tv_sec: 1792718715, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/trades/binance-futures_trades_2026-10-22_CRVUSDT.csv.gz"
+        },
+        {
+          "bytes": 42440469,
+          "modified": "SystemTime { tv_sec: 1792719840, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_CRVUSDT.csv.gz"
+        },
+        {
+          "bytes": 2512949,
+          "modified": "SystemTime { tv_sec: 1792805253, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/trades/binance-futures_trades_2026-10-23_CRVUSDT.csv.gz"
+        },
+        {
+          "bytes": 31178591,
+          "modified": "SystemTime { tv_sec: 1792806639, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_CRVUSDT.csv.gz"
+        },
+        {
+          "bytes": 1782522,
+          "modified": "SystemTime { tv_sec: 1792891147, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/trades/binance-futures_trades_2026-10-24_CRVUSDT.csv.gz"
+        },
+        {
+          "bytes": 26519989,
+          "modified": "SystemTime { tv_sec: 1792893482, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_CRVUSDT.csv.gz"
+        },
+        {
+          "bytes": 1730036,
+          "modified": "SystemTime { tv_sec: 1792975402, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/trades/binance-futures_trades_2026-10-25_CRVUSDT.csv.gz"
+        },
+        {
+          "bytes": 22476756,
+          "modified": "SystemTime { tv_sec: 1792977058, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_CRVUSDT.csv.gz"
+        },
+        {
+          "bytes": 2321954,
+          "modified": "SystemTime { tv_sec: 1793061983, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/trades/binance-futures_trades_2026-10-26_CRVUSDT.csv.gz"
+        },
+        {
+          "bytes": 31241815,
+          "modified": "SystemTime { tv_sec: 1793064447, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_CRVUSDT.csv.gz"
+        },
+        {
+          "bytes": 1864183,
+          "modified": "SystemTime { tv_sec: 1793150694, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/trades/binance-futures_trades_2026-10-27_CRVUSDT.csv.gz"
+        },
+        {
+          "bytes": 23280074,
+          "modified": "SystemTime { tv_sec: 1793152606, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_CRVUSDT.csv.gz"
+        },
+        {
+          "bytes": 1892871,
+          "modified": "SystemTime { tv_sec: 1793235284, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/trades/binance-futures_trades_2026-10-28_CRVUSDT.csv.gz"
+        },
+        {
+          "bytes": 23774179,
+          "modified": "SystemTime { tv_sec: 1793238050, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_CRVUSDT.csv.gz"
+        }
+      ],
+      "symbol": "CRVUSDT",
+      "trade_rows": 1699866
+    },
+    "DASHUSDT": {
+      "bars": 672,
+      "book_rows": 41702676,
+      "bytes": 782893,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 74.569633232,
+      "sha256": "ce2d63c9ec09b2e361a610347cb5c6083d21fc86113ccff7ffb2f1908016c036",
+      "sources": [
+        {
+          "bytes": 4521692,
+          "modified": "SystemTime { tv_sec: 1792719989, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dashusdt/trades/binance-futures_trades_2026-10-22_DASHUSDT.csv.gz"
+        },
+        {
+          "bytes": 60858293,
+          "modified": "SystemTime { tv_sec: 1792719668, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dashusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_DASHUSDT.csv.gz"
+        },
+        {
+          "bytes": 6413926,
+          "modified": "SystemTime { tv_sec: 1792807183, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dashusdt/trades/binance-futures_trades_2026-10-23_DASHUSDT.csv.gz"
+        },
+        {
+          "bytes": 77145430,
+          "modified": "SystemTime { tv_sec: 1792807123, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dashusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_DASHUSDT.csv.gz"
+        },
+        {
+          "bytes": 3696843,
+          "modified": "SystemTime { tv_sec: 1792893301, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dashusdt/trades/binance-futures_trades_2026-10-24_DASHUSDT.csv.gz"
+        },
+        {
+          "bytes": 53481188,
+          "modified": "SystemTime { tv_sec: 1792891874, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dashusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_DASHUSDT.csv.gz"
+        },
+        {
+          "bytes": 2882361,
+          "modified": "SystemTime { tv_sec: 1792976670, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dashusdt/trades/binance-futures_trades_2026-10-25_DASHUSDT.csv.gz"
+        },
+        {
+          "bytes": 41876550,
+          "modified": "SystemTime { tv_sec: 1792976175, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dashusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_DASHUSDT.csv.gz"
+        },
+        {
+          "bytes": 2964980,
+          "modified": "SystemTime { tv_sec: 1793065270, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dashusdt/trades/binance-futures_trades_2026-10-26_DASHUSDT.csv.gz"
+        },
+        {
+          "bytes": 42393330,
+          "modified": "SystemTime { tv_sec: 1793062853, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dashusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_DASHUSDT.csv.gz"
+        },
+        {
+          "bytes": 3439410,
+          "modified": "SystemTime { tv_sec: 1793152182, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dashusdt/trades/binance-futures_trades_2026-10-27_DASHUSDT.csv.gz"
+        },
+        {
+          "bytes": 42208169,
+          "modified": "SystemTime { tv_sec: 1793152832, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dashusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_DASHUSDT.csv.gz"
+        },
+        {
+          "bytes": 2321647,
+          "modified": "SystemTime { tv_sec: 1793237017, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dashusdt/trades/binance-futures_trades_2026-10-28_DASHUSDT.csv.gz"
+        },
+        {
+          "bytes": 31458557,
+          "modified": "SystemTime { tv_sec: 1793238236, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dashusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_DASHUSDT.csv.gz"
+        }
+      ],
+      "symbol": "DASHUSDT",
+      "trade_rows": 2956388
+    },
+    "DOTUSDT": {
+      "bars": 672,
+      "book_rows": 83812312,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 139.238629181,
+      "sha256": "528fea626bfe6979fbabdf6b4a6b7f937e5701ff369b90e3bf0ec99bf65f8379",
+      "sources": [
+        {
+          "bytes": 4604896,
+          "modified": "SystemTime { tv_sec: 1792718864, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/trades/binance-futures_trades_2026-10-22_DOTUSDT.csv.gz"
+        },
+        {
+          "bytes": 82236184,
+          "modified": "SystemTime { tv_sec: 1792719992, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_DOTUSDT.csv.gz"
+        },
+        {
+          "bytes": 8388771,
+          "modified": "SystemTime { tv_sec: 1792805294, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/trades/binance-futures_trades_2026-10-23_DOTUSDT.csv.gz"
+        },
+        {
+          "bytes": 125401084,
+          "modified": "SystemTime { tv_sec: 1792806328, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_DOTUSDT.csv.gz"
+        },
+        {
+          "bytes": 5001782,
+          "modified": "SystemTime { tv_sec: 1792891159, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/trades/binance-futures_trades_2026-10-24_DOTUSDT.csv.gz"
+        },
+        {
+          "bytes": 86587828,
+          "modified": "SystemTime { tv_sec: 1792893079, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_DOTUSDT.csv.gz"
+        },
+        {
+          "bytes": 3626413,
+          "modified": "SystemTime { tv_sec: 1792975541, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/trades/binance-futures_trades_2026-10-25_DOTUSDT.csv.gz"
+        },
+        {
+          "bytes": 72385704,
+          "modified": "SystemTime { tv_sec: 1792977898, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_DOTUSDT.csv.gz"
+        },
+        {
+          "bytes": 4692569,
+          "modified": "SystemTime { tv_sec: 1793061993, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/trades/binance-futures_trades_2026-10-26_DOTUSDT.csv.gz"
+        },
+        {
+          "bytes": 96453396,
+          "modified": "SystemTime { tv_sec: 1793063375, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_DOTUSDT.csv.gz"
+        },
+        {
+          "bytes": 4303008,
+          "modified": "SystemTime { tv_sec: 1793150872, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/trades/binance-futures_trades_2026-10-27_DOTUSDT.csv.gz"
+        },
+        {
+          "bytes": 78813489,
+          "modified": "SystemTime { tv_sec: 1793152277, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_DOTUSDT.csv.gz"
+        },
+        {
+          "bytes": 5023771,
+          "modified": "SystemTime { tv_sec: 1793235232, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/trades/binance-futures_trades_2026-10-28_DOTUSDT.csv.gz"
+        },
+        {
+          "bytes": 93912859,
+          "modified": "SystemTime { tv_sec: 1793236245, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_DOTUSDT.csv.gz"
+        }
+      ],
+      "symbol": "DOTUSDT",
+      "trade_rows": 3961376
+    },
+    "EGLDUSDT": {
+      "bars": 672,
+      "book_rows": 9377638,
+      "bytes": 782893,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 19.175695284,
+      "sha256": "95bf4ff8cf2eb108548e875ea6c7cd2fcde493e68e3d89ef9666de8aaade07ad",
+      "sources": [
+        {
+          "bytes": 841609,
+          "modified": "SystemTime { tv_sec: 1792719974, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_egldusdt/trades/binance-futures_trades_2026-10-22_EGLDUSDT.csv.gz"
+        },
+        {
+          "bytes": 13444864,
+          "modified": "SystemTime { tv_sec: 1792720364, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_egldusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_EGLDUSDT.csv.gz"
+        },
+        {
+          "bytes": 963380,
+          "modified": "SystemTime { tv_sec: 1792807257, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_egldusdt/trades/binance-futures_trades_2026-10-23_EGLDUSDT.csv.gz"
+        },
+        {
+          "bytes": 13950139,
+          "modified": "SystemTime { tv_sec: 1792806918, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_egldusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_EGLDUSDT.csv.gz"
+        },
+        {
+          "bytes": 819705,
+          "modified": "SystemTime { tv_sec: 1792893294, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_egldusdt/trades/binance-futures_trades_2026-10-24_EGLDUSDT.csv.gz"
+        },
+        {
+          "bytes": 11589126,
+          "modified": "SystemTime { tv_sec: 1792892298, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_egldusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_EGLDUSDT.csv.gz"
+        },
+        {
+          "bytes": 559737,
+          "modified": "SystemTime { tv_sec: 1792975971, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_egldusdt/trades/binance-futures_trades_2026-10-25_EGLDUSDT.csv.gz"
+        },
+        {
+          "bytes": 9559455,
+          "modified": "SystemTime { tv_sec: 1792977476, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_egldusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_EGLDUSDT.csv.gz"
+        },
+        {
+          "bytes": 770841,
+          "modified": "SystemTime { tv_sec: 1793062560, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_egldusdt/trades/binance-futures_trades_2026-10-26_EGLDUSDT.csv.gz"
+        },
+        {
+          "bytes": 13586103,
+          "modified": "SystemTime { tv_sec: 1793065283, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_egldusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_EGLDUSDT.csv.gz"
+        },
+        {
+          "bytes": 481519,
+          "modified": "SystemTime { tv_sec: 1793153031, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_egldusdt/trades/binance-futures_trades_2026-10-27_EGLDUSDT.csv.gz"
+        },
+        {
+          "bytes": 9288701,
+          "modified": "SystemTime { tv_sec: 1793152416, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_egldusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_EGLDUSDT.csv.gz"
+        },
+        {
+          "bytes": 501769,
+          "modified": "SystemTime { tv_sec: 1793235732, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_egldusdt/trades/binance-futures_trades_2026-10-28_EGLDUSDT.csv.gz"
+        },
+        {
+          "bytes": 9809443,
+          "modified": "SystemTime { tv_sec: 1793237827, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_egldusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_EGLDUSDT.csv.gz"
+        }
+      ],
+      "symbol": "EGLDUSDT",
+      "trade_rows": 502824
+    },
+    "ENJUSDT": {
+      "bars": 672,
+      "book_rows": 6598711,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 13.090464043,
+      "sha256": "9484e5771676894af3417e6f0dc7c9a326def0a3cbde67c28afe57403e59d29c",
+      "sources": [
+        {
+          "bytes": 488893,
+          "modified": "SystemTime { tv_sec: 1792720762, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_enjusdt/trades/binance-futures_trades_2026-10-22_ENJUSDT.csv.gz"
+        },
+        {
+          "bytes": 9879757,
+          "modified": "SystemTime { tv_sec: 1792720299, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_enjusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_ENJUSDT.csv.gz"
+        },
+        {
+          "bytes": 753097,
+          "modified": "SystemTime { tv_sec: 1792807172, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_enjusdt/trades/binance-futures_trades_2026-10-23_ENJUSDT.csv.gz"
+        },
+        {
+          "bytes": 9727360,
+          "modified": "SystemTime { tv_sec: 1792807061, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_enjusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_ENJUSDT.csv.gz"
+        },
+        {
+          "bytes": 486398,
+          "modified": "SystemTime { tv_sec: 1792893487, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_enjusdt/trades/binance-futures_trades_2026-10-24_ENJUSDT.csv.gz"
+        },
+        {
+          "bytes": 9079298,
+          "modified": "SystemTime { tv_sec: 1792893109, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_enjusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_ENJUSDT.csv.gz"
+        },
+        {
+          "bytes": 396868,
+          "modified": "SystemTime { tv_sec: 1792978327, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_enjusdt/trades/binance-futures_trades_2026-10-25_ENJUSDT.csv.gz"
+        },
+        {
+          "bytes": 7415510,
+          "modified": "SystemTime { tv_sec: 1792978041, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_enjusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_ENJUSDT.csv.gz"
+        },
+        {
+          "bytes": 484709,
+          "modified": "SystemTime { tv_sec: 1793062356, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_enjusdt/trades/binance-futures_trades_2026-10-26_ENJUSDT.csv.gz"
+        },
+        {
+          "bytes": 9702090,
+          "modified": "SystemTime { tv_sec: 1793065221, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_enjusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_ENJUSDT.csv.gz"
+        },
+        {
+          "bytes": 409339,
+          "modified": "SystemTime { tv_sec: 1793152854, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_enjusdt/trades/binance-futures_trades_2026-10-27_ENJUSDT.csv.gz"
+        },
+        {
+          "bytes": 7775478,
+          "modified": "SystemTime { tv_sec: 1793152907, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_enjusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_ENJUSDT.csv.gz"
+        },
+        {
+          "bytes": 331466,
+          "modified": "SystemTime { tv_sec: 1793238381, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_enjusdt/trades/binance-futures_trades_2026-10-28_ENJUSDT.csv.gz"
+        },
+        {
+          "bytes": 6910814,
+          "modified": "SystemTime { tv_sec: 1793235460, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_enjusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_ENJUSDT.csv.gz"
+        }
+      ],
+      "symbol": "ENJUSDT",
+      "trade_rows": 310994
+    },
+    "ETCUSDT": {
+      "bars": 672,
+      "book_rows": 21373652,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 37.487438322,
+      "sha256": "2e707d70e388b547694a9e927c4d2519c0fa9a64bc0c6e6c29ba8455727b3d09",
+      "sources": [
+        {
+          "bytes": 1422411,
+          "modified": "SystemTime { tv_sec: 1792718734, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/trades/binance-futures_trades_2026-10-22_ETCUSDT.csv.gz"
+        },
+        {
+          "bytes": 28513975,
+          "modified": "SystemTime { tv_sec: 1792719810, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_ETCUSDT.csv.gz"
+        },
+        {
+          "bytes": 1426034,
+          "modified": "SystemTime { tv_sec: 1792805385, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/trades/binance-futures_trades_2026-10-23_ETCUSDT.csv.gz"
+        },
+        {
+          "bytes": 29715334,
+          "modified": "SystemTime { tv_sec: 1792806262, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_ETCUSDT.csv.gz"
+        },
+        {
+          "bytes": 1317037,
+          "modified": "SystemTime { tv_sec: 1792891119, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/trades/binance-futures_trades_2026-10-24_ETCUSDT.csv.gz"
+        },
+        {
+          "bytes": 25696836,
+          "modified": "SystemTime { tv_sec: 1792892795, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_ETCUSDT.csv.gz"
+        },
+        {
+          "bytes": 977823,
+          "modified": "SystemTime { tv_sec: 1792975383, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/trades/binance-futures_trades_2026-10-25_ETCUSDT.csv.gz"
+        },
+        {
+          "bytes": 22499461,
+          "modified": "SystemTime { tv_sec: 1792976780, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_ETCUSDT.csv.gz"
+        },
+        {
+          "bytes": 1355904,
+          "modified": "SystemTime { tv_sec: 1793062065, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/trades/binance-futures_trades_2026-10-26_ETCUSDT.csv.gz"
+        },
+        {
+          "bytes": 31150030,
+          "modified": "SystemTime { tv_sec: 1793062853, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_ETCUSDT.csv.gz"
+        },
+        {
+          "bytes": 969080,
+          "modified": "SystemTime { tv_sec: 1793150766, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/trades/binance-futures_trades_2026-10-27_ETCUSDT.csv.gz"
+        },
+        {
+          "bytes": 23637472,
+          "modified": "SystemTime { tv_sec: 1793152829, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_ETCUSDT.csv.gz"
+        },
+        {
+          "bytes": 1274031,
+          "modified": "SystemTime { tv_sec: 1793235501, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/trades/binance-futures_trades_2026-10-28_ETCUSDT.csv.gz"
+        },
+        {
+          "bytes": 28086065,
+          "modified": "SystemTime { tv_sec: 1793237725, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_ETCUSDT.csv.gz"
+        }
+      ],
+      "symbol": "ETCUSDT",
+      "trade_rows": 877452
+    },
+    "FILUSDT": {
+      "bars": 672,
+      "book_rows": 73524280,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 122.60727434,
+      "sha256": "edcfcca4abd819de8d6622c0cf50910e787663e1bb82abd1ea39edf4becb76d1",
+      "sources": [
+        {
+          "bytes": 8943139,
+          "modified": "SystemTime { tv_sec: 1792718754, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/trades/binance-futures_trades_2026-10-22_FILUSDT.csv.gz"
+        },
+        {
+          "bytes": 111492748,
+          "modified": "SystemTime { tv_sec: 1792719472, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_FILUSDT.csv.gz"
+        },
+        {
+          "bytes": 6398676,
+          "modified": "SystemTime { tv_sec: 1792805428, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/trades/binance-futures_trades_2026-10-23_FILUSDT.csv.gz"
+        },
+        {
+          "bytes": 82257689,
+          "modified": "SystemTime { tv_sec: 1792806851, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_FILUSDT.csv.gz"
+        },
+        {
+          "bytes": 5228893,
+          "modified": "SystemTime { tv_sec: 1792891148, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/trades/binance-futures_trades_2026-10-24_FILUSDT.csv.gz"
+        },
+        {
+          "bytes": 70615616,
+          "modified": "SystemTime { tv_sec: 1792893224, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_FILUSDT.csv.gz"
+        },
+        {
+          "bytes": 3842659,
+          "modified": "SystemTime { tv_sec: 1792975618, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/trades/binance-futures_trades_2026-10-25_FILUSDT.csv.gz"
+        },
+        {
+          "bytes": 53413485,
+          "modified": "SystemTime { tv_sec: 1792977629, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_FILUSDT.csv.gz"
+        },
+        {
+          "bytes": 5723438,
+          "modified": "SystemTime { tv_sec: 1793062081, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/trades/binance-futures_trades_2026-10-26_FILUSDT.csv.gz"
+        },
+        {
+          "bytes": 91946280,
+          "modified": "SystemTime { tv_sec: 1793063772, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_FILUSDT.csv.gz"
+        },
+        {
+          "bytes": 4815529,
+          "modified": "SystemTime { tv_sec: 1793150712, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/trades/binance-futures_trades_2026-10-27_FILUSDT.csv.gz"
+        },
+        {
+          "bytes": 75384493,
+          "modified": "SystemTime { tv_sec: 1793152858, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_FILUSDT.csv.gz"
+        },
+        {
+          "bytes": 5819556,
+          "modified": "SystemTime { tv_sec: 1793235572, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/trades/binance-futures_trades_2026-10-28_FILUSDT.csv.gz"
+        },
+        {
+          "bytes": 85414700,
+          "modified": "SystemTime { tv_sec: 1793238300, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_FILUSDT.csv.gz"
+        }
+      ],
+      "symbol": "FILUSDT",
+      "trade_rows": 4530487
+    },
+    "IOSTUSDT": {
+      "bars": 672,
+      "book_rows": 99817060,
+      "bytes": 782893,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 144.026931843,
+      "sha256": "eb80bf4237f98b4bae121b0eea4c38c467c2050398d8cf90f0eb2935c5bee89b",
+      "sources": [
+        {
+          "bytes": 28518375,
+          "modified": "SystemTime { tv_sec: 1792718784, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iostusdt/trades/binance-futures_trades_2026-10-22_IOSTUSDT.csv.gz"
+        },
+        {
+          "bytes": 322915067,
+          "modified": "SystemTime { tv_sec: 1792719431, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iostusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_IOSTUSDT.csv.gz"
+        },
+        {
+          "bytes": 9020759,
+          "modified": "SystemTime { tv_sec: 1792806969, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iostusdt/trades/binance-futures_trades_2026-10-23_IOSTUSDT.csv.gz"
+        },
+        {
+          "bytes": 114262237,
+          "modified": "SystemTime { tv_sec: 1792807199, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iostusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_IOSTUSDT.csv.gz"
+        },
+        {
+          "bytes": 6395214,
+          "modified": "SystemTime { tv_sec: 1792892568, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iostusdt/trades/binance-futures_trades_2026-10-24_IOSTUSDT.csv.gz"
+        },
+        {
+          "bytes": 82638805,
+          "modified": "SystemTime { tv_sec: 1792891853, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iostusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_IOSTUSDT.csv.gz"
+        },
+        {
+          "bytes": 8062512,
+          "modified": "SystemTime { tv_sec: 1792975773, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iostusdt/trades/binance-futures_trades_2026-10-25_IOSTUSDT.csv.gz"
+        },
+        {
+          "bytes": 96810382,
+          "modified": "SystemTime { tv_sec: 1792977631, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iostusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_IOSTUSDT.csv.gz"
+        },
+        {
+          "bytes": 4446614,
+          "modified": "SystemTime { tv_sec: 1793062228, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iostusdt/trades/binance-futures_trades_2026-10-26_IOSTUSDT.csv.gz"
+        },
+        {
+          "bytes": 58517878,
+          "modified": "SystemTime { tv_sec: 1793065273, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iostusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_IOSTUSDT.csv.gz"
+        },
+        {
+          "bytes": 5366120,
+          "modified": "SystemTime { tv_sec: 1793151250, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iostusdt/trades/binance-futures_trades_2026-10-27_IOSTUSDT.csv.gz"
+        },
+        {
+          "bytes": 63715327,
+          "modified": "SystemTime { tv_sec: 1793152938, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iostusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_IOSTUSDT.csv.gz"
+        },
+        {
+          "bytes": 2850450,
+          "modified": "SystemTime { tv_sec: 1793235703, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iostusdt/trades/binance-futures_trades_2026-10-28_IOSTUSDT.csv.gz"
+        },
+        {
+          "bytes": 42070330,
+          "modified": "SystemTime { tv_sec: 1793236324, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iostusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_IOSTUSDT.csv.gz"
+        }
+      ],
+      "symbol": "IOSTUSDT",
+      "trade_rows": 6603803
+    },
+    "IOTAUSDT": {
+      "bars": 672,
+      "book_rows": 9342386,
+      "bytes": 782893,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 17.555895122,
+      "sha256": "1519832436e6ba20dc7a1d74825c8308c22a4e2202682cfff990c5a62542f448",
+      "sources": [
+        {
+          "bytes": 564170,
+          "modified": "SystemTime { tv_sec: 1792720970, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iotausdt/trades/binance-futures_trades_2026-10-22_IOTAUSDT.csv.gz"
+        },
+        {
+          "bytes": 14042288,
+          "modified": "SystemTime { tv_sec: 1792720350, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iotausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_IOTAUSDT.csv.gz"
+        },
+        {
+          "bytes": 625732,
+          "modified": "SystemTime { tv_sec: 1792807478, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iotausdt/trades/binance-futures_trades_2026-10-23_IOTAUSDT.csv.gz"
+        },
+        {
+          "bytes": 13077674,
+          "modified": "SystemTime { tv_sec: 1792806709, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iotausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_IOTAUSDT.csv.gz"
+        },
+        {
+          "bytes": 654367,
+          "modified": "SystemTime { tv_sec: 1792892903, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iotausdt/trades/binance-futures_trades_2026-10-24_IOTAUSDT.csv.gz"
+        },
+        {
+          "bytes": 12415144,
+          "modified": "SystemTime { tv_sec: 1792893578, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iotausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_IOTAUSDT.csv.gz"
+        },
+        {
+          "bytes": 407655,
+          "modified": "SystemTime { tv_sec: 1792975754, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iotausdt/trades/binance-futures_trades_2026-10-25_IOTAUSDT.csv.gz"
+        },
+        {
+          "bytes": 10458264,
+          "modified": "SystemTime { tv_sec: 1792977935, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iotausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_IOTAUSDT.csv.gz"
+        },
+        {
+          "bytes": 571964,
+          "modified": "SystemTime { tv_sec: 1793062292, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iotausdt/trades/binance-futures_trades_2026-10-26_IOTAUSDT.csv.gz"
+        },
+        {
+          "bytes": 13418615,
+          "modified": "SystemTime { tv_sec: 1793065601, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iotausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_IOTAUSDT.csv.gz"
+        },
+        {
+          "bytes": 546371,
+          "modified": "SystemTime { tv_sec: 1793151374, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iotausdt/trades/binance-futures_trades_2026-10-27_IOTAUSDT.csv.gz"
+        },
+        {
+          "bytes": 11615544,
+          "modified": "SystemTime { tv_sec: 1793152221, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iotausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_IOTAUSDT.csv.gz"
+        },
+        {
+          "bytes": 585062,
+          "modified": "SystemTime { tv_sec: 1793235996, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iotausdt/trades/binance-futures_trades_2026-10-28_IOTAUSDT.csv.gz"
+        },
+        {
+          "bytes": 12149033,
+          "modified": "SystemTime { tv_sec: 1793237449, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_iotausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_IOTAUSDT.csv.gz"
+        }
+      ],
+      "symbol": "IOTAUSDT",
+      "trade_rows": 342400
+    },
+    "KAVAUSDT": {
+      "bars": 672,
+      "book_rows": 3762195,
+      "bytes": 782893,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 9.37004042,
+      "sha256": "e15bf92e8ecfd195bdfb7e5ff3f6ec02c53dafb5b3cfdf21ee613dbe9e2e8597",
+      "sources": [
+        {
+          "bytes": 705403,
+          "modified": "SystemTime { tv_sec: 1792720770, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kavausdt/trades/binance-futures_trades_2026-10-22_KAVAUSDT.csv.gz"
+        },
+        {
+          "bytes": 5103967,
+          "modified": "SystemTime { tv_sec: 1792719794, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kavausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_KAVAUSDT.csv.gz"
+        },
+        {
+          "bytes": 753607,
+          "modified": "SystemTime { tv_sec: 1792807036, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kavausdt/trades/binance-futures_trades_2026-10-23_KAVAUSDT.csv.gz"
+        },
+        {
+          "bytes": 5839838,
+          "modified": "SystemTime { tv_sec: 1792807065, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kavausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_KAVAUSDT.csv.gz"
+        },
+        {
+          "bytes": 641494,
+          "modified": "SystemTime { tv_sec: 1792893321, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kavausdt/trades/binance-futures_trades_2026-10-24_KAVAUSDT.csv.gz"
+        },
+        {
+          "bytes": 5031210,
+          "modified": "SystemTime { tv_sec: 1792893322, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kavausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_KAVAUSDT.csv.gz"
+        },
+        {
+          "bytes": 529275,
+          "modified": "SystemTime { tv_sec: 1792977838, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kavausdt/trades/binance-futures_trades_2026-10-25_KAVAUSDT.csv.gz"
+        },
+        {
+          "bytes": 4468248,
+          "modified": "SystemTime { tv_sec: 1792977551, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kavausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_KAVAUSDT.csv.gz"
+        },
+        {
+          "bytes": 663211,
+          "modified": "SystemTime { tv_sec: 1793065688, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kavausdt/trades/binance-futures_trades_2026-10-26_KAVAUSDT.csv.gz"
+        },
+        {
+          "bytes": 6163175,
+          "modified": "SystemTime { tv_sec: 1793065613, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kavausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_KAVAUSDT.csv.gz"
+        },
+        {
+          "bytes": 519094,
+          "modified": "SystemTime { tv_sec: 1793153035, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kavausdt/trades/binance-futures_trades_2026-10-27_KAVAUSDT.csv.gz"
+        },
+        {
+          "bytes": 4689561,
+          "modified": "SystemTime { tv_sec: 1793152551, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kavausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_KAVAUSDT.csv.gz"
+        },
+        {
+          "bytes": 588777,
+          "modified": "SystemTime { tv_sec: 1793238353, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kavausdt/trades/binance-futures_trades_2026-10-28_KAVAUSDT.csv.gz"
+        },
+        {
+          "bytes": 5535220,
+          "modified": "SystemTime { tv_sec: 1793237765, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kavausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_KAVAUSDT.csv.gz"
+        }
+      ],
+      "symbol": "KAVAUSDT",
+      "trade_rows": 409017
+    },
+    "KNCUSDT": {
+      "bars": 672,
+      "book_rows": 2356083,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 6.01930656,
+      "sha256": "763393c4fea47839dce40ff0000487c8939eb125253f160b5265909aec558f96",
+      "sources": [
+        {
+          "bytes": 184581,
+          "modified": "SystemTime { tv_sec: 1792720576, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kncusdt/trades/binance-futures_trades_2026-10-22_KNCUSDT.csv.gz"
+        },
+        {
+          "bytes": 3160973,
+          "modified": "SystemTime { tv_sec: 1792720578, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kncusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_KNCUSDT.csv.gz"
+        },
+        {
+          "bytes": 255167,
+          "modified": "SystemTime { tv_sec: 1792807483, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kncusdt/trades/binance-futures_trades_2026-10-23_KNCUSDT.csv.gz"
+        },
+        {
+          "bytes": 3678589,
+          "modified": "SystemTime { tv_sec: 1792807259, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kncusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_KNCUSDT.csv.gz"
+        },
+        {
+          "bytes": 214989,
+          "modified": "SystemTime { tv_sec: 1792891206, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kncusdt/trades/binance-futures_trades_2026-10-24_KNCUSDT.csv.gz"
+        },
+        {
+          "bytes": 3562570,
+          "modified": "SystemTime { tv_sec: 1792893077, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kncusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_KNCUSDT.csv.gz"
+        },
+        {
+          "bytes": 180697,
+          "modified": "SystemTime { tv_sec: 1792977852, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kncusdt/trades/binance-futures_trades_2026-10-25_KNCUSDT.csv.gz"
+        },
+        {
+          "bytes": 3367718,
+          "modified": "SystemTime { tv_sec: 1792978377, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kncusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_KNCUSDT.csv.gz"
+        },
+        {
+          "bytes": 170633,
+          "modified": "SystemTime { tv_sec: 1793065811, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kncusdt/trades/binance-futures_trades_2026-10-26_KNCUSDT.csv.gz"
+        },
+        {
+          "bytes": 3266109,
+          "modified": "SystemTime { tv_sec: 1793065741, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kncusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_KNCUSDT.csv.gz"
+        },
+        {
+          "bytes": 136811,
+          "modified": "SystemTime { tv_sec: 1793153168, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kncusdt/trades/binance-futures_trades_2026-10-27_KNCUSDT.csv.gz"
+        },
+        {
+          "bytes": 2720938,
+          "modified": "SystemTime { tv_sec: 1793152502, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kncusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_KNCUSDT.csv.gz"
+        },
+        {
+          "bytes": 142317,
+          "modified": "SystemTime { tv_sec: 1793238479, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kncusdt/trades/binance-futures_trades_2026-10-28_KNCUSDT.csv.gz"
+        },
+        {
+          "bytes": 2868592,
+          "modified": "SystemTime { tv_sec: 1793238371, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_kncusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_KNCUSDT.csv.gz"
+        }
+      ],
+      "symbol": "KNCUSDT",
+      "trade_rows": 129880
+    },
+    "KSMUSDT": {
+      "bars": 672,
+      "book_rows": 5782007,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 10.433037663,
+      "sha256": "6117682c809565a72d3b194d7eed85b49d15b8ca105590ca2b5416c967712183",
+      "sources": [
+        {
+          "bytes": 436713,
+          "modified": "SystemTime { tv_sec: 1792720307, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ksmusdt/trades/binance-futures_trades_2026-10-22_KSMUSDT.csv.gz"
+        },
+        {
+          "bytes": 7648336,
+          "modified": "SystemTime { tv_sec: 1792720334, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ksmusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_KSMUSDT.csv.gz"
+        },
+        {
+          "bytes": 414153,
+          "modified": "SystemTime { tv_sec: 1792807249, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ksmusdt/trades/binance-futures_trades_2026-10-23_KSMUSDT.csv.gz"
+        },
+        {
+          "bytes": 8329347,
+          "modified": "SystemTime { tv_sec: 1792807168, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ksmusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_KSMUSDT.csv.gz"
+        },
+        {
+          "bytes": 353462,
+          "modified": "SystemTime { tv_sec: 1792893122, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ksmusdt/trades/binance-futures_trades_2026-10-24_KSMUSDT.csv.gz"
+        },
+        {
+          "bytes": 6508911,
+          "modified": "SystemTime { tv_sec: 1792893423, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ksmusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_KSMUSDT.csv.gz"
+        },
+        {
+          "bytes": 330016,
+          "modified": "SystemTime { tv_sec: 1792978372, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ksmusdt/trades/binance-futures_trades_2026-10-25_KSMUSDT.csv.gz"
+        },
+        {
+          "bytes": 6232262,
+          "modified": "SystemTime { tv_sec: 1792978341, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ksmusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_KSMUSDT.csv.gz"
+        },
+        {
+          "bytes": 306665,
+          "modified": "SystemTime { tv_sec: 1793065686, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ksmusdt/trades/binance-futures_trades_2026-10-26_KSMUSDT.csv.gz"
+        },
+        {
+          "bytes": 7691475,
+          "modified": "SystemTime { tv_sec: 1793065682, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ksmusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_KSMUSDT.csv.gz"
+        },
+        {
+          "bytes": 238964,
+          "modified": "SystemTime { tv_sec: 1793151400, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ksmusdt/trades/binance-futures_trades_2026-10-27_KSMUSDT.csv.gz"
+        },
+        {
+          "bytes": 5523836,
+          "modified": "SystemTime { tv_sec: 1793152574, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ksmusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_KSMUSDT.csv.gz"
+        },
+        {
+          "bytes": 374826,
+          "modified": "SystemTime { tv_sec: 1793235919, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ksmusdt/trades/binance-futures_trades_2026-10-28_KSMUSDT.csv.gz"
+        },
+        {
+          "bytes": 6157060,
+          "modified": "SystemTime { tv_sec: 1793238092, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ksmusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_KSMUSDT.csv.gz"
+        }
+      ],
+      "symbol": "KSMUSDT",
+      "trade_rows": 231588
+    },
+    "LTCUSDT": {
+      "bars": 672,
+      "book_rows": 43651138,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 72.537211809,
+      "sha256": "cd03ee9be4152039ab261263e795318ca56c546df5950d99e823ca6ca8a7c993",
+      "sources": [
+        {
+          "bytes": 2552078,
+          "modified": "SystemTime { tv_sec: 1792718726, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/trades/binance-futures_trades_2026-10-22_LTCUSDT.csv.gz"
+        },
+        {
+          "bytes": 50849948,
+          "modified": "SystemTime { tv_sec: 1792720129, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_LTCUSDT.csv.gz"
+        },
+        {
+          "bytes": 2600316,
+          "modified": "SystemTime { tv_sec: 1792805232, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/trades/binance-futures_trades_2026-10-23_LTCUSDT.csv.gz"
+        },
+        {
+          "bytes": 58491909,
+          "modified": "SystemTime { tv_sec: 1792806352, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_LTCUSDT.csv.gz"
+        },
+        {
+          "bytes": 2649789,
+          "modified": "SystemTime { tv_sec: 1792891177, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/trades/binance-futures_trades_2026-10-24_LTCUSDT.csv.gz"
+        },
+        {
+          "bytes": 49651146,
+          "modified": "SystemTime { tv_sec: 1792893167, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_LTCUSDT.csv.gz"
+        },
+        {
+          "bytes": 1664277,
+          "modified": "SystemTime { tv_sec: 1792975440, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/trades/binance-futures_trades_2026-10-25_LTCUSDT.csv.gz"
+        },
+        {
+          "bytes": 38684708,
+          "modified": "SystemTime { tv_sec: 1792976168, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_LTCUSDT.csv.gz"
+        },
+        {
+          "bytes": 2318803,
+          "modified": "SystemTime { tv_sec: 1793062087, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/trades/binance-futures_trades_2026-10-26_LTCUSDT.csv.gz"
+        },
+        {
+          "bytes": 59071894,
+          "modified": "SystemTime { tv_sec: 1793065792, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_LTCUSDT.csv.gz"
+        },
+        {
+          "bytes": 1795111,
+          "modified": "SystemTime { tv_sec: 1793150856, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/trades/binance-futures_trades_2026-10-27_LTCUSDT.csv.gz"
+        },
+        {
+          "bytes": 53621974,
+          "modified": "SystemTime { tv_sec: 1793152960, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_LTCUSDT.csv.gz"
+        },
+        {
+          "bytes": 3246481,
+          "modified": "SystemTime { tv_sec: 1793235553, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/trades/binance-futures_trades_2026-10-28_LTCUSDT.csv.gz"
+        },
+        {
+          "bytes": 67800392,
+          "modified": "SystemTime { tv_sec: 1793238414, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_LTCUSDT.csv.gz"
+        }
+      ],
+      "symbol": "LTCUSDT",
+      "trade_rows": 1822120
+    },
+    "NEARUSDT": {
+      "bars": 672,
+      "book_rows": 123323786,
+      "bytes": 782893,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 185.036490622,
+      "sha256": "b4c32d293884ceb428a983cb8d119a757be80d139328207427bcd01a167e71f5",
+      "sources": [
+        {
+          "bytes": 9404446,
+          "modified": "SystemTime { tv_sec: 1792718729, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/trades/binance-futures_trades_2026-10-22_NEARUSDT.csv.gz"
+        },
+        {
+          "bytes": 121981935,
+          "modified": "SystemTime { tv_sec: 1792718739, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_NEARUSDT.csv.gz"
+        },
+        {
+          "bytes": 9016595,
+          "modified": "SystemTime { tv_sec: 1792805223, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/trades/binance-futures_trades_2026-10-23_NEARUSDT.csv.gz"
+        },
+        {
+          "bytes": 136403632,
+          "modified": "SystemTime { tv_sec: 1792805851, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_NEARUSDT.csv.gz"
+        },
+        {
+          "bytes": 9377489,
+          "modified": "SystemTime { tv_sec: 1792891176, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/trades/binance-futures_trades_2026-10-24_NEARUSDT.csv.gz"
+        },
+        {
+          "bytes": 112811196,
+          "modified": "SystemTime { tv_sec: 1792891415, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_NEARUSDT.csv.gz"
+        },
+        {
+          "bytes": 7258591,
+          "modified": "SystemTime { tv_sec: 1792975319, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/trades/binance-futures_trades_2026-10-25_NEARUSDT.csv.gz"
+        },
+        {
+          "bytes": 100663246,
+          "modified": "SystemTime { tv_sec: 1792975682, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_NEARUSDT.csv.gz"
+        },
+        {
+          "bytes": 8281677,
+          "modified": "SystemTime { tv_sec: 1793061968, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/trades/binance-futures_trades_2026-10-26_NEARUSDT.csv.gz"
+        },
+        {
+          "bytes": 137333319,
+          "modified": "SystemTime { tv_sec: 1793065548, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_NEARUSDT.csv.gz"
+        },
+        {
+          "bytes": 7336171,
+          "modified": "SystemTime { tv_sec: 1793150888, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/trades/binance-futures_trades_2026-10-27_NEARUSDT.csv.gz"
+        },
+        {
+          "bytes": 119106212,
+          "modified": "SystemTime { tv_sec: 1793151347, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_NEARUSDT.csv.gz"
+        },
+        {
+          "bytes": 6977719,
+          "modified": "SystemTime { tv_sec: 1793235518, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/trades/binance-futures_trades_2026-10-28_NEARUSDT.csv.gz"
+        },
+        {
+          "bytes": 119808526,
+          "modified": "SystemTime { tv_sec: 1793235761, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_NEARUSDT.csv.gz"
+        }
+      ],
+      "symbol": "NEARUSDT",
+      "trade_rows": 8153480
+    },
+    "ONTUSDT": {
+      "bars": 672,
+      "book_rows": 7374313,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 11.802845929,
+      "sha256": "fa4db30aca9e2627134b7e1ea0c2d2b394b36ec8d2f37dec4bbf34206d2ccc26",
+      "sources": [
+        {
+          "bytes": 385879,
+          "modified": "SystemTime { tv_sec: 1792720764, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ontusdt/trades/binance-futures_trades_2026-10-22_ONTUSDT.csv.gz"
+        },
+        {
+          "bytes": 10318296,
+          "modified": "SystemTime { tv_sec: 1792720324, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ontusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_ONTUSDT.csv.gz"
+        },
+        {
+          "bytes": 381919,
+          "modified": "SystemTime { tv_sec: 1792807112, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ontusdt/trades/binance-futures_trades_2026-10-23_ONTUSDT.csv.gz"
+        },
+        {
+          "bytes": 10306250,
+          "modified": "SystemTime { tv_sec: 1792806485, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ontusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_ONTUSDT.csv.gz"
+        },
+        {
+          "bytes": 360196,
+          "modified": "SystemTime { tv_sec: 1792893501, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ontusdt/trades/binance-futures_trades_2026-10-24_ONTUSDT.csv.gz"
+        },
+        {
+          "bytes": 8156069,
+          "modified": "SystemTime { tv_sec: 1792893364, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ontusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_ONTUSDT.csv.gz"
+        },
+        {
+          "bytes": 355990,
+          "modified": "SystemTime { tv_sec: 1792977866, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ontusdt/trades/binance-futures_trades_2026-10-25_ONTUSDT.csv.gz"
+        },
+        {
+          "bytes": 7475527,
+          "modified": "SystemTime { tv_sec: 1792977409, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ontusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_ONTUSDT.csv.gz"
+        },
+        {
+          "bytes": 320893,
+          "modified": "SystemTime { tv_sec: 1793062919, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ontusdt/trades/binance-futures_trades_2026-10-26_ONTUSDT.csv.gz"
+        },
+        {
+          "bytes": 8025124,
+          "modified": "SystemTime { tv_sec: 1793063873, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ontusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_ONTUSDT.csv.gz"
+        },
+        {
+          "bytes": 333227,
+          "modified": "SystemTime { tv_sec: 1793151491, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ontusdt/trades/binance-futures_trades_2026-10-27_ONTUSDT.csv.gz"
+        },
+        {
+          "bytes": 8272912,
+          "modified": "SystemTime { tv_sec: 1793152484, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ontusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_ONTUSDT.csv.gz"
+        },
+        {
+          "bytes": 380591,
+          "modified": "SystemTime { tv_sec: 1793238377, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ontusdt/trades/binance-futures_trades_2026-10-28_ONTUSDT.csv.gz"
+        },
+        {
+          "bytes": 11974665,
+          "modified": "SystemTime { tv_sec: 1793238146, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ontusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_ONTUSDT.csv.gz"
+        }
+      ],
+      "symbol": "ONTUSDT",
+      "trade_rows": 225913
+    },
+    "QTUMUSDT": {
+      "bars": 672,
+      "book_rows": 6758415,
+      "bytes": 782893,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 9.863259353,
+      "sha256": "47fd111b881e6c0d252620aaeb571bbee256a590c2a0c2ed5a851cee8b4bf121",
+      "sources": [
+        {
+          "bytes": 340559,
+          "modified": "SystemTime { tv_sec: 1792720743, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_qtumusdt/trades/binance-futures_trades_2026-10-22_QTUMUSDT.csv.gz"
+        },
+        {
+          "bytes": 7453998,
+          "modified": "SystemTime { tv_sec: 1792720243, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_qtumusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_QTUMUSDT.csv.gz"
+        },
+        {
+          "bytes": 470348,
+          "modified": "SystemTime { tv_sec: 1792807313, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_qtumusdt/trades/binance-futures_trades_2026-10-23_QTUMUSDT.csv.gz"
+        },
+        {
+          "bytes": 9457896,
+          "modified": "SystemTime { tv_sec: 1792806848, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_qtumusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_QTUMUSDT.csv.gz"
+        },
+        {
+          "bytes": 309839,
+          "modified": "SystemTime { tv_sec: 1792893551, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_qtumusdt/trades/binance-futures_trades_2026-10-24_QTUMUSDT.csv.gz"
+        },
+        {
+          "bytes": 7712369,
+          "modified": "SystemTime { tv_sec: 1792893325, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_qtumusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_QTUMUSDT.csv.gz"
+        },
+        {
+          "bytes": 264227,
+          "modified": "SystemTime { tv_sec: 1792977650, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_qtumusdt/trades/binance-futures_trades_2026-10-25_QTUMUSDT.csv.gz"
+        },
+        {
+          "bytes": 6431260,
+          "modified": "SystemTime { tv_sec: 1792976201, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_qtumusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_QTUMUSDT.csv.gz"
+        },
+        {
+          "bytes": 416126,
+          "modified": "SystemTime { tv_sec: 1793062006, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_qtumusdt/trades/binance-futures_trades_2026-10-26_QTUMUSDT.csv.gz"
+        },
+        {
+          "bytes": 10589547,
+          "modified": "SystemTime { tv_sec: 1793065034, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_qtumusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_QTUMUSDT.csv.gz"
+        },
+        {
+          "bytes": 255226,
+          "modified": "SystemTime { tv_sec: 1793152842, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_qtumusdt/trades/binance-futures_trades_2026-10-27_QTUMUSDT.csv.gz"
+        },
+        {
+          "bytes": 6705770,
+          "modified": "SystemTime { tv_sec: 1793152056, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_qtumusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_QTUMUSDT.csv.gz"
+        },
+        {
+          "bytes": 324217,
+          "modified": "SystemTime { tv_sec: 1793238310, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_qtumusdt/trades/binance-futures_trades_2026-10-28_QTUMUSDT.csv.gz"
+        },
+        {
+          "bytes": 6916991,
+          "modified": "SystemTime { tv_sec: 1793237877, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_qtumusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_QTUMUSDT.csv.gz"
+        }
+      ],
+      "symbol": "QTUMUSDT",
+      "trade_rows": 208006
+    },
+    "RLCUSDT": {
+      "bars": 672,
+      "book_rows": 21277970,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 30.427393579,
+      "sha256": "4c237b14a7797bd15cfe1586429b7f76d9c7e78613aacf3e57a1ed53797cce51",
+      "sources": [
+        {
+          "bytes": 2311075,
+          "modified": "SystemTime { tv_sec: 1792719118, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rlcusdt/trades/binance-futures_trades_2026-10-22_RLCUSDT.csv.gz"
+        },
+        {
+          "bytes": 28592712,
+          "modified": "SystemTime { tv_sec: 1792719609, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rlcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_RLCUSDT.csv.gz"
+        },
+        {
+          "bytes": 2420805,
+          "modified": "SystemTime { tv_sec: 1792807187, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rlcusdt/trades/binance-futures_trades_2026-10-23_RLCUSDT.csv.gz"
+        },
+        {
+          "bytes": 27585471,
+          "modified": "SystemTime { tv_sec: 1792806360, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rlcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_RLCUSDT.csv.gz"
+        },
+        {
+          "bytes": 2780947,
+          "modified": "SystemTime { tv_sec: 1792893335, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rlcusdt/trades/binance-futures_trades_2026-10-24_RLCUSDT.csv.gz"
+        },
+        {
+          "bytes": 24400442,
+          "modified": "SystemTime { tv_sec: 1792893332, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rlcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_RLCUSDT.csv.gz"
+        },
+        {
+          "bytes": 2125516,
+          "modified": "SystemTime { tv_sec: 1792976104, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rlcusdt/trades/binance-futures_trades_2026-10-25_RLCUSDT.csv.gz"
+        },
+        {
+          "bytes": 22114530,
+          "modified": "SystemTime { tv_sec: 1792977725, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rlcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_RLCUSDT.csv.gz"
+        },
+        {
+          "bytes": 2951660,
+          "modified": "SystemTime { tv_sec: 1793062349, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rlcusdt/trades/binance-futures_trades_2026-10-26_RLCUSDT.csv.gz"
+        },
+        {
+          "bytes": 29884847,
+          "modified": "SystemTime { tv_sec: 1793064371, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rlcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_RLCUSDT.csv.gz"
+        },
+        {
+          "bytes": 2271750,
+          "modified": "SystemTime { tv_sec: 1793151430, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rlcusdt/trades/binance-futures_trades_2026-10-27_RLCUSDT.csv.gz"
+        },
+        {
+          "bytes": 22371569,
+          "modified": "SystemTime { tv_sec: 1793152149, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rlcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_RLCUSDT.csv.gz"
+        },
+        {
+          "bytes": 2028584,
+          "modified": "SystemTime { tv_sec: 1793235611, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rlcusdt/trades/binance-futures_trades_2026-10-28_RLCUSDT.csv.gz"
+        },
+        {
+          "bytes": 19856344,
+          "modified": "SystemTime { tv_sec: 1793238327, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rlcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_RLCUSDT.csv.gz"
+        }
+      ],
+      "symbol": "RLCUSDT",
+      "trade_rows": 1721241
+    },
+    "RSRUSDT": {
+      "bars": 672,
+      "book_rows": 12815518,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 19.524866669,
+      "sha256": "9c3521020844415aed4b510115aca51eea3de98d1156a6b3d354f2ebc9d15548",
+      "sources": [
+        {
+          "bytes": 1112568,
+          "modified": "SystemTime { tv_sec: 1792718854, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rsrusdt/trades/binance-futures_trades_2026-10-22_RSRUSDT.csv.gz"
+        },
+        {
+          "bytes": 17198694,
+          "modified": "SystemTime { tv_sec: 1792719863, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rsrusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_RSRUSDT.csv.gz"
+        },
+        {
+          "bytes": 872894,
+          "modified": "SystemTime { tv_sec: 1792807150, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rsrusdt/trades/binance-futures_trades_2026-10-23_RSRUSDT.csv.gz"
+        },
+        {
+          "bytes": 15465839,
+          "modified": "SystemTime { tv_sec: 1792806086, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rsrusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_RSRUSDT.csv.gz"
+        },
+        {
+          "bytes": 944745,
+          "modified": "SystemTime { tv_sec: 1792893566, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rsrusdt/trades/binance-futures_trades_2026-10-24_RSRUSDT.csv.gz"
+        },
+        {
+          "bytes": 17197647,
+          "modified": "SystemTime { tv_sec: 1792893182, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rsrusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_RSRUSDT.csv.gz"
+        },
+        {
+          "bytes": 839503,
+          "modified": "SystemTime { tv_sec: 1792977723, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rsrusdt/trades/binance-futures_trades_2026-10-25_RSRUSDT.csv.gz"
+        },
+        {
+          "bytes": 14906505,
+          "modified": "SystemTime { tv_sec: 1792977017, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rsrusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_RSRUSDT.csv.gz"
+        },
+        {
+          "bytes": 860724,
+          "modified": "SystemTime { tv_sec: 1793064660, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rsrusdt/trades/binance-futures_trades_2026-10-26_RSRUSDT.csv.gz"
+        },
+        {
+          "bytes": 15689995,
+          "modified": "SystemTime { tv_sec: 1793064615, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rsrusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_RSRUSDT.csv.gz"
+        },
+        {
+          "bytes": 695296,
+          "modified": "SystemTime { tv_sec: 1793153027, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rsrusdt/trades/binance-futures_trades_2026-10-27_RSRUSDT.csv.gz"
+        },
+        {
+          "bytes": 14185342,
+          "modified": "SystemTime { tv_sec: 1793152623, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rsrusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_RSRUSDT.csv.gz"
+        },
+        {
+          "bytes": 934101,
+          "modified": "SystemTime { tv_sec: 1793238351, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rsrusdt/trades/binance-futures_trades_2026-10-28_RSRUSDT.csv.gz"
+        },
+        {
+          "bytes": 16059598,
+          "modified": "SystemTime { tv_sec: 1793238272, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_rsrusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_RSRUSDT.csv.gz"
+        }
+      ],
+      "symbol": "RSRUSDT",
+      "trade_rows": 561776
+    },
+    "RUNEUSDT": {
+      "bars": 672,
+      "book_rows": 13110362,
+      "bytes": 782893,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 18.451746359,
+      "sha256": "09b483557e706638906070811297cac7b8eed48c241d32eca624d6658228114e",
+      "sources": [
+        {
+          "bytes": 3491291,
+          "modified": "SystemTime { tv_sec: 1792718684, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_runeusdt/trades/binance-futures_trades_2026-10-22_RUNEUSDT.csv.gz"
+        },
+        {
+          "bytes": 31587992,
+          "modified": "SystemTime { tv_sec: 1792720149, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_runeusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_RUNEUSDT.csv.gz"
+        },
+        {
+          "bytes": 1386822,
+          "modified": "SystemTime { tv_sec: 1792805370, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_runeusdt/trades/binance-futures_trades_2026-10-23_RUNEUSDT.csv.gz"
+        },
+        {
+          "bytes": 17539014,
+          "modified": "SystemTime { tv_sec: 1792806164, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_runeusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_RUNEUSDT.csv.gz"
+        },
+        {
+          "bytes": 670235,
+          "modified": "SystemTime { tv_sec: 1792891135, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_runeusdt/trades/binance-futures_trades_2026-10-24_RUNEUSDT.csv.gz"
+        },
+        {
+          "bytes": 11283488,
+          "modified": "SystemTime { tv_sec: 1792892467, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_runeusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_RUNEUSDT.csv.gz"
+        },
+        {
+          "bytes": 523479,
+          "modified": "SystemTime { tv_sec: 1792975414, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_runeusdt/trades/binance-futures_trades_2026-10-25_RUNEUSDT.csv.gz"
+        },
+        {
+          "bytes": 8616215,
+          "modified": "SystemTime { tv_sec: 1792977675, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_runeusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_RUNEUSDT.csv.gz"
+        },
+        {
+          "bytes": 727449,
+          "modified": "SystemTime { tv_sec: 1793062036, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_runeusdt/trades/binance-futures_trades_2026-10-26_RUNEUSDT.csv.gz"
+        },
+        {
+          "bytes": 13226412,
+          "modified": "SystemTime { tv_sec: 1793064422, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_runeusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_RUNEUSDT.csv.gz"
+        },
+        {
+          "bytes": 462113,
+          "modified": "SystemTime { tv_sec: 1793151012, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_runeusdt/trades/binance-futures_trades_2026-10-27_RUNEUSDT.csv.gz"
+        },
+        {
+          "bytes": 9659980,
+          "modified": "SystemTime { tv_sec: 1793152754, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_runeusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_RUNEUSDT.csv.gz"
+        },
+        {
+          "bytes": 545977,
+          "modified": "SystemTime { tv_sec: 1793235524, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_runeusdt/trades/binance-futures_trades_2026-10-28_RUNEUSDT.csv.gz"
+        },
+        {
+          "bytes": 9910858,
+          "modified": "SystemTime { tv_sec: 1793238048, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_runeusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_RUNEUSDT.csv.gz"
+        }
+      ],
+      "symbol": "RUNEUSDT",
+      "trade_rows": 880629
+    },
+    "SKLUSDT": {
+      "bars": 672,
+      "book_rows": 6726740,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 11.31413028,
+      "sha256": "edf05f43c328ef6bb74e4fe1666cb122d2a78d6c391370cb9a506b185af83fe1",
+      "sources": [
+        {
+          "bytes": 760411,
+          "modified": "SystemTime { tv_sec: 1792720979, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sklusdt/trades/binance-futures_trades_2026-10-22_SKLUSDT.csv.gz"
+        },
+        {
+          "bytes": 9358457,
+          "modified": "SystemTime { tv_sec: 1792720896, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sklusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_SKLUSDT.csv.gz"
+        },
+        {
+          "bytes": 696716,
+          "modified": "SystemTime { tv_sec: 1792806391, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sklusdt/trades/binance-futures_trades_2026-10-23_SKLUSDT.csv.gz"
+        },
+        {
+          "bytes": 9971108,
+          "modified": "SystemTime { tv_sec: 1792807132, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sklusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_SKLUSDT.csv.gz"
+        },
+        {
+          "bytes": 622606,
+          "modified": "SystemTime { tv_sec: 1792892656, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sklusdt/trades/binance-futures_trades_2026-10-24_SKLUSDT.csv.gz"
+        },
+        {
+          "bytes": 9137646,
+          "modified": "SystemTime { tv_sec: 1792893531, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sklusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_SKLUSDT.csv.gz"
+        },
+        {
+          "bytes": 759446,
+          "modified": "SystemTime { tv_sec: 1792975881, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sklusdt/trades/binance-futures_trades_2026-10-25_SKLUSDT.csv.gz"
+        },
+        {
+          "bytes": 8741663,
+          "modified": "SystemTime { tv_sec: 1792977510, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sklusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_SKLUSDT.csv.gz"
+        },
+        {
+          "bytes": 578134,
+          "modified": "SystemTime { tv_sec: 1793062904, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sklusdt/trades/binance-futures_trades_2026-10-26_SKLUSDT.csv.gz"
+        },
+        {
+          "bytes": 9296746,
+          "modified": "SystemTime { tv_sec: 1793064400, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sklusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_SKLUSDT.csv.gz"
+        },
+        {
+          "bytes": 412717,
+          "modified": "SystemTime { tv_sec: 1793151423, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sklusdt/trades/binance-futures_trades_2026-10-27_SKLUSDT.csv.gz"
+        },
+        {
+          "bytes": 8305751,
+          "modified": "SystemTime { tv_sec: 1793152757, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sklusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_SKLUSDT.csv.gz"
+        },
+        {
+          "bytes": 429471,
+          "modified": "SystemTime { tv_sec: 1793235514, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sklusdt/trades/binance-futures_trades_2026-10-28_SKLUSDT.csv.gz"
+        },
+        {
+          "bytes": 7134237,
+          "modified": "SystemTime { tv_sec: 1793238039, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sklusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_SKLUSDT.csv.gz"
+        }
+      ],
+      "symbol": "SKLUSDT",
+      "trade_rows": 366227
+    },
+    "SNXUSDT": {
+      "bars": 672,
+      "book_rows": 8000380,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 16.166715362,
+      "sha256": "9dcae60f1255e781f2eca52dccbc8597b315ed804ad63cc871c24edff3013b86",
+      "sources": [
+        {
+          "bytes": 486056,
+          "modified": "SystemTime { tv_sec: 1792718822, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_snxusdt/trades/binance-futures_trades_2026-10-22_SNXUSDT.csv.gz"
+        },
+        {
+          "bytes": 10459897,
+          "modified": "SystemTime { tv_sec: 1792720007, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_snxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_SNXUSDT.csv.gz"
+        },
+        {
+          "bytes": 490000,
+          "modified": "SystemTime { tv_sec: 1792805277, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_snxusdt/trades/binance-futures_trades_2026-10-23_SNXUSDT.csv.gz"
+        },
+        {
+          "bytes": 11188798,
+          "modified": "SystemTime { tv_sec: 1792806740, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_snxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_SNXUSDT.csv.gz"
+        },
+        {
+          "bytes": 488597,
+          "modified": "SystemTime { tv_sec: 1792891105, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_snxusdt/trades/binance-futures_trades_2026-10-24_SNXUSDT.csv.gz"
+        },
+        {
+          "bytes": 10906715,
+          "modified": "SystemTime { tv_sec: 1792891534, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_snxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_SNXUSDT.csv.gz"
+        },
+        {
+          "bytes": 269074,
+          "modified": "SystemTime { tv_sec: 1792977840, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_snxusdt/trades/binance-futures_trades_2026-10-25_SNXUSDT.csv.gz"
+        },
+        {
+          "bytes": 8005191,
+          "modified": "SystemTime { tv_sec: 1792977932, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_snxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_SNXUSDT.csv.gz"
+        },
+        {
+          "bytes": 319009,
+          "modified": "SystemTime { tv_sec: 1793062041, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_snxusdt/trades/binance-futures_trades_2026-10-26_SNXUSDT.csv.gz"
+        },
+        {
+          "bytes": 10596235,
+          "modified": "SystemTime { tv_sec: 1793065397, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_snxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_SNXUSDT.csv.gz"
+        },
+        {
+          "bytes": 295515,
+          "modified": "SystemTime { tv_sec: 1793150773, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_snxusdt/trades/binance-futures_trades_2026-10-27_SNXUSDT.csv.gz"
+        },
+        {
+          "bytes": 8826822,
+          "modified": "SystemTime { tv_sec: 1793152514, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_snxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_SNXUSDT.csv.gz"
+        },
+        {
+          "bytes": 330892,
+          "modified": "SystemTime { tv_sec: 1793235556, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_snxusdt/trades/binance-futures_trades_2026-10-28_SNXUSDT.csv.gz"
+        },
+        {
+          "bytes": 9240458,
+          "modified": "SystemTime { tv_sec: 1793238065, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_snxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_SNXUSDT.csv.gz"
+        }
+      ],
+      "symbol": "SNXUSDT",
+      "trade_rows": 269951
+    },
+    "SOLUSDT": {
+      "bars": 672,
+      "book_rows": 185796201,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 281.919437904,
+      "sha256": "99ac2337ef6dc247347787586d3150bdf1bd5e8e683292e08bcb8ba37a767718",
+      "sources": [
+        {
+          "bytes": 12411596,
+          "modified": "SystemTime { tv_sec: 1792718759, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_solusdt/trades/binance-futures_trades_2026-10-22_SOLUSDT.csv.gz"
+        },
+        {
+          "bytes": 201645847,
+          "modified": "SystemTime { tv_sec: 1792720495, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_solusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_SOLUSDT.csv.gz"
+        },
+        {
+          "bytes": 10980529,
+          "modified": "SystemTime { tv_sec: 1792805463, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_solusdt/trades/binance-futures_trades_2026-10-23_SOLUSDT.csv.gz"
+        },
+        {
+          "bytes": 196450441,
+          "modified": "SystemTime { tv_sec: 1792805693, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_solusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_SOLUSDT.csv.gz"
+        },
+        {
+          "bytes": 11421298,
+          "modified": "SystemTime { tv_sec: 1792891102, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_solusdt/trades/binance-futures_trades_2026-10-24_SOLUSDT.csv.gz"
+        },
+        {
+          "bytes": 173178631,
+          "modified": "SystemTime { tv_sec: 1792892820, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_solusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_SOLUSDT.csv.gz"
+        },
+        {
+          "bytes": 8431700,
+          "modified": "SystemTime { tv_sec: 1792975391, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_solusdt/trades/binance-futures_trades_2026-10-25_SOLUSDT.csv.gz"
+        },
+        {
+          "bytes": 148115612,
+          "modified": "SystemTime { tv_sec: 1792978279, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_solusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_SOLUSDT.csv.gz"
+        },
+        {
+          "bytes": 12465790,
+          "modified": "SystemTime { tv_sec: 1793062072, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_solusdt/trades/binance-futures_trades_2026-10-26_SOLUSDT.csv.gz"
+        },
+        {
+          "bytes": 221671005,
+          "modified": "SystemTime { tv_sec: 1793062170, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_solusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_SOLUSDT.csv.gz"
+        },
+        {
+          "bytes": 10926817,
+          "modified": "SystemTime { tv_sec: 1793150953, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_solusdt/trades/binance-futures_trades_2026-10-27_SOLUSDT.csv.gz"
+        },
+        {
+          "bytes": 199136774,
+          "modified": "SystemTime { tv_sec: 1793151841, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_solusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_SOLUSDT.csv.gz"
+        },
+        {
+          "bytes": 11770732,
+          "modified": "SystemTime { tv_sec: 1793235296, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_solusdt/trades/binance-futures_trades_2026-10-28_SOLUSDT.csv.gz"
+        },
+        {
+          "bytes": 210335304,
+          "modified": "SystemTime { tv_sec: 1793237783, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_solusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_SOLUSDT.csv.gz"
+        }
+      ],
+      "symbol": "SOLUSDT",
+      "trade_rows": 10153573
+    },
+    "SUSHIUSDT": {
+      "bars": 672,
+      "book_rows": 7238335,
+      "bytes": 783566,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 17.18547594,
+      "sha256": "db94df59505ab4d92f696be3ade0cf6481ebd8d4a76c8c7c129811b1e89379b9",
+      "sources": [
+        {
+          "bytes": 409463,
+          "modified": "SystemTime { tv_sec: 1792720766, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sushiusdt/trades/binance-futures_trades_2026-10-22_SUSHIUSDT.csv.gz"
+        },
+        {
+          "bytes": 10021414,
+          "modified": "SystemTime { tv_sec: 1792720303, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sushiusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_SUSHIUSDT.csv.gz"
+        },
+        {
+          "bytes": 482815,
+          "modified": "SystemTime { tv_sec: 1792807374, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sushiusdt/trades/binance-futures_trades_2026-10-23_SUSHIUSDT.csv.gz"
+        },
+        {
+          "bytes": 10350826,
+          "modified": "SystemTime { tv_sec: 1792806798, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sushiusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_SUSHIUSDT.csv.gz"
+        },
+        {
+          "bytes": 459667,
+          "modified": "SystemTime { tv_sec: 1792893294, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sushiusdt/trades/binance-futures_trades_2026-10-24_SUSHIUSDT.csv.gz"
+        },
+        {
+          "bytes": 9333387,
+          "modified": "SystemTime { tv_sec: 1792893366, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sushiusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_SUSHIUSDT.csv.gz"
+        },
+        {
+          "bytes": 318040,
+          "modified": "SystemTime { tv_sec: 1792978330, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sushiusdt/trades/binance-futures_trades_2026-10-25_SUSHIUSDT.csv.gz"
+        },
+        {
+          "bytes": 7390770,
+          "modified": "SystemTime { tv_sec: 1792977758, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sushiusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_SUSHIUSDT.csv.gz"
+        },
+        {
+          "bytes": 396636,
+          "modified": "SystemTime { tv_sec: 1793062523, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sushiusdt/trades/binance-futures_trades_2026-10-26_SUSHIUSDT.csv.gz"
+        },
+        {
+          "bytes": 9868724,
+          "modified": "SystemTime { tv_sec: 1793064298, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sushiusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_SUSHIUSDT.csv.gz"
+        },
+        {
+          "bytes": 324606,
+          "modified": "SystemTime { tv_sec: 1793151306, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sushiusdt/trades/binance-futures_trades_2026-10-27_SUSHIUSDT.csv.gz"
+        },
+        {
+          "bytes": 7720595,
+          "modified": "SystemTime { tv_sec: 1793152602, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sushiusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_SUSHIUSDT.csv.gz"
+        },
+        {
+          "bytes": 362756,
+          "modified": "SystemTime { tv_sec: 1793238334, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sushiusdt/trades/binance-futures_trades_2026-10-28_SUSHIUSDT.csv.gz"
+        },
+        {
+          "bytes": 8623503,
+          "modified": "SystemTime { tv_sec: 1793238156, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_sushiusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_SUSHIUSDT.csv.gz"
+        }
+      ],
+      "symbol": "SUSHIUSDT",
+      "trade_rows": 292350
+    },
+    "THETAUSDT": {
+      "bars": 672,
+      "book_rows": 6821015,
+      "bytes": 783566,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 11.059147216,
+      "sha256": "01e249ecc24feb4349a5b84ab0bea1b6ca4ec7c0231e05762beb2441ee95e3e8",
+      "sources": [
+        {
+          "bytes": 626938,
+          "modified": "SystemTime { tv_sec: 1792720973, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_thetausdt/trades/binance-futures_trades_2026-10-22_THETAUSDT.csv.gz"
+        },
+        {
+          "bytes": 11268367,
+          "modified": "SystemTime { tv_sec: 1792720816, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_thetausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_THETAUSDT.csv.gz"
+        },
+        {
+          "bytes": 551849,
+          "modified": "SystemTime { tv_sec: 1792807403, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_thetausdt/trades/binance-futures_trades_2026-10-23_THETAUSDT.csv.gz"
+        },
+        {
+          "bytes": 10594511,
+          "modified": "SystemTime { tv_sec: 1792807358, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_thetausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_THETAUSDT.csv.gz"
+        },
+        {
+          "bytes": 448366,
+          "modified": "SystemTime { tv_sec: 1792893692, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_thetausdt/trades/binance-futures_trades_2026-10-24_THETAUSDT.csv.gz"
+        },
+        {
+          "bytes": 9156018,
+          "modified": "SystemTime { tv_sec: 1792892642, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_thetausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_THETAUSDT.csv.gz"
+        },
+        {
+          "bytes": 404769,
+          "modified": "SystemTime { tv_sec: 1792977986, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_thetausdt/trades/binance-futures_trades_2026-10-25_THETAUSDT.csv.gz"
+        },
+        {
+          "bytes": 7992844,
+          "modified": "SystemTime { tv_sec: 1792977567, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_thetausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_THETAUSDT.csv.gz"
+        },
+        {
+          "bytes": 498965,
+          "modified": "SystemTime { tv_sec: 1793062852, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_thetausdt/trades/binance-futures_trades_2026-10-26_THETAUSDT.csv.gz"
+        },
+        {
+          "bytes": 10151831,
+          "modified": "SystemTime { tv_sec: 1793065667, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_thetausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_THETAUSDT.csv.gz"
+        },
+        {
+          "bytes": 425049,
+          "modified": "SystemTime { tv_sec: 1793153181, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_thetausdt/trades/binance-futures_trades_2026-10-27_THETAUSDT.csv.gz"
+        },
+        {
+          "bytes": 8334727,
+          "modified": "SystemTime { tv_sec: 1793153179, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_thetausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_THETAUSDT.csv.gz"
+        },
+        {
+          "bytes": 570020,
+          "modified": "SystemTime { tv_sec: 1793235533, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_thetausdt/trades/binance-futures_trades_2026-10-28_THETAUSDT.csv.gz"
+        },
+        {
+          "bytes": 8977222,
+          "modified": "SystemTime { tv_sec: 1793238111, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_thetausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_THETAUSDT.csv.gz"
+        }
+      ],
+      "symbol": "THETAUSDT",
+      "trade_rows": 353756
+    },
+    "VETUSDT": {
+      "bars": 672,
+      "book_rows": 25453929,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 37.143739092,
+      "sha256": "03609addd79e47d36788458224f6234289b6b8478d9afb7ce32e58b617dae1b7",
+      "sources": [
+        {
+          "bytes": 1548847,
+          "modified": "SystemTime { tv_sec: 1792718804, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_vetusdt/trades/binance-futures_trades_2026-10-22_VETUSDT.csv.gz"
+        },
+        {
+          "bytes": 32917681,
+          "modified": "SystemTime { tv_sec: 1792719698, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_vetusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_VETUSDT.csv.gz"
+        },
+        {
+          "bytes": 1424167,
+          "modified": "SystemTime { tv_sec: 1792805287, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_vetusdt/trades/binance-futures_trades_2026-10-23_VETUSDT.csv.gz"
+        },
+        {
+          "bytes": 34337354,
+          "modified": "SystemTime { tv_sec: 1792806031, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_vetusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_VETUSDT.csv.gz"
+        },
+        {
+          "bytes": 1516922,
+          "modified": "SystemTime { tv_sec: 1792891123, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_vetusdt/trades/binance-futures_trades_2026-10-24_VETUSDT.csv.gz"
+        },
+        {
+          "bytes": 31048643,
+          "modified": "SystemTime { tv_sec: 1792892124, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_vetusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_VETUSDT.csv.gz"
+        },
+        {
+          "bytes": 898707,
+          "modified": "SystemTime { tv_sec: 1792975331, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_vetusdt/trades/binance-futures_trades_2026-10-25_VETUSDT.csv.gz"
+        },
+        {
+          "bytes": 25709851,
+          "modified": "SystemTime { tv_sec: 1792976962, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_vetusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_VETUSDT.csv.gz"
+        },
+        {
+          "bytes": 1421216,
+          "modified": "SystemTime { tv_sec: 1793061939, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_vetusdt/trades/binance-futures_trades_2026-10-26_VETUSDT.csv.gz"
+        },
+        {
+          "bytes": 32086266,
+          "modified": "SystemTime { tv_sec: 1793063517, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_vetusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_VETUSDT.csv.gz"
+        },
+        {
+          "bytes": 864331,
+          "modified": "SystemTime { tv_sec: 1793150783, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_vetusdt/trades/binance-futures_trades_2026-10-27_VETUSDT.csv.gz"
+        },
+        {
+          "bytes": 22960301,
+          "modified": "SystemTime { tv_sec: 1793152590, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_vetusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_VETUSDT.csv.gz"
+        },
+        {
+          "bytes": 969072,
+          "modified": "SystemTime { tv_sec: 1793235292, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_vetusdt/trades/binance-futures_trades_2026-10-28_VETUSDT.csv.gz"
+        },
+        {
+          "bytes": 21110879,
+          "modified": "SystemTime { tv_sec: 1793236715, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_vetusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_VETUSDT.csv.gz"
+        }
+      ],
+      "symbol": "VETUSDT",
+      "trade_rows": 824946
+    },
+    "XRPUSDT": {
+      "bars": 672,
+      "book_rows": 231799212,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 310.58489214,
+      "sha256": "34ba441d430d6f866a0021e37e443371bcdc0fffbbd4c889224d5df435156c85",
+      "sources": [
+        {
+          "bytes": 11753615,
+          "modified": "SystemTime { tv_sec: 1792718894, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/trades/binance-futures_trades_2026-10-22_XRPUSDT.csv.gz"
+        },
+        {
+          "bytes": 234382969,
+          "modified": "SystemTime { tv_sec: 1792720870, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_XRPUSDT.csv.gz"
+        },
+        {
+          "bytes": 10157064,
+          "modified": "SystemTime { tv_sec: 1792805511, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/trades/binance-futures_trades_2026-10-23_XRPUSDT.csv.gz"
+        },
+        {
+          "bytes": 234887053,
+          "modified": "SystemTime { tv_sec: 1792806764, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_XRPUSDT.csv.gz"
+        },
+        {
+          "bytes": 9527823,
+          "modified": "SystemTime { tv_sec: 1792891218, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/trades/binance-futures_trades_2026-10-24_XRPUSDT.csv.gz"
+        },
+        {
+          "bytes": 205958927,
+          "modified": "SystemTime { tv_sec: 1792891210, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_XRPUSDT.csv.gz"
+        },
+        {
+          "bytes": 8604782,
+          "modified": "SystemTime { tv_sec: 1792975376, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/trades/binance-futures_trades_2026-10-25_XRPUSDT.csv.gz"
+        },
+        {
+          "bytes": 188948861,
+          "modified": "SystemTime { tv_sec: 1792976009, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_XRPUSDT.csv.gz"
+        },
+        {
+          "bytes": 10669681,
+          "modified": "SystemTime { tv_sec: 1793062097, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/trades/binance-futures_trades_2026-10-26_XRPUSDT.csv.gz"
+        },
+        {
+          "bytes": 261672237,
+          "modified": "SystemTime { tv_sec: 1793062351, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_XRPUSDT.csv.gz"
+        },
+        {
+          "bytes": 9472483,
+          "modified": "SystemTime { tv_sec: 1793150955, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/trades/binance-futures_trades_2026-10-27_XRPUSDT.csv.gz"
+        },
+        {
+          "bytes": 245842570,
+          "modified": "SystemTime { tv_sec: 1793152770, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_XRPUSDT.csv.gz"
+        },
+        {
+          "bytes": 9581320,
+          "modified": "SystemTime { tv_sec: 1793235547, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/trades/binance-futures_trades_2026-10-28_XRPUSDT.csv.gz"
+        },
+        {
+          "bytes": 241245654,
+          "modified": "SystemTime { tv_sec: 1793237548, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_XRPUSDT.csv.gz"
+        }
+      ],
+      "symbol": "XRPUSDT",
+      "trade_rows": 8750113
+    },
+    "YFIUSDT": {
+      "bars": 672,
+      "book_rows": 4493584,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 7.291863062,
+      "sha256": "df21e8cf330ed3eb06185ad05c10c425b70628126c68200152abb4b7c71d66c3",
+      "sources": [
+        {
+          "bytes": 271745,
+          "modified": "SystemTime { tv_sec: 1792718932, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_yfiusdt/trades/binance-futures_trades_2026-10-22_YFIUSDT.csv.gz"
+        },
+        {
+          "bytes": 5697837,
+          "modified": "SystemTime { tv_sec: 1792720671, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_yfiusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_YFIUSDT.csv.gz"
+        },
+        {
+          "bytes": 405064,
+          "modified": "SystemTime { tv_sec: 1792806986, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_yfiusdt/trades/binance-futures_trades_2026-10-23_YFIUSDT.csv.gz"
+        },
+        {
+          "bytes": 6875488,
+          "modified": "SystemTime { tv_sec: 1792807069, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_yfiusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_YFIUSDT.csv.gz"
+        },
+        {
+          "bytes": 247111,
+          "modified": "SystemTime { tv_sec: 1792893285, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_yfiusdt/trades/binance-futures_trades_2026-10-24_YFIUSDT.csv.gz"
+        },
+        {
+          "bytes": 5657401,
+          "modified": "SystemTime { tv_sec: 1792893166, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_yfiusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_YFIUSDT.csv.gz"
+        },
+        {
+          "bytes": 255261,
+          "modified": "SystemTime { tv_sec: 1792977881, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_yfiusdt/trades/binance-futures_trades_2026-10-25_YFIUSDT.csv.gz"
+        },
+        {
+          "bytes": 5052965,
+          "modified": "SystemTime { tv_sec: 1792977889, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_yfiusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_YFIUSDT.csv.gz"
+        },
+        {
+          "bytes": 239344,
+          "modified": "SystemTime { tv_sec: 1793065624, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_yfiusdt/trades/binance-futures_trades_2026-10-26_YFIUSDT.csv.gz"
+        },
+        {
+          "bytes": 5908070,
+          "modified": "SystemTime { tv_sec: 1793065605, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_yfiusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_YFIUSDT.csv.gz"
+        },
+        {
+          "bytes": 225884,
+          "modified": "SystemTime { tv_sec: 1793152174, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_yfiusdt/trades/binance-futures_trades_2026-10-27_YFIUSDT.csv.gz"
+        },
+        {
+          "bytes": 4989637,
+          "modified": "SystemTime { tv_sec: 1793152619, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_yfiusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_YFIUSDT.csv.gz"
+        },
+        {
+          "bytes": 203141,
+          "modified": "SystemTime { tv_sec: 1793238381, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_yfiusdt/trades/binance-futures_trades_2026-10-28_YFIUSDT.csv.gz"
+        },
+        {
+          "bytes": 5190681,
+          "modified": "SystemTime { tv_sec: 1793238144, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_yfiusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_YFIUSDT.csv.gz"
+        }
+      ],
+      "symbol": "YFIUSDT",
+      "trade_rows": 206075
+    },
+    "ZENUSDT": {
+      "bars": 672,
+      "book_rows": 15008033,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 26.189705423,
+      "sha256": "595a0261738a5e5377c7f6c8252be6c3ec2bba39c20d1a3f5fea2f43895e88b3",
+      "sources": [
+        {
+          "bytes": 1112739,
+          "modified": "SystemTime { tv_sec: 1792720963, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zenusdt/trades/binance-futures_trades_2026-10-22_ZENUSDT.csv.gz"
+        },
+        {
+          "bytes": 19802607,
+          "modified": "SystemTime { tv_sec: 1792720556, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zenusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_ZENUSDT.csv.gz"
+        },
+        {
+          "bytes": 1256692,
+          "modified": "SystemTime { tv_sec: 1792807118, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zenusdt/trades/binance-futures_trades_2026-10-23_ZENUSDT.csv.gz"
+        },
+        {
+          "bytes": 23583153,
+          "modified": "SystemTime { tv_sec: 1792807089, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zenusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_ZENUSDT.csv.gz"
+        },
+        {
+          "bytes": 942809,
+          "modified": "SystemTime { tv_sec: 1792893707, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zenusdt/trades/binance-futures_trades_2026-10-24_ZENUSDT.csv.gz"
+        },
+        {
+          "bytes": 16879931,
+          "modified": "SystemTime { tv_sec: 1792893703, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zenusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_ZENUSDT.csv.gz"
+        },
+        {
+          "bytes": 733059,
+          "modified": "SystemTime { tv_sec: 1792975968, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zenusdt/trades/binance-futures_trades_2026-10-25_ZENUSDT.csv.gz"
+        },
+        {
+          "bytes": 12987383,
+          "modified": "SystemTime { tv_sec: 1792977254, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zenusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_ZENUSDT.csv.gz"
+        },
+        {
+          "bytes": 909818,
+          "modified": "SystemTime { tv_sec: 1793065717, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zenusdt/trades/binance-futures_trades_2026-10-26_ZENUSDT.csv.gz"
+        },
+        {
+          "bytes": 17980966,
+          "modified": "SystemTime { tv_sec: 1793065592, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zenusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_ZENUSDT.csv.gz"
+        },
+        {
+          "bytes": 857290,
+          "modified": "SystemTime { tv_sec: 1793151442, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zenusdt/trades/binance-futures_trades_2026-10-27_ZENUSDT.csv.gz"
+        },
+        {
+          "bytes": 15200043,
+          "modified": "SystemTime { tv_sec: 1793152430, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zenusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_ZENUSDT.csv.gz"
+        },
+        {
+          "bytes": 728926,
+          "modified": "SystemTime { tv_sec: 1793238485, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zenusdt/trades/binance-futures_trades_2026-10-28_ZENUSDT.csv.gz"
+        },
+        {
+          "bytes": 13557508,
+          "modified": "SystemTime { tv_sec: 1793238420, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zenusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_ZENUSDT.csv.gz"
+        }
+      ],
+      "symbol": "ZENUSDT",
+      "trade_rows": 701296
+    },
+    "ZILUSDT": {
+      "bars": 672,
+      "book_rows": 6772567,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 13.488140606,
+      "sha256": "74b22b2cf3b110bac7b697f0e59dea8f8d967dbdb53b87fc333832145d17867d",
+      "sources": [
+        {
+          "bytes": 956267,
+          "modified": "SystemTime { tv_sec: 1792719062, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zilusdt/trades/binance-futures_trades_2026-10-22_ZILUSDT.csv.gz"
+        },
+        {
+          "bytes": 9401426,
+          "modified": "SystemTime { tv_sec: 1792720463, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zilusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_ZILUSDT.csv.gz"
+        },
+        {
+          "bytes": 1100205,
+          "modified": "SystemTime { tv_sec: 1792805680, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zilusdt/trades/binance-futures_trades_2026-10-23_ZILUSDT.csv.gz"
+        },
+        {
+          "bytes": 9890014,
+          "modified": "SystemTime { tv_sec: 1792806964, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zilusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_ZILUSDT.csv.gz"
+        },
+        {
+          "bytes": 1087263,
+          "modified": "SystemTime { tv_sec: 1792891405, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zilusdt/trades/binance-futures_trades_2026-10-24_ZILUSDT.csv.gz"
+        },
+        {
+          "bytes": 8996303,
+          "modified": "SystemTime { tv_sec: 1792893142, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zilusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_ZILUSDT.csv.gz"
+        },
+        {
+          "bytes": 1230045,
+          "modified": "SystemTime { tv_sec: 1792977689, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zilusdt/trades/binance-futures_trades_2026-10-25_ZILUSDT.csv.gz"
+        },
+        {
+          "bytes": 10901237,
+          "modified": "SystemTime { tv_sec: 1792977207, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zilusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_ZILUSDT.csv.gz"
+        },
+        {
+          "bytes": 1255785,
+          "modified": "SystemTime { tv_sec: 1793065515, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zilusdt/trades/binance-futures_trades_2026-10-26_ZILUSDT.csv.gz"
+        },
+        {
+          "bytes": 12278797,
+          "modified": "SystemTime { tv_sec: 1793065085, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zilusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_ZILUSDT.csv.gz"
+        },
+        {
+          "bytes": 614250,
+          "modified": "SystemTime { tv_sec: 1793152840, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zilusdt/trades/binance-futures_trades_2026-10-27_ZILUSDT.csv.gz"
+        },
+        {
+          "bytes": 7467876,
+          "modified": "SystemTime { tv_sec: 1793152790, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zilusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_ZILUSDT.csv.gz"
+        },
+        {
+          "bytes": 624039,
+          "modified": "SystemTime { tv_sec: 1793235517, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zilusdt/trades/binance-futures_trades_2026-10-28_ZILUSDT.csv.gz"
+        },
+        {
+          "bytes": 7254129,
+          "modified": "SystemTime { tv_sec: 1793236706, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zilusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_ZILUSDT.csv.gz"
+        }
+      ],
+      "symbol": "ZILUSDT",
+      "trade_rows": 627759
+    },
+    "ZRXUSDT": {
+      "bars": 672,
+      "book_rows": 3358169,
+      "bytes": 782220,
+      "end_ms": 1793232000000,
+      "late_trades": 0,
+      "seconds": 6.31231243,
+      "sha256": "77e0791e796a3558d7d4a9138a5889df73c3d6466189e9ced22358f665f76c53",
+      "sources": [
+        {
+          "bytes": 223087,
+          "modified": "SystemTime { tv_sec: 1792720964, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zrxusdt/trades/binance-futures_trades_2026-10-22_ZRXUSDT.csv.gz"
+        },
+        {
+          "bytes": 4565854,
+          "modified": "SystemTime { tv_sec: 1792720965, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zrxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-22_ZRXUSDT.csv.gz"
+        },
+        {
+          "bytes": 212876,
+          "modified": "SystemTime { tv_sec: 1792807485, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zrxusdt/trades/binance-futures_trades_2026-10-23_ZRXUSDT.csv.gz"
+        },
+        {
+          "bytes": 4787161,
+          "modified": "SystemTime { tv_sec: 1792807428, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zrxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-23_ZRXUSDT.csv.gz"
+        },
+        {
+          "bytes": 216604,
+          "modified": "SystemTime { tv_sec: 1792893728, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zrxusdt/trades/binance-futures_trades_2026-10-24_ZRXUSDT.csv.gz"
+        },
+        {
+          "bytes": 4921766,
+          "modified": "SystemTime { tv_sec: 1792893309, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zrxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-24_ZRXUSDT.csv.gz"
+        },
+        {
+          "bytes": 161446,
+          "modified": "SystemTime { tv_sec: 1792978413, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zrxusdt/trades/binance-futures_trades_2026-10-25_ZRXUSDT.csv.gz"
+        },
+        {
+          "bytes": 3777563,
+          "modified": "SystemTime { tv_sec: 1792977779, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zrxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-25_ZRXUSDT.csv.gz"
+        },
+        {
+          "bytes": 220139,
+          "modified": "SystemTime { tv_sec: 1793065852, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zrxusdt/trades/binance-futures_trades_2026-10-26_ZRXUSDT.csv.gz"
+        },
+        {
+          "bytes": 4875260,
+          "modified": "SystemTime { tv_sec: 1793065776, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zrxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-26_ZRXUSDT.csv.gz"
+        },
+        {
+          "bytes": 183404,
+          "modified": "SystemTime { tv_sec: 1793153195, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zrxusdt/trades/binance-futures_trades_2026-10-27_ZRXUSDT.csv.gz"
+        },
+        {
+          "bytes": 4786737,
+          "modified": "SystemTime { tv_sec: 1793153156, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zrxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-27_ZRXUSDT.csv.gz"
+        },
+        {
+          "bytes": 225045,
+          "modified": "SystemTime { tv_sec: 1793238481, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zrxusdt/trades/binance-futures_trades_2026-10-28_ZRXUSDT.csv.gz"
+        },
+        {
+          "bytes": 4726788,
+          "modified": "SystemTime { tv_sec: 1793238454, tv_nsec: 0 }",
+          "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_zrxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-10-28_ZRXUSDT.csv.gz"
+        }
+      ],
+      "symbol": "ZRXUSDT",
+      "trade_rows": 137835
+    }
+  },
+  "thresholds_sha256": "685de1ea87601396873535708d749c0a209e36fb891cfb76ad7876b93cd86875"
+}

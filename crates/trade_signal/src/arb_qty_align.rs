@@ -244,13 +244,9 @@ mod tests {
     #[test]
     fn coin_contract_multiplier_is_contract_size_over_price() {
         let table = coin_table();
-        let multiplier = contract_qty_multiplier(
-            &table,
-            TradingVenue::BinanceCoinFutures,
-            "BTCUSDPERP",
-            50_000.0,
-        )
-        .expect("inverse multiplier");
+        let multiplier =
+            contract_qty_multiplier(&table, TradingVenue::BinanceCoinFutures, "BTCUSD", 50_000.0)
+                .expect("inverse multiplier");
         assert!((multiplier - 0.002).abs() < 1e-12);
     }
 
@@ -260,7 +256,7 @@ mod tests {
         let contracts = convert_aligned_base_qty_to_open_venue_qty(
             &table,
             TradingVenue::BinanceCoinFutures,
-            "BTCUSDPERP",
+            "BTCUSD",
             50_000.0,
             0.004,
         );

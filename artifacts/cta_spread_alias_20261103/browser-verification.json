@@ -1,0 +1,12 @@
+{
+  "account_id": "cta_cross_spread_rx01",
+  "display_alias": "okex_binace_cross_1min",
+  "public_account_entries": 1,
+  "alias_editor": "passed",
+  "execution_tabs": "passed",
+  "bindings_account_selector": "single account",
+  "both_leg_urls_keep_account_id": true,
+  "desktop": "passed",
+  "mobile_width": "passed",
+  "page_errors": []
+}

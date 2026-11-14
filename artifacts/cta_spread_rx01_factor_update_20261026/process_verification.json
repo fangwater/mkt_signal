@@ -1,0 +1,34 @@
+{
+  "env_only_process_name_changed": true,
+  "processes": [
+    {
+      "pid": 3173585,
+      "comm": "cta_spread_fact",
+      "all_thread_cpu_lists": [
+        "17"
+      ]
+    },
+    {
+      "pid": 2879622,
+      "comm": "cta_spread_sign",
+      "all_thread_cpu_lists": [
+        "0-5,48-95"
+      ]
+    },
+    {
+      "pid": 2879569,
+      "comm": "python3",
+      "all_thread_cpu_lists": [
+        "0-5,48-95"
+      ]
+    },
+    {
+      "pid": 3207816,
+      "comm": "python3",
+      "all_thread_cpu_lists": [
+        "0-5,48-95"
+      ]
+    }
+  ],
+  "checked_at_ms": 1792986379607
+}

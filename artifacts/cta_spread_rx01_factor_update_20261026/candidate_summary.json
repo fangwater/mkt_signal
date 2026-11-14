@@ -1,0 +1,17 @@
+{
+  "requested_symbols": 18,
+  "requested_factors": 7,
+  "requested_combinations": 59,
+  "candidate_symbols": 17,
+  "candidate_combinations": 55,
+  "excluded_symbols": {
+    "ICXUSDT": {
+      "binance-margin": "MISSING",
+      "binance-futures": "MISSING"
+    }
+  },
+  "candidate_only": false,
+  "live_changed": true,
+  "deployed_at_ms": 1792986156858,
+  "result_file": "deployment_result.json"
+}

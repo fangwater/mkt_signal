@@ -1,0 +1,120 @@
+{
+  "quantity_unit": "native_contracts",
+  "match_count": 9,
+  "comparison": "same instrument/side, timestamp within 2ms (SBE vs JSON), price/quantity within floating-point tolerance",
+  "ipc_trades": 30,
+  "native_trades": 9,
+  "examples": [
+    {
+      "ipc": {
+        "symbol": "DOGEUSDT",
+        "ts_ms": "1793674774305",
+        "side": "S",
+        "price": "0.07386000000000001",
+        "amount": "7.8"
+      },
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377534082",
+        "px": "0.07386",
+        "sz": "7.8",
+        "side": "sell",
+        "ts": "1793674774305",
+        "count": "1",
+        "source": "0",
+        "seqId": 87690208542
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000
+    },
+    {
+      "ipc": {
+        "symbol": "DOGEUSDT",
+        "ts_ms": "1793674775287",
+        "side": "S",
+        "price": "0.07386000000000001",
+        "amount": "102.63"
+      },
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377534101",
+        "px": "0.07386",
+        "sz": "102.63",
+        "side": "sell",
+        "ts": "1793674775286",
+        "count": "19",
+        "source": "0",
+        "seqId": 87690208886
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000
+    },
+    {
+      "ipc": {
+        "symbol": "DOGEUSDT",
+        "ts_ms": "1793674775288",
+        "side": "S",
+        "price": "0.07386000000000001",
+        "amount": "1.86"
+      },
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377534105",
+        "px": "0.07386",
+        "sz": "1.86",
+        "side": "sell",
+        "ts": "1793674775287",
+        "count": "4",
+        "source": "0",
+        "seqId": 87690208899
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000
+    },
+    {
+      "ipc": {
+        "symbol": "DOGEUSDT",
+        "ts_ms": "1793674775989",
+        "side": "S",
+        "price": "0.07385000000000001",
+        "amount": "22.54"
+      },
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377534132",
+        "px": "0.07385",
+        "sz": "22.54",
+        "side": "sell",
+        "ts": "1793674775989",
+        "count": "27",
+        "source": "0",
+        "seqId": 87690209658
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000
+    },
+    {
+      "ipc": {
+        "symbol": "DOGEUSDT",
+        "ts_ms": "1793674775994",
+        "side": "B",
+        "price": "0.07386000000000001",
+        "amount": "12.25"
+      },
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377534134",
+        "px": "0.07386",
+        "sz": "12.25",
+        "side": "buy",
+        "ts": "1793674775993",
+        "count": "2",
+        "source": "0",
+        "seqId": 87690209697
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000
+    }
+  ],
+  "kafka_probe": "timed out; no Kafka unit assertion"
+}

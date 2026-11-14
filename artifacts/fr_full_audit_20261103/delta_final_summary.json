@@ -1,0 +1,115 @@
+{
+  "accounts": [
+    {
+      "event": "result",
+      "utc": "2026-11-03T14:14:22Z",
+      "env": "gate_fr_arb03",
+      "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+      "changed": true,
+      "before": false,
+      "after": true,
+      "detail": "Unified Account cross-currency margin"
+    },
+    {
+      "event": "result",
+      "utc": "2026-11-03T14:14:23Z",
+      "env": "bitget_fr_arb03",
+      "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+      "changed": true,
+      "before": false,
+      "after": true,
+      "detail": "accountMode=unified accountLevel=advanced deltaSwitch=True"
+    },
+    {
+      "event": "result",
+      "utc": "2026-11-03T14:14:54Z",
+      "env": "binance_fr_arb02",
+      "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+      "changed": true,
+      "before": false,
+      "after": true,
+      "detail": "Portfolio Margin Delta Mode"
+    },
+    {
+      "event": "result",
+      "utc": "2026-11-03T14:15:25Z",
+      "env": "binance_fr_arb03",
+      "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+      "changed": false,
+      "before": true,
+      "after": true,
+      "detail": "Portfolio Margin Delta Mode"
+    },
+    {
+      "event": "result",
+      "utc": "2026-11-03T14:15:56Z",
+      "env": "binance_fr_arb04",
+      "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+      "changed": false,
+      "before": true,
+      "after": true,
+      "detail": "Portfolio Margin Delta Mode"
+    },
+    {
+      "event": "result",
+      "utc": "2026-11-03T14:15:56Z",
+      "env": "bitget_fr_arb01",
+      "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+      "changed": false,
+      "before": true,
+      "after": true,
+      "detail": "accountMode=unified accountLevel=advanced deltaSwitch=True"
+    },
+    {
+      "event": "result",
+      "utc": "2026-11-03T14:15:56Z",
+      "env": "bitget_fr_arb02",
+      "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+      "changed": false,
+      "before": true,
+      "after": true,
+      "detail": "accountMode=unified accountLevel=advanced deltaSwitch=True"
+    },
+    {
+      "event": "result",
+      "utc": "2026-11-03T14:15:56Z",
+      "env": "gate_fr_arb01",
+      "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+      "changed": false,
+      "before": true,
+      "after": true,
+      "detail": "Unified Account cross-currency margin"
+    },
+    {
+      "event": "result",
+      "utc": "2026-11-03T14:15:57Z",
+      "env": "gate_fr_arb02",
+      "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+      "changed": false,
+      "before": true,
+      "after": true,
+      "detail": "Unified Account cross-currency margin"
+    },
+    {
+      "event": "result",
+      "utc": "2026-11-03T14:14:22Z",
+      "env": "bybit_fr_arb01",
+      "host": "ip-172-31-7-123.ap-southeast-1.compute.internal",
+      "changed": true,
+      "before": false,
+      "after": true,
+      "detail": "Unified Trading Account Delta Neutral Mode"
+    },
+    {
+      "event": "result",
+      "utc": "2026-11-03T14:21:37Z",
+      "env": "gate_fr_arb04",
+      "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+      "changed": false,
+      "before": true,
+      "after": true,
+      "detail": "Unified Account cross-currency margin"
+    }
+  ],
+  "all_verified_on": true
+}

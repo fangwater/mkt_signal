@@ -1,0 +1,64 @@
+{
+  "checked": [
+    {
+      "worker": "cta-prep-binance-futures",
+      "combination": "binance-futures_1min",
+      "rules": 45,
+      "max_pos_u": 100,
+      "enabled": false,
+      "independent_preview": true
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "combination": "binance-futures_5min",
+      "rules": 48,
+      "max_pos_u": 200,
+      "enabled": false,
+      "independent_preview": true
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "combination": "binance-futures_15min",
+      "rules": 146,
+      "max_pos_u": 200,
+      "enabled": false,
+      "independent_preview": true
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "combination": "prep02_binance-futures_1min",
+      "rules": 59,
+      "max_pos_u": 100,
+      "enabled": false,
+      "independent_preview": true
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "combination": "prep02_binance-futures_5min",
+      "rules": 7,
+      "max_pos_u": 200,
+      "enabled": false,
+      "independent_preview": true
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "combination": "prep02_binance-futures_15min",
+      "rules": 33,
+      "max_pos_u": 200,
+      "enabled": false,
+      "independent_preview": true
+    },
+    {
+      "worker": "cta-factor-spread",
+      "combination": "okex-futures_binance-futures_1min",
+      "rules": 34,
+      "max_pos_u": 200,
+      "enabled": false,
+      "independent_preview": true
+    }
+  ],
+  "previews_only": true,
+  "desktop_width": 1440,
+  "mobile_width": 390,
+  "script_errors": []
+}

@@ -1,0 +1,8 @@
+data_root = "/mnt/hdd-raid5-72t/liang_torch/usstock_data/raw_data/raw"
+output_root = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/usstock_raw_zstd_shards"
+periods = ["2021-07-01_2022-07-01"]
+
+workers = 4
+rows_per_shard = 250000000
+zstd_level = 1
+progress_every = 10000000

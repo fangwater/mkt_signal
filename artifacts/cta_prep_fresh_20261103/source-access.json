@@ -1,0 +1,12 @@
+[
+  {
+    "username": "lgq",
+    "source_id": "binance_exec_rx03",
+    "access_level": "configure"
+  },
+  {
+    "username": "lgq",
+    "source_id": "binance_exec_rx01",
+    "access_level": "configure"
+  }
+]

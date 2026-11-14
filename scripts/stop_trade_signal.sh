@@ -129,12 +129,12 @@ PROC_NAME="${PM2_NAME:-$DEFAULT_PROC_NAME}"
 
 echo "[INFO] Deleting ${PROC_NAME} (namespace=${NAMESPACE})"
 if [[ -n "$LEGACY_PROC_NAME" ]]; then
-  npx pm2 delete "$LEGACY_PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+  npx pm2 delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
 fi
 if [[ -n "$BUGGY_PROC_NAME" && "$BUGGY_PROC_NAME" != "$PROC_NAME" ]]; then
-  npx pm2 delete "$BUGGY_PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+  npx pm2 delete "$BUGGY_PROC_NAME" >/dev/null 2>&1 || true
 fi
-if npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE"; then
+if npx pm2 delete "$PROC_NAME"; then
   echo "[INFO] Deleted ${PROC_NAME}"
 else
   echo "[WARN] ${PROC_NAME} not found in namespace ${NAMESPACE}"

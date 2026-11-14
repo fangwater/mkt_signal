@@ -1,0 +1,113 @@
+{
+  "checked_at_utc": "2026-10-11T02:59:12Z",
+  "source": "binance_exec_trade05",
+  "account": "RX02",
+  "virtual_id": "virtual02",
+  "virtual_name": "lgq_cta",
+  "shares_per_factor": 1,
+  "follower_multiplier": 1,
+  "algorithm": "ctaker",
+  "factor_strategies": 5,
+  "factor_symbol_rows": 32,
+  "symbols": 16,
+  "entry_budget_usdt": 500,
+  "publication_error": null,
+  "exec_position_ready": true,
+  "protected_processes_unchanged": true,
+  "rx03_stopped": true,
+  "processes": {
+    "binance-cta-special-rx02": [
+      {
+        "pid": 1975542,
+        "name": "cta_special_fac",
+        "cpu_allowed": "0-5,48-95"
+      },
+      {
+        "pid": 3036716,
+        "name": "python3",
+        "cpu_allowed": "0-5,48-95"
+      },
+      {
+        "pid": 3038272,
+        "name": "cta_special_sig",
+        "cpu_allowed": "0-5,48-95"
+      },
+      {
+        "pid": 3141576,
+        "name": "python3",
+        "cpu_allowed": "0-5,48-95"
+      }
+    ],
+    "binance-cta-special-rx03": [],
+    "binance_exec_trade05": [
+      {
+        "pid": 3028399,
+        "name": "python3",
+        "cpu_allowed": "0-5,48-95"
+      },
+      {
+        "pid": 3036362,
+        "name": "persist_manager",
+        "cpu_allowed": "0-5,48-95"
+      },
+      {
+        "pid": 3038156,
+        "name": "rapidx_account_",
+        "cpu_allowed": "0-5,48-95"
+      },
+      {
+        "pid": 3117346,
+        "name": "viz_server",
+        "cpu_allowed": "0-5,48-95"
+      },
+      {
+        "pid": 3134140,
+        "name": "exec-pre-trade",
+        "cpu_allowed": "0-5,48-95"
+      },
+      {
+        "pid": 3175453,
+        "name": "trade_engine",
+        "cpu_allowed": "0-5,48-95"
+      }
+    ]
+  },
+  "max_symbol_entry_notional": 500.0,
+  "exec_nonflat_rows": [
+    {
+      "strategy_name": "lgq_cta_TD_TI_002",
+      "symbol": "XRPUSDT",
+      "target_qty": -178.58418458461318,
+      "current_qty": -178.5,
+      "pending_qty": -0.08418458461318323
+    },
+    {
+      "strategy_name": "lgq_cta_baseline_004",
+      "symbol": "DOGEUSDT",
+      "target_qty": -2917.1528588098017,
+      "current_qty": -2917.0,
+      "pending_qty": -0.15285880980172806
+    },
+    {
+      "strategy_name": "lgq_cta_factor_036",
+      "symbol": "AAVEUSDT",
+      "target_qty": -1.474404340646379,
+      "current_qty": -1.4,
+      "pending_qty": -0.07440434064637902
+    },
+    {
+      "strategy_name": "lgq_cta_factor_170",
+      "symbol": "DOGEUSDT",
+      "target_qty": -2906.6387629345422,
+      "current_qty": -2906.0,
+      "pending_qty": -0.6387629345422283
+    },
+    {
+      "strategy_name": "lgq_cta_factor_170",
+      "symbol": "XRPUSDT",
+      "target_qty": -178.3675799086758,
+      "current_qty": -178.3,
+      "pending_qty": -0.06757990867578201
+    }
+  ]
+}

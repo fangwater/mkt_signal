@@ -1,0 +1,159 @@
+{
+  "checked_at_utc": "2026-10-11T05:37:05Z",
+  "manager_equity": {
+    "source_id": "binance_exec_trade05",
+    "account": "lgq_cta_RX02",
+    "venue": "binance-futures",
+    "feed": "rapidx_account_risk",
+    "equity_usdt": 9992.69715941642,
+    "wallet_balance_usdt": null,
+    "unrealized_pnl_usdt": null,
+    "available_balance_usdt": null,
+    "exchange_ts_ms": 1791697023855,
+    "status": "ok"
+  },
+  "exec_equity": 9992.69715941642,
+  "account_monitor_equity": 9992.69715941642,
+  "account_monitor_ready": true,
+  "position_ready": true,
+  "processes": {
+    "binance-cta-special-rx02": [
+      {
+        "pid": 1975542,
+        "name": "cta_special_fac"
+      },
+      {
+        "pid": 3036716,
+        "name": "python3"
+      },
+      {
+        "pid": 3038272,
+        "name": "cta_special_sig"
+      },
+      {
+        "pid": 3141576,
+        "name": "python3"
+      }
+    ],
+    "binance-cta-special-rx03": [],
+    "binance_exec_trade05": [
+      {
+        "pid": 3028399,
+        "name": "python3"
+      },
+      {
+        "pid": 3036362,
+        "name": "persist_manager"
+      },
+      {
+        "pid": 3038156,
+        "name": "rapidx_account_"
+      },
+      {
+        "pid": 3175453,
+        "name": "trade_engine"
+      },
+      {
+        "pid": 3371634,
+        "name": "viz_server"
+      },
+      {
+        "pid": 3371755,
+        "name": "exec-pre-trade"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "strategy_name": "SYSTEM_POSITION_CLOSE",
+      "symbol": "XRPUSDT",
+      "target_qty": 0.0,
+      "current_qty": 1.2207031204525263e-05,
+      "account_position_qty": -357.70000000000005,
+      "pending_qty": 0.0,
+      "pending_usdt": 0.0,
+      "delta_usdt": -1.702453606939116e-05,
+      "remaining_batches": 0,
+      "execution_complete": true,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "strategy_name": "lgq_cta_TD_TI_002",
+      "symbol": "BNBUSDT",
+      "target_qty": -0.3340370380267764,
+      "current_qty": -0.33,
+      "account_position_qty": -0.33,
+      "pending_qty": 0.0,
+      "pending_usdt": 0.0,
+      "delta_usdt": -3.018957591993799,
+      "remaining_batches": 0,
+      "execution_complete": true,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "strategy_name": "lgq_cta_TD_TI_002",
+      "symbol": "XRPUSDT",
+      "target_qty": -178.58418458461318,
+      "current_qty": -178.58418458461318,
+      "account_position_qty": -357.70000000000005,
+      "pending_qty": 0.0,
+      "pending_usdt": 0.0,
+      "delta_usdt": 0.0,
+      "remaining_batches": 0,
+      "execution_complete": true,
+      "completion_reason": "target_reached"
+    },
+    {
+      "strategy_name": "lgq_cta_baseline_004",
+      "symbol": "DOGEUSDT",
+      "target_qty": -2917.1528588098017,
+      "current_qty": -2917.1528588098017,
+      "account_position_qty": -5844.0,
+      "pending_qty": 0.0,
+      "pending_usdt": 0.0,
+      "delta_usdt": 0.0,
+      "remaining_batches": 0,
+      "execution_complete": true,
+      "completion_reason": "target_reached"
+    },
+    {
+      "strategy_name": "lgq_cta_factor_170",
+      "symbol": "DOGEUSDT",
+      "target_qty": -2927.0577215782696,
+      "current_qty": -2926.8471411901983,
+      "account_position_qty": -5844.0,
+      "pending_qty": 0.0,
+      "pending_usdt": 0.0,
+      "delta_usdt": -0.01797408902382761,
+      "remaining_batches": 0,
+      "execution_complete": true,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "strategy_name": "lgq_cta_factor_170",
+      "symbol": "LTCUSDT",
+      "target_qty": -2.623019620186759,
+      "current_qty": -2.623,
+      "account_position_qty": -2.623,
+      "pending_qty": 0.0,
+      "pending_usdt": 0.0,
+      "delta_usdt": -0.0012455875563842334,
+      "remaining_batches": 0,
+      "execution_complete": true,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "strategy_name": "lgq_cta_factor_170",
+      "symbol": "XRPUSDT",
+      "target_qty": -179.1472590469366,
+      "current_qty": -179.11582762241804,
+      "account_position_qty": -357.70000000000005,
+      "pending_qty": 0.0,
+      "pending_usdt": 0.0,
+      "delta_usdt": -0.04383583620480763,
+      "remaining_batches": 0,
+      "execution_complete": true,
+      "completion_reason": "exchange_minimum"
+    }
+  ]
+}

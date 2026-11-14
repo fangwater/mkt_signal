@@ -1,0 +1,11 @@
+{
+  "environment": "binance_exec_rx04_5m05",
+  "source_id": "binance_exec_rx04_5m05",
+  "alias": "RX04 5min",
+  "portfolio_id": "2224101339031877",
+  "old_portfolio_preserved": "2212167742921797",
+  "source_ip": "172.31.35.228",
+  "gateway": "/exec_trade05",
+  "trading_started": false,
+  "signal_enabled": false
+}

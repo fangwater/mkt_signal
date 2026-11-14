@@ -1,0 +1,9 @@
+{
+  "release_id": "20261014T043000Z",
+  "base_commit": "6ff0248e524a673c3ba8524bab8e9a6c6ddbb7e1",
+  "binary_sha256": "ca410b20b2408b4eb6bb8a4d3ddfc9f6fe3c3c31a14fda9d5dd93da95ffa9aea",
+  "source_patch_sha256": "b01327f702c8802138266695029e41f2f8815a9e13f843bc9ee8d4e943a9c1bd",
+  "old_pid": 3307344,
+  "previous_binary_sha256": "c31472e85397e94c2eb2faf81b330f96a666f5ed6ccd2304bdfeb43e6c347eb1",
+  "native_startup_diff": "pre-existing; reviewed, gated off for RapidX; preserved without edits"
+}

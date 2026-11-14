@@ -20,7 +20,7 @@ Usage: scripts/start-exec.sh --env-name <nameNN> [options]
 Options:
   --host <ssh-host>     SSH config host (default: cta_exec)
   --env-name <nameNN>   Exec environment (required), e.g. binance_exec_trade01
-  --venue <name>        Venue (binance-futures, binance-coin-futures or okex-futures)
+  --venue <name>        Venue (binance-futures, binance-coin-futures, okex-futures, bybit-futures or bitget-futures)
   --check-only          Validate the target and show process state without starting
   -h, --help            Show this help
 
@@ -67,7 +67,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! "$ENV_NAME" =~ ^(binance|okex)_exec_[a-z0-9][a-z0-9_-]*([0-9]{2})$ ]]; then
+if [[ ! "$ENV_NAME" =~ ^(binance|okex|bybit|bitget)_exec_[a-z0-9][a-z0-9_-]*([0-9]{2})$ ]]; then
   echo "[ERROR] env-name must match binance_exec_<suffixNN> or okex_exec_<suffixNN>: $ENV_NAME" >&2
   exit 2
 fi
@@ -77,6 +77,8 @@ VENUE="${VENUE:-$INFERRED_VENUE}"
 case "$VENUE" in
   binance-futures|binance-coin-futures) VENUE_EXCHANGE="binance" ;;
   okex-futures) VENUE_EXCHANGE="okex" ;;
+  bybit-futures) VENUE_EXCHANGE="bybit" ;;
+  bitget-futures) VENUE_EXCHANGE="bitget" ;;
   *) echo "[ERROR] unsupported venue: $VENUE" >&2; exit 2 ;;
 esac
 if [[ "$VENUE_EXCHANGE" != "$INFERRED_EXCHANGE" ]]; then
@@ -138,6 +140,9 @@ check_only="$4"
 startup_wait_seconds="$5"
 startup_settle_seconds="$6"
 log_lines="$7"
+if [[ -d "$HOME/.local/bin" ]]; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 scripts_dir="$target/scripts"
 
 if [[ ! -d "$target" || "$(readlink -f -- "$target")" != "$target" ]]; then
@@ -166,7 +171,6 @@ required_executables=(
   "$target/viz_server"
   "$target/persist_manager"
   "$target/trade_engine"
-  "$target/account_monitor"
   "$scripts_dir/start_exec_persist_manager.sh"
   "$scripts_dir/stop_exec_persist_manager.sh"
   "$scripts_dir/start_exec_trade_engine.sh"
@@ -192,31 +196,133 @@ for required_executable in "${required_executables[@]}"; do
     exit 1
   fi
 done
-for required_command in bash curl pmdaemon ps readlink sed grep ss tail sleep awk; do
+for required_command in bash curl pmdaemon ps readlink sed tr grep ss tail sleep awk; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
     echo "[ERROR] required remote command not found: $required_command" >&2
     exit 1
   fi
 done
 
+# Keep this parser aligned with runtime_common::execution_backend::ExecBackend.
+parse_exec_backend() {
+  local raw="$1"
+  raw="$(printf '%s' "$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    ''|native|exchange|direct) printf '%s\n' native ;;
+    ltp|rapidx|liquidity|liquiditytech) printf '%s\n' ltp ;;
+    *) echo "[ERROR] invalid execution backend: $1 (expected native or rapidx)" >&2; return 1 ;;
+  esac
+}
+
+exec_backend_for_exchange() {
+  local exchange="$1"
+  local default_backend="${TRADE_ENGINE_EXEC_BACKEND:-}"
+  local mapping="${TRADE_ENGINE_EXEC_BACKEND_MAP:-}"
+  local parsed_default wildcard='' specific='' entry key value parsed
+  local wildcard_set=0 specific_set=0
+  local -a entries=()
+
+  if [[ "$mapping" == *$'\n'* || "$mapping" == *$'\r'* ]]; then
+    echo "[ERROR] execution backend map must not contain newlines" >&2
+    return 1
+  fi
+  parsed_default="$(parse_exec_backend "$default_backend")" || return 1
+  IFS=',' read -r -a entries <<< "$mapping"
+  for entry in "${entries[@]}"; do
+    entry="$(printf '%s' "$entry" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [[ -z "$entry" ]] && continue
+    if [[ "$entry" != *=* ]]; then
+      echo "[ERROR] invalid execution backend map entry: $entry (expected exchange=backend)" >&2
+      return 1
+    fi
+    key="$(printf '%s' "${entry%%=*}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+    value="${entry#*=}"
+    parsed="$(parse_exec_backend "$value")" || return 1
+    case "$key" in
+      '*')
+        if ((wildcard_set)); then
+          echo "[ERROR] duplicate wildcard execution backend mapping" >&2
+          return 1
+        fi
+        wildcard="$parsed"
+        wildcard_set=1
+        ;;
+      binance|okex|bybit|bitget|gate|hyperliquid)
+        if [[ "$key" == "$exchange" ]]; then
+          if ((specific_set)); then
+            echo "[ERROR] duplicate $exchange execution backend mapping" >&2
+            return 1
+          fi
+          specific="$parsed"
+          specific_set=1
+        fi
+        ;;
+      *)
+        echo "[ERROR] unknown exchange in execution backend map: $key" >&2
+        return 1
+        ;;
+    esac
+  done
+
+  if ((specific_set)); then
+    printf '%s\n' "$specific"
+  elif ((wildcard_set)); then
+    printf '%s\n' "$wildcard"
+  else
+    printf '%s\n' "$parsed_default"
+  fi
+}
+
 if ! (
   set +u
   set -a
   # shellcheck disable=SC1090
-  source "$target/env.sh" >/dev/null 2>&1
+  source "$target/env.sh" >/dev/null 2>&1 || exit 1
   set +a
-  [[ "${EXEC_VENUE:-${VENUE:-}}" == "$venue" ]]
-  [[ "${IPC_NAMESPACE:-}" == "$(basename "$target")" ]]
-  case "$exchange" in
-    binance)
-      [[ -n "${BINANCE_API_KEY:-}" && -n "${BINANCE_API_SECRET:-}" ]]
+  [[ "${EXEC_VENUE:-${VENUE:-}}" == "$venue" ]] || exit 1
+  [[ "${IPC_NAMESPACE:-}" == "$(basename "$target")" ]] || exit 1
+  exec_backend="$(exec_backend_for_exchange "$exchange")" || exit 1
+  case "$exec_backend" in
+    native)
+      case "$exchange" in
+        binance) [[ -n "${BINANCE_API_KEY:-}" && -n "${BINANCE_API_SECRET:-}" ]] || exit 1 ;;
+        bybit) [[ -n "${BYBIT_API_KEY:-}" && -n "${BYBIT_API_SECRET:-}" ]] || exit 1 ;;
+        bitget) [[ -n "${BITGET_API_KEY:-}" && -n "${BITGET_API_SECRET:-}" && -n "${BITGET_API_PASSPHRASE:-}" ]] || exit 1 ;;
+        okex) [[ -n "${OKX_API_KEY:-}" && -n "${OKX_API_SECRET:-}" && -n "${OKX_PASSPHRASE:-}" ]] || exit 1 ;;
+      esac
       ;;
-    okex)
-      [[ -n "${OKX_API_KEY:-}" && -n "${OKX_API_SECRET:-}" && -n "${OKX_PASSPHRASE:-}" ]]
+    ltp)
+      [[ "$venue" == "binance-futures" || "$venue" == "okex-futures" ]] || exit 1
+      [[ -n "${LTP_API_KEY:-}" && -n "${LTP_API_SECRET:-}" ]] || exit 1
+      [[ "${LTP_PORTFOLIO_ID:-}" =~ ^[0-9]{1,64}$ ]] || exit 1
+      ;;
+    *)
+      exit 1
       ;;
   esac
 ); then
-  echo "[ERROR] env.sh must provide matching EXEC_VENUE/IPC_NAMESPACE and ${exchange} credentials" >&2
+  echo "[ERROR] env.sh must provide matching EXEC_VENUE/IPC_NAMESPACE and credentials for its resolved execution backend" >&2
+  exit 1
+fi
+
+exec_backend="$(
+  set +u
+  set -a
+  # shellcheck disable=SC1090
+  source "$target/env.sh" >/dev/null 2>&1 || exit 1
+  set +a
+  exec_backend_for_exchange "$exchange"
+)" || {
+  echo "[ERROR] failed to resolve execution backend from env.sh" >&2
+  exit 1
+}
+case "$exec_backend" in
+  native) account_monitor_binary="$target/account_monitor" ;;
+  ltp) account_monitor_binary="$target/rapidx_account_monitor" ;;
+  *) echo "[ERROR] unsupported execution backend: $exec_backend" >&2; exit 1 ;;
+esac
+if [[ ! -x "$account_monitor_binary" ]]; then
+  echo "[ERROR] required account monitor binary not found or not executable: $account_monitor_binary" >&2
   exit 1
 fi
 
@@ -231,6 +337,8 @@ fi
 case "$exchange" in
   binance) short_exchange="bn" ;;
   okex) short_exchange="ok" ;;
+  bybit) short_exchange="bb" ;;
+  bitget) short_exchange="bg" ;;
   *)
     echo "[ERROR] unsupported exchange: $exchange" >&2
     exit 1
@@ -259,7 +367,7 @@ labels=(
 binaries=(
   "$target/persist_manager"
   "$target/trade_engine"
-  "$target/account_monitor"
+  "$account_monitor_binary"
   "$target/exec-pre-trade"
   "$target/viz_server"
 )
@@ -573,6 +681,7 @@ check_recent_logs() {
     if [[ -n "$stream_output" ]]; then
       display_output="$(printf '%s\n' "$stream_output" | sed -E \
         -e 's/("(KEY|SIGN|API_KEY|API_SECRET|SECRET|SIGNATURE|TOKEN|AUTHORIZATION)"[[:space:]]*:[[:space:]]*")[^"]*"/\1<redacted>"/gI' \
+        -e 's/([?&](listenKey|signature|apiKey|access_token|token)=)[^&[:space:]"]+/\1<redacted>/gI' \
         -e "s/(first4=')[^']*(' last4=')[^']*'/\1<redacted>\2<redacted>'/g" \
         -e 's/(Authorization:[[:space:]]*(Bearer|Basic)[[:space:]]+)[^[:space:]]+/\1<redacted>/gI')"
       printf '%s\n' "$display_output"

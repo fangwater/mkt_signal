@@ -4,30 +4,91 @@ version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "cme_tas_replay"
-path = "src/main.rs"
+name = "cme_tas_replay_all"
+path = "src/bin/cme_tas_replay_all.rs"
 
 [[bin]]
-name = "cme_tas_vs_summary"
-path = "src/bin/cme_tas_vs_summary.rs"
+name = "cme_tas_shard"
+path = "src/bin/cme_tas_shard.rs"
 
 [[bin]]
-name = "cme_tas_synth_1min"
-path = "src/bin/cme_tas_synth_1min.rs"
+name = "cme_tas_db_compare"
+path = "src/bin/cme_tas_db_compare.rs"
 
 [[bin]]
-name = "cme_tas_kll"
-path = "src/bin/cme_tas_kll.rs"
+name = "cme_tas_reference_scan"
+path = "src/bin/cme_tas_reference_scan.rs"
 
 [[bin]]
-name = "cme_tas_backtest"
-path = "src/bin/cme_tas_backtest.rs"
+name = "cme_tas_export_backtest_1s"
+path = "src/bin/cme_tas_export_backtest_1s.rs"
 
 [[bin]]
-name = "cme_tas_drop_special_1min"
-path = "src/bin/cme_tas_drop_special_1min.rs"
+name = "cme_tas_validate_backtest_1s"
+path = "src/bin/cme_tas_validate_backtest_1s.rs"
+
+[[bin]]
+name = "cme_tas_export_settlements"
+path = "src/bin/cme_tas_export_settlements.rs"
+
+[[bin]]
+name = "cme_tas_export_status"
+path = "src/bin/cme_tas_export_status.rs"
+
+[[bin]]
+name = "cme_ll2_replay"
+path = "src/bin/cme_ll2_replay.rs"
+
+[[bin]]
+name = "cme_ll2_shard"
+path = "src/bin/cme_ll2_shard.rs"
+
+[[bin]]
+name = "cme_baseline_1min"
+path = "src/bin/cme_baseline_1min.rs"
+
+[[bin]]
+name = "cme_baseline_hfq_1min"
+path = "src/bin/cme_baseline_hfq_1min.rs"
+
+[[bin]]
+name = "cme_baseline_fill_size_buckets"
+path = "src/bin/cme_baseline_fill_size_buckets.rs"
+
+[[bin]]
+name = "cme_baseline_ylabel_1min"
+path = "src/bin/cme_baseline_ylabel_1min.rs"
+
+[[bin]]
+name = "cme_patch_twap_1min"
+path = "src/bin/cme_patch_twap_1min.rs"
+
+[[bin]]
+name = "cme_patch_size_1min"
+path = "src/bin/cme_patch_size_1min.rs"
+
+[[bin]]
+name = "cme_raw_ll2_replay"
+path = "src/bin/cme_raw_ll2_replay.rs"
+
+[[bin]]
+name = "cme_patch_ll2_1min"
+path = "src/bin/cme_patch_ll2_1min.rs"
+
+[[bin]]
+name = "cme_raw_ll2_shard"
+path = "src/bin/cme_raw_ll2_shard.rs"
+
+[[bin]]
+name = "cme_ll2_contract_status"
+path = "src/bin/cme_ll2_contract_status.rs"
+
+[[bin]]
+name = "cme_tas_ll2_match"
+path = "src/bin/cme_tas_ll2_match.rs"
 
 [dependencies]
+cme_roll_metadata = { path = "../cme_roll_metadata" }
 anyhow = "1.0"
 bytes = { version = "1.0", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -35,17 +96,22 @@ chrono-tz = "0.8"
 clap = { version = "4.0", features = ["derive"] }
 crossbeam-channel = "0.5"
 csv = "1.3"
+csv-core = "0.1"
 env_logger = "0.10"
 flate2 = { version = "1.0", default-features = false, features = ["zlib-ng"] }
 log = "0.4"
+libc = "0.2"
+mimalloc = "0.1"
 mkt_parsers = { path = "../mkt_parsers" }
 polars = { version = "0.43.1", default-features = false, features = ["parquet"] }
-reqwest = { version = "0.12.19", features = ["blocking"] }
-rocksdb = { version = "0.21", default-features = false, features = ["lz4"] }
-rolling_common = { path = "../rolling_common" }
+rayon = "1.10"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+rocksdb = { version = "0.25", default-features = false, features = ["lz4"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 toml = "0.8"
+zstd = "0.13"
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,0 +1,5 @@
+--- env.sh
++++ env.sh
+@@ -1 +1,2 @@
+ #!/usr/bin/env bash
++export BINANCE_FUTURES_IPC_PROXY=1

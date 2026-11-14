@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use super::cfg::TlenServerConfig;
 use super::factor_enum::FusionFactorId;
+use crate::factor_pub::depth_book::DepthFactorId;
 
 const TLEN_SHARED_CONFIG_FIELD: &str = "__shared__";
 
@@ -39,6 +40,7 @@ pub(crate) struct FactorBinding {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtraFactorId {
+    DepthBook(DepthFactorId),
     AvgPrice,
     BuyAvgPrice,
     SellAvgPrice,
@@ -82,6 +84,9 @@ pub enum ExtraFactorId {
 
 impl ExtraFactorId {
     pub fn from_name(name: &str) -> Option<Self> {
+        if let Some(id) = DepthFactorId::from_name(name) {
+            return Some(Self::DepthBook(id));
+        }
         match name {
             "avg_price" => Some(Self::AvgPrice),
             "buy_avg_price" => Some(Self::BuyAvgPrice),
@@ -129,6 +134,7 @@ impl ExtraFactorId {
     pub const fn as_index(self) -> u16 {
         const EXTRA_FACTOR_BASE: u16 = 1000;
         match self {
+            Self::DepthBook(id) => 1100 + id.index() as u16,
             Self::AvgPrice => EXTRA_FACTOR_BASE,
             Self::BuyAvgPrice => EXTRA_FACTOR_BASE + 1,
             Self::SellAvgPrice => EXTRA_FACTOR_BASE + 2,
@@ -172,6 +178,12 @@ impl ExtraFactorId {
     }
 
     pub fn from_index(index: u16) -> Option<Self> {
+        if let Some(id) = index
+            .checked_sub(1100)
+            .and_then(|value| DepthFactorId::from_index(value as usize))
+        {
+            return Some(Self::DepthBook(id));
+        }
         const EXTRA_FACTOR_BASE: u16 = 1000;
         match index {
             x if x == EXTRA_FACTOR_BASE => Some(Self::AvgPrice),
@@ -219,6 +231,7 @@ impl ExtraFactorId {
 
     pub fn index_to_name(index: u16) -> Option<&'static str> {
         Self::from_index(index).map(|id| match id {
+            Self::DepthBook(id) => id.name(),
             Self::AvgPrice => "avg_price",
             Self::BuyAvgPrice => "buy_avg_price",
             Self::SellAvgPrice => "sell_avg_price",

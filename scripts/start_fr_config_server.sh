@@ -34,7 +34,7 @@ case "$dir_name" in
 esac
 
 EXCHANGE="${EXCHANGE:-${detected_exchange:-okex}}"
-HOST="${HOST:-0.0.0.0}"
+HOST="${HOST:-127.0.0.1}"
 DEFAULT_EXCHANGE="${DEFAULT_EXCHANGE:-$EXCHANGE}"
 APP_NAME="${PM2_NAME:-fr_config_server_${dir_tag}}"
 if [[ -z "${PYTHON_BIN:-}" ]]; then
@@ -83,7 +83,7 @@ if port_in_use "$PORT"; then
 fi
 
 echo "[INFO] 启动 fr_config_server (exchange=${DEFAULT_EXCHANGE}, port=${PORT}, namespace=${NAMESPACE})"
-npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
+npx pm2 delete "$APP_NAME" </dev/null >/dev/null 2>&1 || true
 
 (
   cd "$BASE_DIR"

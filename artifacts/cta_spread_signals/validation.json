@@ -1,0 +1,604 @@
+{
+  "checked_at": "2026-10-13T06:49:45.443756+00:00",
+  "dashboard_commit": "ff3a8082bf7ce4ce8d5f7e7da4bc383e0fa06491",
+  "publication_enabled": false,
+  "history_error": null,
+  "history_ready": 0,
+  "spread_ready": 57,
+  "live_ready": 0,
+  "latest_model_ms": 1791819360000,
+  "oldest_model_ms": 1791819360000,
+  "all_other_processes_unchanged": true,
+  "preserved_account_configs": true,
+  "artifact_sha256_verified": true,
+  "dashboard_process": [
+    {
+      "pid": 3390010,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "exe": "python3.12",
+      "scripts": [
+        "/home/ubuntu/binance-cta-spread-rx01/scripts/cta_spread_dashboard.py"
+      ],
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    }
+  ],
+  "pairs": [
+    {
+      "factor": "baseline_141",
+      "symbol": "AAVEUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "ADAUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "AVAXUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "BCHUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "BTCUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "DASHUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "DOGEUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "DOTUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "ETHUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "FILUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "LINKUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "LTCUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "NEARUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "SOLUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "UNIUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "XLMUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "XRPUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "ZECUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "AAVEUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "ADAUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "AVAXUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "BCHUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "DASHUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "DOGEUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "DOTUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "ETHUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "FILUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "LINKUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "LTCUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "NEARUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "SOLUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "TRXUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "UNIUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "XLMUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "XRPUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "ZECUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_052",
+      "symbol": "ADAUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_052",
+      "symbol": "DASHUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_052",
+      "symbol": "DOGEUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_052",
+      "symbol": "DOTUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_052",
+      "symbol": "FILUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_052",
+      "symbol": "LINKUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_052",
+      "symbol": "NEARUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_052",
+      "symbol": "SOLUSDT",
+      "sign": 1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_113",
+      "symbol": "AAVEUSDT",
+      "sign": -1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_113",
+      "symbol": "ADAUSDT",
+      "sign": -1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_113",
+      "symbol": "DASHUSDT",
+      "sign": -1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_113",
+      "symbol": "DOTUSDT",
+      "sign": -1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_113",
+      "symbol": "FILUSDT",
+      "sign": -1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_113",
+      "symbol": "NEARUSDT",
+      "sign": -1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_170",
+      "symbol": "ADAUSDT",
+      "sign": -1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_170",
+      "symbol": "DASHUSDT",
+      "sign": -1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_170",
+      "symbol": "DOGEUSDT",
+      "sign": -1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_170",
+      "symbol": "DOTUSDT",
+      "sign": -1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_170",
+      "symbol": "LTCUSDT",
+      "sign": -1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_170",
+      "symbol": "NEARUSDT",
+      "sign": -1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    },
+    {
+      "factor": "factor_170",
+      "symbol": "ZECUSDT",
+      "sign": -1,
+      "points": 1441,
+      "events": 0,
+      "candles": 1441,
+      "missing_candles": 0,
+      "feed_error": null
+    }
+  ]
+}

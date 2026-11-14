@@ -1,48 +1,349 @@
 use crate::ltp_ws::LtpCredentials;
 use crate::query_parsers::compact_order::{CompactOrderQueryResp, ORDER_QUERY_NOT_FOUND_MARKER};
-use crate::query_request::{QueryRequestMsg, QueryRequestType};
+use crate::query_request::{QueryRequestMsg, QueryRequestType, SNAPSHOT_COMPLETE_MARKER};
 use crate::query_response_handle::QueryExecOutcome;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use hmac::{Hmac, Mac};
 use mkt_parsers::msg::basic_account_msg::{
-    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+    BasicBalanceMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
 };
 use order_common::{OrderExecutionStatus, TimeInForce};
 use runtime_common::exchange::Exchange;
-use serde::Deserialize;
+use runtime_common::execution_backend::rapidx_portfolio_id;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Sha256;
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 type HmacSha256 = Hmac<Sha256>;
 
 pub const DEFAULT_REST_URL: &str = "https://api.liquiditytech.com";
 const ORDER_PATH: &str = "/api/v1/trading/order";
-const ASSET_PATH: &str = "/api/v1/user/asset";
+const ASSET_PATH: &str = "/api/v1/trading/portfolio/assets";
+const ACCOUNT_PATH: &str = "/api/v1/trading/account";
 const POSITION_PATH: &str = "/api/v1/trading/position";
+const TRANSFER_APPLY_PATH: &str = "/api/v1/transfer/apply";
+const TRANSFER_GET_PATH: &str = "/api/v1/transfer/get";
+const TRANSFER_LIST_PATH: &str = "/api/v1/transfer/list";
+const LOAN_INFO_PATH: &str = "/api/v1/trading/rapidxLoan/loan/info";
+const LOAN_MAX_PATH: &str = "/api/v1/trading/rapidxLoan/loan/maxLoan";
+const LOAN_CONFIG_PATH: &str = "/api/v1/trading/rapidxLoan/loan/config";
+const LOAN_ORDERS_PATH: &str = "/api/v1/trading/rapidxLoan/loan/orders";
+const LOAN_REPAY_PATH: &str = "/api/v1/trading/rapidxLoan/loan/repay";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LtpTransferRequest {
+    pub from_trade_account_id: u64,
+    pub to_trade_account_id: u64,
+    pub from_account_type: String,
+    pub to_account_type: String,
+    pub currency: String,
+    pub amount: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    pub rapid_transfer: bool,
+    pub client_order_id: String,
+    pub loan_trans: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LtpLoanRepayRequest {
+    pub exchange: String,
+    pub coin: String,
+    pub amount: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_order_id: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 pub struct LtpRestClient {
     base_url: String,
     creds: LtpCredentials,
+    portfolio_id: String,
     http: reqwest::Client,
 }
 
 impl LtpRestClient {
     pub fn from_env() -> Result<Self> {
+        let local_ip = if runtime_common::mkt_cfg::find_trade_engine_local_cfg_path()?.is_some() {
+            Some(
+                runtime_common::mkt_cfg::load_primary_local_ip_from_trade_engine_sync()?
+                    .0
+                    .parse()
+                    .context("invalid RapidX REST source IP in trade_engine config")?,
+            )
+        } else {
+            None
+        };
+        Self::from_env_with_local_ip(local_ip)
+    }
+
+    pub fn from_env_with_local_ip(local_ip: Option<std::net::IpAddr>) -> Result<Self> {
         let base_url = std::env::var("LTP_REST_URL")
             .ok()
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_REST_URL.to_string());
+        let portfolio_id = rapidx_portfolio_id()?;
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             creds: LtpCredentials::from_env()?,
-            http: reqwest::Client::new(),
+            portfolio_id,
+            http: reqwest::Client::builder()
+                .local_address(local_ip)
+                .timeout(Duration::from_secs(5))
+                .build()
+                .with_context(|| "build LTP REST client")?,
         })
     }
 
+    pub fn portfolio_id(&self) -> &str {
+        &self.portfolio_id
+    }
+
+    pub async fn apply_transfer(&self, request: &LtpTransferRequest) -> Result<(u16, String)> {
+        let body = serde_json::to_value(request).context("encode RapidX transfer request")?;
+        self.signed_json(reqwest::Method::POST, TRANSFER_APPLY_PATH, &body)
+            .await
+    }
+
+    pub async fn get_transfer(
+        &self,
+        transfer_id: Option<u64>,
+        client_order_id: Option<&str>,
+    ) -> Result<(u16, String)> {
+        let mut params = BTreeMap::new();
+        if let Some(value) = transfer_id {
+            params.insert("transferId".into(), value.to_string());
+        }
+        if let Some(value) = client_order_id {
+            params.insert("clientOrderId".into(), value.to_string());
+        }
+        self.signed_get(TRANSFER_GET_PATH, &params).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn list_transfers(
+        &self,
+        currency: Option<&str>,
+        status: Option<u8>,
+        start_time_ms: Option<i64>,
+        end_time_ms: Option<i64>,
+        page: u32,
+        page_size: u32,
+    ) -> Result<(u16, String)> {
+        let mut params = BTreeMap::new();
+        if let Some(value) = currency {
+            params.insert("currency".into(), value.to_string());
+        }
+        if let Some(value) = status {
+            params.insert("status".into(), value.to_string());
+        }
+        if let Some(value) = start_time_ms {
+            params.insert("startTime".into(), value.to_string());
+        }
+        if let Some(value) = end_time_ms {
+            params.insert("endTime".into(), value.to_string());
+        }
+        params.insert("page".into(), page.to_string());
+        params.insert("pageSize".into(), page_size.to_string());
+        self.signed_get(TRANSFER_LIST_PATH, &params).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(base_url: String) -> Self {
+        Self {
+            base_url,
+            creds: LtpCredentials {
+                api_key: "fixture".into(),
+                secret_key: "fixture".into(),
+            },
+            portfolio_id: "123".into(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+        }
+    }
+
+    pub(crate) async fn signed_json(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: &Value,
+    ) -> Result<(u16, String)> {
+        anyhow::ensure!(
+            matches!(
+                method,
+                reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::DELETE
+            ),
+            "invalid RapidX JSON method"
+        );
+        let params = body
+            .as_object()
+            .context("RapidX JSON body must be an object")?
+            .iter()
+            .map(|(key, value)| {
+                let value = match value {
+                    Value::String(value) => value.clone(),
+                    Value::Number(_) | Value::Bool(_) => value.to_string(),
+                    _ => return Err(anyhow!("RapidX signed body requires scalar parameters")),
+                };
+                Ok((key.clone(), value))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let nonce = chrono::Utc::now().timestamp().to_string();
+        let signature = sign_params(&self.creds.secret_key, &params, &nonce)?;
+        let response = self
+            .http
+            .request(method, format!("{}{}", self.base_url, path))
+            .header("X-MBX-APIKEY", &self.creds.api_key)
+            .header("nonce", nonce)
+            .header("ts", chrono::Utc::now().timestamp_micros().to_string())
+            .header("signature", signature)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("RapidX JSON request {path}"))?;
+        let status = response.status().as_u16();
+        Ok((
+            status,
+            response.text().await.context("read RapidX JSON response")?,
+        ))
+    }
+
+    /// A complete, identity-checked snapshot, shaped like the corresponding WS channel.
+    pub async fn fetch_account_push(&self, channel: &str, exchange: &str) -> Result<String> {
+        let snapshot_started_ms = chrono::Utc::now().timestamp_millis();
+        let mut params = BTreeMap::new();
+        let path = match channel {
+            "Assets" => {
+                params.insert("exchangeType".into(), exchange.into());
+                ASSET_PATH
+            }
+            "Positions" => {
+                params.insert("exchange".into(), exchange.into());
+                POSITION_PATH
+            }
+            "Accounts" => ACCOUNT_PATH,
+            _ => return Err(anyhow!("unsupported RapidX snapshot channel")),
+        };
+        let mut rows = Vec::new();
+        let mut expected_total = None;
+        for page in 1..=100 {
+            if channel == "Assets" {
+                params.insert("page".into(), page.to_string());
+                params.insert("pageSize".into(), "1000".into());
+            }
+            let (status, body) = self.signed_get(path, &params).await?;
+            if status != 200 {
+                return Err(anyhow!("RapidX snapshot HTTP status {status}"));
+            }
+            let value: Value = serde_json::from_str(&body).context("decode RapidX snapshot")?;
+            let code = value
+                .get("code")
+                .and_then(Value::as_i64)
+                .context("RapidX snapshot missing code")?;
+            if !matches!(code, 200 | 200000) {
+                return Err(anyhow!("RapidX snapshot error code {code}"));
+            }
+            let data = value.get("data").context("RapidX snapshot missing data")?;
+            let (batch, done) = if channel == "Assets" {
+                let reported_page = data
+                    .get("page")
+                    .and_then(Value::as_u64)
+                    .context("RapidX assets missing page")?;
+                let pages = data
+                    .get("pageNum")
+                    .and_then(Value::as_u64)
+                    .context("RapidX assets missing pageNum")?;
+                let total = data
+                    .get("totalSize")
+                    .and_then(Value::as_u64)
+                    .context("RapidX assets missing totalSize")?;
+                if reported_page != page
+                    || pages > 100
+                    || expected_total.is_some_and(|n| n != total)
+                {
+                    return Err(anyhow!(
+                        "RapidX asset pagination changed or exceeded bounded limit"
+                    ));
+                }
+                expected_total = Some(total);
+                (
+                    data.get("list")
+                        .and_then(Value::as_array)
+                        .context("RapidX assets missing list")?,
+                    page >= pages,
+                )
+            } else {
+                (
+                    data.as_array()
+                        .context("RapidX snapshot data must be array")?,
+                    true,
+                )
+            };
+            rows.extend(batch.iter().cloned());
+            if done {
+                if expected_total.is_some_and(|n| n != rows.len() as u64) {
+                    return Err(anyhow!("RapidX assets snapshot is incomplete"));
+                }
+                let mut selected = Vec::new();
+                for mut row in rows {
+                    let source = row
+                        .get("exchangeType")
+                        .and_then(Value::as_str)
+                        .or_else(|| {
+                            row.get("sym")
+                                .and_then(Value::as_str)
+                                .and_then(|s| s.split('_').next())
+                        })
+                        .context("RapidX snapshot row missing exchange identity")?;
+                    if source != exchange {
+                        continue;
+                    }
+                    if row.get("portfolioId").and_then(Value::as_str)
+                        != Some(self.portfolio_id.as_str())
+                    {
+                        return Err(anyhow!("RapidX snapshot portfolio mismatch"));
+                    }
+                    // REST account summaries omit a venue timestamp; use poll time explicitly.
+                    if channel == "Accounts" && row.get("updateAt").is_none() {
+                        row.as_object_mut()
+                            .context("RapidX account row must be object")?
+                            .insert("updateAt".into(), json!(snapshot_started_ms.to_string()));
+                    }
+                    selected.push(row);
+                }
+                if channel == "Accounts" && selected.len() != 1 {
+                    return Err(anyhow!(
+                        "RapidX account snapshot must identify exactly one venue account"
+                    ));
+                }
+                return Ok(json!({"channel":channel,"data":selected}).to_string());
+            }
+        }
+        Err(anyhow!("RapidX asset pagination limit exceeded"))
+    }
+
+    async fn snapshot_response(&self, channel: &str, exchange: &str) -> Result<(u16, String)> {
+        let push: Value = serde_json::from_str(&self.fetch_account_push(channel, exchange).await?)?;
+        Ok((200, json!({"code":200000,"data":push["data"]}).to_string()))
+    }
+
     pub async fn query_order(&self, msg: &QueryRequestMsg) -> QueryLtpOrderOutcome {
+        let expected_exchange = match ltp_exchange_for_query_type(msg.req_type) {
+            Some(exchange) => exchange,
+            None => {
+                return QueryLtpOrderOutcome::Http {
+                    status: 503,
+                    body: Bytes::from_static(b"LTP order query exchange unsupported"),
+                }
+            }
+        };
         let params = match build_ltp_query_params(msg) {
             Ok(params) => params,
             Err(err) => {
@@ -54,7 +355,12 @@ impl LtpRestClient {
         };
 
         match self.signed_get(ORDER_PATH, &params).await {
-            Ok((status, body)) => parse_ltp_order_query_json(status, &body),
+            Ok((status, body)) => parse_ltp_order_query_json_for_portfolio(
+                status,
+                &body,
+                &self.portfolio_id,
+                expected_exchange,
+            ),
             Err(err) => QueryLtpOrderOutcome::Http {
                 status: 0,
                 body: Bytes::from(err.to_string()),
@@ -97,11 +403,12 @@ impl LtpRestClient {
             | QueryRequestType::BinanceUmBalanceSnapshotStd
             | QueryRequestType::BinanceSpotAccountSnapshotStd
             | QueryRequestType::OkexAccountBalanceSnapshot => {
-                match self.signed_get(ASSET_PATH, &BTreeMap::new()).await {
+                match self.snapshot_response("Assets", ltp_exchange).await {
                     Ok((status, body)) => parse_ltp_assets_snapshot(
                         msg,
                         logical_exchange,
                         ltp_exchange,
+                        &self.portfolio_id,
                         status,
                         &body,
                     ),
@@ -115,11 +422,12 @@ impl LtpRestClient {
             }
             QueryRequestType::BinancePmAccountSnapshot
             | QueryRequestType::OkexUsdtAvailableSnapshot => {
-                match self.signed_get(ASSET_PATH, &BTreeMap::new()).await {
+                match self.snapshot_response("Assets", ltp_exchange).await {
                     Ok((status, body)) => parse_ltp_usdt_available_snapshot(
                         msg,
                         logical_exchange,
                         ltp_exchange,
+                        &self.portfolio_id,
                         status,
                         &body,
                     ),
@@ -144,12 +452,15 @@ impl LtpRestClient {
             QueryRequestType::BinanceUmAccountSnapshot
             | QueryRequestType::BinanceUmAccountSnapshotStd
             | QueryRequestType::OkexPositionsSnapshot => {
-                let mut params = BTreeMap::new();
-                params.insert("exchange".to_string(), ltp_exchange.to_string());
-                match self.signed_get(POSITION_PATH, &params).await {
-                    Ok((status, body)) => {
-                        parse_ltp_positions_snapshot(msg, logical_exchange, status, &body)
-                    }
+                match self.snapshot_response("Positions", ltp_exchange).await {
+                    Ok((status, body)) => parse_ltp_positions_snapshot(
+                        msg,
+                        logical_exchange,
+                        status,
+                        &body,
+                        &self.portfolio_id,
+                        ltp_exchange,
+                    ),
                     Err(err) => vec![query_outcome(
                         msg,
                         logical_exchange,
@@ -169,12 +480,98 @@ impl LtpRestClient {
         }
     }
 
-    async fn signed_get(
+    pub async fn fetch_loan_info(&self) -> Result<Value> {
+        self.fetch_financial_response(LOAN_INFO_PATH, &BTreeMap::new())
+            .await
+    }
+
+    pub async fn fetch_loan_capacity(&self, exchange: &str) -> Result<Value> {
+        anyhow::ensure!(
+            matches!(exchange, "BINANCE" | "OKX"),
+            "unsupported RapidX loan exchange"
+        );
+        self.fetch_financial_response(
+            LOAN_MAX_PATH,
+            &BTreeMap::from([("exchange".into(), exchange.into())]),
+        )
+        .await
+    }
+
+    pub async fn fetch_loan_config(&self) -> Result<Value> {
+        self.fetch_financial_response(LOAN_CONFIG_PATH, &BTreeMap::new())
+            .await
+    }
+
+    pub async fn fetch_loan_orders(
+        &self,
+        coin: Option<&str>,
+        order_type: Option<&str>,
+        client_order_id: Option<&str>,
+        start_time_ms: Option<i64>,
+        end_time_ms: Option<i64>,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Value> {
+        let mut params = BTreeMap::from([
+            ("page".into(), page.to_string()),
+            ("pageSize".into(), page_size.to_string()),
+        ]);
+        if let Some(value) = coin {
+            params.insert("coin".into(), value.into());
+        }
+        if let Some(value) = order_type {
+            params.insert("type".into(), value.into());
+        }
+        if let Some(value) = client_order_id {
+            params.insert("clientOrderId".into(), value.into());
+        }
+        if let Some(value) = start_time_ms {
+            params.insert("startTime".into(), value.to_string());
+        }
+        if let Some(value) = end_time_ms {
+            params.insert("endTime".into(), value.to_string());
+        }
+        self.fetch_financial_response(LOAN_ORDERS_PATH, &params)
+            .await
+    }
+
+    pub async fn repay_loan(&self, request: &LtpLoanRepayRequest) -> Result<(u16, String)> {
+        let value = serde_json::to_value(request).context("encode RapidX loan repay request")?;
+        let params = value
+            .as_object()
+            .context("RapidX loan repay request must encode as an object")?
+            .iter()
+            .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.into())))
+            .collect::<BTreeMap<_, _>>();
+        self.signed_post_query(LOAN_REPAY_PATH, &params).await
+    }
+
+    async fn fetch_financial_response(
+        &self,
+        path: &str,
+        params: &BTreeMap<String, String>,
+    ) -> Result<Value> {
+        let (status, body) = self.signed_get(path, params).await?;
+        anyhow::ensure!(status == 200, "RapidX financial HTTP status {status}");
+        let response: Value =
+            serde_json::from_str(&body).context("decode RapidX financial response")?;
+        anyhow::ensure!(
+            matches!(
+                response.get("code").and_then(Value::as_i64),
+                Some(200 | 200000)
+            ),
+            "RapidX financial response failed or missing code"
+        );
+        Ok(response)
+    }
+
+    pub(crate) async fn signed_get(
         &self,
         path: &str,
         params: &BTreeMap<String, String>,
     ) -> Result<(u16, String)> {
         let nonce = chrono::Utc::now().timestamp().to_string();
+        let ts = chrono::Utc::now().timestamp_micros().to_string();
         let signature = sign_params(&self.creds.secret_key, params, &nonce)?;
         let query = encode_query(params);
         let url = if query.is_empty() {
@@ -189,11 +586,48 @@ impl LtpRestClient {
             .header("X-MBX-APIKEY", self.creds.api_key.as_str())
             .header("nonce", nonce)
             .header("signature", signature)
+            .header("ts", ts)
             .send()
             .await
             .with_context(|| format!("LTP signed GET {}", url))?;
         let status = resp.status().as_u16();
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp.text().await.with_context(|| {
+            format!(
+                "read LTP signed GET response body status={} url={}",
+                status, url
+            )
+        })?;
+        Ok((status, body))
+    }
+
+    async fn signed_post_query(
+        &self,
+        path: &str,
+        params: &BTreeMap<String, String>,
+    ) -> Result<(u16, String)> {
+        let nonce = chrono::Utc::now().timestamp().to_string();
+        let ts = chrono::Utc::now().timestamp_micros().to_string();
+        let signature = sign_params(&self.creds.secret_key, params, &nonce)?;
+        let query = encode_query(params);
+        let url = format!("{}{}?{}", self.base_url, path, query);
+        let resp = self
+            .http
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("X-MBX-APIKEY", self.creds.api_key.as_str())
+            .header("nonce", nonce)
+            .header("signature", signature)
+            .header("ts", ts)
+            .send()
+            .await
+            .with_context(|| format!("LTP signed POST {}", url))?;
+        let status = resp.status().as_u16();
+        let body = resp.text().await.with_context(|| {
+            format!(
+                "read LTP signed POST response body status={} url={}",
+                status, url
+            )
+        })?;
         Ok((status, body))
     }
 }
@@ -236,6 +670,7 @@ fn parse_ltp_assets_snapshot(
     msg: &QueryRequestMsg,
     logical_exchange: Exchange,
     ltp_exchange: &str,
+    portfolio_id: &str,
     http_status: u16,
     body: &str,
 ) -> Vec<QueryExecOutcome> {
@@ -248,11 +683,20 @@ fn parse_ltp_assets_snapshot(
         )];
     }
 
-    match parse_ltp_asset_basic_msgs(body, ltp_exchange) {
-        Ok(payloads) => payloads
-            .into_iter()
-            .map(|body| query_outcome(msg, logical_exchange, http_status, body))
-            .collect(),
+    match parse_ltp_asset_basic_msgs(body, ltp_exchange, portfolio_id) {
+        Ok(payloads) => {
+            let mut outcomes: Vec<_> = payloads
+                .into_iter()
+                .map(|body| query_outcome(msg, logical_exchange, http_status, body))
+                .collect();
+            outcomes.push(query_outcome(
+                msg,
+                logical_exchange,
+                http_status,
+                Bytes::from_static(SNAPSHOT_COMPLETE_MARKER),
+            ));
+            outcomes
+        }
         Err(err) => vec![query_outcome(
             msg,
             logical_exchange,
@@ -267,6 +711,8 @@ fn parse_ltp_positions_snapshot(
     logical_exchange: Exchange,
     http_status: u16,
     body: &str,
+    portfolio_id: &str,
+    ltp_exchange: &str,
 ) -> Vec<QueryExecOutcome> {
     if http_status != 200 {
         return vec![query_outcome(
@@ -277,7 +723,7 @@ fn parse_ltp_positions_snapshot(
         )];
     }
 
-    match parse_ltp_position_basic_msgs(body, logical_exchange) {
+    match parse_ltp_position_basic_msgs(body, logical_exchange, portfolio_id, ltp_exchange) {
         Ok(payloads) => {
             if payloads.is_empty() {
                 return vec![query_outcome(
@@ -287,10 +733,19 @@ fn parse_ltp_positions_snapshot(
                     Bytes::new(),
                 )];
             }
-            payloads
+            let mut outcomes: Vec<_> = payloads
                 .into_iter()
                 .map(|body| query_outcome(msg, logical_exchange, http_status, body))
-                .collect()
+                .collect();
+            // Non-empty snapshots (including rows with zero qty) also need the
+            // existing completion marker before Exec may initialize its ledger.
+            outcomes.push(query_outcome(
+                msg,
+                logical_exchange,
+                http_status,
+                Bytes::from_static(SNAPSHOT_COMPLETE_MARKER),
+            ));
+            outcomes
         }
         Err(err) => vec![query_outcome(
             msg,
@@ -305,6 +760,7 @@ fn parse_ltp_usdt_available_snapshot(
     msg: &QueryRequestMsg,
     logical_exchange: Exchange,
     ltp_exchange: &str,
+    portfolio_id: &str,
     http_status: u16,
     body: &str,
 ) -> Vec<QueryExecOutcome> {
@@ -317,7 +773,7 @@ fn parse_ltp_usdt_available_snapshot(
         )];
     }
 
-    match parse_ltp_usdt_available_body(body, msg.req_type, ltp_exchange) {
+    match parse_ltp_usdt_available_body(body, msg.req_type, ltp_exchange, portfolio_id) {
         Ok(body) => vec![query_outcome(msg, logical_exchange, http_status, body)],
         Err(err) => vec![query_outcome(
             msg,
@@ -342,6 +798,8 @@ struct LtpAssetOuter {
 
 #[derive(Debug, Deserialize)]
 struct LtpAssetRow {
+    #[serde(default, rename = "portfolioId")]
+    portfolio_id: String,
     #[serde(default)]
     coin: String,
     #[serde(default, rename = "exchangeType")]
@@ -350,26 +808,20 @@ struct LtpAssetRow {
     balance: String,
     #[serde(default)]
     available: String,
-    #[serde(default, rename = "maxTransferable")]
-    max_transferable: String,
-    #[serde(default)]
-    equity: String,
-    #[serde(default)]
-    debt: String,
-    #[serde(default)]
-    borrow: String,
-    #[serde(default)]
-    overdraw: String,
     #[serde(default, rename = "updateAt")]
     update_at: String,
 }
 
-fn parse_ltp_asset_basic_msgs(body: &str, ltp_exchange: &str) -> Result<Vec<Bytes>> {
+fn parse_ltp_asset_basic_msgs(
+    body: &str,
+    ltp_exchange: &str,
+    portfolio_id: &str,
+) -> Result<Vec<Bytes>> {
     let outer: LtpAssetOuter =
         serde_json::from_str(body).with_context(|| "decode LTP asset response")?;
     ensure_ltp_success(outer.code, &outer.message, &outer.msg)?;
 
-    let rows = ltp_asset_rows_from_data(outer.data, ltp_exchange)?;
+    let rows = ltp_asset_rows_from_data(outer.data, ltp_exchange, portfolio_id)?;
     let now_ms = chrono::Utc::now().timestamp_millis();
     let mut out = Vec::new();
     for row in rows {
@@ -379,14 +831,9 @@ fn parse_ltp_asset_basic_msgs(body: &str, ltp_exchange: &str) -> Result<Vec<Byte
         let ts = parse_i64(&row.update_at);
         let ts = if ts > 0 { ts } else { now_ms };
         let coin = row.coin.to_ascii_uppercase();
-        let debt = first_positive_f64(&[&row.debt, &row.borrow, &row.overdraw]);
-        let wallet = first_present_f64(&[&row.balance]).unwrap_or_else(|| {
-            first_present_f64(&[&row.equity])
-                .map(|equity| equity + debt)
-                .unwrap_or(0.0)
-        });
-        out.push(BasicBalanceMsg::create(ts, coin.clone(), wallet).to_bytes());
-        out.push(BasicBorrowInterestMsg::create(ts, coin, debt, 0.0).to_bytes());
+        let wallet = first_present_f64(&[&row.balance])
+            .context("RapidX asset balance missing or invalid")?;
+        out.push(BasicBalanceMsg::create(ts, coin, wallet).to_bytes());
     }
     Ok(out)
 }
@@ -395,11 +842,11 @@ fn parse_ltp_usdt_available_body(
     body: &str,
     req_type: QueryRequestType,
     ltp_exchange: &str,
+    portfolio_id: &str,
 ) -> Result<Bytes> {
-    let row = parse_ltp_usdt_asset_row(body, ltp_exchange)?;
-    let available = first_present_f64(&[&row.available, &row.max_transferable])
-        .or_else(|| first_present_f64(&[&row.equity]))
-        .unwrap_or(0.0);
+    let row = parse_ltp_usdt_asset_row(body, ltp_exchange, portfolio_id)?;
+    let available = first_present_f64(&[&row.available])
+        .context("RapidX available balance missing or invalid")?;
     let response = match req_type {
         QueryRequestType::BinancePmAccountSnapshot => {
             json!({
@@ -430,52 +877,71 @@ fn parse_ltp_usdt_available_body(
         .with_context(|| "encode LTP USDT available compatibility body")
 }
 
-fn parse_ltp_usdt_asset_row(body: &str, ltp_exchange: &str) -> Result<LtpAssetRow> {
+fn parse_ltp_usdt_asset_row(
+    body: &str,
+    ltp_exchange: &str,
+    portfolio_id: &str,
+) -> Result<LtpAssetRow> {
     let outer: LtpAssetOuter =
         serde_json::from_str(body).with_context(|| "decode LTP asset response")?;
     ensure_ltp_success(outer.code, &outer.message, &outer.msg)?;
-    ltp_asset_rows_from_data(outer.data, ltp_exchange)?
+    ltp_asset_rows_from_data(outer.data, ltp_exchange, portfolio_id)?
         .into_iter()
         .find(|row| row.coin.eq_ignore_ascii_case("USDT"))
         .ok_or_else(|| anyhow!("LTP asset response does not contain USDT for {ltp_exchange}"))
 }
 
-fn ltp_asset_rows_from_data(data: Value, ltp_exchange: &str) -> Result<Vec<LtpAssetRow>> {
+fn ltp_asset_rows_from_data(
+    data: Value,
+    ltp_exchange: &str,
+    portfolio_id: &str,
+) -> Result<Vec<LtpAssetRow>> {
     let mut rows = Vec::new();
     match data {
         Value::Object(map) => {
             if map.contains_key("coin") {
-                push_asset_rows(Value::Object(map), ltp_exchange, &mut rows)?;
+                push_asset_rows(Value::Object(map), ltp_exchange, portfolio_id, &mut rows)?;
             } else {
                 for (_, value) in map {
-                    push_asset_rows(value, ltp_exchange, &mut rows)?;
+                    push_asset_rows(value, ltp_exchange, portfolio_id, &mut rows)?;
                 }
             }
         }
-        Value::Array(items) => push_asset_rows(Value::Array(items), ltp_exchange, &mut rows)?,
+        Value::Array(items) => {
+            push_asset_rows(Value::Array(items), ltp_exchange, portfolio_id, &mut rows)?
+        }
         Value::Null => {}
         other => return Err(anyhow!("unexpected LTP asset data shape: {other:?}")),
     }
     Ok(rows)
 }
 
-fn push_asset_rows(value: Value, ltp_exchange: &str, rows: &mut Vec<LtpAssetRow>) -> Result<()> {
+fn push_asset_rows(
+    value: Value,
+    ltp_exchange: &str,
+    portfolio_id: &str,
+    rows: &mut Vec<LtpAssetRow>,
+) -> Result<()> {
     match value {
         Value::Array(items) => {
             for item in items {
                 let row: LtpAssetRow =
                     serde_json::from_value(item).with_context(|| "decode LTP asset row")?;
-                if row.exchange_type.eq_ignore_ascii_case(ltp_exchange) {
-                    rows.push(row);
+                if !row.exchange_type.eq_ignore_ascii_case(ltp_exchange) {
+                    continue;
                 }
+                ensure_asset_scope(&row, ltp_exchange, portfolio_id)?;
+                rows.push(row);
             }
         }
         Value::Object(_) => {
             let row: LtpAssetRow =
                 serde_json::from_value(value).with_context(|| "decode LTP asset row")?;
-            if row.exchange_type.eq_ignore_ascii_case(ltp_exchange) {
-                rows.push(row);
+            if !row.exchange_type.eq_ignore_ascii_case(ltp_exchange) {
+                return Ok(());
             }
+            ensure_asset_scope(&row, ltp_exchange, portfolio_id)?;
+            rows.push(row);
         }
         Value::Null => {}
         other => return Err(anyhow!("unexpected LTP asset row shape: {other:?}")),
@@ -497,6 +963,10 @@ struct LtpPositionOuter {
 
 #[derive(Debug, Deserialize)]
 struct LtpPositionRow {
+    #[serde(default, rename = "portfolioId")]
+    portfolio_id: String,
+    #[serde(default, rename = "exchangeType")]
+    exchange_type: String,
     #[serde(default)]
     sym: String,
     #[serde(default, rename = "positionSide")]
@@ -509,7 +979,12 @@ struct LtpPositionRow {
     update_at: String,
 }
 
-fn parse_ltp_position_basic_msgs(body: &str, logical_exchange: Exchange) -> Result<Vec<Bytes>> {
+fn parse_ltp_position_basic_msgs(
+    body: &str,
+    logical_exchange: Exchange,
+    portfolio_id: &str,
+    ltp_exchange: &str,
+) -> Result<Vec<Bytes>> {
     let outer: LtpPositionOuter =
         serde_json::from_str(body).with_context(|| "decode LTP position response")?;
     ensure_ltp_success(outer.code, &outer.message, &outer.msg)?;
@@ -517,20 +992,29 @@ fn parse_ltp_position_basic_msgs(body: &str, logical_exchange: Exchange) -> Resu
     let mut out = Vec::new();
     let now_ms = chrono::Utc::now().timestamp_millis();
     for row in outer.data {
-        let Some(inst_id) = ltp_sym_to_internal(&row.sym, logical_exchange) else {
-            continue;
-        };
-        let raw_qty = parse_f64(&row.position_qty) as f32;
+        ensure_position_scope(&row, ltp_exchange, portfolio_id)?;
+        let inst_id = ltp_sym_to_internal(&row.sym, logical_exchange)
+            .context("RapidX position symbol invalid")?;
+        let quantity = first_present_f64(&[&row.position_qty])
+            .context("RapidX position quantity missing or invalid")?;
+        if quantity.abs() > f32::MAX as f64 {
+            return Err(anyhow!("RapidX position quantity exceeds IPC range"));
+        }
+        let raw_qty = quantity as f32;
         let raw_ts = parse_i64(&row.update_at);
         let ts = if raw_ts > 0 { raw_ts } else { now_ms };
+        if !matches!(
+            row.position_side.as_str(),
+            "LONG" | "SHORT" | "NONE" | "NET"
+        ) {
+            return Err(anyhow!("RapidX position side invalid"));
+        }
         let side = ltp_position_side_to_char(&row.position_side);
         let amount = match side {
             'L' | 'S' => raw_qty.abs(),
             _ => raw_qty,
         };
-        if amount != 0.0 {
-            out.push(BasicPositionMsg::create(ts, inst_id.clone(), side, amount).to_bytes());
-        }
+        out.push(BasicPositionMsg::create(ts, inst_id.clone(), side, amount).to_bytes());
         if let Some(pnl) = first_present_f64(&[&row.unrealized_pnl]) {
             out.push(BasicUmUnrealizedMsg::create(ts, inst_id, side, pnl).to_bytes());
         }
@@ -539,11 +1023,59 @@ fn parse_ltp_position_basic_msgs(body: &str, logical_exchange: Exchange) -> Resu
 }
 
 fn ensure_ltp_success(code: i32, message: &str, msg: &str) -> Result<()> {
-    if code == 0 || code == 200000 {
+    if matches!(code, 200 | 200000) {
         return Ok(());
     }
     let text = if message.is_empty() { msg } else { message };
     Err(anyhow!("LTP response code={} message={}", code, text))
+}
+
+fn ltp_exchange_for_query_type(req_type: QueryRequestType) -> Option<&'static str> {
+    match req_type {
+        QueryRequestType::BinanceMarginQuery
+        | QueryRequestType::BinanceUMQuery
+        | QueryRequestType::BinanceWsMarginQuery
+        | QueryRequestType::BinanceWsUMQuery => Some("BINANCE"),
+        QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => Some("OKX"),
+        _ => None,
+    }
+}
+
+fn ensure_asset_scope(row: &LtpAssetRow, exchange: &str, portfolio_id: &str) -> Result<()> {
+    if portfolio_id.is_empty() {
+        return Ok(());
+    }
+    if row.portfolio_id != portfolio_id || !row.exchange_type.eq_ignore_ascii_case(exchange) {
+        return Err(anyhow!(
+            "LTP asset scope mismatch: expected portfolio={} exchange={}, got portfolio={} exchange={}",
+            portfolio_id,
+            exchange,
+            row.portfolio_id,
+            row.exchange_type
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_position_scope(row: &LtpPositionRow, exchange: &str, portfolio_id: &str) -> Result<()> {
+    if portfolio_id.is_empty() {
+        return Ok(());
+    }
+    let row_exchange = if row.exchange_type.is_empty() {
+        row.sym.split('_').next().unwrap_or_default()
+    } else {
+        row.exchange_type.as_str()
+    };
+    if row.portfolio_id != portfolio_id || !row_exchange.eq_ignore_ascii_case(exchange) {
+        return Err(anyhow!(
+            "LTP position scope mismatch: expected portfolio={} exchange={}, got portfolio={} exchange={}",
+            portfolio_id,
+            exchange,
+            row.portfolio_id,
+            row_exchange
+        ));
+    }
+    Ok(())
 }
 
 fn first_present_f64(values: &[&str]) -> Option<f64> {
@@ -555,15 +1087,6 @@ fn first_present_f64(values: &[&str]) -> Option<f64> {
             trimmed.parse::<f64>().ok()
         }
     })
-}
-
-fn first_positive_f64(values: &[&str]) -> f64 {
-    values
-        .iter()
-        .filter_map(|value| first_present_f64(&[value]))
-        .map(f64::abs)
-        .find(|value| *value > 0.0)
-        .unwrap_or(0.0)
 }
 
 fn ltp_position_side_to_char(side: &str) -> char {
@@ -598,7 +1121,8 @@ fn ltp_sym_to_internal(sym: &str, logical_exchange: Exchange) -> Option<String> 
     }
 }
 
-fn sign_params(secret: &str, params: &BTreeMap<String, String>, nonce: &str) -> Result<String> {
+/// Sign LTP asset or trading parameters before URL encoding their values.
+pub fn sign_params(secret: &str, params: &BTreeMap<String, String>, nonce: &str) -> Result<String> {
     let mut message = String::new();
     for (idx, (key, value)) in params.iter().enumerate() {
         if idx > 0 {
@@ -662,8 +1186,6 @@ pub fn build_ltp_query_params(msg: &QueryRequestMsg) -> Result<BTreeMap<String, 
             "clientOrderId".to_string(),
             client_order_id.trim().to_string(),
         );
-    } else if msg.client_query_id > 0 {
-        out.insert("clientOrderId".to_string(), msg.client_query_id.to_string());
     } else {
         return Err(anyhow!(
             "LTP order query requires orderId or clientOrderId params"
@@ -676,15 +1198,15 @@ pub fn build_ltp_query_params(msg: &QueryRequestMsg) -> Result<BTreeMap<String, 
 struct LtpOrderOuter {
     #[serde(default)]
     code: i32,
-    #[serde(default)]
-    message: String,
-    #[serde(default)]
-    msg: String,
     data: Option<LtpOrderData>,
 }
 
 #[derive(Debug, Deserialize)]
 struct LtpOrderData {
+    #[serde(default, rename = "portfolioId")]
+    portfolio_id: String,
+    #[serde(default, rename = "exchangeType")]
+    exchange_type: String,
     #[serde(default, rename = "orderId")]
     order_id: String,
     #[serde(default, rename = "orderState")]
@@ -706,29 +1228,32 @@ struct LtpOrderData {
 }
 
 pub fn parse_ltp_order_query_json(http_status: u16, body: &str) -> QueryLtpOrderOutcome {
-    if http_status == 404 {
-        return QueryLtpOrderOutcome::NotFound;
+    parse_ltp_order_query_json_for_portfolio(http_status, body, "", "")
+}
+
+pub fn parse_ltp_order_query_json_for_portfolio(
+    http_status: u16,
+    body: &str,
+    portfolio_id: &str,
+    exchange: &str,
+) -> QueryLtpOrderOutcome {
+    if http_status != 200 {
+        return QueryLtpOrderOutcome::Http {
+            status: 502,
+            body: Bytes::from(body.to_string()),
+        };
     }
     let outer: LtpOrderOuter = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(_) => {
             return QueryLtpOrderOutcome::Http {
-                status: http_status,
+                status: 502,
                 body: Bytes::from(body.to_string()),
             }
         }
     };
-    if outer.code != 0 && outer.code != 200000 {
-        let msg = if outer.message.is_empty() {
-            outer.msg
-        } else {
-            outer.message
-        };
-        let lower = msg.to_ascii_lowercase();
-        if lower.contains("not found")
-            || lower.contains("does not exist")
-            || lower.contains("not exist")
-        {
+    if !matches!(outer.code, 200 | 200000) {
+        if outer.code == 401018 {
             return QueryLtpOrderOutcome::NotFound;
         }
         return QueryLtpOrderOutcome::Http {
@@ -737,10 +1262,46 @@ pub fn parse_ltp_order_query_json(http_status: u16, body: &str) -> QueryLtpOrder
         };
     }
     let Some(data) = outer.data else {
-        return QueryLtpOrderOutcome::NotFound;
+        return QueryLtpOrderOutcome::Http {
+            status: 502,
+            body: Bytes::from_static(b"RapidX successful order query missing data"),
+        };
     };
+    if !portfolio_id.is_empty()
+        && (data.portfolio_id != portfolio_id || !data.exchange_type.eq_ignore_ascii_case(exchange))
+    {
+        return QueryLtpOrderOutcome::Http {
+            status: 400,
+            body: Bytes::from(format!(
+                "LTP order scope mismatch: expected portfolio={} exchange={}, got portfolio={} exchange={}",
+                portfolio_id, exchange, data.portfolio_id, data.exchange_type
+            )),
+        };
+    }
+    let quantity = first_present_f64(&[&data.executed_qty]);
+    if quantity.is_none_or(|qty| qty < 0.0)
+        || parse_i64(&data.order_id) <= 0
+        || !matches!(
+            data.order_state.as_str(),
+            "NEW"
+                | "OPEN"
+                | "PARTIALLY_FILLED"
+                | "FILLED"
+                | "CANCELLED"
+                | "CANCELED"
+                | "EXPIRED"
+                | "REJECT"
+                | "REJECTED"
+                | "FAIL"
+        )
+    {
+        return QueryLtpOrderOutcome::Http {
+            status: 502,
+            body: Bytes::from_static(b"RapidX order query contains invalid lifecycle fields"),
+        };
+    }
     let compact = CompactOrderQueryResp {
-        executed_qty: parse_f64(&data.executed_qty),
+        executed_qty: quantity.unwrap(),
         order_id: parse_i64(&data.order_id),
         status_u8: ltp_order_state_to_exec_status(data.order_state.as_str()),
         update_time_ms: parse_i64(&data.update_at).max(parse_i64(&data.create_at)),
@@ -748,6 +1309,7 @@ pub fn parse_ltp_order_query_json(http_status: u16, body: &str) -> QueryLtpOrder
             .unwrap_or(TimeInForce::GTC)
             .to_u8(),
         response_price: response_price(&data),
+        order_price: parse_f64(&data.limit_price),
     };
     QueryLtpOrderOutcome::Compact {
         status: http_status,
@@ -790,9 +1352,248 @@ mod tests {
     use super::*;
     use crate::query_request::GenericQueryRequest;
     use mkt_parsers::msg::basic_account_msg::{
-        BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+        BasicBalanceMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
     };
     use runtime_common::time_util::get_timestamp_us;
+
+    #[test]
+    fn ltp_query_id_is_not_an_order_id() {
+        let request = GenericQueryRequest::create(
+            QueryRequestType::BinanceUMQuery,
+            get_timestamp_us(),
+            123,
+            Bytes::new(),
+        );
+        let request = QueryRequestMsg::parse(request.to_bytes().as_ref()).unwrap();
+        assert!(build_ltp_query_params(&request).is_err());
+    }
+
+    #[test]
+    fn ltp_only_documented_order_not_found_is_terminal() {
+        assert!(matches!(
+            parse_ltp_order_query_json(200, r#"{"code":401018,"data":null}"#),
+            QueryLtpOrderOutcome::NotFound
+        ));
+        for (status, body) in [
+            (404, "not found"),
+            (200, r#"{"code":400001,"message":"API key not found"}"#),
+            (200, r#"{"code":200000,"data":null}"#),
+        ] {
+            assert!(!matches!(
+                parse_ltp_order_query_json(status, body),
+                QueryLtpOrderOutcome::NotFound
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn ltp_asset_snapshot_fetches_all_pages_and_checks_identity() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for page in 1..=2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buffer = [0; 1024];
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buffer[..count]);
+                    if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+                assert!(request.contains("/api/v1/trading/portfolio/assets?"));
+                assert!(request.contains(&format!("page={page}&")));
+                assert!(request.contains("\r\nts: "));
+                assert!(request.contains("\r\nnonce: "));
+                let body = json!({"code":200000,"data":{"page":page,"pageSize":1,"pageNum":2,"totalSize":2,"list":[{"portfolioId":"123","exchangeType":"BINANCE","coin":if page == 1 {"BTC"} else {"USDT"},"balance":"1","updateAt":"1700000000000"}]}}).to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",body.len(),body).as_bytes()).await.unwrap();
+            }
+        });
+        let client = LtpRestClient {
+            base_url: format!("http://{address}"),
+            creds: LtpCredentials {
+                api_key: "fixture".into(),
+                secret_key: "fixture".into(),
+            },
+            portfolio_id: "123".into(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+        };
+        let value: Value = serde_json::from_str(
+            &client
+                .fetch_account_push("Assets", "BINANCE")
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["data"].as_array().unwrap().len(), 2);
+        assert_eq!(value["channel"], "Assets");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ltp_financial_and_history_requests_use_documented_paths_and_binding() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let end = chrono::Utc::now().timestamp_millis();
+        let begin = end - 1000;
+        let server = tokio::spawn(async move {
+            for index in 0..4 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let mut buffer = [0; 4096];
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let request = String::from_utf8(request).unwrap();
+                let path = request
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap();
+                assert!(!path.contains("portfolioId="));
+                assert!(request.to_ascii_lowercase().contains("\r\nsignature: "));
+                assert!(request.to_ascii_lowercase().contains("\r\nts: "));
+                let data = match index {
+                    0 => {
+                        assert_eq!(path, "/api/v1/trading/rapidxLoan/loan/info");
+                        json!({"portfolioId":123,"accounts":[]})
+                    }
+                    1 => {
+                        assert_eq!(path, "/api/v1/trading/rapidxLoan/loan/maxLoan?exchange=OKX");
+                        json!([{ "exchange":"OKX","coin":"USDT","portfolioMaxLoanCoin":"0" }])
+                    }
+                    2 => {
+                        assert_eq!(path, format!("/api/v1/trading/executions/pageable?begin={begin}&end={end}&exchange=OKX&page=1&pageSize=1000"));
+                        json!({"page":1,"pageSize":1000,"pageNum":0,"totalSize":0,"list":[]})
+                    }
+                    _ => {
+                        assert_eq!(path, format!("/api/v1/trading/statement?endTime={end}&exchange=OKX&page=1&pageSize=1000&startTime={begin}"));
+                        json!({"page":1,"pageSize":1000,"pageNum":0,"totalSize":0,"list":[]})
+                    }
+                };
+                let body = json!({"code":200000,"data":data}).to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",body.len(),body).as_bytes()).await.unwrap();
+            }
+        });
+        let client = LtpRestClient {
+            base_url: format!("http://{address}"),
+            creds: LtpCredentials {
+                api_key: "fixture".into(),
+                secret_key: "fixture".into(),
+            },
+            portfolio_id: "123".into(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+        };
+        assert_eq!(
+            client.fetch_loan_info().await.unwrap()["data"]["portfolioId"],
+            123
+        );
+        assert_eq!(
+            client.fetch_loan_capacity("OKX").await.unwrap()["data"][0]["portfolioMaxLoanCoin"],
+            "0"
+        );
+        assert!(client
+            .fetch_transaction_history("OKX", begin, end)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(client
+            .fetch_statement_history("OKX", begin, end)
+            .await
+            .unwrap()
+            .is_empty());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ltp_loan_config_history_and_repay_use_documented_contract() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for index in 0..3 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let mut buffer = [0; 4096];
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let request = String::from_utf8(request).unwrap();
+                let first_line = request.lines().next().unwrap();
+                assert!(request.to_ascii_lowercase().contains("\r\nsignature: "));
+                assert!(request.to_ascii_lowercase().contains("\r\nts: "));
+                match index {
+                    0 => assert_eq!(
+                        first_line,
+                        "GET /api/v1/trading/rapidxLoan/loan/config HTTP/1.1"
+                    ),
+                    1 => assert_eq!(
+                        first_line,
+                        "GET /api/v1/trading/rapidxLoan/loan/orders?clientOrderId=smoke-1&coin=COTI&page=1&pageSize=1000&type=repay HTTP/1.1"
+                    ),
+                    _ => assert_eq!(
+                        first_line,
+                        "POST /api/v1/trading/rapidxLoan/loan/repay?amount=12.34&clientOrderId=smoke-1&coin=COTI&exchange=BINANCE HTTP/1.1"
+                    ),
+                }
+                let body = json!({"code":200000,"message":"Success","data":{}}).to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",body.len(),body).as_bytes()).await.unwrap();
+            }
+        });
+        let client = LtpRestClient {
+            base_url: format!("http://{address}"),
+            creds: LtpCredentials {
+                api_key: "fixture".into(),
+                secret_key: "fixture".into(),
+            },
+            portfolio_id: "123".into(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+        };
+        client.fetch_loan_config().await.unwrap();
+        client
+            .fetch_loan_orders(
+                Some("COTI"),
+                Some("repay"),
+                Some("smoke-1"),
+                None,
+                None,
+                1,
+                1000,
+            )
+            .await
+            .unwrap();
+        let response = client
+            .repay_loan(&LtpLoanRepayRequest {
+                exchange: "BINANCE".into(),
+                coin: "COTI".into(),
+                amount: "12.34".into(),
+                client_order_id: Some("smoke-1".into()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.0, 200);
+        server.await.unwrap();
+    }
 
     #[test]
     fn builds_ltp_query_params_from_binance_client_id() {
@@ -832,6 +1633,7 @@ mod tests {
                 assert_eq!(compact.executed_qty, 0.5);
                 assert_eq!(compact.status_u8, OrderExecutionStatus::Filled.to_u8());
                 assert_eq!(compact.response_price, 3200.0);
+                assert_eq!(compact.order_price, 3200.0);
             }
             other => panic!("unexpected parse result: {:?}", other),
         }
@@ -846,9 +1648,19 @@ mod tests {
                 let compact = CompactOrderQueryResp::from_bytes_prefix(&body).unwrap();
                 assert_eq!(compact.status_u8, OrderExecutionStatus::Rejected.to_u8());
                 assert_eq!(compact.response_price, 0.1);
+                assert_eq!(compact.order_price, 0.1);
             }
             other => panic!("unexpected parse result: {:?}", other),
         }
+    }
+
+    #[test]
+    fn rejects_order_for_a_different_portfolio_or_exchange() {
+        let body = r#"{"code":200000,"data":{"portfolioId":"other","exchangeType":"BINANCE","orderId":"1","orderState":"OPEN","timeInForce":"GTC","executedQty":"0","executedAvgPrice":"0","lastExecutedPrice":"0","limitPrice":"1","updateAt":"1769068022495"}}"#;
+        assert!(matches!(
+            parse_ltp_order_query_json_for_portfolio(200, body, "expected", "BINANCE"),
+            QueryLtpOrderOutcome::Http { status: 400, .. }
+        ));
     }
 
     #[test]
@@ -875,22 +1687,17 @@ mod tests {
             }
         }"#;
 
-        let msgs = parse_ltp_asset_basic_msgs(body, "BINANCE").expect("parse assets");
-        assert_eq!(msgs.len(), 2);
+        let msgs = parse_ltp_asset_basic_msgs(body, "BINANCE", "").expect("parse assets");
+        assert_eq!(msgs.len(), 1);
 
         let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("balance");
         assert_eq!(bal.timestamp, 1769068022495);
         assert_eq!(bal.symbol, "USDT");
         assert!((bal.wallet - 100.5).abs() < 1e-12);
-
-        let borrow = BasicBorrowInterestMsg::from_bytes(&msgs[1]).expect("borrow");
-        assert_eq!(borrow.symbol, "USDT");
-        assert!((borrow.borrowed - 10.0).abs() < 1e-12);
-        assert_eq!(borrow.interest, 0.0);
     }
 
     #[test]
-    fn parses_ltp_assets_falls_back_to_equity_plus_debt() {
+    fn parses_ltp_assets_does_not_invent_balance_from_equity_or_borrow() {
         let body = r#"{
             "code":200000,
             "data":[{
@@ -902,10 +1709,7 @@ mod tests {
             }]
         }"#;
 
-        let msgs = parse_ltp_asset_basic_msgs(body, "OKX").expect("parse assets");
-        let bal = BasicBalanceMsg::from_bytes(&msgs[0]).expect("balance");
-        assert_eq!(bal.symbol, "ETH");
-        assert!((bal.wallet - 7.0).abs() < 1e-12);
+        assert!(parse_ltp_asset_basic_msgs(body, "OKX", "").is_err());
     }
 
     #[test]
@@ -922,7 +1726,8 @@ mod tests {
             }]
         }"#;
 
-        let msgs = parse_ltp_position_basic_msgs(body, Exchange::Binance).expect("parse positions");
+        let msgs = parse_ltp_position_basic_msgs(body, Exchange::Binance, "", "BINANCE")
+            .expect("parse positions");
         assert_eq!(msgs.len(), 2);
 
         let pos = BasicPositionMsg::from_bytes(&msgs[0]).expect("position");
@@ -949,7 +1754,8 @@ mod tests {
             }]
         }"#;
 
-        let msgs = parse_ltp_position_basic_msgs(body, Exchange::Okex).expect("parse positions");
+        let msgs = parse_ltp_position_basic_msgs(body, Exchange::Okex, "", "OKX")
+            .expect("parse positions");
         let pos = BasicPositionMsg::from_bytes(&msgs[0]).expect("position");
         assert_eq!(pos.inst_id, "BTC-USDT-SWAP");
         assert_eq!(pos.position_side, 'N');
@@ -975,9 +1781,18 @@ mod tests {
                 "updateAt":"1769068022495"
             }]
         }"#;
-        let asset_out =
-            parse_ltp_assets_snapshot(&asset_msg, Exchange::Binance, "BINANCE", 200, asset_body);
+        let asset_out = parse_ltp_assets_snapshot(
+            &asset_msg,
+            Exchange::Binance,
+            "BINANCE",
+            "",
+            200,
+            asset_body,
+        );
         assert_eq!(asset_out.len(), 2);
+        assert!(crate::query_request::is_snapshot_complete_body(
+            &asset_out[1].body
+        ));
         assert_eq!(asset_out[0].status, 200);
         assert_eq!(
             asset_out[0].req_type,
@@ -1003,12 +1818,117 @@ mod tests {
                 "updateAt":"1769068022495"
             }]
         }"#;
-        let pos_out = parse_ltp_positions_snapshot(&pos_msg, Exchange::Binance, 200, pos_body);
+        let pos_out =
+            parse_ltp_positions_snapshot(&pos_msg, Exchange::Binance, 200, pos_body, "", "BINANCE");
         assert_eq!(
             pos_out[0].req_type,
             QueryRequestType::BinanceUmAccountSnapshotStd
         );
         let pos = BasicPositionMsg::from_bytes(&pos_out[0].body).expect("position");
         assert_eq!(pos.inst_id, "BTCUSDT");
+    }
+
+    #[test]
+    fn rapidx_asset_snapshot_completes_only_after_all_valid_rows() {
+        let request = GenericQueryRequest::create(
+            QueryRequestType::BinancePmBalanceSnapshot,
+            get_timestamp_us(),
+            46,
+            Bytes::new(),
+        );
+        let msg = QueryRequestMsg::parse(request.to_bytes().as_ref()).unwrap();
+        for body in [
+            json!({"code":200000,"data":[]}),
+            json!({"code":200000,"data":[{"exchangeType":"BINANCE","coin":"BTC","balance":"1"}]}),
+        ] {
+            let outcomes = parse_ltp_assets_snapshot(
+                &msg,
+                Exchange::Binance,
+                "BINANCE",
+                "",
+                200,
+                &body.to_string(),
+            );
+            assert_eq!(outcomes.len(), body["data"].as_array().unwrap().len() + 1);
+            assert!(crate::query_request::is_snapshot_complete_body(
+                &outcomes.last().unwrap().body
+            ));
+            assert!(outcomes
+                .iter()
+                .all(|out| out.client_query_id == 46 && out.status == 200));
+        }
+        let invalid = json!({"code":200000,"data":[
+            {"exchangeType":"BINANCE","coin":"BTC","balance":"1"},
+            {"exchangeType":"BINANCE","coin":"ETH","balance":"invalid"}
+        ]});
+        let outcomes = parse_ltp_assets_snapshot(
+            &msg,
+            Exchange::Binance,
+            "BINANCE",
+            "",
+            200,
+            &invalid.to_string(),
+        );
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].status, 400);
+        assert!(!crate::query_request::is_snapshot_complete_body(
+            &outcomes[0].body
+        ));
+    }
+
+    #[test]
+    fn rapidx_position_snapshot_completes_only_after_all_valid_rows() {
+        let request = GenericQueryRequest::create(
+            QueryRequestType::BinanceUmAccountSnapshot,
+            get_timestamp_us(),
+            45,
+            Bytes::new(),
+        );
+        let msg = QueryRequestMsg::parse(request.to_bytes().as_ref()).unwrap();
+        let mut response = json!({"code":200000,"data":[
+            {"portfolioId":"123","exchangeType":"BINANCE","sym":"BINANCE_PERP_BTC_USDT","positionSide":"NET","positionQty":"0"},
+            {"portfolioId":"123","exchangeType":"BINANCE","sym":"BINANCE_PERP_ETH_USDT","positionSide":"NET","positionQty":"-2"}
+        ]});
+        let outcomes = parse_ltp_positions_snapshot(
+            &msg,
+            Exchange::Binance,
+            200,
+            &response.to_string(),
+            "123",
+            "BINANCE",
+        );
+        assert_eq!(outcomes.len(), 3);
+        assert_eq!(
+            BasicPositionMsg::from_bytes(&outcomes[0].body)
+                .unwrap()
+                .position_amount,
+            0.0
+        );
+        assert_eq!(
+            BasicPositionMsg::from_bytes(&outcomes[1].body)
+                .unwrap()
+                .position_amount,
+            -2.0
+        );
+        assert!(crate::query_request::is_snapshot_complete_body(
+            &outcomes[2].body
+        ));
+        assert!(outcomes
+            .iter()
+            .all(|out| out.client_query_id == 45 && out.status == 200));
+        response["data"][1]["portfolioId"] = json!("456");
+        let failed = parse_ltp_positions_snapshot(
+            &msg,
+            Exchange::Binance,
+            200,
+            &response.to_string(),
+            "123",
+            "BINANCE",
+        );
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].status, 400);
+        assert!(!crate::query_request::is_snapshot_complete_body(
+            &failed[0].body
+        ));
     }
 }

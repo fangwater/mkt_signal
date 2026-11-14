@@ -1,0 +1,40 @@
+{
+  "intent": {
+    "time_ms": 1792677514440,
+    "type": "MARGIN_UMFUTURE",
+    "asset": "USDT",
+    "amount": "20000"
+  },
+  "history": {
+    "timestamp": 1792677514000,
+    "asset": "USDT",
+    "amount": "20000",
+    "type": "MARGIN_UMFUTURE",
+    "status": "CONFIRMED",
+    "tranId": 423596580418
+  },
+  "after": {
+    "at": "2026-10-22T13:59:01.546976+00:00",
+    "margin_usdt": {
+      "free": "0",
+      "locked": "0",
+      "borrowed": "0",
+      "interest": "0",
+      "netAsset": "0"
+    },
+    "spot_usdt": {
+      "asset": "USDT",
+      "free": "0.00000000",
+      "locked": "0.00000000"
+    },
+    "um": {
+      "totalWalletBalance": "20000.00000000",
+      "totalUnrealizedProfit": "0.00000000",
+      "totalMarginBalance": "20000.00000000",
+      "availableBalance": "20000.00000000"
+    },
+    "um_nonzero_positions": 0
+  },
+  "transfer_confirmed": true,
+  "trading_processes_started": false
+}

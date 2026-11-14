@@ -84,12 +84,13 @@ class FakeRedis:
         return FakePipeline(self)
 
 
-def fake_store():
+def fake_store(venue="binance-futures", env_name="cta_exec_trade"):
     store = object.__new__(MODULE.ExecConfigStore)
     store.client = FakeRedis()
-    store.env_name = "cta_exec_trade"
-    store.venue = "binance-futures"
-    store.prefix = "cta_exec_trade:binance-futures:batch_exec:"
+    store.env_name = env_name
+    store.venue = venue
+    store.markets = [venue]
+    store.prefix = f"{env_name}:{venue}:batch_exec:"
     store.index_key = f"{store.prefix}strategy_names"
     store.removed_index_key = f"{store.prefix}removed_strategy_names"
     store._save_lock = threading.Lock()
@@ -101,7 +102,297 @@ def order_parameters(config):
     return {field: config[field] for field in MODULE.ORDER_PARAMETER_FIELDS}
 
 
+class ClearTargetTests(unittest.TestCase):
+    def test_clear_in_qty_preserves_ordinary_target_contract(self):
+        self.assertEqual(MODULE.normalize_target_position('clear', 'target'), {'qty':'clear','signal':0})
+        self.assertEqual(MODULE.normalize_target_position({'qty':'clear','signal':1}, 'target'), {'qty':'clear','signal':1})
+        self.assertEqual(MODULE.normalize_target_position(0.1, 'target'), {'qty':0.1,'signal':0})
+        with self.assertRaises(ValueError):
+            MODULE.normalize_target_position('+max_u_1000', 'target')
+
+
 class ExecConfigServerTests(unittest.TestCase):
+    def test_standard_usdm_grid_save_preserves_market_isolation(self):
+        with mock.patch.dict(MODULE.os.environ, {
+            "TRADE_ENGINE_EXEC_BACKEND": "native",
+            "TRADE_ENGINE_EXEC_BACKEND_MAP": "",
+            "BINANCE_ACCOUNT_MODE": "STANDARD",
+        }):
+            store = fake_store()
+            for config in (
+                {**MODULE.DEFAULT_CONFIG, "algorithm": "grid"},
+                {**MODULE.DEFAULT_CONFIG, "symbol_overrides": {"BTCUSDT": {"algorithm": "grid"}}},
+            ):
+                saved = store.save("rx02", {**config, "targets": {"BTCUSDT": 0.01}})
+                self.assertEqual(store.load("rx02"), saved)
+                for symbol in ("BTC", "BTCUSD"):
+                    before = dict(store.client.values)
+                    with self.assertRaises(ValueError):
+                        store.save("rx02", {**config, "targets": {symbol: 0.01}})
+                    self.assertEqual(store.client.values, before)
+            for mode in ("", "invalid"):
+                with mock.patch.dict(MODULE.os.environ, {"BINANCE_ACCOUNT_MODE": mode}):
+                    with self.assertRaisesRegex(ValueError, "grid requires"):
+                        store.save("rx02", {**MODULE.DEFAULT_CONFIG, "algorithm": "grid", "targets": {"BTCUSDT": 0.01}})
+            coin_store = fake_store("binance-coin-futures")
+            with self.assertRaisesRegex(ValueError, "grid requires"):
+                coin_store.save("rx02", {**MODULE.DEFAULT_CONFIG, "algorithm": "grid", "targets": {"BTCUSD": 1}})
+            self.assertEqual(coin_store.client.values, {})
+
+    def test_native_uta_market_and_strategy_isolation(self):
+        for venue in ("bybit-futures", "bitget-futures"):
+            with self.subTest(venue=venue), mock.patch.dict(MODULE.os.environ, {"TRADE_ENGINE_EXEC_BACKEND":"native", "TRADE_ENGINE_EXEC_BACKEND_MAP":""}):
+                self.assertEqual(MODULE.exec_markets(venue), [venue])
+                store = fake_store(venue, venue.replace("-futures", "_exec_trade01"))
+                store.markets = MODULE.exec_markets(venue)
+                for family, defaults in [("batch_exec",MODULE.DEFAULT_CONFIG),("chase_exec",MODULE.DEFAULT_CHASE_CONFIG)]:
+                    saved = store.save("cta", {**defaults,"targets":{"BTCUSDT":0.2}},family)
+                    self.assertEqual(store.load("cta",family),saved)
+                    for symbol in ("BTC", "BTCUSDC", "BTCUSD", "USDT"):
+                        with self.assertRaises(ValueError): store.save("cta",{**defaults,"targets":{symbol:1}},family)
+                    self.assertTrue(store.remove("cta",family))
+            with mock.patch.dict(MODULE.os.environ, {"TRADE_ENGINE_EXEC_BACKEND":"rapidx", "TRADE_ENGINE_EXEC_BACKEND_MAP":""}):
+                with self.assertRaises(ValueError): MODULE.exec_markets(venue)
+
+    def test_rapidx_mixed_cash_and_perp_publish_merge_clear_and_remove(self):
+        for venue, cash in [("binance-futures", "binance-margin"), ("okex-futures", "okex-margin")]:
+            for family, defaults in [("batch_exec", MODULE.DEFAULT_CONFIG), ("chase_exec", MODULE.DEFAULT_CHASE_CONFIG)]:
+                with self.subTest(venue=venue, family=family), mock.patch.dict(MODULE.os.environ, {
+                    "TRADE_ENGINE_EXEC_BACKEND": "rapidx", "TRADE_ENGINE_EXEC_BACKEND_MAP": ""
+                }):
+                    store = fake_store(venue)
+                    store.markets = MODULE.exec_markets(venue)
+                    targets = {"BTC": {"qty": 1, "signal": 1}, "BTCUSDT": {"qty": -1, "signal": 0}, "ETH": {"qty": "clear", "signal": 0}}
+                    saved = store.save("hedged", {**defaults, "targets": targets}, family)
+                    spot_config = json.loads(store.client.get(store.key("hedged", family, cash)))
+                    perp_config = json.loads(store.client.get(store.key("hedged", family, venue)))
+                    self.assertEqual(set(spot_config["targets"]), {"BTC", "ETH"})
+                    self.assertEqual(set(perp_config["targets"]), {"BTCUSDT"})
+                    self.assertEqual(store.load("hedged", family), saved)
+                    updated = store.save("hedged", {**defaults, "targets": {"BTCUSDT": 0}}, family)
+                    self.assertEqual(store.load("hedged", family), updated)
+                    self.assertEqual(json.loads(store.client.get(store.key("hedged", family, cash)))["targets"], {})
+                    self.assertTrue(store.remove("hedged", family))
+                    for market in store.markets:
+                        self.assertEqual(json.loads(store.client.get(f"{store.family_prefix(family, market)}removed_strategy_names")), ["hedged"])
+
+    def test_independent_market_publish_update_and_remove(self):
+        um = fake_store(env_name="exec_um")
+        cm = fake_store("binance-coin-futures", "exec_cm")
+        cm.client = um.client
+        um.save("same_strategy", {**MODULE.DEFAULT_CONFIG, "targets": {"BTCUSDT": 0.2}})
+        current = cm.save("same_strategy", {**MODULE.DEFAULT_CONFIG, "targets": {"BTCUSD_PERP": 0.01}})
+        old_um = dict(um.client.values)
+        parameters = order_parameters(current)
+        parameters["single_order_usdt"] = 200
+        saved = cm.save_order_parameters("same_strategy", parameters, current["updated_at_us"])
+        self.assertEqual(saved["targets"], {"BTCUSD": {"qty": 0.01, "signal": 0}})
+        self.assertEqual(saved["single_order_usdt"], 200)
+        self.assertTrue(cm.remove("same_strategy"))
+        for key, value in old_um.items():
+            if key.startswith(um.prefix):
+                self.assertEqual(um.client.get(key), value)
+        self.assertEqual(json.loads(cm.client.get(cm.removed_index_key)), ["same_strategy"])
+
+    def test_coin_target_race_aborts_parameter_write(self):
+        store = fake_store("binance-coin-futures")
+        current = store.save("coin", {**MODULE.DEFAULT_CONFIG, "targets": {"BTCUSD": 0.01}})
+        cm_key = store.key("coin")
+        changed_cm = json.loads(store.client.get(cm_key))
+        changed_cm["targets"]["BTCUSD"]["qty"] = 0.02
+        store.client.before_pipeline_execute = lambda: store.client.set(cm_key, json.dumps(changed_cm))
+        with self.assertRaises(MODULE.ConfigVersionConflict):
+            store.save_order_parameters("coin", order_parameters(current), current["updated_at_us"])
+        self.assertEqual(json.loads(store.client.get(cm_key)), changed_cm)
+
+    def test_backend_mapping_limits_coin_market_and_rejects_target_before_writes(self):
+        with mock.patch.dict(MODULE.os.environ, {"TRADE_ENGINE_EXEC_BACKEND": "rapidx", "TRADE_ENGINE_EXEC_BACKEND_MAP": "*=rapidx,binance=native"}):
+            self.assertEqual(MODULE.exec_markets("binance-futures"), ["binance-futures"])
+            self.assertEqual(MODULE.exec_markets("binance-coin-futures"), ["binance-coin-futures"])
+        with mock.patch.dict(MODULE.os.environ, {"TRADE_ENGINE_EXEC_BACKEND": "native", "TRADE_ENGINE_EXEC_BACKEND_MAP": "binance=rapidx"}):
+            store = fake_store()
+            store.markets = MODULE.exec_markets(store.venue)
+            with self.assertRaisesRegex(ValueError, "does not belong"):
+                store.save("coin", {**MODULE.DEFAULT_CONFIG, "targets": {"BTCUSD": 0.01}})
+            self.assertEqual(store.client.values, {})
+            with self.assertRaises(ValueError):
+                MODULE.exec_markets("binance-coin-futures")
+
+    def test_mixed_targets_and_foreign_overrides_never_write_redis(self):
+        for venue, foreign in [("binance-futures", "BTCUSD"), ("binance-coin-futures", "BTCUSDT")]:
+            store = fake_store(venue)
+            with self.assertRaisesRegex(ValueError, "does not belong"):
+                store.save("mixed", {**MODULE.DEFAULT_CONFIG, "targets": {"BTCUSD": 0.01, "BTCUSDT": 0.1}})
+            self.assertEqual(store.client.values, {})
+            with self.assertRaisesRegex(ValueError, "does not belong"):
+                store.save("foreign", {**MODULE.DEFAULT_CONFIG, "symbol_overrides": {foreign: {"single_order_usdt": 100}}})
+            self.assertEqual(store.client.values, {})
+
+    def test_coin_symbols_normalize_without_changing_base_qty(self):
+        targets = MODULE.normalize_targets({"btcUSD_perp": {"qty": 0.01, "signal": 1}})
+        self.assertEqual(targets, {"BTCUSD": {"qty": 0.01, "signal": 1}})
+        self.assertEqual(MODULE.normalize_symbol("BTCUSD"), "BTCUSD")
+        self.assertEqual(MODULE.normalize_symbol("BTCUSDC"), "BTCUSDC")
+        self.assertEqual(MODULE.normalize_symbol("BTCUSDT"), "BTCUSDT")
+        with self.assertRaises(ValueError):
+            MODULE.normalize_targets({"BTCUSD_PERP": 0.01, "BTCUSD": 0.02})
+        with self.assertRaises(ValueError):
+            MODULE.normalize_symbol("BTC_USDT")
+        for symbol in ("ETHUSD_261225", "ETHUSD261225"):
+            with self.assertRaises(ValueError):
+                MODULE.normalize_symbol(symbol)
+
+    def test_pov_parameters_and_symbol_override_roundtrip(self):
+        config = MODULE.normalize_exec_config({
+            **MODULE.DEFAULT_CONFIG,
+            "algorithm": "pov",
+            "pov": {"participation_rate": 0.075, "liquidity": "maker_only", "limit_price": 100.0},
+            "symbol_overrides": {"btcusdt": {"algorithm": "batch"}, "ethusdt": {
+                "pov": {"participation_rate": 0.2}
+            }},
+        })
+        self.assertEqual(config["pov"]["participation_rate"], 0.075)
+        self.assertEqual(config["pov"]["duration_ms"], 3600000)
+        self.assertEqual(config["symbol_overrides"]["BTCUSDT"]["algorithm"], "batch")
+        self.assertEqual(config["symbol_overrides"]["ETHUSDT"]["pov"]["participation_rate"], 0.2)
+        self.assertEqual(MODULE.normalize_exec_config(config), config)
+
+    def test_pov_rejects_invalid_budgets_and_unenforceable_limit(self):
+        for pov in [
+            {"participation_rate": 0}, {"participation_rate": 1.1},
+            {"participation_rate": float("nan")}, {"participation_rate": True},
+            {"max_batch_usdt": 0}, {"max_carry_usdt": 1},
+            {"volume_stale_ms": 0}, {"quote_stale_ms": -1},
+            {"duration_ms": 0}, {"duration_ms": 4294967296},
+            {"liquidity": "unknown"}, {"limit_price": 100}, {"typo": 1},
+        ]:
+            with self.subTest(pov=pov), self.assertRaises(ValueError):
+                MODULE.normalize_exec_config({**MODULE.DEFAULT_CONFIG, "algorithm": "pov", "pov": pov})
+
+    def test_missing_algorithm_defaults_to_batch(self):
+        config = {key: value for key, value in MODULE.DEFAULT_CONFIG.items() if key not in {"algorithm", "pov"}}
+        self.assertEqual(MODULE.normalize_exec_config(config)["algorithm"], "batch")
+
+    def test_chase_parameters_and_namespace_roundtrip(self):
+        config = MODULE.normalize_chase_config({
+            **MODULE.DEFAULT_CHASE_CONFIG,
+            "max_batch": 8,
+            "max_open_batches": 3,
+            "maker_recenter_trigger_bps": 0,
+            "strategy_order_rate_limit_per_min": 60,
+            "strategy_order_rate_limit_10s": 15,
+            "targets": {"btcusdt": {"qty": 0.2, "signal": 0}},
+            "symbol_overrides": {
+                "ethusdt": {"maker_amend_cooldown_ms": 25}
+            },
+        })
+        self.assertEqual(config["max_batch"], 8)
+        self.assertEqual(config["max_open_batches"], 3)
+        self.assertEqual(config["maker_amend_cooldown_ms"], 1000)
+        self.assertEqual(config["strategy_order_rate_limit_per_min"], 60)
+        self.assertEqual(config["strategy_order_rate_limit_10s"], 15)
+        self.assertEqual(config["targets"]["BTCUSDT"]["qty"], 0.2)
+        self.assertEqual(
+            config["symbol_overrides"]["ETHUSDT"]["maker_amend_cooldown_ms"],
+            25,
+        )
+
+        store = fake_store()
+        saved = store.save("trend_a", config, "chase_exec")
+        self.assertEqual(saved["max_open_batches"], 3)
+        self.assertEqual(store.list_strategy_names("chase_exec"), ["trend_a"])
+        self.assertEqual(store.list_strategy_names("batch_exec"), [])
+        self.assertIn(":chase_exec:", store.key("trend_a", "chase_exec"))
+
+    def test_chase_rejects_invalid_values_and_batch_fields(self):
+        for change in (
+            {"batch_floor_usdt": 0},
+            {"max_batch": 0},
+            {"max_open_batches": 0},
+            {"max_open_batches": 5},
+            {"maker_recenter_trigger_bps": -1},
+            {"maker_timeout_sec": 0},
+            {"strategy_order_rate_limit_per_min": -1},
+            {"strategy_order_rate_limit_10s": -1},
+            {"bbo_max_age_ms": 2000},
+            {"maker_timeout_ms": 60000},
+            {"maker_price_anchor": "own_best"},
+        ):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                MODULE.normalize_chase_config(
+                    {**MODULE.DEFAULT_CHASE_CONFIG, **change}
+                )
+
+        with self.assertRaisesRegex(ValueError, "unknown symbol_overrides"):
+            MODULE.normalize_chase_config({
+                **MODULE.DEFAULT_CHASE_CONFIG,
+                "symbol_overrides": {
+                    "BTCUSDT": {"strategy_order_rate_limit_10s": 10}
+                },
+            })
+
+    def test_http_chase_order_parameter_update_uses_chase_namespace(self):
+        store = fake_store()
+        config = dict(MODULE.DEFAULT_CHASE_CONFIG)
+        config["targets"] = {"BTCUSDT": 0.2}
+        current = store.save("trend_a", config, "chase_exec")
+        parameters = {
+            field: current[field] for field in MODULE.CHASE_ORDER_PARAMETER_FIELDS
+        }
+        parameters["max_open_batches"] = 1
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), MODULE.make_handler(store, "../", WRITE_TOKEN)
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/order-parameters",
+            data=json.dumps({
+                "strategy_name": "trend_a",
+                "execution_family": "chase_exec",
+                "expected_updated_at_us": current["updated_at_us"],
+                "order_parameters": parameters,
+            }).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {WRITE_TOKEN}",
+            },
+            method="POST",
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            with urllib.request.urlopen(request, timeout=2) as response:
+                payload = json.load(response)
+
+        self.assertEqual(payload["execution_family"], "chase_exec")
+        self.assertEqual(payload["order_parameters"]["max_open_batches"], 1)
+        self.assertEqual(
+            store.load("trend_a", "chase_exec")["targets"],
+            {"BTCUSDT": {"qty": 0.2, "signal": 0}},
+        )
+        self.assertEqual(store.list_strategy_names(), [])
+
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/api/strategy"
+            "?name=trend_a&execution_family=chase_exec",
+            timeout=2,
+        ) as response:
+            loaded = json.load(response)
+        self.assertTrue(loaded["exists"])
+        self.assertEqual(loaded["execution_family"], "chase_exec")
+        self.assertEqual(loaded["config"]["max_open_batches"], 1)
+
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/api/strategies"
+            "?execution_family=chase_exec",
+            timeout=2,
+        ) as response:
+            listed = json.load(response)
+        self.assertEqual(listed["strategies"], ["trend_a"])
+        self.assertEqual(listed["execution_family"], "chase_exec")
+
     def test_old_client_script_is_not_served(self):
         store = fake_store()
         server = ThreadingHTTPServer(
@@ -172,6 +463,34 @@ class ExecConfigServerTests(unittest.TestCase):
         self.assertEqual(updated["targets"], current["targets"])
         self.assertEqual(store.load("trend_a")["targets"], current["targets"])
         self.assertEqual(store.client.get(store.index_key), index_before)
+
+    def test_order_parameter_save_preserves_symbol_overrides(self):
+        store = fake_store()
+        config = dict(MODULE.DEFAULT_CONFIG)
+        config["targets"] = {"BTCUSDT": 0.2}
+        config["symbol_overrides"] = {
+            "btcusdt": {
+                "single_order_usdt": 250,
+                "maker_timeout_ms": 200,
+            }
+        }
+        current = store.save("trend_a", config)
+        parameters = order_parameters(current)
+        parameters["orders_per_batch"] = 5
+
+        updated = store.save_order_parameters(
+            "trend_a", parameters, current["updated_at_us"]
+        )
+
+        self.assertEqual(
+            updated["symbol_overrides"],
+            {
+                "BTCUSDT": {
+                    "single_order_usdt": 250.0,
+                    "maker_timeout_ms": 200,
+                }
+            },
+        )
 
     def test_stale_order_parameter_save_does_not_modify_redis(self):
         store = fake_store()
@@ -568,6 +887,31 @@ class ExecConfigServerTests(unittest.TestCase):
                 "ETHUSDT": {"qty": -0.5, "signal": 0},
             },
         )
+
+    def test_symbol_overrides_normalize_partial_parameters(self):
+        config = dict(MODULE.DEFAULT_CONFIG)
+        config["symbol_overrides"] = {
+            "btcusdt": {
+                "single_order_usdt": 250,
+                "maker_price_anchor": "opposite_best_plus_one_tick",
+            }
+        }
+
+        normalized = MODULE.normalize_exec_config(config)
+
+        self.assertEqual(
+            normalized["symbol_overrides"],
+            {
+                "BTCUSDT": {
+                    "single_order_usdt": 250.0,
+                    "maker_price_anchor": "opposite_best_plus_one_tick",
+                }
+            },
+        )
+
+        config["symbol_overrides"] = {"BTCUSDT": {}}
+        with self.assertRaisesRegex(ValueError, "must override at least one"):
+            MODULE.normalize_exec_config(config)
 
     def test_invalid_target_signal_is_rejected(self):
         config = dict(MODULE.DEFAULT_CONFIG)

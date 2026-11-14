@@ -1,0 +1,17 @@
+{
+  "at": "2026-10-22T14:55:55.463115+00:00",
+  "before": {
+    "multiAssetsMargin": false,
+    "dualSidePosition": false,
+    "canTrade": true
+  },
+  "response": {
+    "code": 200,
+    "msg": "success"
+  },
+  "after": {
+    "multiAssetsMargin": true,
+    "dualSidePosition": false,
+    "canTrade": true
+  }
+}

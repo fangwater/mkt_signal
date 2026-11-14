@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Optional
 
-SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
+SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate", "hyperliquid"]
 
 
 def try_import_redis():
@@ -42,13 +42,21 @@ def normalize_exchange(ex: str) -> str:
 
 def infer_exchange_from_name(name: str) -> Optional[str]:
     n = (name or "").strip().lower()
-    m = re.match(r"^([a-z0-9]+)[-_]intra([_-].*)?$", n)
+    m = re.match(r"^([a-z0-9]+)[-_](intra)([_-].*)?$", n)
     if not m:
         return None
     ex = normalize_exchange(m.group(1))
     if ex not in SUPPORTED_EXCHANGES:
         return None
     return ex
+
+
+def infer_namespace_from_name(name: str) -> Optional[str]:
+    n = (name or "").strip().lower()
+    m = re.match(r"^[a-z0-9]+[-_](intra)([_-].*)?$", n)
+    if not m:
+        return None
+    return m.group(1)
 
 
 def infer_exchange_from_cwd() -> Optional[str]:
@@ -61,9 +69,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
     p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
     p.add_argument("--env-name", help="环境目录名（例如 binance-intra-trade）")
+    p.add_argument(
+        "--namespace",
+        choices=["intra"],
+        help="策略参数命名空间（默认按 env-name/CWD 的 -intra- 段推断）",
+    )
     args = p.parse_args()
 
     exchange = args.exchange
+    env_name = (args.env_name or Path.cwd().name).strip().lower()
     if not exchange:
         exchange = infer_exchange_from_name(args.env_name) if args.env_name else infer_exchange_from_cwd()
         if exchange:
@@ -83,6 +97,7 @@ def parse_args() -> argparse.Namespace:
 
     args.open_venue = args.open_venue.lower()
     args.hedge_venue = args.hedge_venue.lower()
+    args.namespace = args.namespace or infer_namespace_from_name(env_name) or "intra"
     return args
 
 
@@ -272,10 +287,10 @@ def main() -> int:
         print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
         return 2
 
-    key = f"intra_strategy_params_{args.open_venue}_{args.hedge_venue}"
+    key = f"{args.namespace}_strategy_params_{args.open_venue}_{args.hedge_venue}"
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
-    print(f"🔄 同步 intra 策略参数: {key}")
+    print(f"🔄 同步 {args.namespace} 策略参数: {key}")
     print("📍 Redis: 127.0.0.1:6379/0")
 
     sync_strategy_params(rds, key)

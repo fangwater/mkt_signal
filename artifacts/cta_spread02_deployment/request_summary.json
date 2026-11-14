@@ -1,0 +1,31 @@
+{
+  "rules": 319,
+  "symbols": 18,
+  "by_frequency": {
+    "15min": 64,
+    "1h": 128,
+    "5min": 79,
+    "1min": 48
+  },
+  "by_symbol": {
+    "AAVEUSDT": 5,
+    "ADAUSDT": 14,
+    "ATOMUSDT": 20,
+    "AVAXUSDT": 3,
+    "BCHUSDT": 15,
+    "CRVUSDT": 16,
+    "DOGEUSDT": 11,
+    "DOTUSDT": 30,
+    "ETCUSDT": 21,
+    "ETHUSDT": 3,
+    "FILUSDT": 25,
+    "LINKUSDT": 6,
+    "LTCUSDT": 5,
+    "NEARUSDT": 25,
+    "TRBUSDT": 75,
+    "TRXUSDT": 6,
+    "UNIUSDT": 5,
+    "XRPUSDT": 34
+  },
+  "unique_symbol_factor_frequency": 240
+}

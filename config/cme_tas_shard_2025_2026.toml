@@ -1,0 +1,12 @@
+data_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/future/normalised"
+output_root = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_zstd_shards"
+periods = [
+    "2025-01-01_2026-01-01",
+    "2026-01-01_2026-06-01",
+]
+
+# Every source gzip is sequential; two parts run while the other parts queue.
+workers = 2
+rows_per_shard = 25000000
+zstd_level = 1
+progress_every = 10000000

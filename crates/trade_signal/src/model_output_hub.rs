@@ -15,6 +15,7 @@ use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 const MODEL_OUTPUT_HISTORY_SIZE: usize = 128;
 const MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE: usize = 256;
+const MODEL_OUTPUT_DEFAULT_MAX_SUBSCRIBERS: usize = 10;
 const MODEL_OUTPUT_POLL_MAX_PER_CHANNEL: usize = 256;
 const MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS: u64 = 60;
 
@@ -26,6 +27,18 @@ pub struct ModelOutputScoreLookupResult {
     pub score: Option<f64>,
     pub score_quantile: Option<f64>,
     pub score_ready: bool,
+    pub score_long_threshold: Option<f64>,
+    pub score_short_threshold: Option<f64>,
+    pub filter_long_value: Option<f64>,
+    pub filter_long_threshold: Option<f64>,
+    pub filter_short_value: Option<f64>,
+    pub filter_short_threshold: Option<f64>,
+    pub filter_long_quantile: Option<f64>,
+    pub filter_short_quantile: Option<f64>,
+    pub filter_ready: bool,
+    /// 最近一次该 (service, symbol) 模型消息的 ts_in_ms（bar 时间戳）；
+    /// 无数据/未订阅时为 0。
+    pub score_ts_ms: i64,
     pub note: String,
 }
 
@@ -43,6 +56,16 @@ struct ModelOutputSnapshot {
     score: f64,
     score_quantile: Option<f64>,
     score_ready: bool,
+    score_long_threshold: Option<f64>,
+    score_short_threshold: Option<f64>,
+    filter_long_value: Option<f64>,
+    filter_long_threshold: Option<f64>,
+    filter_short_value: Option<f64>,
+    filter_short_threshold: Option<f64>,
+    filter_long_quantile: Option<f64>,
+    filter_short_quantile: Option<f64>,
+    filter_ready: bool,
+    ts_in_ms: i64,
 }
 
 #[derive(Default)]
@@ -72,6 +95,7 @@ struct ModelOutputSubscriberEntry {
 
 pub struct ModelOutputHub {
     hedge_venue: TradingVenue,
+    max_subscribers: usize,
     subscribers: Vec<ModelOutputSubscriberEntry>,
     services: Vec<String>,
     latest_scores: HashMap<(String, String), ModelOutputSnapshot>,
@@ -84,8 +108,13 @@ pub struct ModelOutputHub {
 
 impl ModelOutputHub {
     pub fn new(hedge_venue: TradingVenue) -> Self {
+        Self::new_with_max_subscribers(hedge_venue, MODEL_OUTPUT_DEFAULT_MAX_SUBSCRIBERS)
+    }
+
+    pub fn new_with_max_subscribers(hedge_venue: TradingVenue, max_subscribers: usize) -> Self {
         Self {
             hedge_venue,
+            max_subscribers: max_subscribers.max(1),
             subscribers: Vec::new(),
             services: Vec::new(),
             latest_scores: HashMap::new(),
@@ -106,7 +135,7 @@ impl ModelOutputHub {
         let mut subscribers: Vec<ModelOutputSubscriberEntry> = Vec::new();
         let mut active_services = Vec::new();
         for service_name in &normalized {
-            match Self::create_subscriber(node, service_name) {
+            match Self::create_subscriber(node, service_name, self.max_subscribers) {
                 Ok(subscriber) => {
                     active_services.push(service_name.clone());
                     subscribers.push(ModelOutputSubscriberEntry {
@@ -231,6 +260,16 @@ impl ModelOutputHub {
                                 score,
                                 score_quantile: msg.score_quantile,
                                 score_ready: msg.score_ready,
+                                score_long_threshold: msg.score_long_threshold,
+                                score_short_threshold: msg.score_short_threshold,
+                                filter_long_value: msg.filter_long_value,
+                                filter_long_threshold: msg.filter_long_threshold,
+                                filter_short_value: msg.filter_short_value,
+                                filter_short_threshold: msg.filter_short_threshold,
+                                filter_long_quantile: msg.filter_long_quantile,
+                                filter_short_quantile: msg.filter_short_quantile,
+                                filter_ready: msg.filter_ready,
+                                ts_in_ms: msg.ts_in_ms,
                             },
                         );
                         self.msg_count = self.msg_count.saturating_add(1);
@@ -287,6 +326,16 @@ impl ModelOutputHub {
                 score: None,
                 score_quantile: None,
                 score_ready: false,
+                score_long_threshold: None,
+                score_short_threshold: None,
+                filter_long_value: None,
+                filter_long_threshold: None,
+                filter_short_value: None,
+                filter_short_threshold: None,
+                filter_long_quantile: None,
+                filter_short_quantile: None,
+                filter_ready: false,
+                score_ts_ms: 0,
                 note: "service_disabled".to_string(),
             };
         };
@@ -301,6 +350,16 @@ impl ModelOutputHub {
                 score: None,
                 score_quantile: None,
                 score_ready: false,
+                score_long_threshold: None,
+                score_short_threshold: None,
+                filter_long_value: None,
+                filter_long_threshold: None,
+                filter_short_value: None,
+                filter_short_threshold: None,
+                filter_long_quantile: None,
+                filter_short_quantile: None,
+                filter_ready: false,
+                score_ts_ms: 0,
                 note: "service_not_subscribed".to_string(),
             };
         }
@@ -318,6 +377,16 @@ impl ModelOutputHub {
                     score: None,
                     score_quantile: snapshot.score_quantile,
                     score_ready: false,
+                    score_long_threshold: snapshot.score_long_threshold,
+                    score_short_threshold: snapshot.score_short_threshold,
+                    filter_long_value: snapshot.filter_long_value,
+                    filter_long_threshold: snapshot.filter_long_threshold,
+                    filter_short_value: snapshot.filter_short_value,
+                    filter_short_threshold: snapshot.filter_short_threshold,
+                    filter_long_quantile: snapshot.filter_long_quantile,
+                    filter_short_quantile: snapshot.filter_short_quantile,
+                    filter_ready: snapshot.filter_ready,
+                    score_ts_ms: snapshot.ts_in_ms,
                     note: "score_not_ready".to_string(),
                 }
             }
@@ -328,15 +397,35 @@ impl ModelOutputHub {
                 score: Some(snapshot.score),
                 score_quantile: snapshot.score_quantile,
                 score_ready: snapshot.score_ready,
+                score_long_threshold: snapshot.score_long_threshold,
+                score_short_threshold: snapshot.score_short_threshold,
+                filter_long_value: snapshot.filter_long_value,
+                filter_long_threshold: snapshot.filter_long_threshold,
+                filter_short_value: snapshot.filter_short_value,
+                filter_short_threshold: snapshot.filter_short_threshold,
+                filter_long_quantile: snapshot.filter_long_quantile,
+                filter_short_quantile: snapshot.filter_short_quantile,
+                filter_ready: snapshot.filter_ready,
+                score_ts_ms: snapshot.ts_in_ms,
                 note: "ok".to_string(),
             },
-            Some(_) => ModelOutputScoreLookupResult {
+            Some(snapshot) => ModelOutputScoreLookupResult {
                 service_name,
                 symbol_key,
                 subscribed: true,
                 score: None,
                 score_quantile: None,
                 score_ready: false,
+                score_long_threshold: snapshot.score_long_threshold,
+                score_short_threshold: snapshot.score_short_threshold,
+                filter_long_value: snapshot.filter_long_value,
+                filter_long_threshold: snapshot.filter_long_threshold,
+                filter_short_value: snapshot.filter_short_value,
+                filter_short_threshold: snapshot.filter_short_threshold,
+                filter_long_quantile: snapshot.filter_long_quantile,
+                filter_short_quantile: snapshot.filter_short_quantile,
+                filter_ready: snapshot.filter_ready,
+                score_ts_ms: snapshot.ts_in_ms,
                 note: "invalid_model_score".to_string(),
             },
             None => ModelOutputScoreLookupResult {
@@ -346,6 +435,16 @@ impl ModelOutputHub {
                 score: None,
                 score_quantile: None,
                 score_ready: false,
+                score_long_threshold: None,
+                score_short_threshold: None,
+                filter_long_value: None,
+                filter_long_threshold: None,
+                filter_short_value: None,
+                filter_short_threshold: None,
+                filter_long_quantile: None,
+                filter_short_quantile: None,
+                filter_ready: false,
+                score_ts_ms: 0,
                 note: "missing_model_score".to_string(),
             },
         }
@@ -365,12 +464,13 @@ impl ModelOutputHub {
     fn create_subscriber(
         node: &Node<ipc::Service>,
         service_name: &str,
+        max_subscribers: usize,
     ) -> Result<Subscriber<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()>> {
         let service = node
             .service_builder(&ServiceName::new(service_name)?)
             .publish_subscribe::<[u8; MODEL_PAYLOAD_MAX_BYTES]>()
             .max_publishers(1)
-            .max_subscribers(10)
+            .max_subscribers(max_subscribers)
             .history_size(MODEL_OUTPUT_HISTORY_SIZE)
             .subscriber_max_buffer_size(MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE)
             .open_or_create()

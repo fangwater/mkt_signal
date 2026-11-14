@@ -3,10 +3,12 @@
 pub mod binance;
 pub mod bybit;
 pub mod gate;
+pub mod rapidx;
 
 pub use binance::BinanceRepayer;
 pub use bybit::BybitRepayer;
 pub use gate::GateRepayer;
+pub use rapidx::RapidXRepayer;
 
 use prettytable::format::{FormatBuilder, LinePosition, LineSeparator};
 use prettytable::{Cell, Row, Table};

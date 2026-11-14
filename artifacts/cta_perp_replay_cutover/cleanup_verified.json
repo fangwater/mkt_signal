@@ -1,0 +1,13 @@
+{
+  "checked_ts_us": 1792072808204191,
+  "removed_exact_paths": [
+    "/home/ubuntu/crypto_cta_manager/run/clear_before_20261015T124130Z",
+    "/home/ubuntu/binance-cta-perp-rx02/run/cutover_before_20261015",
+    "/home/ubuntu/binance-cta-perp-rx03/run/cutover_before_20261015",
+    "/home/ubuntu/binance_exec_trade05/run/cta_leverage_cap_20261015T134100Z",
+    "/home/ubuntu/binance_exec_trade05/run/cta_engine_match_20261015T134900Z",
+    "/home/ubuntu/cta_perp_replay_cutover_stage_20261015"
+  ],
+  "confirmed_absent": true,
+  "runtime_history_and_position_state_preserved": true
+}

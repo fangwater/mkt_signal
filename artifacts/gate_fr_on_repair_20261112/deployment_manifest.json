@@ -1,0 +1,18 @@
+{
+  "commit": "c2419da3d794fa039764de6b0a2850ddb4fb33eb",
+  "branch": "arbmm",
+  "source": "git archive of committed arbmm inside active local worktree",
+  "uncommitted_changes_included": false,
+  "binaries": {
+    "delist_risk_server": "d1620eff4ae9aa1e92ee3886c773e0521d559c96c81d88df1c98f5b722520f02",
+    "fr_signal_dashboard": "d76f07cdd78c94bd20fe89f7e6c923ac904fc3e399ed63ef590e9d63dae399b6",
+    "gate_account_monitor": "53455636cb7dac4dd92fcc1758d4d73c8c56fb0f77132d8aa0ed0acd79745d3b",
+    "persist_manager": "34b89982c74d713ca30068a4e5f0463b850a2bd2764b56e348c2f34cd5220c88",
+    "pre_trade": "431d35ad227282c1a84879b03d503cbb0ee693d4cc14788b81cf0987b845346c",
+    "trade_engine": "98f3133a0107cd2fd0fa0d04bbadd5540b40e7bc339eaa058ff41c6d5b626eec",
+    "trade_signal": "8cfa76874e7a17aa20f2e829900665f4137b8e59cedbe4866fda17c4ec648350",
+    "viz_server": "8d68516e7b4277d9a8ad659923c01675c2db1deca7231124379bd5c7929e536e"
+  },
+  "delist_html_sha256": "6f0a22389e4c26061ac6c05915c8b6de0c6773293208ff2696a97fd87812bfa3",
+  "delist_html_note": "Committed FR fixes plus unchanged live CTA gateway links; remote/live diff reviewed."
+}

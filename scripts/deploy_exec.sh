@@ -2,29 +2,37 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/execution_backend_lib.sh
+source "${ROOT_DIR}/scripts/execution_backend_lib.sh"
 ENV_NAME=""
 VENUE=""
+REQUESTED_EXEC_BACKEND=""
 VIZ_PORT=""
 CONFIG_PORT=""
 DO_BUILD=1
+SKIP_BUILD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env-name) ENV_NAME="${2:-}"; shift 2 ;;
     --venue) VENUE="${2:-}"; shift 2 ;;
+    --exec-backend) REQUESTED_EXEC_BACKEND="$(execution_backend_parse "${2:?missing --exec-backend}")"; shift 2 ;;
     --viz-port) VIZ_PORT="${2:-}"; shift 2 ;;
     --config-port) CONFIG_PORT="${2:-}"; shift 2 ;;
     --scripts-only) DO_BUILD=0; shift ;;
+    --skip-build) SKIP_BUILD=1; shift ;;
     -h|--help)
-      echo "Usage: scripts/deploy_exec.sh --env-name <nameNN> --venue <binance-futures|binance-coin-futures|okex-futures> [--viz-port <port>] [--config-port <port>] [--scripts-only]"
-      echo "Deploys the complete Exec runtime plus the matching spread_pbs venue; nothing is started."
-      echo "Default ports are derived from the trailing instance number: 01 -> 10041/18161, 02 -> 10042/18162."
+      echo "Usage: scripts/deploy_exec.sh --env-name <nameNN> --venue <binance-futures|binance-coin-futures|okex-futures|bybit-futures|bitget-futures> [--exec-backend <native|rapidx>] [--viz-port <port>] [--config-port <port>] [--scripts-only|--skip-build]"
+      echo "Deploys the complete Exec runtime plus matching spread_pbs markets (OKX: SWAP and USDT cash); nothing is started."
+      echo "Backend: new environments default to native; existing environments use env.sh."
+      echo "--scripts-only prepares scripts/config; --skip-build also installs prebuilt release binaries."
+      echo "Default ports: U/OKX 01 -> 10041/18161; COIN-M 01 -> 10141/18261."
       exit 0
       ;;
     *) echo "[ERROR] Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
 [[ "$ENV_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || { echo "[ERROR] invalid --env-name" >&2; exit 1; }
-[[ "$VENUE" == "binance-futures" || "$VENUE" == "binance-coin-futures" || "$VENUE" == "okex-futures" ]] || { echo "[ERROR] unsupported --venue" >&2; exit 1; }
+[[ "$VENUE" == "binance-futures" || "$VENUE" == "binance-coin-futures" || "$VENUE" == "okex-futures" || "$VENUE" == "bybit-futures" || "$VENUE" == "bitget-futures" ]] || { echo "[ERROR] unsupported --venue" >&2; exit 1; }
 if [[ "$ENV_NAME" =~ ([0-9]+)$ ]]; then
   INSTANCE_SUFFIX="${BASH_REMATCH[1]}"
   INSTANCE_INDEX=$((10#$INSTANCE_SUFFIX))
@@ -33,51 +41,96 @@ else
   exit 1
 fi
 ((INSTANCE_INDEX >= 1 && INSTANCE_INDEX <= 99)) || { echo "[ERROR] instance number must be 01..99" >&2; exit 1; }
-VIZ_PORT="${VIZ_PORT:-$((10040 + INSTANCE_INDEX))}"
-CONFIG_PORT="${CONFIG_PORT:-$((18160 + INSTANCE_INDEX))}"
+if [[ "$VENUE" == "binance-coin-futures" ]]; then
+  VIZ_PORT="${VIZ_PORT:-$((10140 + INSTANCE_INDEX))}"
+  CONFIG_PORT="${CONFIG_PORT:-$((18260 + INSTANCE_INDEX))}"
+else
+  VIZ_PORT="${VIZ_PORT:-$((10040 + INSTANCE_INDEX))}"
+  CONFIG_PORT="${CONFIG_PORT:-$((18160 + INSTANCE_INDEX))}"
+fi
 [[ "$VIZ_PORT" =~ ^[0-9]+$ ]] && ((VIZ_PORT >= 1 && VIZ_PORT <= 65535)) || { echo "[ERROR] invalid --viz-port" >&2; exit 1; }
 [[ "$CONFIG_PORT" =~ ^[0-9]+$ ]] && ((CONFIG_PORT >= 1 && CONFIG_PORT <= 65535)) || { echo "[ERROR] invalid --config-port" >&2; exit 1; }
 [[ "$VIZ_PORT" != "$CONFIG_PORT" ]] || { echo "[ERROR] viz and config ports must differ" >&2; exit 1; }
 
 DEPLOY_ROOT="${DEPLOY_ROOT:-${HOME}}"
 TARGET_DIR="${DEPLOY_ROOT}/${ENV_NAME}"
-SPREAD_ROOT="${DEPLOY_ROOT}/spread_pbs"
-SPREAD_DIR="${SPREAD_ROOT}/${VENUE}"
-HOST_CONFIG_DIR="${DEPLOY_ROOT}/config"
 case "$VENUE" in
-  binance-futures|binance-coin-futures)
-    EXCHANGE="binance"
-    ACCOUNT_MONITOR_BIN="binance_account_monitor"
-    ;;
-  okex-futures)
-    EXCHANGE="okex"
-    ACCOUNT_MONITOR_BIN="okex_account_monitor"
-    ;;
+  binance-futures|binance-coin-futures) EXCHANGE="binance" ;;
+  okex-futures) EXCHANGE="okex" ;;
+  bybit-futures) EXCHANGE="bybit" ;;
+  bitget-futures) EXCHANGE="bitget" ;;
 esac
+if [[ -f "${TARGET_DIR}/env.sh" ]]; then
+  if ! (requested_exec_venue="$VENUE"; requested_exec_namespace="$ENV_NAME"; source "${TARGET_DIR}/env.sh" >/dev/null 2>&1 || exit 1; [[ "${EXEC_VENUE:-${VENUE:-}}" == "$requested_exec_venue" && "${IPC_NAMESPACE:-}" == "$requested_exec_namespace" ]]); then
+    echo "[ERROR] existing deployment must retain its Exec market and namespace; create a separate environment for the other market" >&2
+    exit 1
+  fi
+  if ! EXEC_BACKEND="$(
+    requested_exec_exchange="$EXCHANGE"
+    unset TRADE_ENGINE_EXEC_BACKEND TRADE_ENGINE_EXEC_BACKEND_MAP
+    source "${TARGET_DIR}/env.sh" >/dev/null 2>&1 || exit 1
+    execution_backend_for_exchange "$requested_exec_exchange" 2>/dev/null
+  )"; then
+    echo "[ERROR] invalid execution backend in existing env.sh" >&2
+    exit 1
+  fi
+  if [[ -n "$REQUESTED_EXEC_BACKEND" && "$REQUESTED_EXEC_BACKEND" != "$EXEC_BACKEND" ]]; then
+    echo "[ERROR] --exec-backend must match existing env.sh; account settings are never rewritten" >&2
+    exit 1
+  fi
+else
+  EXEC_BACKEND="${REQUESTED_EXEC_BACKEND:-native}"
+fi
+if [[ "$EXEC_BACKEND" == "ltp" && "$VENUE" != "binance-futures" && "$VENUE" != "okex-futures" ]]; then
+  echo "[ERROR] RapidX Exec supports Binance/OKX linear perpetual venues only" >&2
+  exit 1
+fi
+SPREAD_ROOT="${DEPLOY_ROOT}/spread_pbs"
+SPREAD_VENUES=("${VENUE}")
+if [[ "$VENUE" == "okex-futures" ]]; then
+  SPREAD_VENUES+=("okex-margin")
+fi
+HOST_CONFIG_DIR="${DEPLOY_ROOT}/config"
+ACCOUNT_MONITOR_BIN="${EXCHANGE}_account_monitor"
+ACCOUNT_MONITOR_DEST="account_monitor"
+if [[ "$EXEC_BACKEND" == "ltp" ]]; then
+  ACCOUNT_MONITOR_BIN="rapidx_account_monitor"
+  ACCOUNT_MONITOR_DEST="$ACCOUNT_MONITOR_BIN"
+fi
+if [[ "$DO_BUILD" -eq 1 && "$SKIP_BUILD" -eq 0 && "$ROOT_DIR" != /home/fanghaizhou/mkt_signal ]]; then
+  echo "[ERROR] build release artifacts in /home/fanghaizhou/mkt_signal; install prebuilt artifacts with --skip-build" >&2
+  exit 1
+fi
 
 mkdir -p \
   "${TARGET_DIR}/scripts" \
   "${TARGET_DIR}/config" \
   "${TARGET_DIR}/data/persist_manager" \
-  "${SPREAD_DIR}/scripts" \
   "${SPREAD_ROOT}/config" \
   "${HOST_CONFIG_DIR}"
+for spread_venue in "${SPREAD_VENUES[@]}"; do
+  mkdir -p "${SPREAD_ROOT}/${spread_venue}/scripts"
+done
 if [[ $DO_BUILD -eq 1 ]]; then
-  (cd "$ROOT_DIR" && cargo build --release -p mkt_signal \
-    --bin exec-pre-trade \
-    --bin trade_engine \
-    --bin "$ACCOUNT_MONITOR_BIN" \
-    --bin spread_pbs)
-  (cd "$ROOT_DIR" && cargo build --release -p trade_signal --bin trade_signal)
-  (cd "$ROOT_DIR" && cargo build --release -p viz_server --bin viz_server)
-  (cd "$ROOT_DIR" && cargo build --release -p persist_manager --features runtime --bin persist_manager)
+  if [[ "$SKIP_BUILD" -eq 0 ]]; then
+    (cd "$ROOT_DIR" && cargo build --release -p mkt_signal \
+      --bin exec-pre-trade \
+      --bin trade_engine \
+      --bin "$ACCOUNT_MONITOR_BIN" \
+      --bin spread_pbs)
+    (cd "$ROOT_DIR" && cargo build --release -p trade_signal --bin trade_signal)
+    (cd "$ROOT_DIR" && cargo build --release -p viz_server --bin viz_server)
+    (cd "$ROOT_DIR" && cargo build --release -p persist_manager --features runtime --bin persist_manager)
+  fi
   install -m 755 "${ROOT_DIR}/target/release/exec-pre-trade" "${TARGET_DIR}/exec-pre-trade"
   install -m 755 "${ROOT_DIR}/target/release/trade_signal" "${TARGET_DIR}/trade_signal"
   install -m 755 "${ROOT_DIR}/target/release/trade_engine" "${TARGET_DIR}/trade_engine"
-  install -m 755 "${ROOT_DIR}/target/release/${ACCOUNT_MONITOR_BIN}" "${TARGET_DIR}/account_monitor"
+  install -m 755 "${ROOT_DIR}/target/release/${ACCOUNT_MONITOR_BIN}" "${TARGET_DIR}/${ACCOUNT_MONITOR_DEST}"
   install -m 755 "${ROOT_DIR}/target/release/persist_manager" "${TARGET_DIR}/persist_manager"
   install -m 755 "${ROOT_DIR}/target/release/viz_server" "${TARGET_DIR}/viz_server"
-  install -m 755 "${ROOT_DIR}/target/release/spread_pbs" "${SPREAD_DIR}/spread_pbs"
+  for spread_venue in "${SPREAD_VENUES[@]}"; do
+    install -m 755 "${ROOT_DIR}/target/release/spread_pbs" "${SPREAD_ROOT}/${spread_venue}/spread_pbs"
+  done
 fi
 
 FILES=(
@@ -91,15 +144,17 @@ FILES=(
   start_account_monitor.sh stop_account_monitor.sh
   start_trade_engine.sh stop_trade_engine.sh
   start_fr_persist_manager.sh stop_fr_persist_manager.sh
-  process_match_lib.sh okx_swap_open_orders.py
+  process_match_lib.sh execution_backend_lib.sh okx_swap_open_orders.py
   binance_cancel_all_std_um_ws_orders.py binance_cancel_all_std_cm_orders.py binance_cancel_all_unified_open_orders.py
-  binance_local_ip.py sell_margin_spot.py
+  binance_local_ip.py binance_bfusd.py sell_margin_spot.py
   sync_exec_risk_params.py print_exec_risk_params.py
   sync_exec_max_pos_u.py print_exec_max_pos_u.py
 )
 for file in "${FILES[@]}"; do install -m 755 "${ROOT_DIR}/scripts/${file}" "${TARGET_DIR}/scripts/${file}"; done
-for file in start_spread_pbs.sh stop_spread_pbs.sh; do
-  install -m 755 "${ROOT_DIR}/scripts/spread_pbs/${file}" "${SPREAD_DIR}/scripts/${file}"
+for spread_venue in "${SPREAD_VENUES[@]}"; do
+  for file in start_spread_pbs.sh stop_spread_pbs.sh; do
+    install -m 755 "${ROOT_DIR}/scripts/spread_pbs/${file}" "${SPREAD_ROOT}/${spread_venue}/scripts/${file}"
+  done
 done
 if [[ ! -f "${TARGET_DIR}/config/iceoryx2.toml" ]]; then
   install -m 644 "${ROOT_DIR}/config/iceoryx2.toml" "${TARGET_DIR}/config/iceoryx2.toml"
@@ -117,12 +172,17 @@ if [[ ! -f "${HOST_CONFIG_DIR}/mkt_cfg.yaml" ]]; then
   install -m 644 "${ROOT_DIR}/config/mkt_cfg.yaml" "${HOST_CONFIG_DIR}/mkt_cfg.yaml"
 fi
 if [[ ! -f "${TARGET_DIR}/env.sh" ]]; then
+  CREDENTIAL_NOTE="Add the ${EXCHANGE} account credentials and account-mode settings before starting."
+  if [[ "$EXEC_BACKEND" == "ltp" ]]; then
+    CREDENTIAL_NOTE="Set LTP_API_KEY, LTP_API_SECRET and LTP_PORTFOLIO_ID securely before starting."
+  fi
   cat >"${TARGET_DIR}/env.sh" <<ENV
 #!/usr/bin/env bash
 export IPC_NAMESPACE="${ENV_NAME}"
 export EXEC_VENUE="${VENUE}"
 export VENUE="${VENUE}"
 export EXEC_INSTANCE="${INSTANCE_SUFFIX}"
+export TRADE_ENGINE_EXEC_BACKEND_MAP="${EXCHANGE}=${EXEC_BACKEND}"
 export EXEC_VIZ_PORT="${VIZ_PORT}"
 export EXEC_CONFIG_PORT="${CONFIG_PORT}"
 export EXEC_CONFIG_RELOAD_MS="\${EXEC_CONFIG_RELOAD_MS:-30000}"
@@ -131,7 +191,7 @@ export TRADE_SIGNAL_ENABLE_QUEUE_POSITION="0"
 export enable_ipc_fast_poll="0"
 export ENABLE_IPC_FAST_POLL="0"
 
-# Add the ${EXCHANGE} account credentials and account-mode settings before starting.
+# ${CREDENTIAL_NOTE}
 ENV
   chmod 600 "${TARGET_DIR}/env.sh"
 fi
@@ -147,6 +207,7 @@ enabled = false
 [servers.exec_pre_trade]
 enabled = true
 namespace = "${ENV_NAME}"
+venue = "${VENUE}"
 config_proxy_url = "http://127.0.0.1:${CONFIG_PORT}"
 TOML
 fi
@@ -161,6 +222,9 @@ DASHBOARD_URL=../
 ENV
 fi
 echo "[INFO] Deployed complete Exec runtime to ${TARGET_DIR}"
-echo "[INFO] Deployed spread_pbs venue to ${SPREAD_DIR}"
+echo "[INFO] Execution backend=${EXEC_BACKEND} account monitor=${ACCOUNT_MONITOR_DEST}"
+for spread_venue in "${SPREAD_VENUES[@]}"; do
+  echo "[INFO] Deployed spread_pbs venue to ${SPREAD_ROOT}/${spread_venue}"
+done
 echo "[INFO] Ports: viz=${VIZ_PORT} config=${CONFIG_PORT} instance=${INSTANCE_SUFFIX}"
 echo "[INFO] Processes were not started"

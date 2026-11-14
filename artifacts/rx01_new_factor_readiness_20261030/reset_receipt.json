@@ -1,0 +1,17 @@
+{
+  "observed_at": "2026-10-30T11:17:12.767810+00:00",
+  "environment": "binance_exec_trade06",
+  "execute": true,
+  "open_orders": 0,
+  "algo_orders": 0,
+  "nonzero_perpetuals": 0,
+  "asset_debts_including_usdt": 0,
+  "explicit_loans": 0,
+  "cash_dust_assets": 55,
+  "cash_dust_notional_usdt": "3.60230629527407238642442679",
+  "tradable_cash_quantity": 0,
+  "reset_keys": 135,
+  "preserved_keys": 3,
+  "keys_sha256": "5dc14ffa475a292eaa2da5bcd4c9766bcfddef744c298bea99c4e9a099dae903",
+  "verified": true
+}

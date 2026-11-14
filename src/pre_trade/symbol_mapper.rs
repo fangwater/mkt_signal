@@ -118,6 +118,28 @@ impl SymbolMapper for GateSymbolMapper {
     }
 }
 
+#[derive(Debug)]
+pub struct HyperliquidSymbolMapper;
+
+impl SymbolMapper for HyperliquidSymbolMapper {
+    fn balance_asset_to_um_symbol(&self, asset: &str) -> String {
+        let upper = asset.to_ascii_uppercase();
+        if upper == "USDC" {
+            upper
+        } else {
+            format!("{upper}USDC")
+        }
+    }
+
+    fn inst_id_to_base_asset(&self, inst_id: &str) -> Option<String> {
+        extract_base_asset(inst_id)
+    }
+
+    fn asset_to_price_symbol(&self, asset: &str) -> String {
+        self.balance_asset_to_um_symbol(asset)
+    }
+}
+
 /// 根据交易所创建对应的 SymbolMapper
 pub fn create_symbol_mapper(exchange: Exchange) -> Box<dyn SymbolMapper> {
     match exchange {
@@ -126,13 +148,13 @@ pub fn create_symbol_mapper(exchange: Exchange) -> Box<dyn SymbolMapper> {
             Box::new(BinanceSymbolMapper)
         }
         Exchange::Gate => Box::new(GateSymbolMapper),
-        Exchange::Hyperliquid => Box::new(BinanceSymbolMapper),
+        Exchange::Hyperliquid => Box::new(HyperliquidSymbolMapper),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{GateSymbolMapper, SymbolMapper};
+    use super::{GateSymbolMapper, HyperliquidSymbolMapper, SymbolMapper};
 
     #[test]
     fn gate_price_symbol_uses_contract_style() {
@@ -140,5 +162,16 @@ mod tests {
         assert_eq!(mapper.asset_to_price_symbol("BTC"), "BTC_USDT");
         assert_eq!(mapper.asset_to_price_symbol("sol"), "SOL_USDT");
         assert_eq!(mapper.asset_to_price_symbol("USDT"), "USDT");
+    }
+
+    #[test]
+    fn hyperliquid_symbols_use_usdc_quote() {
+        let mapper = HyperliquidSymbolMapper;
+        assert_eq!(mapper.balance_asset_to_um_symbol("HYPE"), "HYPEUSDC");
+        assert_eq!(mapper.asset_to_price_symbol("usdc"), "USDC");
+        assert_eq!(
+            mapper.inst_id_to_base_asset("HYPEUSDC").as_deref(),
+            Some("HYPE")
+        );
     }
 }

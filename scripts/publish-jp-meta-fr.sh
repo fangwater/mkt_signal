@@ -14,8 +14,8 @@ Usage: scripts/publish-jp-meta-fr.sh [options]
 
 Options:
   --host <ssh-host>    SSH config host (default: jp-meta-elvpn)
-  --env-name <name>   Binance/Gate FR environment (default: binance_fr_arb03)
-  --exchange <name>   Exchange (binance or gate; inferred from env-name)
+  --env-name <name>   Binance/Gate/Bitget/OKX FR environment (default: binance_fr_arb03)
+  --exchange <name>   Exchange (binance, gate, bitget, or okex; inferred from env-name)
   --check-only        Only verify that publish target processes are stopped
   --skip-build        Reuse binaries built by update-jp-meta-fr.sh
   -h, --help          Show this help
@@ -61,8 +61,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! "$ENV_NAME" =~ ^(binance|gate)_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
-  echo "[ERROR] env-name must match binance_fr_<suffix> or gate_fr_<suffix>: $ENV_NAME" >&2
+if [[ ! "$ENV_NAME" =~ ^(binance|gate|bitget|okex)_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
+  echo "[ERROR] env-name must match binance_fr_<suffix>, gate_fr_<suffix>, bitget_fr_<suffix>, or okex_fr_<suffix>: $ENV_NAME" >&2
   exit 2
 fi
 INFERRED_EXCHANGE="${BASH_REMATCH[1]}"
@@ -71,9 +71,9 @@ if [[ -z "$EXCHANGE" ]]; then
   EXCHANGE="$INFERRED_EXCHANGE"
 fi
 case "$EXCHANGE" in
-  binance|gate) ;;
+  binance|gate|bitget|okex) ;;
   *)
-    echo "[ERROR] exchange must be binance or gate: $EXCHANGE" >&2
+    echo "[ERROR] exchange must be binance, gate, bitget, or okex: $EXCHANGE" >&2
     exit 2
     ;;
 esac
@@ -130,6 +130,7 @@ target_executables=(
   "$target/account_monitor"
   "$target/binance_account_monitor"
   "$target/gate_account_monitor"
+  "$target/bitget_account_monitor"
   "$target/viz_server"
   "$target/pre_trade"
   "$target/trade_engine"
@@ -198,9 +199,16 @@ LOCAL_RELATIVE=(
   "target/release/trade_engine"
   "target/release/persist_manager"
   "scripts/fr_config_server.py"
+  "scripts/parameter_audit.py"
   "scripts/print_fr_risk_params.py"
   "scripts/sync_fr_risk_params.py"
   "scripts/start_trade_engine.sh"
+  "scripts/start_trade_signal.sh"
+  "scripts/start_fr_pre_trade.sh"
+  "scripts/check_fr_collateral.py"
+  "scripts/sync_fr_symbol_lists.py"
+  "scripts/lib/exchange_signing.py"
+  "scripts/lib/intra_symbols.py"
 )
 UPLOAD_NAMES=(
   "trade_signal"
@@ -210,9 +218,16 @@ UPLOAD_NAMES=(
   "trade_engine"
   "persist_manager"
   "fr_config_server.py"
+  "parameter_audit.py"
   "print_fr_risk_params.py"
   "sync_fr_risk_params.py"
   "start_trade_engine.sh"
+  "start_trade_signal.sh"
+  "start_fr_pre_trade.sh"
+  "check_fr_collateral.py"
+  "sync_fr_symbol_lists.py"
+  "exchange_signing.py"
+  "intra_symbols.py"
 )
 LOCAL_PATHS=()
 for relative_path in "${LOCAL_RELATIVE[@]}"; do
@@ -313,9 +328,17 @@ publish_file pre_trade pre_trade
 publish_file trade_engine trade_engine
 publish_file persist_manager persist_manager
 publish_file fr_config_server.py scripts/fr_config_server.py
+publish_file parameter_audit.py scripts/parameter_audit.py
 publish_file print_fr_risk_params.py scripts/print_fr_risk_params.py
 publish_file sync_fr_risk_params.py scripts/sync_fr_risk_params.py
 publish_file start_trade_engine.sh scripts/start_trade_engine.sh
+mkdir -p "$target/scripts/lib"
+publish_file exchange_signing.py scripts/lib/exchange_signing.py
+publish_file intra_symbols.py scripts/lib/intra_symbols.py
+publish_file check_fr_collateral.py scripts/check_fr_collateral.py
+publish_file sync_fr_symbol_lists.py scripts/sync_fr_symbol_lists.py
+publish_file start_trade_signal.sh scripts/start_trade_signal.sh
+publish_file start_fr_pre_trade.sh scripts/start_fr_pre_trade.sh
 
 rm -f "$stage/SHA256SUMS"
 rmdir "$stage"

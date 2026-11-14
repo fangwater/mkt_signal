@@ -1,0 +1,16 @@
+{
+  "branch": "arbmm",
+  "origin_ahead_behind": [
+    0,
+    0
+  ],
+  "source_commit": "133bf23fcdc53001eb2dbac72cd0b1d64ac285ca",
+  "existing_dirty_worktree": true,
+  "worktree_patch_sha256": "18ec70a0855bf1e754219153f132cdae9cb7fdd4e3ee4aab5737f8a91bc5a1f7",
+  "patch_local_path": "/tmp/bybit_intra_redeploy_20261016/source_worktree.patch",
+  "backup_remote": "/home/ubuntu/bybit_intra_redeploy_backup_20261016",
+  "state": "all_target_processes_stopped",
+  "env_and_configs_preserved": true,
+  "balance_contract": "https://bybit-exchange.github.io/docs/v5/account/wallet-balance",
+  "order_contract": "https://bybit-exchange.github.io/docs/v5/order/create-order"
+}

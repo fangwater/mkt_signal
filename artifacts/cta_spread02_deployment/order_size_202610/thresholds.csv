@@ -1,0 +1,11 @@
+exchange,symbol,source_month,apply_month,medium_quantile,large_quantile,medium_notional_threshold,large_notional_threshold,sample_count,nonempty_hours,unit
+okex-swap,AAVEUSDT,2026-10,2026-11,0.5,0.9,68.92,3111.8239999999996,9235215,744,price_x_contracts
+okex-swap,AVAXUSDT,2026-10,2026-11,0.5,0.9,3.0093,285.3048,7890924,744,price_x_contracts
+okex-swap,BCHUSDT,2026-10,2026-11,0.5,0.9,170.16,5901.400000000001,4715626,744,price_x_contracts
+okex-swap,ETHUSDT,2026-10,2026-11,0.5,0.9,48.455600000000004,23118.48,108906384,744,price_x_contracts
+okex-swap,FILUSDT,2026-10,2026-11,0.5,0.9,20.3076,2499.3036,19410056,744,price_x_contracts
+okex-swap,LINKUSDT,2026-10,2026-11,0.5,0.9,5.182,383.8464,7711448,744,price_x_contracts
+okex-swap,LTCUSDT,2026-10,2026-11,0.5,0.9,16.95,541.0559999999999,4004787,744,price_x_contracts
+okex-swap,TRXUSDT,2026-10,2026-11,0.5,0.9,0.0191928,0.2872044,3807304,744,price_x_contracts
+okex-swap,UNIUSDT,2026-10,2026-11,0.5,0.9,17.91,629.1,12242220,744,price_x_contracts
+okex-swap,XRPUSDT,2026-10,2026-11,0.5,0.9,0.072035,9.450368,17401229,744,price_x_contracts

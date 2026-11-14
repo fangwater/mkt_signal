@@ -204,6 +204,10 @@ async fn main() -> Result<()> {
             channel: "futures.positions".to_string(),
             payload: vec!["!all".to_string()],
         },
+        SubscribeChannel {
+            channel: "futures.usertrades".to_string(),
+            payload: vec!["!all".to_string()],
+        },
     ];
 
     // 创建 PM 转发器 (account_pubs/gate/pm)
@@ -737,14 +741,15 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::AccountRisk => {
             if let Ok(m) = BasicAccountRiskMsg::from_bytes(&payload) {
                 info!(
-                    "Gate AccountRisk: scope={} ts={} adj_eq_usd={:.2} actual_eq_usd={:.2} maint_margin_usd={:.2} initial_margin_usd={:.2} margin_ratio={:.6}",
+                    "Gate AccountRisk: scope={} ts={} adj_eq_usd={:.2} actual_eq_usd={:.2} maint_margin_usd={:.2} initial_margin_usd={:.2} margin_ratio={:.6} available_margin_usd={:.2}",
                     account_scope.as_str(),
                     m.timestamp,
                     m.adj_equity_usd,
                     m.actual_equity_usd,
                     m.maintenance_margin_usd,
                     m.initial_margin_usd,
-                    m.margin_ratio
+                    m.margin_ratio,
+                    m.available_margin_usd
                 );
             }
         }

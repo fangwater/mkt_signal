@@ -1,0 +1,42 @@
+{
+  "source_commit": "a73d427de74bbff49fdb9dd8088cfdcf477a2d67",
+  "branch": "arbmm",
+  "built_at_utc": "2026-10-16T09:40:53.605893+00:00",
+  "artifacts": {
+    "exec-pre-trade": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/mkt_signal/release/exec-pre-trade",
+      "sha256": "4a2e2be2dd378bcab066ca3748579d41f3e6167a22615626cb9019ddf717384a",
+      "size": 19867904
+    },
+    "trade_engine": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/mkt_signal/release/trade_engine",
+      "sha256": "ef0bc7d5b6e4e5c1509c0afbebfb0a03206fe4e95d22c24baa950174b0879320",
+      "size": 12261424
+    },
+    "bybit_account_monitor": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/mkt_signal/release/bybit_account_monitor",
+      "sha256": "bbb74b808f8a91330571f5a50681bcda6b2861f3946a707ed66bfe2f8eec3c50",
+      "size": 8533864
+    },
+    "bitget_account_monitor": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/mkt_signal/release/bitget_account_monitor",
+      "sha256": "8588259d9a517f4a6c048496d25c25801e461ef2d17bc2419eaf29082fe05e21",
+      "size": 8534928
+    },
+    "trade_signal": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/mkt_signal/release/trade_signal",
+      "sha256": "fbbcbb128e2e3078285c33d5d80e2c332723e0ecb7a6e620950455e46deec66c",
+      "size": 12350624
+    },
+    "viz_server": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/mkt_signal/release/viz_server",
+      "sha256": "63247f2fe6e9e042483904b44b2f79775ca284e47cc08f20f037ee6a40711f24",
+      "size": 8688472
+    },
+    "persist_manager": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/mkt_signal/release/persist_manager",
+      "sha256": "d3f0cda99acfecd564b03d332bb87312446ebe207f63403f5d87082e682c818b",
+      "size": 18382408
+    }
+  }
+}

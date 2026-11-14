@@ -55,13 +55,21 @@ def exchange_from_venue(venue: str) -> Optional[str]:
 
 def infer_exchange_from_name(name: str) -> Optional[str]:
     n = (name or "").strip().lower()
-    m = re.match(r"^([a-z0-9]+)[-_]intra([_-].*)?$", n)
+    m = re.match(r"^([a-z0-9]+)[-_](intra)([_-].*)?$", n)
     if not m:
         return None
     ex = normalize_exchange(m.group(1))
     if ex not in SUPPORTED_EXCHANGES:
         return None
     return ex
+
+
+def infer_namespace_from_name(name: str) -> Optional[str]:
+    n = (name or "").strip().lower()
+    m = re.match(r"^[a-z0-9]+[-_](intra)([_-].*)?$", n)
+    if not m:
+        return None
+    return m.group(1)
 
 
 def infer_exchange_from_cwd() -> Optional[str]:
@@ -74,6 +82,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
     p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
     p.add_argument("--env-name", help="环境目录名（例如 binance-intra-trade）")
+    p.add_argument(
+        "--namespace",
+        choices=["intra"],
+        help="symbol list 命名空间（默认按 env-name/CWD 的 -intra- 段推断）",
+    )
     return p.parse_args()
 
 
@@ -97,16 +110,22 @@ def resolve_env_name(args: argparse.Namespace) -> str:
     return Path.cwd().name.strip().lower()
 
 
+def resolve_namespace(args: argparse.Namespace, env_name: str) -> str:
+    if args.namespace:
+        return args.namespace
+    return infer_namespace_from_name(env_name) or "intra"
+
+
 def resolve_venues(args: argparse.Namespace, exchange: str) -> tuple[str, str]:
     open_venue = (args.open_venue or f"{exchange}-margin").strip().lower()
     hedge_venue = (args.hedge_venue or f"{exchange}-futures").strip().lower()
     return open_venue, hedge_venue
 
 
-def symbol_list_key(env_name: str, name: str, exchange: str) -> str:
+def symbol_list_key(env_name: str, name: str, exchange: str, namespace: str = "intra") -> str:
     if not env_name:
         raise ValueError("env_name is required for intra symbol lists")
-    return f"{env_name}:intra_{name}:{exchange}"
+    return f"{env_name}:{namespace}_{name}:{exchange}"
 
 
 def print_symbol_list(rds, key: str, title: str) -> int:
@@ -148,27 +167,30 @@ def main() -> int:
         return 2
     open_venue, hedge_venue = resolve_venues(args, exchange)
     env_name = resolve_env_name(args)
+    namespace = resolve_namespace(args, env_name)
 
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     print("📍 Redis: 127.0.0.1:6379/0")
     print(f"📦 env_name: {env_name or '-'}")
+    print(f"🏷️  namespace: {namespace}")
     print(f"📍 exchange: {exchange}\n")
 
-    print("\n📊 intra 交易对列表配置:")
+    print(f"\n📊 {namespace} 交易对列表配置:")
     print("=" * 80)
     total = 0
-    total += print_symbol_list(rds, symbol_list_key(env_name, "dump_symbols", exchange), "🔴 dump_symbols")
-    total += print_symbol_list(rds, symbol_list_key(env_name, "fwd_trade_symbols", exchange), "🟢 fwd_trade_symbols")
-    total += print_symbol_list(rds, symbol_list_key(env_name, "bwd_trade_symbols", exchange), "🔴 bwd_trade_symbols")
+    keys = [
+        symbol_list_key(env_name, "dump_symbols", exchange, namespace),
+        symbol_list_key(env_name, "fwd_trade_symbols", exchange, namespace),
+        symbol_list_key(env_name, "bwd_trade_symbols", exchange, namespace),
+    ]
+    total += print_symbol_list(rds, keys[0], "🔴 dump_symbols")
+    total += print_symbol_list(rds, keys[1], "🟢 fwd_trade_symbols")
+    total += print_symbol_list(rds, keys[2], "🔴 bwd_trade_symbols")
 
     print("\n📈 统计摘要:")
     print("=" * 80)
-    for k in [
-        symbol_list_key(env_name, "dump_symbols", exchange),
-        symbol_list_key(env_name, "fwd_trade_symbols", exchange),
-        symbol_list_key(env_name, "bwd_trade_symbols", exchange),
-    ]:
+    for k in keys:
         data = rds.get(k)
         if not data:
             continue
@@ -179,7 +201,7 @@ def main() -> int:
                 print(f"  {k:45} {len(symbols):3} 个")
         except Exception:
             pass
-    print(f"\n  总计: {total} 个交易对（intra all lists）\n")
+    print(f"\n  总计: {total} 个交易对（{namespace} all lists）\n")
     return 0
 
 

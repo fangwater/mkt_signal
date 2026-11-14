@@ -1,0 +1,17 @@
+{
+  "gate": {
+    "SLVON": { "max_abs_qty": 0.01, "max_abs_usdt": 1.0 },
+    "TSLAX": { "max_abs_qty": 0.001, "max_abs_usdt": 1.0 },
+    "CRCLX": { "max_abs_qty": 0.003, "max_abs_usdt": 1.0 },
+    "FTM": { "max_abs_qty": 0.000001, "max_abs_usdt": 1.0 },
+    "MATIC": { "max_abs_qty": 0.000001, "max_abs_usdt": 1.0 },
+    "AMZNX": { "max_abs_qty": 0.000001, "max_abs_usdt": 1.0 },
+    "CTC": { "max_abs_qty": 0.000001, "max_abs_usdt": 1.0 },
+    "HOODX": { "max_abs_qty": 0.000001, "max_abs_usdt": 1.0 },
+    "METAX": { "max_abs_qty": 0.000001, "max_abs_usdt": 1.0 }
+  },
+  "bybit": {
+    "EUR": { "max_abs_qty": 0.01, "max_abs_usdt": 1.0 },
+    "HFT": { "max_abs_qty": 25.0, "max_abs_usdt": 1.0 }
+  }
+}

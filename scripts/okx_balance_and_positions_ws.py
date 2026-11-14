@@ -20,7 +20,7 @@ except ImportError:
     print("Missing dependency: websocket-client. Install with `pip install websocket-client`.", file=sys.stderr)
     sys.exit(1)
 
-DEFAULT_WS_URL = os.environ.get("OKX_WS_PRIVATE_URL", "wss://ws.okx.com:8443/ws/v5/private")
+DEFAULT_WS_URL = os.environ.get("OKX_WS_PRIVATE_URL", "wss://ws.okx.com/ws/v5/private")
 DEFAULT_REST_URL = os.environ.get("OKX_BASE_URL", "https://www.okx.com")
 
 

@@ -20,8 +20,9 @@ import math
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
@@ -40,6 +41,8 @@ EXCHANGE_DEFAULTS = {
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)
 import arb_per_symbol_overrides as ps_overrides  # noqa: E402
+import check_fr_collateral as collateral  # noqa: E402
+import parameter_audit  # noqa: E402
 
 ROLLING_METRICS_SCRIPT_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -645,7 +648,7 @@ __PER_SYMBOL_PANELS_HTML__
     }
 
     async function saveSymbolLists() {
-      setStatus('sym-status', '保存中...');
+      setStatus('sym-status', '正在检查抵押并保存...');
       try {
         const payload = {
           exchange: normalizeExchange(exchangeSelect.value),
@@ -656,12 +659,16 @@ __PER_SYMBOL_PANELS_HTML__
           fwd_trade_symbols: toList(document.getElementById('sym-fwd').value),
           bwd_trade_symbols: toList(document.getElementById('sym-bwd').value),
         };
-        await fetchJson(apiUrl('symbol-lists'), {
+        const saved = await fetchJson(apiUrl('symbol-lists'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        setStatus('sym-status', '保存成功');
+        const enabled = (saved.collateral || {}).enabled || [];
+        const unsupported = (saved.collateral || {}).unsupported || [];
+        setStatus('sym-status', '保存成功，抵押检查已通过'
+          + (enabled.length ? `；已开启抵押：${enabled.join(', ')}` : '')
+          + (unsupported.length ? `；交易所不支持抵押：${unsupported.join(', ')}` : ''));
       } catch (err) {
         setStatus('sym-status', `保存失败: ${err}`, false);
       }
@@ -989,7 +996,7 @@ def try_import_redis():
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Funding Rate 配置服务器 (fr_config_server)")
-    parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
+    parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
     parser.add_argument(
         "--default-exchange",
@@ -1952,6 +1959,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         self._send_error(404, "not found")
 
+    @parameter_audit.audit_post("funding_rate", lambda handler: infer_dir_prefix_from_cwd() or "")
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
@@ -1985,91 +1993,86 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            raw_dump = payload.get("dump_symbols") or []
-            raw_unimmr_close = payload.get("unimmr_close_symbols") or []
-            raw_fwd = payload.get("fwd_trade_symbols") or []
-            raw_bwd = payload.get("bwd_trade_symbols") or []
-            dump_symbols = normalize_symbol_list_for_exchange(
-                exchange, raw_dump
+            # 字段缺省（未传或 null）跳过对应 Redis key，避免空 body / 部分字段
+            # 请求把线上已有列表清成 []；显式传 [] 仍是合法的清空操作。
+            field_specs = (
+                ("dump_symbols", "dump"),
+                ("unimmr_close_symbols", "unimmr_close"),
+                ("fwd_trade_symbols", "fwd"),
+                ("bwd_trade_symbols", "bwd"),
             )
-            unimmr_close_symbols = normalize_symbol_list_for_exchange(
-                exchange, raw_unimmr_close
-            )
-            fwd_symbols = normalize_symbol_list_for_exchange(
-                exchange, raw_fwd
-            )
-            bwd_symbols = normalize_symbol_list_for_exchange(
-                exchange, raw_bwd
-            )
-            raw_dump_len, raw_dump_sample = summarize_symbol_payload(raw_dump)
-            raw_unimmr_close_len, raw_unimmr_close_sample = summarize_symbol_payload(
-                raw_unimmr_close
-            )
-            raw_fwd_len, raw_fwd_sample = summarize_symbol_payload(raw_fwd)
-            raw_bwd_len, raw_bwd_sample = summarize_symbol_payload(raw_bwd)
+            provided = [
+                (name, payload[name])
+                for name, _ in field_specs
+                if payload.get(name) is not None
+            ]
+            if not provided:
+                self._send_error(
+                    400,
+                    "symbol-lists 未携带任何列表字段（{}），未写入任何 key".format(
+                        "/".join(name for name, _ in field_specs)
+                    ),
+                )
+                return
+            invalid_fields = [
+                name
+                for name, value in provided
+                if not isinstance(value, (list, str))
+            ]
+            if invalid_fields:
+                self._send_error(
+                    400,
+                    "字段必须是字符串或数组: {}".format(", ".join(invalid_fields)),
+                )
+                return
+            normalized_lists: Dict[str, List[str]] = {
+                name: normalize_symbol_list_for_exchange(exchange, value)
+                for name, value in provided
+            }
+            skipped_fields = [name for name, _ in field_specs if name not in normalized_lists]
             print(
-                "[symbol-lists] env={} exchange={} open={} hedge={} key_suffix={}".format(
-                    infer_dir_prefix_from_cwd() or "-", exchange, open_v, hedge_v, key_suffix
+                "[symbol-lists] env={} exchange={} open={} hedge={} key_suffix={} skipped={}".format(
+                    infer_dir_prefix_from_cwd() or "-",
+                    exchange,
+                    open_v,
+                    hedge_v,
+                    key_suffix,
+                    ",".join(skipped_fields) or "-",
                 )
             )
-            print(
-                "[symbol-lists] dump raw={} norm={} sample_raw={} sample_norm={}".format(
-                    raw_dump_len, len(dump_symbols), raw_dump_sample, dump_symbols[:5]
+            for name, label in field_specs:
+                if name not in normalized_lists:
+                    continue
+                raw_len, raw_sample = summarize_symbol_payload(payload[name])
+                symbols = normalized_lists[name]
+                print(
+                    "[symbol-lists] {} raw={} norm={} sample_raw={} sample_norm={}".format(
+                        label, raw_len, len(symbols), raw_sample, symbols[:5]
+                    )
                 )
-            )
-            print(
-                "[symbol-lists] unimmr_close raw={} norm={} sample_raw={} sample_norm={}".format(
-                    raw_unimmr_close_len,
-                    len(unimmr_close_symbols),
-                    raw_unimmr_close_sample,
-                    unimmr_close_symbols[:5],
-                )
-            )
-            print(
-                "[symbol-lists] fwd  raw={} norm={} sample_raw={} sample_norm={}".format(
-                    raw_fwd_len, len(fwd_symbols), raw_fwd_sample, fwd_symbols[:5]
-                )
-            )
-            print(
-                "[symbol-lists] bwd  raw={} norm={} sample_raw={} sample_norm={}".format(
-                    raw_bwd_len, len(bwd_symbols), raw_bwd_sample, bwd_symbols[:5]
-                )
-            )
             sys.stdout.flush()
 
             rds = self.server.context.redis_client
             try:
-                rds.set(
-                    build_symbol_list_key("dump_symbols", key_suffix),
-                    json.dumps(dump_symbols, ensure_ascii=False),
-                )
-                rds.set(
-                    build_symbol_list_key("unimmr_close_symbols", key_suffix),
-                    json.dumps(unimmr_close_symbols, ensure_ascii=False),
-                )
-                rds.set(
-                    build_symbol_list_key("fwd_trade_symbols", key_suffix),
-                    json.dumps(fwd_symbols, ensure_ascii=False),
-                )
-                rds.set(
-                    build_symbol_list_key("bwd_trade_symbols", key_suffix),
-                    json.dumps(bwd_symbols, ensure_ascii=False),
-                )
+                collateral_report = collateral.publish_symbol_lists(
+                    rds, Path.cwd(), exchange, open_v, hedge_v, normalized_lists)
+            except collateral.PreflightError as exc:
+                self._send_error(503, f"抵押检查未通过，名单未更新: {exc}")
+                return
             except Exception as exc:
-                self._send_error(500, f"redis write failed: {exc}")
+                self._send_error(503, f"币对保存未完成（{type(exc).__name__}），请重新读取名单后重试")
                 return
 
-            self._send_json(
-                200,
-                {
-                    "exchange": exchange,
-                    "key_suffix": key_suffix,
-                    "dump_count": len(dump_symbols),
-                    "unimmr_close_count": len(unimmr_close_symbols),
-                    "fwd_count": len(fwd_symbols),
-                    "bwd_count": len(bwd_symbols),
-                },
-            )
+            response: Dict[str, Any] = {
+                "exchange": exchange,
+                "key_suffix": key_suffix,
+                "skipped_fields": skipped_fields,
+                "collateral": asdict(collateral_report),
+            }
+            for name, label in field_specs:
+                if name in normalized_lists:
+                    response[f"{label}_count"] = len(normalized_lists[name])
+            self._send_json(200, response)
             return
 
         if parsed.path == "/api/risk-params":
@@ -2293,7 +2296,7 @@ def main() -> int:
 
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
-    context = ServerContext(redis_client=rds, default_exchange=default_exchange)
+    context = ServerContext(redis_client=parameter_audit.wrap_redis(rds), default_exchange=default_exchange)
     try:
         server = FrConfigServer((args.host, args.port), RequestHandler, context)
     except OSError as exc:

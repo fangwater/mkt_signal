@@ -1,0 +1,16 @@
+# Factor calculations and independently configured frequency position tables; orders are executed downstream by Manager/Exec.
+combinations_dir = "cta_factor_spread"
+history_dir = "../data/cta_factor_spread"
+lookback_secs = 1296000
+catchup_timeout_secs = 5400
+
+[kafka]
+# Topics are derived from the merged factor IDs, not from a strategy family.
+brokers = "156.231.137.189:1501"
+payload_compression = "zlib"
+poll_timeout_ms = 1000
+enable_auto_commit = false
+security_protocol = "none"
+broker_addr_rewrites = [
+  { from_host = "10.140.140.55", to_host = "156.231.137.189" },
+]

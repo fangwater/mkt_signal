@@ -1,0 +1,34 @@
+{
+  "at_ms": 1793336884748,
+  "env": "bybit_fr_arb01",
+  "before": {
+    "GRVT": {
+      "marginCollateral": true,
+      "collateralSwitch": false
+    },
+    "SLX": {
+      "marginCollateral": true,
+      "collateralSwitch": false
+    }
+  },
+  "changes": [
+    {
+      "coin": "GRVT",
+      "retCode": 0
+    },
+    {
+      "coin": "SLX",
+      "retCode": 0
+    }
+  ],
+  "after": {
+    "GRVT": {
+      "marginCollateral": true,
+      "collateralSwitch": true
+    },
+    "SLX": {
+      "marginCollateral": true,
+      "collateralSwitch": true
+    }
+  }
+}

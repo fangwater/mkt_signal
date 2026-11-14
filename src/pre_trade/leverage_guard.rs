@@ -9,6 +9,8 @@ use hmac::{Hmac, Mac};
 use log::{info, warn};
 use order_common::TradingVenue;
 use reqwest::Client;
+use runtime_common::exchange::Exchange;
+use runtime_common::execution_backend::ExecBackend;
 use runtime_common::redis_client::{RedisClient, RedisSettings};
 use runtime_common::time_util::get_timestamp_us;
 use serde_json::{json, Value};
@@ -16,6 +18,7 @@ use sha2::{Digest, Sha256, Sha512};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::IpAddr;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use trade_engine::bybit_query::build_bybit_rest_client_with_timeout;
 use trade_signal::ArbMode;
@@ -25,6 +28,7 @@ type HmacSha512 = Hmac<Sha512>;
 
 const TARGET_LEVERAGES: [u8; 1] = [5];
 pub const BATCH_EXEC_DEFAULT_LEVERAGE: u8 = 5;
+pub const RAPIDX_EXEC_DEFAULT_LEVERAGE: u8 = 4;
 const BLOCK_SUMMARY_INTERVAL_US: i64 = 60_000_000;
 const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_REQUEST_SLEEP_MS: u64 = 120;
@@ -46,12 +50,16 @@ impl LeverageTarget {
     fn new(venue: TradingVenue, symbol: &str) -> Self {
         Self {
             venue,
-            symbol: normalize_online_value_to_internal_symbol(symbol).unwrap_or_else(|| {
-                symbol
-                    .trim()
-                    .to_ascii_uppercase()
-                    .replace(['-', '_', '/'], "")
-            }),
+            symbol: if venue == TradingVenue::BinanceFutures {
+                symbol_for_venue(symbol, venue)
+            } else {
+                normalize_online_value_to_internal_symbol(symbol).unwrap_or_else(|| {
+                    symbol
+                        .trim()
+                        .to_ascii_uppercase()
+                        .replace(['-', '_', '/'], "")
+                })
+            },
         }
     }
 
@@ -63,17 +71,19 @@ impl LeverageTarget {
 #[derive(Debug, Clone)]
 enum TargetStatus {
     Confirmed(u8),
+    PortfolioMargin,
     Failed { last_error: String },
 }
 
 impl TargetStatus {
     fn is_confirmed(&self) -> bool {
-        matches!(self, Self::Confirmed(_))
+        matches!(self, Self::Confirmed(_) | Self::PortfolioMargin)
     }
 
     fn reason_label(&self) -> &'static str {
         match self {
             Self::Confirmed(_) => "confirmed",
+            Self::PortfolioMargin => "portfolio_margin",
             Self::Failed { .. } => "set_failed",
         }
     }
@@ -245,37 +255,80 @@ impl GuardRefreshSnapshot {
 
 pub struct LeverageGuard;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeverageInitOutcome {
+    Set,
+    PortfolioMargin,
+}
+
+// One native OKX account per runtime. Share the successful startup mode across
+// Batch/Chase/symbols: account/config only permits 5 requests per 2 seconds.
+// Scope by API key and endpoint; account-mode changes require a runtime restart.
+type OkxLeverageModeCache =
+    tokio::sync::Mutex<HashMap<(String, String), Arc<tokio::sync::OnceCell<i64>>>>;
+static OKX_LEVERAGE_MODES: OnceLock<OkxLeverageModeCache> = OnceLock::new();
+
 pub async fn set_batch_exec_default_leverage(
     venue: TradingVenue,
     symbol: &str,
     binance_account_mode: Option<BinanceAccountMode>,
-) -> Result<()> {
+) -> Result<LeverageInitOutcome> {
+    if matches!(
+        venue,
+        TradingVenue::BybitFutures | TradingVenue::BitgetFutures
+    ) {
+        return trade_engine::native_uta_exec::set_and_verify_leverage(
+            venue,
+            symbol,
+            BATCH_EXEC_DEFAULT_LEVERAGE,
+        )
+        .await
+        .map(|()| LeverageInitOutcome::Set);
+    }
+    let backend = match venue {
+        TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures => {
+            ExecBackend::for_exchange(Exchange::Binance)?
+        }
+        TradingVenue::OkexFutures => ExecBackend::for_exchange(Exchange::Okex)?,
+        other => bail!(
+            "unsupported BatchExec futures venue for default leverage: {:?}",
+            other
+        ),
+    };
+    if backend == ExecBackend::Ltp {
+        return trade_engine::ltp_init_leverage::set_and_verify_exec_default_leverage(
+            venue,
+            symbol,
+            RAPIDX_EXEC_DEFAULT_LEVERAGE,
+        )
+        .await
+        .map(|()| LeverageInitOutcome::Set);
+    }
+
     let client = Client::builder()
         .timeout(Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS))
         .build()
         .context("build BatchExec leverage REST client")?;
     let symbol = symbol_for_venue(symbol, venue);
     match venue {
-        TradingVenue::BinanceFutures => {
-            set_binance_leverage(
-                &client,
-                &symbol,
-                BATCH_EXEC_DEFAULT_LEVERAGE,
-                binance_account_mode,
-                false,
-            )
-            .await
-        }
-        TradingVenue::BinanceCoinFutures => {
-            set_binance_leverage(
-                &client,
-                &symbol,
-                BATCH_EXEC_DEFAULT_LEVERAGE,
-                binance_account_mode,
-                true,
-            )
-            .await
-        }
+        TradingVenue::BinanceFutures => set_binance_leverage(
+            &client,
+            &symbol,
+            BATCH_EXEC_DEFAULT_LEVERAGE,
+            binance_account_mode,
+            false,
+        )
+        .await
+        .map(|()| LeverageInitOutcome::Set),
+        TradingVenue::BinanceCoinFutures => set_binance_leverage(
+            &client,
+            &symbol,
+            BATCH_EXEC_DEFAULT_LEVERAGE,
+            binance_account_mode,
+            true,
+        )
+        .await
+        .map(|()| LeverageInitOutcome::Set),
         TradingVenue::OkexFutures => {
             set_okx_leverage(&client, &symbol, BATCH_EXEC_DEFAULT_LEVERAGE).await
         }
@@ -561,7 +614,9 @@ impl LeverageGuard {
                             continue;
                         }
                         let reason = match status {
-                            TargetStatus::Confirmed(_) => "confirmed".to_string(),
+                            TargetStatus::Confirmed(_) | TargetStatus::PortfolioMargin => {
+                                status.reason_label().to_string()
+                            }
                             TargetStatus::Failed { last_error } => {
                                 format!("{}:{}", status.reason_label(), truncate(last_error, 180))
                             }
@@ -799,7 +854,7 @@ async fn bybit_account_is_pm(local_ip: Option<IpAddr>) -> Result<bool> {
         .get("marginMode")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let is_pm = unified_status == 6 || margin_mode.eq_ignore_ascii_case("PORTFOLIO_MARGIN");
+    let is_pm = margin_mode.eq_ignore_ascii_case("PORTFOLIO_MARGIN");
     info!(
         "ArbOpen leverage guard Bybit account mode: unifiedMarginStatus={} marginMode={} portfolio_margin={}",
         unified_status, margin_mode, is_pm
@@ -825,16 +880,23 @@ fn online_symbol_keys(config: &GuardStartupConfig) -> Vec<String> {
         .map(|name| format!("{}:fr_{}:{}", config.env_name, name, venue_suffix))
         .collect(),
         ArbMode::IntraArb => {
+            let list_ns = "intra";
             let exchange_suffix = config.open_venue.trade_engine_exchange();
             vec![
-                format!("{}:intra_dump_symbols:{exchange_suffix}", config.env_name),
-                format!("{}:intra_trade_symbols:{exchange_suffix}", config.env_name),
                 format!(
-                    "{}:intra_fwd_trade_symbols:{exchange_suffix}",
+                    "{}:{list_ns}_dump_symbols:{exchange_suffix}",
                     config.env_name
                 ),
                 format!(
-                    "{}:intra_bwd_trade_symbols:{exchange_suffix}",
+                    "{}:{list_ns}_trade_symbols:{exchange_suffix}",
+                    config.env_name
+                ),
+                format!(
+                    "{}:{list_ns}_fwd_trade_symbols:{exchange_suffix}",
+                    config.env_name
+                ),
+                format!(
+                    "{}:{list_ns}_bwd_trade_symbols:{exchange_suffix}",
                     config.env_name
                 ),
             ]
@@ -946,10 +1008,7 @@ fn normalize_online_value_to_internal_symbol(value: &str) -> Option<String> {
 }
 
 fn clean_symbol_text(value: &str) -> String {
-    value
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .collect()
+    value.chars().filter(|ch| ch.is_alphanumeric()).collect()
 }
 
 fn arb_open_targets(
@@ -979,7 +1038,8 @@ async fn set_target_with_fallback(
     let mut last_error = String::new();
     for leverage in TARGET_LEVERAGES {
         match set_target_leverage(client, config, target, leverage).await {
-            Ok(()) => return TargetStatus::Confirmed(leverage),
+            Ok(LeverageInitOutcome::Set) => return TargetStatus::Confirmed(leverage),
+            Ok(LeverageInitOutcome::PortfolioMargin) => return TargetStatus::PortfolioMargin,
             Err(err) => {
                 last_error = format!("{err:#}");
             }
@@ -993,8 +1053,28 @@ async fn set_target_leverage(
     config: &GuardStartupConfig,
     target: &LeverageTarget,
     leverage: u8,
-) -> Result<()> {
+) -> Result<LeverageInitOutcome> {
+    let ltp_exchange = match target.venue {
+        TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures => Some(Exchange::Binance),
+        TradingVenue::OkexFutures => Some(Exchange::Okex),
+        _ => None,
+    };
+    if let Some(exchange) = ltp_exchange {
+        if ExecBackend::for_exchange(exchange)? == ExecBackend::Ltp {
+            return trade_engine::ltp_init_leverage::set_and_verify_batch_exec_leverage(
+                target.venue,
+                &target.symbol,
+                leverage,
+            )
+            .await
+            .map(|()| LeverageInitOutcome::Set);
+        }
+    }
+
     let symbol = symbol_for_venue(&target.symbol, target.venue);
+    if target.venue == TradingVenue::OkexFutures {
+        return set_okx_leverage(client, &symbol, leverage).await;
+    }
     match target.venue {
         TradingVenue::BinanceFutures => {
             set_binance_leverage(
@@ -1009,7 +1089,6 @@ async fn set_target_leverage(
         TradingVenue::BinanceCoinFutures => {
             set_binance_leverage(client, &symbol, leverage, config.binance_account_mode, true).await
         }
-        TradingVenue::OkexFutures => set_okx_leverage(client, &symbol, leverage).await,
         TradingVenue::BybitFutures => set_bybit_leverage(client, &symbol, leverage).await,
         TradingVenue::BitgetFutures => {
             set_bitget_leverage(client, &symbol, leverage, "USDT-FUTURES").await
@@ -1020,9 +1099,22 @@ async fn set_target_leverage(
         TradingVenue::GateFutures => set_gate_leverage(client, &symbol, leverage).await,
         other => bail!("unsupported futures venue for leverage guard: {:?}", other),
     }
+    .map(|()| LeverageInitOutcome::Set)
 }
 
 fn symbol_for_venue(symbol: &str, venue: TradingVenue) -> String {
+    if venue == TradingVenue::BinanceFutures {
+        let canonical = clean_symbol_text(
+            &symbol
+                .split('@')
+                .next()
+                .unwrap_or(symbol)
+                .to_ascii_uppercase(),
+        );
+        if canonical.ends_with("USDC") && canonical.len() > 4 {
+            return canonical;
+        }
+    }
     if venue == TradingVenue::BinanceCoinFutures {
         return runtime_common::symbol_util::binance_coin_futures_symbol(symbol);
     }
@@ -1132,9 +1224,59 @@ fn binance_leverage_path(
     }
 }
 
-async fn set_okx_leverage(client: &Client, symbol: &str, leverage: u8) -> Result<()> {
+async fn set_okx_leverage(
+    client: &Client,
+    symbol: &str,
+    leverage: u8,
+) -> Result<LeverageInitOutcome> {
     let credentials = OkexCredentials::from_env()?;
     let base = env_or("OKX_BASE_URL", "https://www.okx.com");
+    let mode = {
+        let mut modes = OKX_LEVERAGE_MODES
+            .get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+            .lock()
+            .await;
+        modes
+            .entry((base.clone(), credentials.api_key.clone()))
+            .or_default()
+            .clone()
+    };
+    set_okx_leverage_with_credentials(client, &credentials, &base, &mode, symbol, leverage).await
+}
+
+async fn set_okx_leverage_with_credentials(
+    client: &Client,
+    credentials: &OkexCredentials,
+    base: &str,
+    mode: &tokio::sync::OnceCell<i64>,
+    symbol: &str,
+    leverage: u8,
+) -> Result<LeverageInitOutcome> {
+    anyhow::ensure!(
+        symbol.ends_with("-SWAP"),
+        "OKX leverage initialization requires a perpetual: {symbol}"
+    );
+    // This path only submits mgnMode=cross. Portfolio margin has no adjustable
+    // per-contract leverage; keep mode-query failures blocking activation.
+    let acct_lv = *mode
+        .get_or_try_init(|| async {
+            let acct_lv =
+                trade_engine::okex_precheck::fetch_acct_lv(client, credentials, base).await?;
+            anyhow::ensure!(
+                matches!(acct_lv, 3 | 4),
+                "OKX cross SWAP leverage initialization requires acctLv=3 or 4, got {acct_lv}"
+            );
+            Ok::<_, anyhow::Error>(acct_lv)
+        })
+        .await?;
+    match acct_lv {
+        4 => {
+            info!("OKX cross SWAP leverage initialization skipped: symbol={symbol} acctLv=4 (portfolio margin)");
+            return Ok(LeverageInitOutcome::PortfolioMargin);
+        }
+        3 => {}
+        _ => bail!("unsupported cached OKX account mode: {acct_lv}"),
+    }
     let path = "/api/v5/account/set-leverage";
     let body = serde_json::to_string(&json!({
         "instId": symbol,
@@ -1148,10 +1290,10 @@ async fn set_okx_leverage(client: &Client, symbol: &str, leverage: u8) -> Result
     );
     let resp = client
         .post(format!("{}{}", base.trim_end_matches('/'), path))
-        .header("OK-ACCESS-KEY", credentials.api_key)
+        .header("OK-ACCESS-KEY", &credentials.api_key)
         .header("OK-ACCESS-SIGN", signature)
         .header("OK-ACCESS-TIMESTAMP", timestamp)
-        .header("OK-ACCESS-PASSPHRASE", credentials.passphrase)
+        .header("OK-ACCESS-PASSPHRASE", &credentials.passphrase)
         .header("Content-Type", "application/json")
         .body(body)
         .send()
@@ -1174,7 +1316,7 @@ async fn set_okx_leverage(client: &Client, symbol: &str, leverage: u8) -> Result
             truncate(&body, 500)
         );
     }
-    Ok(())
+    Ok(LeverageInitOutcome::Set)
 }
 
 async fn set_bybit_leverage(client: &Client, symbol: &str, leverage: u8) -> Result<()> {
@@ -1441,12 +1583,14 @@ fn log_startup_summary(statuses: &HashMap<LeverageTarget, TargetStatus>) {
         .count();
     let failed = statuses.len().saturating_sub(confirmed);
     let mut level_counts: BTreeMap<u8, usize> = BTreeMap::new();
+    let mut portfolio_margin_skipped = 0;
     let mut failed_samples = Vec::new();
     for (target, status) in statuses {
         match status {
             TargetStatus::Confirmed(level) => {
                 *level_counts.entry(*level).or_default() += 1;
             }
+            TargetStatus::PortfolioMargin => portfolio_margin_skipped += 1,
             TargetStatus::Failed { last_error } => {
                 if failed_samples.len() < 12 {
                     failed_samples.push(format!(
@@ -1459,11 +1603,12 @@ fn log_startup_summary(statuses: &HashMap<LeverageTarget, TargetStatus>) {
         }
     }
     info!(
-        "ArbOpen leverage guard initialized: targets={} confirmed={} failed={} levels={:?}",
+        "ArbOpen leverage guard initialized: targets={} confirmed={} failed={} levels={:?} portfolio_margin_skipped={}",
         statuses.len(),
         confirmed,
         failed,
-        level_counts
+        level_counts,
+        portfolio_margin_skipped
     );
     if failed > 0 {
         warn!(
@@ -1575,6 +1720,175 @@ fn truncate(value: &str, max_len: usize) -> String {
 mod tests {
     use super::*;
 
+    async fn okx_leverage_fixture(responses: Vec<(u16, Value)>) -> Result<LeverageInitOutcome> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for (index, (status, response)) in responses.into_iter().enumerate() {
+                let (mut socket, _) =
+                    tokio::time::timeout(Duration::from_secs(3), listener.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut buffer = [0; 4096];
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let header = std::str::from_utf8(&bytes[..end]).unwrap();
+                        let length = header
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if bytes.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                let request = std::str::from_utf8(&bytes).unwrap();
+                if index == 0 {
+                    assert!(request.starts_with("GET /api/v5/account/config HTTP/1.1"));
+                } else {
+                    assert!(request.starts_with("POST /api/v5/account/set-leverage HTTP/1.1"));
+                    assert_eq!(
+                        serde_json::from_str::<Value>(request.split("\r\n\r\n").nth(1).unwrap())
+                            .unwrap(),
+                        json!({"instId":"BTC-USDT-SWAP", "lever":"5", "mgnMode":"cross"})
+                    );
+                }
+                let body = response.to_string();
+                socket.write_all(format!("HTTP/1.1 {status} OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+            // Close the listener too: an unexpected POST after a mode-only
+            // response must fail rather than silently count as a successful skip.
+        });
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let mode = tokio::sync::OnceCell::new();
+        let credentials = OkexCredentials::new(
+            "fixture-key".into(),
+            "fixture-secret".into(),
+            "fixture-passphrase".into(),
+        );
+        let result = set_okx_leverage_with_credentials(
+            &client,
+            &credentials,
+            &base,
+            &mode,
+            "BTC-USDT-SWAP",
+            5,
+        )
+        .await;
+        server.await.unwrap();
+        if matches!(result, Ok(LeverageInitOutcome::PortfolioMargin)) {
+            // The listener is closed. Another symbol must reuse the confirmed
+            // mode and succeed without another account query or leverage POST.
+            assert_eq!(
+                set_okx_leverage_with_credentials(
+                    &client,
+                    &credentials,
+                    &base,
+                    &mode,
+                    "ETH-USDT-SWAP",
+                    5,
+                )
+                .await
+                .unwrap(),
+                LeverageInitOutcome::PortfolioMargin
+            );
+        }
+        if result.is_err() && mode.get() != Some(&3) {
+            assert!(mode.get().is_none(), "failed mode checks must be retried");
+        }
+        result
+    }
+
+    #[tokio::test]
+    async fn okx_portfolio_cross_swap_skips_leverage_post() {
+        assert_eq!(
+            okx_leverage_fixture(vec![(200, json!({"code":"0","data":[{"acctLv":"4"}]}))])
+                .await
+                .unwrap(),
+            LeverageInitOutcome::PortfolioMargin
+        );
+    }
+
+    #[tokio::test]
+    async fn okx_multi_currency_cross_swap_still_sets_leverage_and_propagates_rejection() {
+        for (response, success) in [
+            (json!({"code":"0","data":[{"lever":"5"}]}), true),
+            (json!({"code":"59102","msg":"rejected","data":[]}), false),
+        ] {
+            let result = okx_leverage_fixture(vec![
+                (200, json!({"code":"0","data":[{"acctLv":"3"}]})),
+                (200, response),
+            ])
+            .await;
+            if success {
+                assert_eq!(result.unwrap(), LeverageInitOutcome::Set);
+            } else {
+                assert!(result.is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn okx_leverage_mode_errors_remain_blocking_without_post() {
+        for (status, response) in [
+            (503, json!({"code":"0","data":[{"acctLv":"4"}]})),
+            (200, json!({"code":"50001","data":[{"acctLv":"4"}]})),
+            (200, json!({"code":"0","data":[]})),
+            (200, json!({"code":"0","data":[{}]})),
+            (200, json!({"code":"0","data":[{"acctLv":"invalid"}]})),
+            (200, json!({"code":"0","data":[{"acctLv":"2"}]})),
+            (200, json!({"code":"0","data":[{"acctLv":"5"}]})),
+        ] {
+            assert!(
+                okx_leverage_fixture(vec![(status, response.clone())])
+                    .await
+                    .is_err(),
+                "unexpectedly passed: HTTP {status} {response}"
+            );
+        }
+    }
+
+    #[test]
+    fn okx_portfolio_margin_does_not_block_arb_open() {
+        let config = cfg(
+            "okx_test",
+            ArbMode::FundingArb,
+            TradingVenue::OkexMargin,
+            TradingVenue::OkexFutures,
+        );
+        install_guard_state(LeverageGuardState::enabled(
+            HashMap::from([(
+                LeverageTarget::new(TradingVenue::OkexFutures, "BTCUSDT"),
+                TargetStatus::PortfolioMargin,
+            )]),
+            GuardRefreshContext {
+                redis: RedisSettings::default(),
+                config,
+            },
+        ));
+        assert!(!LeverageGuard::should_block_arb_open(
+            "BTCUSDT",
+            TradingVenue::OkexMargin,
+            "BTCUSDT",
+            TradingVenue::OkexFutures
+        ));
+        install_guard_state(LeverageGuardState::disabled());
+    }
+
     fn cfg(
         env_name: &str,
         arb_mode: ArbMode,
@@ -1673,6 +1987,28 @@ mod tests {
             normalize_online_value_to_internal_symbol("HNT-USDT-260628"),
             Some("HNTUSDT".to_string())
         );
+        assert_eq!(
+            normalize_online_value_to_internal_symbol("龙虾USDT"),
+            Some("龙虾USDT".to_string())
+        );
+    }
+
+    #[test]
+    fn binance_usdc_leverage_preserves_quote_currency() {
+        for symbol in ["BNBUSDC", "bnb/usdc", "BNB_USDC@source"] {
+            assert_eq!(
+                symbol_for_venue(symbol, TradingVenue::BinanceFutures),
+                "BNBUSDC"
+            );
+            assert_eq!(
+                LeverageTarget::new(TradingVenue::BinanceFutures, symbol).symbol,
+                "BNBUSDC"
+            );
+        }
+        assert_eq!(
+            symbol_for_venue("BNBUSDT", TradingVenue::BinanceFutures),
+            "BNBUSDT"
+        );
     }
 
     #[test]
@@ -1680,6 +2016,10 @@ mod tests {
         assert_eq!(
             symbol_for_venue("HNTUSDT", TradingVenue::BinanceFutures),
             "HNTUSDT"
+        );
+        assert_eq!(
+            symbol_for_venue("龙虾USDT", TradingVenue::BinanceFutures),
+            "龙虾USDT"
         );
         assert_eq!(
             symbol_for_venue("HNTUSDT", TradingVenue::OkexFutures),
@@ -1690,7 +2030,7 @@ mod tests {
             "HNT_USDT"
         );
         assert_eq!(
-            symbol_for_venue("BTCUSDPERP", TradingVenue::BinanceCoinFutures),
+            symbol_for_venue("BTCUSD", TradingVenue::BinanceCoinFutures),
             "BTCUSD_PERP"
         );
     }

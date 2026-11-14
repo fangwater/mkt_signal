@@ -1,0 +1,184 @@
+[
+  {
+    "env": "binance_exec_trade06",
+    "position_ready": true,
+    "snapshot_age_ms": 890,
+    "pids": {
+      "trade_engine": 1132523,
+      "account_monitor": 1132655,
+      "exec-pre-trade": 1132740
+    },
+    "rows": 180,
+    "live_rows": 25,
+    "started_ms": 1792311828453,
+    "checked_ms": 1792311849911
+  },
+  {
+    "env": "binance_exec_trade07",
+    "position_ready": true,
+    "snapshot_age_ms": 84,
+    "pids": {
+      "trade_engine": 1134088,
+      "account_monitor": 1134240,
+      "exec-pre-trade": 1134412
+    },
+    "rows": 165,
+    "live_rows": 51,
+    "started_ms": 1792311849911,
+    "checked_ms": 1792311863438
+  },
+  {
+    "env": "binance_exec_trade08",
+    "position_ready": true,
+    "snapshot_age_ms": 746,
+    "pids": {
+      "trade_engine": 1136243,
+      "account_monitor": 1136381,
+      "exec-pre-trade": 1136469
+    },
+    "rows": 32,
+    "live_rows": 25,
+    "started_ms": 1792311863438,
+    "checked_ms": 1792311909002
+  },
+  {
+    "env": "binance_exec_trade09",
+    "position_ready": true,
+    "snapshot_age_ms": 629,
+    "pids": {
+      "trade_engine": 1137966,
+      "account_monitor": 1138099,
+      "exec-pre-trade": 1138192
+    },
+    "rows": 91,
+    "live_rows": 24,
+    "started_ms": 1792311909002,
+    "checked_ms": 1792311952729
+  },
+  {
+    "env": "binance_exec_trade10",
+    "position_ready": true,
+    "snapshot_age_ms": 718,
+    "pids": {
+      "trade_engine": 1140271,
+      "account_monitor": 1140402,
+      "exec-pre-trade": 1140489
+    },
+    "rows": 32,
+    "live_rows": 14,
+    "started_ms": 1792311952730,
+    "checked_ms": 1792311998360
+  },
+  {
+    "env": "binance_exec_trade11",
+    "position_ready": true,
+    "snapshot_age_ms": 368,
+    "pids": {
+      "trade_engine": 1146450,
+      "account_monitor": 1146587,
+      "exec-pre-trade": 1146673
+    },
+    "rows": 32,
+    "live_rows": 19,
+    "started_ms": 1792311998361,
+    "checked_ms": 1792312041930
+  },
+  {
+    "env": "binance_exec_trade12",
+    "position_ready": true,
+    "snapshot_age_ms": 485,
+    "pids": {
+      "trade_engine": 1151200,
+      "account_monitor": 1152064,
+      "exec-pre-trade": 1152541
+    },
+    "rows": 34,
+    "live_rows": 21,
+    "started_ms": 1792312041930,
+    "checked_ms": 1792312085760
+  },
+  {
+    "env": "binance_exec_xy_lxy21_05",
+    "position_ready": true,
+    "snapshot_age_ms": 355,
+    "pids": {
+      "trade_engine": 1161625,
+      "account_monitor": 1162651,
+      "exec-pre-trade": 1162737
+    },
+    "rows": 28,
+    "live_rows": 19,
+    "started_ms": 1792312085760,
+    "checked_ms": 1792312129539
+  },
+  {
+    "env": "binance_exec_trade14",
+    "position_ready": true,
+    "snapshot_age_ms": 74,
+    "pids": {
+      "trade_engine": 1173001,
+      "account_monitor": 1173156,
+      "exec-pre-trade": 1173254
+    },
+    "rows": 32,
+    "live_rows": 19,
+    "started_ms": 1792312129539,
+    "checked_ms": 1792312173268
+  },
+  {
+    "env": "binance_exec_trade01",
+    "position_ready": true,
+    "snapshot_age_ms": 411,
+    "pids": {
+      "trade_engine": 1184391,
+      "account_monitor": 1184528,
+      "exec-pre-trade": 1184613
+    },
+    "rows": 38,
+    "live_rows": 0,
+    "started_ms": 1792312173268,
+    "checked_ms": 1792312218464
+  },
+  {
+    "env": "binance_exec_trade03",
+    "position_ready": true,
+    "snapshot_age_ms": 259,
+    "pids": {
+      "trade_engine": 1198417,
+      "account_monitor": 1198545,
+      "exec-pre-trade": 1198627
+    },
+    "rows": 112,
+    "live_rows": 18,
+    "started_ms": 1792312218468,
+    "checked_ms": 1792312232169
+  },
+  {
+    "env": "binance_exec_trade04",
+    "position_ready": true,
+    "snapshot_age_ms": 510,
+    "pids": {
+      "trade_engine": 1201657,
+      "account_monitor": 1201797,
+      "exec-pre-trade": 1201885
+    },
+    "rows": 182,
+    "live_rows": 0,
+    "started_ms": 1792312232170,
+    "checked_ms": 1792312277204
+  },
+  {
+    "env": "binance_exec_trade13",
+    "position_ready": true,
+    "snapshot_age_ms": 525,
+    "pids": {
+      "trade_engine": 1212926,
+      "account_monitor": 1213075,
+      "exec-pre-trade": 1213172
+    },
+    "rows": 32,
+    "live_rows": 0,
+    "started_ms": 1792312277206,
+    "checked_ms": 1792312322541
+  }
+]

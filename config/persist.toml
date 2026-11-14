@@ -24,16 +24,16 @@ id = "bitget_fr_arb02"
 url = "http://127.0.0.1:6341"
 
 [[sources]]
+id = "bitget_fr_arb01"
+url = "http://127.0.0.1:50057"
+
+[[sources]]
 id = "binance-intra-arb01"
 url = "http://127.0.0.1:6342"
 
 [[sources]]
-id = "gate-intra-arb01"
-url = "http://127.0.0.1:6343"
-
-[[sources]]
-id = "bitget-intra-arb01"
-url = "http://127.0.0.1:6344"
+id = "binance-intra-arb02"
+url = "http://127.0.0.1:6358"
 
 [[sources]]
 id = "bybit-intra-arb01"

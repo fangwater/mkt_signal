@@ -1,0 +1,46 @@
+{
+  "utc": "2026-10-14T22:48:46.272610+00:00",
+  "processes": [
+    {
+      "name": "viz_server",
+      "pid": 3267729
+    },
+    {
+      "name": "persist_manager",
+      "pid": 3280625
+    },
+    {
+      "name": "trade_engine",
+      "pid": 3294825
+    },
+    {
+      "name": "pre_trade",
+      "pid": 3308938
+    },
+    {
+      "name": "account_monitor",
+      "pid": 3323899
+    },
+    {
+      "name": "trade_signal",
+      "pid": 3341031
+    }
+  ],
+  "leverage_startup_evidence": [
+    "[2026-10-14T22:41:44Z INFO  mkt_signal::pre_trade::leverage_guard] ArbOpen leverage guard Redis key loaded: binance_fr_arb04:fr_unimmr_close_symbols:binance-margin_binance-futures count=46",
+    "[2026-10-14T22:41:50Z INFO  mkt_signal::pre_trade::leverage_guard] ArbOpen leverage guard startup: env=binance_fr_arb04 mode=funding_arb online_symbols=47 targets=47 target_venues=[BinanceFutures] levels=[5]",
+    "[2026-10-14T22:41:50Z INFO  mkt_signal::pre_trade::leverage_guard] ArbOpen leverage guard initialized: targets=47 confirmed=47 failed=0 levels={5: 47}",
+    "[2026-10-14T22:41:50Z INFO  mkt_signal::pre_trade::leverage_guard] ArbOpen leverage guard background refresh task started (interval: 60s)",
+    "[2026-10-14T22:41:50Z INFO  pre_trade] ArbOpen leverage guard initialized",
+    "[2026-10-14T22:41:51Z INFO  mkt_signal::pre_trade::fr_position_concentration_guard] FR position concentration guard enabled: alert_lock=12.00% alert_recover_below=12.00% dump=15.00% dump_stop_below=15.00% denominator=max_leverage_x_total_equity max_leverage=1.7000 thresholds=dynamic schedule=synchronous_config_refresh dump_key=binance_fr_arb04:fr_dump_symbols:binance-margin_binance-futures pos_dump_key=binance_fr_arb04:fr_pos_dump_symbols:binance-margin_binance-futures unimmr_key=binance_fr_arb04:fr_unimmr_close_symbols:binance-margin_binance-futures notification=LocalNotificationClient { endpoint: NotificationEndpoint { addresses: [127.0.0.1:18100], host_header: \"127.0.0.1:18100\", path_and_query: \"/v1/notify\" }, auth: false, timeout: 250ms }"
+  ],
+  "position_limit_startup_evidence": [
+    "[2026-10-14T22:41:51Z INFO  mkt_signal::pre_trade::binance_fr_position_limit_guard] Binance FR position-limit guard startup: env=binance_fr_arb04 limits=750 online_symbols=47 missing_online=0 symbol_config_rows=750 position_rows=44 bracket_rows=1060"
+  ],
+  "position_limit_reject_sample": "[2026-10-14T22:48:42Z INFO  mkt_signal::pre_trade::binance_fr_position_limit_guard] Binance FR position-limit reject detail: symbol=TUTUSDT side=BUY mark_price=0.02013351 current_open_qty=9010682.79963000 add_open_qty=4975.00000000 next_open_qty=9015657.79963000 open_current_usdt=181416.6723 open_order_usdt=100.1642 open_next_usdt=181516.8365 current_futures_qty=-9010750.00000000 add_futures_qty=-4975.00000000 next_futures_qty=-9015725.00000000 futures_current_usdt=181418.0252 futures_order_usdt=100.1642 futures_next_usdt=181518.1894 exceeded_open=true exceeded_futures=true max_notional_value=180000.0000 buffer=3900.0000 buffer_multiplier=1.20 price_buffer_ratio=0.0150 cap=176100.0000 pending_limit_orders=10 amount_u=100.0000 leverage=Some(5.0) current_notional=Some(-181837.0251075) bracket_notional_cap=Some(15000000.0) raw_open_qty=4975.00000000 open_qty_multiplier=1.00000000",
+  "trade_engine_recent_business_errors": {
+    "lines_observed": 398,
+    "51023_count": 265,
+    "panic_or_fatal_count": 0
+  }
+}

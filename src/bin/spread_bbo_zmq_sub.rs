@@ -161,8 +161,12 @@ fn main() -> Result<()> {
     let mut last_derivatives_at = Instant::now();
     let mut last_bbo_stale_warning = None::<Instant>;
     let mut last_derivatives_stale_warning = None::<Instant>;
-    let mut link_latency = LatencyKll::new("bbo-zmq-sub-colo-to-el01");
-    let mut e2e_latency = LatencyKll::new("bbo-zmq-sub-exchange-to-el01");
+    let mut relay_latency = (args.venue != "binance-futures").then(|| {
+        (
+            LatencyKll::new("bbo-zmq-sub-colo-to-el01"),
+            LatencyKll::new("bbo-zmq-sub-exchange-to-el01"),
+        )
+    });
 
     loop {
         let parts = match socket.recv_multipart(0) {
@@ -211,11 +215,13 @@ fn main() -> Result<()> {
                     continue;
                 }
 
-                let recv_ts_us = get_timestamp_us();
-                if is_latency_symbol(meta.symbol) {
-                    link_latency.push((recv_ts_us - header.sent_ts_us) as f64);
-                    if meta.event_ts_us > 0 {
-                        e2e_latency.push((recv_ts_us - meta.event_ts_us) as f64);
+                if let Some((link_latency, e2e_latency)) = &mut relay_latency {
+                    if is_latency_symbol(meta.symbol) {
+                        let recv_ts_us = get_timestamp_us();
+                        link_latency.push((recv_ts_us - header.sent_ts_us) as f64);
+                        if meta.event_ts_us > 0 {
+                            e2e_latency.push((recv_ts_us - meta.event_ts_us) as f64);
+                        }
                     }
                 }
 

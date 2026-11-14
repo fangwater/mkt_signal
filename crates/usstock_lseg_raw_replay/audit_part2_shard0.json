@@ -1,0 +1,4287 @@
+{
+  "distinct_fids": 104,
+  "distinct_message_combinations": 16,
+  "distinct_ordered_fid_signatures": 16,
+  "domains": {
+    "Market Price": 958801
+  },
+  "fids": {
+    "1000": {
+      "empty_value": 0,
+      "names": {
+        "GV1_TEXT": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "1001": {
+      "empty_value": 0,
+      "names": {
+        "GV2_TEXT": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "1002": {
+      "empty_value": 0,
+      "names": {
+        "GV3_TEXT": 51572
+      },
+      "nonempty_enum": 0,
+      "present": 51572
+    },
+    "1003": {
+      "empty_value": 0,
+      "names": {
+        "GV4_TEXT": 51572
+      },
+      "nonempty_enum": 0,
+      "present": 51572
+    },
+    "1018": {
+      "empty_value": 0,
+      "names": {
+        "IRGXID": 51572
+      },
+      "nonempty_enum": 51572,
+      "present": 51572
+    },
+    "1021": {
+      "empty_value": 0,
+      "names": {
+        "SEQNUM": 87906
+      },
+      "nonempty_enum": 0,
+      "present": 87906
+    },
+    "1025": {
+      "empty_value": 0,
+      "names": {
+        "QUOTIM": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "1041": {
+      "empty_value": 0,
+      "names": {
+        "GV1_FLAG": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "1042": {
+      "empty_value": 0,
+      "names": {
+        "GV2_FLAG": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "1043": {
+      "empty_value": 0,
+      "names": {
+        "GV3_FLAG": 51572
+      },
+      "nonempty_enum": 0,
+      "present": 51572
+    },
+    "1067": {
+      "empty_value": 0,
+      "names": {
+        "EXCHTIM": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "11": {
+      "empty_value": 0,
+      "names": {
+        "NETCHNG_1": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "11622": {
+      "empty_value": 0,
+      "names": {
+        "ODDSALCOND": 50909
+      },
+      "nonempty_enum": 0,
+      "present": 50909
+    },
+    "11641": {
+      "empty_value": 0,
+      "names": {
+        "BLKSALCOND": 8
+      },
+      "nonempty_enum": 0,
+      "present": 8
+    },
+    "11683": {
+      "empty_value": 870630,
+      "names": {
+        "BIDFINMMID": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "11684": {
+      "empty_value": 870630,
+      "names": {
+        "ASKFINMMID": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "118": {
+      "empty_value": 0,
+      "names": {
+        "PRC_QL_CD": 870630
+      },
+      "nonempty_enum": 870630,
+      "present": 870630
+    },
+    "12783": {
+      "empty_value": 0,
+      "names": {
+        "NBBO_IND": 870630
+      },
+      "nonempty_enum": 870630,
+      "present": 870630
+    },
+    "13": {
+      "empty_value": 0,
+      "names": {
+        "LOW_1": 128
+      },
+      "nonempty_enum": 0,
+      "present": 128
+    },
+    "131": {
+      "empty_value": 0,
+      "names": {
+        "PRC_QL2": 36334
+      },
+      "nonempty_enum": 36334,
+      "present": 36334
+    },
+    "13495": {
+      "empty_value": 0,
+      "names": {
+        "ODD_EXID": 50909
+      },
+      "nonempty_enum": 50909,
+      "present": 50909
+    },
+    "13552": {
+      "empty_value": 0,
+      "names": {
+        "BLK_EXID": 8
+      },
+      "nonempty_enum": 8,
+      "present": 8
+    },
+    "13583": {
+      "empty_value": 265,
+      "names": {
+        "LMT_TYPE": 265
+      },
+      "nonempty_enum": 0,
+      "present": 265
+    },
+    "1379": {
+      "empty_value": 0,
+      "names": {
+        "VOL_X_PRC1": 87787
+      },
+      "nonempty_enum": 0,
+      "present": 87787
+    },
+    "14": {
+      "empty_value": 0,
+      "names": {
+        "PRCTCK_1": 36334
+      },
+      "nonempty_enum": 36334,
+      "present": 36334
+    },
+    "1404": {
+      "empty_value": 0,
+      "names": {
+        "ODD_VOLUME": 50909
+      },
+      "nonempty_enum": 0,
+      "present": 50909
+    },
+    "14206": {
+      "empty_value": 0,
+      "names": {
+        "BLKTIM_MS": 8
+      },
+      "nonempty_enum": 0,
+      "present": 8
+    },
+    "14238": {
+      "empty_value": 0,
+      "names": {
+        "ORDRECV_MS": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "14239": {
+      "empty_value": 0,
+      "names": {
+        "TRDRECV_MS": 87906
+      },
+      "nonempty_enum": 0,
+      "present": 87906
+    },
+    "14246": {
+      "empty_value": 870630,
+      "names": {
+        "ORDREC2_MS": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "14247": {
+      "empty_value": 65807,
+      "names": {
+        "TRDREC2_MS": 87906
+      },
+      "nonempty_enum": 0,
+      "present": 87906
+    },
+    "14251": {
+      "empty_value": 0,
+      "names": {
+        "ODDTIM_MS": 50909
+      },
+      "nonempty_enum": 0,
+      "present": 50909
+    },
+    "178": {
+      "empty_value": 0,
+      "names": {
+        "TRDVOL_1": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "18": {
+      "empty_value": 0,
+      "names": {
+        "TRDTIM_1": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "22": {
+      "empty_value": 0,
+      "names": {
+        "BID": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "25": {
+      "empty_value": 0,
+      "names": {
+        "ASK": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "293": {
+      "empty_value": 0,
+      "names": {
+        "BID_MMID1": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "296": {
+      "empty_value": 0,
+      "names": {
+        "ASK_MMID1": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "30": {
+      "empty_value": 0,
+      "names": {
+        "BIDSIZE": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "31": {
+      "empty_value": 0,
+      "names": {
+        "ASKSIZE": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "3132": {
+      "empty_value": 0,
+      "names": {
+        "IRGVAL": 265
+      },
+      "nonempty_enum": 0,
+      "present": 265
+    },
+    "32": {
+      "empty_value": 0,
+      "names": {
+        "ACVOL_1": 87906
+      },
+      "nonempty_enum": 0,
+      "present": 87906
+    },
+    "3246": {
+      "empty_value": 0,
+      "names": {
+        "PCT_ABNVOL": 87906
+      },
+      "nonempty_enum": 0,
+      "present": 87906
+    },
+    "3247": {
+      "empty_value": 0,
+      "names": {
+        "BC_10_50K": 5
+      },
+      "nonempty_enum": 0,
+      "present": 5
+    },
+    "3248": {
+      "empty_value": 0,
+      "names": {
+        "BC_50_100K": 1
+      },
+      "nonempty_enum": 0,
+      "present": 1
+    },
+    "32482": {
+      "empty_value": 0,
+      "names": {
+        "ELG_ACVOL": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "3249": {
+      "empty_value": 0,
+      "names": {
+        "BC_100K": 2
+      },
+      "nonempty_enum": 0,
+      "present": 2
+    },
+    "32560": {
+      "empty_value": 0,
+      "names": {
+        "ELG_TNOV": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "32582": {
+      "empty_value": 0,
+      "names": {
+        "ODDTRN_UNS": 50909
+      },
+      "nonempty_enum": 0,
+      "present": 50909
+    },
+    "3264": {
+      "empty_value": 0,
+      "names": {
+        "PRC_QL3": 870630
+      },
+      "nonempty_enum": 870630,
+      "present": 870630
+    },
+    "32741": {
+      "empty_value": 0,
+      "names": {
+        "TRNOVR_UNS": 87906
+      },
+      "nonempty_enum": 0,
+      "present": 87906
+    },
+    "32743": {
+      "empty_value": 0,
+      "names": {
+        "ACVOL_UNS": 87906
+      },
+      "nonempty_enum": 0,
+      "present": 87906
+    },
+    "3297": {
+      "empty_value": 0,
+      "names": {
+        "ASKXID": 870630
+      },
+      "nonempty_enum": 870630,
+      "present": 870630
+    },
+    "3298": {
+      "empty_value": 0,
+      "names": {
+        "BIDXID": 870630
+      },
+      "nonempty_enum": 870630,
+      "present": 870630
+    },
+    "3404": {
+      "empty_value": 0,
+      "names": {
+        "VWAP": 87787
+      },
+      "nonempty_enum": 0,
+      "present": 87787
+    },
+    "372": {
+      "empty_value": 0,
+      "names": {
+        "IRGPRC": 51572
+      },
+      "nonempty_enum": 0,
+      "present": 51572
+    },
+    "373": {
+      "empty_value": 0,
+      "names": {
+        "IRGVOL": 51572
+      },
+      "nonempty_enum": 0,
+      "present": 51572
+    },
+    "374": {
+      "empty_value": 0,
+      "names": {
+        "IRGCOND": 51572
+      },
+      "nonempty_enum": 51572,
+      "present": 51572
+    },
+    "379": {
+      "empty_value": 0,
+      "names": {
+        "SALTIM": 87906
+      },
+      "nonempty_enum": 0,
+      "present": 87906
+    },
+    "3853": {
+      "empty_value": 0,
+      "names": {
+        "TRDTIM_MS": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "3854": {
+      "empty_value": 0,
+      "names": {
+        "SALTIM_MS": 87906
+      },
+      "nonempty_enum": 0,
+      "present": 87906
+    },
+    "3855": {
+      "empty_value": 0,
+      "names": {
+        "QUOTIM_MS": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "3861": {
+      "empty_value": 0,
+      "names": {
+        "BLK_PRC1": 8
+      },
+      "nonempty_enum": 0,
+      "present": 8
+    },
+    "3887": {
+      "empty_value": 0,
+      "names": {
+        "SEQNUM_QT": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "3889": {
+      "empty_value": 0,
+      "names": {
+        "LS_SUBIND": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "3890": {
+      "empty_value": 0,
+      "names": {
+        "IRG_SUBIND": 51572
+      },
+      "nonempty_enum": 0,
+      "present": 51572
+    },
+    "3900": {
+      "empty_value": 0,
+      "names": {
+        "TRADE_ID": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "42": {
+      "empty_value": 0,
+      "names": {
+        "BLKCOUNT": 8
+      },
+      "nonempty_enum": 0,
+      "present": 8
+    },
+    "4205": {
+      "empty_value": 0,
+      "names": {
+        "ODD_PRC": 50909
+      },
+      "nonempty_enum": 0,
+      "present": 50909
+    },
+    "43": {
+      "empty_value": 0,
+      "names": {
+        "BLKVOLUM": 8
+      },
+      "nonempty_enum": 0,
+      "present": 8
+    },
+    "4345": {
+      "empty_value": 0,
+      "names": {
+        "TRD_THRU_X": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "4346": {
+      "empty_value": 0,
+      "names": {
+        "IRG_TDTH_X": 51572
+      },
+      "nonempty_enum": 0,
+      "present": 51572
+    },
+    "44": {
+      "empty_value": 0,
+      "names": {
+        "TRDXID_1": 36334
+      },
+      "nonempty_enum": 36334,
+      "present": 36334
+    },
+    "4436": {
+      "empty_value": 0,
+      "names": {
+        "TURN_BLOCK": 8
+      },
+      "nonempty_enum": 0,
+      "present": 8
+    },
+    "4756": {
+      "empty_value": 0,
+      "names": {
+        "LSTSALCOND": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "4757": {
+      "empty_value": 0,
+      "names": {
+        "IRGSALCOND": 51572
+      },
+      "nonempty_enum": 0,
+      "present": 51572
+    },
+    "53": {
+      "empty_value": 0,
+      "names": {
+        "TRD_UNITS": 6568
+      },
+      "nonempty_enum": 6568,
+      "present": 6568
+    },
+    "5520": {
+      "empty_value": 0,
+      "names": {
+        "IRG_TRDID": 51572
+      },
+      "nonempty_enum": 0,
+      "present": 51572
+    },
+    "56": {
+      "empty_value": 0,
+      "names": {
+        "PCTCHNG": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "6": {
+      "empty_value": 0,
+      "names": {
+        "TRDPRC_1": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "6242": {
+      "empty_value": 0,
+      "names": {
+        "VWAP_VOL": 87787
+      },
+      "nonempty_enum": 0,
+      "present": 87787
+    },
+    "6370": {
+      "empty_value": 0,
+      "names": {
+        "IRG_SEQNO": 51572
+      },
+      "nonempty_enum": 0,
+      "present": 51572
+    },
+    "6579": {
+      "empty_value": 0,
+      "names": {
+        "BID_COND_N": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "6580": {
+      "empty_value": 0,
+      "names": {
+        "ASK_COND_N": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "6588": {
+      "empty_value": 0,
+      "names": {
+        "REPORT_VOL": 87906
+      },
+      "nonempty_enum": 0,
+      "present": 87906
+    },
+    "6638": {
+      "empty_value": 0,
+      "names": {
+        "TRADE_EXID": 36334
+      },
+      "nonempty_enum": 36334,
+      "present": 36334
+    },
+    "6908": {
+      "empty_value": 0,
+      "names": {
+        "BLKTRDVOL": 8
+      },
+      "nonempty_enum": 0,
+      "present": 8
+    },
+    "6922": {
+      "empty_value": 0,
+      "names": {
+        "ODD_TRDVOL": 50909
+      },
+      "nonempty_enum": 0,
+      "present": 50909
+    },
+    "7052": {
+      "empty_value": 0,
+      "names": {
+        "ELG_NUMMOV": 36334
+      },
+      "nonempty_enum": 0,
+      "present": 36334
+    },
+    "7062": {
+      "empty_value": 0,
+      "names": {
+        "BLK_SEQNO": 8
+      },
+      "nonempty_enum": 0,
+      "present": 8
+    },
+    "7063": {
+      "empty_value": 0,
+      "names": {
+        "ODD_SEQNO": 50909
+      },
+      "nonempty_enum": 0,
+      "present": 50909
+    },
+    "75": {
+      "empty_value": 0,
+      "names": {
+        "UPLIMIT": 265
+      },
+      "nonempty_enum": 0,
+      "present": 265
+    },
+    "76": {
+      "empty_value": 0,
+      "names": {
+        "LOLIMIT": 265
+      },
+      "nonempty_enum": 0,
+      "present": 265
+    },
+    "77": {
+      "empty_value": 0,
+      "names": {
+        "NUM_MOVES": 87906
+      },
+      "nonempty_enum": 0,
+      "present": 87906
+    },
+    "8406": {
+      "empty_value": 0,
+      "names": {
+        "QTE_ORIGIN": 870630
+      },
+      "nonempty_enum": 0,
+      "present": 870630
+    },
+    "8665": {
+      "empty_value": 0,
+      "names": {
+        "BLK_TRDID": 8
+      },
+      "nonempty_enum": 0,
+      "present": 8
+    },
+    "8667": {
+      "empty_value": 0,
+      "names": {
+        "ODD_TRDID": 50909
+      },
+      "nonempty_enum": 0,
+      "present": 50909
+    },
+    "8936": {
+      "empty_value": 0,
+      "names": {
+        "LIMIT_IND2": 265
+      },
+      "nonempty_enum": 265,
+      "present": 265
+    },
+    "8937": {
+      "empty_value": 0,
+      "names": {
+        "LIMIT_INDQ": 870630
+      },
+      "nonempty_enum": 870630,
+      "present": 870630
+    },
+    "8980": {
+      "empty_value": 0,
+      "names": {
+        "IRG_EXID": 51572
+      },
+      "nonempty_enum": 51572,
+      "present": 51572
+    },
+    "9060": {
+      "empty_value": 0,
+      "names": {
+        "LULD_TM_MS": 265
+      },
+      "nonempty_enum": 0,
+      "present": 265
+    },
+    "9063": {
+      "empty_value": 0,
+      "names": {
+        "IRGTIM_MS": 51572
+      },
+      "nonempty_enum": 0,
+      "present": 51572
+    },
+    "998": {
+      "empty_value": 0,
+      "names": {
+        "GEN_VAL3": 265
+      },
+      "nonempty_enum": 0,
+      "present": 265
+    },
+    "999": {
+      "empty_value": 0,
+      "names": {
+        "GEN_VAL4": 265
+      },
+      "nonempty_enum": 0,
+      "present": 265
+    }
+  },
+  "first_example_by_combination": {
+    "UPDATE|QUOTE|<EMPTY>|22,25,30,31,11683,11684,3298,3297,6579,6580,293,296,1000,8937,3887,118,3264,8406,1041,12783,3855,1025,14238,14246": {
+      "date_time": "2021-11-15T15:54:38.324006322Z",
+      "fields": [
+        {
+          "enum_value": "",
+          "fid": 22,
+          "name": "BID",
+          "value": "394.35"
+        },
+        {
+          "enum_value": "",
+          "fid": 25,
+          "name": "ASK",
+          "value": "394.36"
+        },
+        {
+          "enum_value": "",
+          "fid": 30,
+          "name": "BIDSIZE",
+          "value": "2"
+        },
+        {
+          "enum_value": "",
+          "fid": 31,
+          "name": "ASKSIZE",
+          "value": "13"
+        },
+        {
+          "enum_value": "",
+          "fid": 11683,
+          "name": "BIDFINMMID",
+          "value": ""
+        },
+        {
+          "enum_value": "",
+          "fid": 11684,
+          "name": "ASKFINMMID",
+          "value": ""
+        },
+        {
+          "enum_value": "NAS",
+          "fid": 3298,
+          "name": "BIDXID",
+          "value": "43"
+        },
+        {
+          "enum_value": "NAS",
+          "fid": 3297,
+          "name": "ASKXID",
+          "value": "43"
+        },
+        {
+          "enum_value": "",
+          "fid": 6579,
+          "name": "BID_COND_N",
+          "value": "R"
+        },
+        {
+          "enum_value": "",
+          "fid": 6580,
+          "name": "ASK_COND_N",
+          "value": "R"
+        },
+        {
+          "enum_value": "",
+          "fid": 293,
+          "name": "BID_MMID1",
+          "value": "NAS"
+        },
+        {
+          "enum_value": "",
+          "fid": 296,
+          "name": "ASK_MMID1",
+          "value": "NAS"
+        },
+        {
+          "enum_value": "",
+          "fid": 1000,
+          "name": "GV1_TEXT",
+          "value": "A"
+        },
+        {
+          "enum_value": "BOE",
+          "fid": 8937,
+          "name": "LIMIT_INDQ",
+          "value": "25"
+        },
+        {
+          "enum_value": "",
+          "fid": 3887,
+          "name": "SEQNUM_QT",
+          "value": "25586392"
+        },
+        {
+          "enum_value": "   ",
+          "fid": 118,
+          "name": "PRC_QL_CD",
+          "value": "0"
+        },
+        {
+          "enum_value": "   ",
+          "fid": 3264,
+          "name": "PRC_QL3",
+          "value": "0"
+        },
+        {
+          "enum_value": "",
+          "fid": 8406,
+          "name": "QTE_ORIGIN",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1041,
+          "name": "GV1_FLAG",
+          "value": " "
+        },
+        {
+          "enum_value": "1  ",
+          "fid": 12783,
+          "name": "NBBO_IND",
+          "value": "2"
+        },
+        {
+          "enum_value": "",
+          "fid": 3855,
+          "name": "QUOTIM_MS",
+          "value": "57278309"
+        },
+        {
+          "enum_value": "",
+          "fid": 1025,
+          "name": "QUOTIM",
+          "value": "15:54:38.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14238,
+          "name": "ORDRECV_MS",
+          "value": "15:54:38.309000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14246,
+          "name": "ORDREC2_MS",
+          "value": ""
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "18512",
+      "template_number": "",
+      "update_type": "QUOTE"
+    },
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,42,43,3247,3861,6908,14206,7062,11641,13552,8665,4436,77,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": {
+      "date_time": "2021-11-15T16:52:56.140059154Z",
+      "fields": [
+        {
+          "enum_value": "CON",
+          "fid": 374,
+          "name": "IRGCOND",
+          "value": "537"
+        },
+        {
+          "enum_value": "",
+          "fid": 1003,
+          "name": "GV4_TEXT",
+          "value": "@7  "
+        },
+        {
+          "enum_value": "",
+          "fid": 4757,
+          "name": "IRGSALCOND",
+          "value": "@7  "
+        },
+        {
+          "enum_value": "",
+          "fid": 9063,
+          "name": "IRGTIM_MS",
+          "value": "60776123"
+        },
+        {
+          "enum_value": "",
+          "fid": 1021,
+          "name": "SEQNUM",
+          "value": "2917744"
+        },
+        {
+          "enum_value": "",
+          "fid": 379,
+          "name": "SALTIM",
+          "value": "16:52:56.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 3854,
+          "name": "SALTIM_MS",
+          "value": "60776123"
+        },
+        {
+          "enum_value": "",
+          "fid": 372,
+          "name": "IRGPRC",
+          "value": "392.7556"
+        },
+        {
+          "enum_value": "",
+          "fid": 373,
+          "name": "IRGVOL",
+          "value": "13500"
+        },
+        {
+          "enum_value": "",
+          "fid": 6370,
+          "name": "IRG_SEQNO",
+          "value": "2917744"
+        },
+        {
+          "enum_value": "",
+          "fid": 4346,
+          "name": "IRG_TDTH_X",
+          "value": "X"
+        },
+        {
+          "enum_value": "",
+          "fid": 1002,
+          "name": "GV3_TEXT",
+          "value": "X"
+        },
+        {
+          "enum_value": "",
+          "fid": 1043,
+          "name": "GV3_FLAG",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 3890,
+          "name": "IRG_SUBIND",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 5520,
+          "name": "IRG_TRDID",
+          "value": "69"
+        },
+        {
+          "enum_value": "MID",
+          "fid": 1018,
+          "name": "IRGXID",
+          "value": "8"
+        },
+        {
+          "enum_value": "MID",
+          "fid": 8980,
+          "name": "IRG_EXID",
+          "value": "8"
+        },
+        {
+          "enum_value": "",
+          "fid": 42,
+          "name": "BLKCOUNT",
+          "value": "8"
+        },
+        {
+          "enum_value": "",
+          "fid": 43,
+          "name": "BLKVOLUM",
+          "value": "224270"
+        },
+        {
+          "enum_value": "",
+          "fid": 3247,
+          "name": "BC_10_50K",
+          "value": "7"
+        },
+        {
+          "enum_value": "",
+          "fid": 3861,
+          "name": "BLK_PRC1",
+          "value": "392.7556"
+        },
+        {
+          "enum_value": "",
+          "fid": 6908,
+          "name": "BLKTRDVOL",
+          "value": "13500"
+        },
+        {
+          "enum_value": "",
+          "fid": 14206,
+          "name": "BLKTIM_MS",
+          "value": "16:52:56.123000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 7062,
+          "name": "BLK_SEQNO",
+          "value": "2917744"
+        },
+        {
+          "enum_value": "",
+          "fid": 11641,
+          "name": "BLKSALCOND",
+          "value": "@7  "
+        },
+        {
+          "enum_value": "MID",
+          "fid": 13552,
+          "name": "BLK_EXID",
+          "value": "8"
+        },
+        {
+          "enum_value": "",
+          "fid": 8665,
+          "name": "BLK_TRDID",
+          "value": "69"
+        },
+        {
+          "enum_value": "",
+          "fid": 4436,
+          "name": "TURN_BLOCK",
+          "value": "88675096.457"
+        },
+        {
+          "enum_value": "",
+          "fid": 77,
+          "name": "NUM_MOVES",
+          "value": "174367"
+        },
+        {
+          "enum_value": "",
+          "fid": 1379,
+          "name": "VOL_X_PRC1",
+          "value": "394.6017"
+        },
+        {
+          "enum_value": "",
+          "fid": 3404,
+          "name": "VWAP",
+          "value": "394.6017"
+        },
+        {
+          "enum_value": "",
+          "fid": 6242,
+          "name": "VWAP_VOL",
+          "value": "15403279"
+        },
+        {
+          "enum_value": "",
+          "fid": 32,
+          "name": "ACVOL_1",
+          "value": "16810303"
+        },
+        {
+          "enum_value": "",
+          "fid": 3246,
+          "name": "PCT_ABNVOL",
+          "value": "0.4483"
+        },
+        {
+          "enum_value": "",
+          "fid": 14239,
+          "name": "TRDRECV_MS",
+          "value": "16:52:56.123000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14247,
+          "name": "TRDREC2_MS",
+          "value": ""
+        },
+        {
+          "enum_value": "",
+          "fid": 32741,
+          "name": "TRNOVR_UNS",
+          "value": "6635266992.782669"
+        },
+        {
+          "enum_value": "",
+          "fid": 32743,
+          "name": "ACVOL_UNS",
+          "value": "16810303"
+        },
+        {
+          "enum_value": "",
+          "fid": 6588,
+          "name": "REPORT_VOL",
+          "value": "17110593"
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "62958",
+      "template_number": "",
+      "update_type": "TRADE"
+    },
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,42,43,3248,3861,6908,14206,7062,11641,13552,8665,4436,77,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": {
+      "date_time": "2021-11-15T17:46:39.731807841Z",
+      "fields": [
+        {
+          "enum_value": "CON",
+          "fid": 374,
+          "name": "IRGCOND",
+          "value": "537"
+        },
+        {
+          "enum_value": "",
+          "fid": 1003,
+          "name": "GV4_TEXT",
+          "value": "@7 V"
+        },
+        {
+          "enum_value": "",
+          "fid": 4757,
+          "name": "IRGSALCOND",
+          "value": "@7 V"
+        },
+        {
+          "enum_value": "",
+          "fid": 9063,
+          "name": "IRGTIM_MS",
+          "value": "63999717"
+        },
+        {
+          "enum_value": "",
+          "fid": 1021,
+          "name": "SEQNUM",
+          "value": "3614601"
+        },
+        {
+          "enum_value": "",
+          "fid": 379,
+          "name": "SALTIM",
+          "value": "17:46:39.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 3854,
+          "name": "SALTIM_MS",
+          "value": "63999717"
+        },
+        {
+          "enum_value": "",
+          "fid": 372,
+          "name": "IRGPRC",
+          "value": "393.5613"
+        },
+        {
+          "enum_value": "",
+          "fid": 373,
+          "name": "IRGVOL",
+          "value": "92000"
+        },
+        {
+          "enum_value": "",
+          "fid": 6370,
+          "name": "IRG_SEQNO",
+          "value": "3614601"
+        },
+        {
+          "enum_value": "",
+          "fid": 4346,
+          "name": "IRG_TDTH_X",
+          "value": "X"
+        },
+        {
+          "enum_value": "",
+          "fid": 1002,
+          "name": "GV3_TEXT",
+          "value": "X"
+        },
+        {
+          "enum_value": "",
+          "fid": 1043,
+          "name": "GV3_FLAG",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 3890,
+          "name": "IRG_SUBIND",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 5520,
+          "name": "IRG_TRDID",
+          "value": "37212"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 1018,
+          "name": "IRGXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 8980,
+          "name": "IRG_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 42,
+          "name": "BLKCOUNT",
+          "value": "13"
+        },
+        {
+          "enum_value": "",
+          "fid": 43,
+          "name": "BLKVOLUM",
+          "value": "711696"
+        },
+        {
+          "enum_value": "",
+          "fid": 3248,
+          "name": "BC_50_100K",
+          "value": "1"
+        },
+        {
+          "enum_value": "",
+          "fid": 3861,
+          "name": "BLK_PRC1",
+          "value": "393.5613"
+        },
+        {
+          "enum_value": "",
+          "fid": 6908,
+          "name": "BLKTRDVOL",
+          "value": "92000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14206,
+          "name": "BLKTIM_MS",
+          "value": "17:46:39.717000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 7062,
+          "name": "BLK_SEQNO",
+          "value": "3614601"
+        },
+        {
+          "enum_value": "",
+          "fid": 11641,
+          "name": "BLKSALCOND",
+          "value": "@7 V"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 13552,
+          "name": "BLK_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 8665,
+          "name": "BLK_TRDID",
+          "value": "37212"
+        },
+        {
+          "enum_value": "",
+          "fid": 4436,
+          "name": "TURN_BLOCK",
+          "value": "280731852.332"
+        },
+        {
+          "enum_value": "",
+          "fid": 77,
+          "name": "NUM_MOVES",
+          "value": "209175"
+        },
+        {
+          "enum_value": "",
+          "fid": 1379,
+          "name": "VOL_X_PRC1",
+          "value": "394.3023"
+        },
+        {
+          "enum_value": "",
+          "fid": 3404,
+          "name": "VWAP",
+          "value": "394.3023"
+        },
+        {
+          "enum_value": "",
+          "fid": 6242,
+          "name": "VWAP_VOL",
+          "value": "19303608"
+        },
+        {
+          "enum_value": "",
+          "fid": 32,
+          "name": "ACVOL_1",
+          "value": "20712528"
+        },
+        {
+          "enum_value": "",
+          "fid": 3246,
+          "name": "PCT_ABNVOL",
+          "value": "0.5524"
+        },
+        {
+          "enum_value": "",
+          "fid": 14239,
+          "name": "TRDRECV_MS",
+          "value": "17:46:39.697000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14247,
+          "name": "TRDREC2_MS",
+          "value": "17:46:39.717000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 32741,
+          "name": "TRNOVR_UNS",
+          "value": "8169308433.718069"
+        },
+        {
+          "enum_value": "",
+          "fid": 32743,
+          "name": "ACVOL_UNS",
+          "value": "20712528"
+        },
+        {
+          "enum_value": "",
+          "fid": 6588,
+          "name": "REPORT_VOL",
+          "value": "21012818"
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "54542",
+      "template_number": "",
+      "update_type": "TRADE"
+    },
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,42,43,3249,3861,6908,14206,7062,11641,13552,8665,4436,77,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": {
+      "date_time": "2021-11-15T16:52:57.115771271Z",
+      "fields": [
+        {
+          "enum_value": "CON",
+          "fid": 374,
+          "name": "IRGCOND",
+          "value": "537"
+        },
+        {
+          "enum_value": "",
+          "fid": 1003,
+          "name": "GV4_TEXT",
+          "value": "@7 V"
+        },
+        {
+          "enum_value": "",
+          "fid": 4757,
+          "name": "IRGSALCOND",
+          "value": "@7 V"
+        },
+        {
+          "enum_value": "",
+          "fid": 9063,
+          "name": "IRGTIM_MS",
+          "value": "60777101"
+        },
+        {
+          "enum_value": "",
+          "fid": 1021,
+          "name": "SEQNUM",
+          "value": "2918010"
+        },
+        {
+          "enum_value": "",
+          "fid": 379,
+          "name": "SALTIM",
+          "value": "16:52:57.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 3854,
+          "name": "SALTIM_MS",
+          "value": "60777101"
+        },
+        {
+          "enum_value": "",
+          "fid": 372,
+          "name": "IRGPRC",
+          "value": "394.7825"
+        },
+        {
+          "enum_value": "",
+          "fid": 373,
+          "name": "IRGVOL",
+          "value": "205318"
+        },
+        {
+          "enum_value": "",
+          "fid": 6370,
+          "name": "IRG_SEQNO",
+          "value": "2918010"
+        },
+        {
+          "enum_value": "",
+          "fid": 4346,
+          "name": "IRG_TDTH_X",
+          "value": "X"
+        },
+        {
+          "enum_value": "",
+          "fid": 1002,
+          "name": "GV3_TEXT",
+          "value": "X"
+        },
+        {
+          "enum_value": "",
+          "fid": 1043,
+          "name": "GV3_FLAG",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 3890,
+          "name": "IRG_SUBIND",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 5520,
+          "name": "IRG_TRDID",
+          "value": "29663"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 1018,
+          "name": "IRGXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 8980,
+          "name": "IRG_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 42,
+          "name": "BLKCOUNT",
+          "value": "9"
+        },
+        {
+          "enum_value": "",
+          "fid": 43,
+          "name": "BLKVOLUM",
+          "value": "429588"
+        },
+        {
+          "enum_value": "",
+          "fid": 3249,
+          "name": "BC_100K",
+          "value": "2"
+        },
+        {
+          "enum_value": "",
+          "fid": 3861,
+          "name": "BLK_PRC1",
+          "value": "394.7825"
+        },
+        {
+          "enum_value": "",
+          "fid": 6908,
+          "name": "BLKTRDVOL",
+          "value": "205318"
+        },
+        {
+          "enum_value": "",
+          "fid": 14206,
+          "name": "BLKTIM_MS",
+          "value": "16:52:57.101000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 7062,
+          "name": "BLK_SEQNO",
+          "value": "2918010"
+        },
+        {
+          "enum_value": "",
+          "fid": 11641,
+          "name": "BLKSALCOND",
+          "value": "@7 V"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 13552,
+          "name": "BLK_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 8665,
+          "name": "BLK_TRDID",
+          "value": "29663"
+        },
+        {
+          "enum_value": "",
+          "fid": 4436,
+          "name": "TURN_BLOCK",
+          "value": "169731049.792"
+        },
+        {
+          "enum_value": "",
+          "fid": 77,
+          "name": "NUM_MOVES",
+          "value": "174390"
+        },
+        {
+          "enum_value": "",
+          "fid": 1379,
+          "name": "VOL_X_PRC1",
+          "value": "394.6035"
+        },
+        {
+          "enum_value": "",
+          "fid": 3404,
+          "name": "VWAP",
+          "value": "394.6035"
+        },
+        {
+          "enum_value": "",
+          "fid": 6242,
+          "name": "VWAP_VOL",
+          "value": "15613605"
+        },
+        {
+          "enum_value": "",
+          "fid": 32,
+          "name": "ACVOL_1",
+          "value": "17020629"
+        },
+        {
+          "enum_value": "",
+          "fid": 3246,
+          "name": "PCT_ABNVOL",
+          "value": "0.4539"
+        },
+        {
+          "enum_value": "",
+          "fid": 14239,
+          "name": "TRDRECV_MS",
+          "value": "16:52:57.095000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14247,
+          "name": "TRDREC2_MS",
+          "value": "16:52:57.101000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 32741,
+          "name": "TRNOVR_UNS",
+          "value": "6718289334.892069"
+        },
+        {
+          "enum_value": "",
+          "fid": 32743,
+          "name": "ACVOL_UNS",
+          "value": "17020629"
+        },
+        {
+          "enum_value": "",
+          "fid": 6588,
+          "name": "REPORT_VOL",
+          "value": "17320919"
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "64702",
+      "template_number": "",
+      "update_type": "TRADE"
+    },
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,13,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": {
+      "date_time": "2021-11-15T17:22:36.472067822Z",
+      "fields": [
+        {
+          "enum_value": "141",
+          "fid": 374,
+          "name": "IRGCOND",
+          "value": "141"
+        },
+        {
+          "enum_value": "",
+          "fid": 1003,
+          "name": "GV4_TEXT",
+          "value": "@ Z "
+        },
+        {
+          "enum_value": "",
+          "fid": 4757,
+          "name": "IRGSALCOND",
+          "value": "@ Z "
+        },
+        {
+          "enum_value": "",
+          "fid": 9063,
+          "name": "IRGTIM_MS",
+          "value": "62556455"
+        },
+        {
+          "enum_value": "",
+          "fid": 1021,
+          "name": "SEQNUM",
+          "value": "3328774"
+        },
+        {
+          "enum_value": "",
+          "fid": 379,
+          "name": "SALTIM",
+          "value": "17:22:36.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 3854,
+          "name": "SALTIM_MS",
+          "value": "62556455"
+        },
+        {
+          "enum_value": "",
+          "fid": 372,
+          "name": "IRGPRC",
+          "value": "392.32"
+        },
+        {
+          "enum_value": "",
+          "fid": 373,
+          "name": "IRGVOL",
+          "value": "100"
+        },
+        {
+          "enum_value": "",
+          "fid": 6370,
+          "name": "IRG_SEQNO",
+          "value": "3328774"
+        },
+        {
+          "enum_value": "",
+          "fid": 4346,
+          "name": "IRG_TDTH_X",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1002,
+          "name": "GV3_TEXT",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1043,
+          "name": "GV3_FLAG",
+          "value": "N"
+        },
+        {
+          "enum_value": "",
+          "fid": 3890,
+          "name": "IRG_SUBIND",
+          "value": "N"
+        },
+        {
+          "enum_value": "",
+          "fid": 5520,
+          "name": "IRG_TRDID",
+          "value": "5841"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 1018,
+          "name": "IRGXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 8980,
+          "name": "IRG_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 77,
+          "name": "NUM_MOVES",
+          "value": "195205"
+        },
+        {
+          "enum_value": "",
+          "fid": 13,
+          "name": "LOW_1",
+          "value": "392.32"
+        },
+        {
+          "enum_value": "",
+          "fid": 1379,
+          "name": "VOL_X_PRC1",
+          "value": "394.4144"
+        },
+        {
+          "enum_value": "",
+          "fid": 3404,
+          "name": "VWAP",
+          "value": "394.4144"
+        },
+        {
+          "enum_value": "",
+          "fid": 6242,
+          "name": "VWAP_VOL",
+          "value": "17883767"
+        },
+        {
+          "enum_value": "",
+          "fid": 32,
+          "name": "ACVOL_1",
+          "value": "19291927"
+        },
+        {
+          "enum_value": "",
+          "fid": 3246,
+          "name": "PCT_ABNVOL",
+          "value": "0.5145"
+        },
+        {
+          "enum_value": "",
+          "fid": 14239,
+          "name": "TRDRECV_MS",
+          "value": "17:22:36.454000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14247,
+          "name": "TRDREC2_MS",
+          "value": "17:22:36.455000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 32741,
+          "name": "TRNOVR_UNS",
+          "value": "7611167909.250869"
+        },
+        {
+          "enum_value": "",
+          "fid": 32743,
+          "name": "ACVOL_UNS",
+          "value": "19291927"
+        },
+        {
+          "enum_value": "",
+          "fid": 6588,
+          "name": "REPORT_VOL",
+          "value": "19592217"
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "32862",
+      "template_number": "",
+      "update_type": "TRADE"
+    },
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": {
+      "date_time": "2021-11-15T15:54:41.435377852Z",
+      "fields": [
+        {
+          "enum_value": "141",
+          "fid": 374,
+          "name": "IRGCOND",
+          "value": "141"
+        },
+        {
+          "enum_value": "",
+          "fid": 1003,
+          "name": "GV4_TEXT",
+          "value": "@ Z "
+        },
+        {
+          "enum_value": "",
+          "fid": 4757,
+          "name": "IRGSALCOND",
+          "value": "@ Z "
+        },
+        {
+          "enum_value": "",
+          "fid": 9063,
+          "name": "IRGTIM_MS",
+          "value": "57281418"
+        },
+        {
+          "enum_value": "",
+          "fid": 1021,
+          "name": "SEQNUM",
+          "value": "2004907"
+        },
+        {
+          "enum_value": "",
+          "fid": 379,
+          "name": "SALTIM",
+          "value": "15:54:41.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 3854,
+          "name": "SALTIM_MS",
+          "value": "57281418"
+        },
+        {
+          "enum_value": "",
+          "fid": 372,
+          "name": "IRGPRC",
+          "value": "394.345"
+        },
+        {
+          "enum_value": "",
+          "fid": 373,
+          "name": "IRGVOL",
+          "value": "200"
+        },
+        {
+          "enum_value": "",
+          "fid": 6370,
+          "name": "IRG_SEQNO",
+          "value": "2004907"
+        },
+        {
+          "enum_value": "",
+          "fid": 4346,
+          "name": "IRG_TDTH_X",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1002,
+          "name": "GV3_TEXT",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1043,
+          "name": "GV3_FLAG",
+          "value": "N"
+        },
+        {
+          "enum_value": "",
+          "fid": 3890,
+          "name": "IRG_SUBIND",
+          "value": "N"
+        },
+        {
+          "enum_value": "",
+          "fid": 5520,
+          "name": "IRG_TRDID",
+          "value": "3609"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 1018,
+          "name": "IRGXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 8980,
+          "name": "IRG_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 77,
+          "name": "NUM_MOVES",
+          "value": "129627"
+        },
+        {
+          "enum_value": "",
+          "fid": 1379,
+          "name": "VOL_X_PRC1",
+          "value": "394.9869"
+        },
+        {
+          "enum_value": "",
+          "fid": 3404,
+          "name": "VWAP",
+          "value": "394.9869"
+        },
+        {
+          "enum_value": "",
+          "fid": 6242,
+          "name": "VWAP_VOL",
+          "value": "10900677"
+        },
+        {
+          "enum_value": "",
+          "fid": 32,
+          "name": "ACVOL_1",
+          "value": "12305664"
+        },
+        {
+          "enum_value": "",
+          "fid": 3246,
+          "name": "PCT_ABNVOL",
+          "value": "0.3282"
+        },
+        {
+          "enum_value": "",
+          "fid": 14239,
+          "name": "TRDRECV_MS",
+          "value": "15:54:41.416000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14247,
+          "name": "TRDREC2_MS",
+          "value": "15:54:41.418000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 32741,
+          "name": "TRNOVR_UNS",
+          "value": "4861929386.601869"
+        },
+        {
+          "enum_value": "",
+          "fid": 32743,
+          "name": "ACVOL_UNS",
+          "value": "12305664"
+        },
+        {
+          "enum_value": "",
+          "fid": 6588,
+          "name": "REPORT_VOL",
+          "value": "12605954"
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "22286",
+      "template_number": "",
+      "update_type": "TRADE"
+    },
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,1379,3404,6242,32,3246,4205,6922,1404,7063,11622,32582,13495,14251,8667,14239,14247,32741,32743,6588": {
+      "date_time": "2021-11-15T15:54:39.295750289Z",
+      "fields": [
+        {
+          "enum_value": "   ",
+          "fid": 374,
+          "name": "IRGCOND",
+          "value": "0"
+        },
+        {
+          "enum_value": "",
+          "fid": 1003,
+          "name": "GV4_TEXT",
+          "value": "@F I"
+        },
+        {
+          "enum_value": "",
+          "fid": 4757,
+          "name": "IRGSALCOND",
+          "value": "@F I"
+        },
+        {
+          "enum_value": "",
+          "fid": 9063,
+          "name": "IRGTIM_MS",
+          "value": "57279280"
+        },
+        {
+          "enum_value": "",
+          "fid": 1021,
+          "name": "SEQNUM",
+          "value": "2004408"
+        },
+        {
+          "enum_value": "",
+          "fid": 379,
+          "name": "SALTIM",
+          "value": "15:54:39.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 3854,
+          "name": "SALTIM_MS",
+          "value": "57279280"
+        },
+        {
+          "enum_value": "",
+          "fid": 372,
+          "name": "IRGPRC",
+          "value": "394.36"
+        },
+        {
+          "enum_value": "",
+          "fid": 373,
+          "name": "IRGVOL",
+          "value": "36"
+        },
+        {
+          "enum_value": "",
+          "fid": 6370,
+          "name": "IRG_SEQNO",
+          "value": "2004408"
+        },
+        {
+          "enum_value": "",
+          "fid": 4346,
+          "name": "IRG_TDTH_X",
+          "value": "X"
+        },
+        {
+          "enum_value": "",
+          "fid": 1002,
+          "name": "GV3_TEXT",
+          "value": "X"
+        },
+        {
+          "enum_value": "",
+          "fid": 1043,
+          "name": "GV3_FLAG",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 3890,
+          "name": "IRG_SUBIND",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 5520,
+          "name": "IRG_TRDID",
+          "value": "4009"
+        },
+        {
+          "enum_value": "MPE",
+          "fid": 1018,
+          "name": "IRGXID",
+          "value": "233"
+        },
+        {
+          "enum_value": "MPE",
+          "fid": 8980,
+          "name": "IRG_EXID",
+          "value": "1615"
+        },
+        {
+          "enum_value": "",
+          "fid": 77,
+          "name": "NUM_MOVES",
+          "value": "129619"
+        },
+        {
+          "enum_value": "",
+          "fid": 1379,
+          "name": "VOL_X_PRC1",
+          "value": "394.987"
+        },
+        {
+          "enum_value": "",
+          "fid": 3404,
+          "name": "VWAP",
+          "value": "394.987"
+        },
+        {
+          "enum_value": "",
+          "fid": 6242,
+          "name": "VWAP_VOL",
+          "value": "10900238"
+        },
+        {
+          "enum_value": "",
+          "fid": 32,
+          "name": "ACVOL_1",
+          "value": "12305225"
+        },
+        {
+          "enum_value": "",
+          "fid": 3246,
+          "name": "PCT_ABNVOL",
+          "value": "0.3282"
+        },
+        {
+          "enum_value": "",
+          "fid": 4205,
+          "name": "ODD_PRC",
+          "value": "394.36"
+        },
+        {
+          "enum_value": "",
+          "fid": 6922,
+          "name": "ODD_TRDVOL",
+          "value": "36"
+        },
+        {
+          "enum_value": "",
+          "fid": 1404,
+          "name": "ODD_VOLUME",
+          "value": "1929395"
+        },
+        {
+          "enum_value": "",
+          "fid": 7063,
+          "name": "ODD_SEQNO",
+          "value": "2004408"
+        },
+        {
+          "enum_value": "",
+          "fid": 11622,
+          "name": "ODDSALCOND",
+          "value": "@F I"
+        },
+        {
+          "enum_value": "",
+          "fid": 32582,
+          "name": "ODDTRN_UNS",
+          "value": "762496134.8597"
+        },
+        {
+          "enum_value": "MPE",
+          "fid": 13495,
+          "name": "ODD_EXID",
+          "value": "1615"
+        },
+        {
+          "enum_value": "",
+          "fid": 14251,
+          "name": "ODDTIM_MS",
+          "value": "15:54:39.280000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 8667,
+          "name": "ODD_TRDID",
+          "value": "4009"
+        },
+        {
+          "enum_value": "",
+          "fid": 14239,
+          "name": "TRDRECV_MS",
+          "value": "15:54:39.280000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14247,
+          "name": "TRDREC2_MS",
+          "value": ""
+        },
+        {
+          "enum_value": "",
+          "fid": 32741,
+          "name": "TRNOVR_UNS",
+          "value": "4861756266.486669"
+        },
+        {
+          "enum_value": "",
+          "fid": 32743,
+          "name": "ACVOL_UNS",
+          "value": "12305225"
+        },
+        {
+          "enum_value": "",
+          "fid": 6588,
+          "name": "REPORT_VOL",
+          "value": "12605515"
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "19966",
+      "template_number": "",
+      "update_type": "TRADE"
+    },
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,32,3246,14239,14247,32741,32743,6588": {
+      "date_time": "2021-11-15T15:59:00.788028147Z",
+      "fields": [
+        {
+          "enum_value": "DAP",
+          "fid": 374,
+          "name": "IRGCOND",
+          "value": "2365"
+        },
+        {
+          "enum_value": "",
+          "fid": 1003,
+          "name": "GV4_TEXT",
+          "value": "@4 W"
+        },
+        {
+          "enum_value": "",
+          "fid": 4757,
+          "name": "IRGSALCOND",
+          "value": "@4 W"
+        },
+        {
+          "enum_value": "",
+          "fid": 9063,
+          "name": "IRGTIM_MS",
+          "value": "57540771"
+        },
+        {
+          "enum_value": "",
+          "fid": 1021,
+          "name": "SEQNUM",
+          "value": "2069753"
+        },
+        {
+          "enum_value": "",
+          "fid": 379,
+          "name": "SALTIM",
+          "value": "15:59:00.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 3854,
+          "name": "SALTIM_MS",
+          "value": "57540771"
+        },
+        {
+          "enum_value": "",
+          "fid": 372,
+          "name": "IRGPRC",
+          "value": "394.3126"
+        },
+        {
+          "enum_value": "",
+          "fid": 373,
+          "name": "IRGVOL",
+          "value": "100"
+        },
+        {
+          "enum_value": "",
+          "fid": 6370,
+          "name": "IRG_SEQNO",
+          "value": "2069753"
+        },
+        {
+          "enum_value": "",
+          "fid": 4346,
+          "name": "IRG_TDTH_X",
+          "value": "X"
+        },
+        {
+          "enum_value": "",
+          "fid": 1002,
+          "name": "GV3_TEXT",
+          "value": "X"
+        },
+        {
+          "enum_value": "",
+          "fid": 1043,
+          "name": "GV3_FLAG",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 3890,
+          "name": "IRG_SUBIND",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 5520,
+          "name": "IRG_TRDID",
+          "value": "21011"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 1018,
+          "name": "IRGXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 8980,
+          "name": "IRG_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 77,
+          "name": "NUM_MOVES",
+          "value": "132030"
+        },
+        {
+          "enum_value": "",
+          "fid": 32,
+          "name": "ACVOL_1",
+          "value": "12540834"
+        },
+        {
+          "enum_value": "",
+          "fid": 3246,
+          "name": "PCT_ABNVOL",
+          "value": "0.3345"
+        },
+        {
+          "enum_value": "",
+          "fid": 14239,
+          "name": "TRDRECV_MS",
+          "value": "15:59:00.761000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14247,
+          "name": "TRDREC2_MS",
+          "value": "15:59:00.771000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 32741,
+          "name": "TRNOVR_UNS",
+          "value": "4954659075.303869"
+        },
+        {
+          "enum_value": "",
+          "fid": 32743,
+          "name": "ACVOL_UNS",
+          "value": "12540834"
+        },
+        {
+          "enum_value": "",
+          "fid": 6588,
+          "name": "REPORT_VOL",
+          "value": "12841124"
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "19262",
+      "template_number": "",
+      "update_type": "TRADE"
+    },
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,32,3246,4205,6922,1404,7063,11622,32582,13495,14251,8667,14239,14247,32741,32743,6588": {
+      "date_time": "2021-11-15T15:55:10.255775940Z",
+      "fields": [
+        {
+          "enum_value": "   ",
+          "fid": 374,
+          "name": "IRGCOND",
+          "value": "0"
+        },
+        {
+          "enum_value": "",
+          "fid": 1003,
+          "name": "GV4_TEXT",
+          "value": "@4 I"
+        },
+        {
+          "enum_value": "",
+          "fid": 4757,
+          "name": "IRGSALCOND",
+          "value": "@4 I"
+        },
+        {
+          "enum_value": "",
+          "fid": 9063,
+          "name": "IRGTIM_MS",
+          "value": "57310238"
+        },
+        {
+          "enum_value": "",
+          "fid": 1021,
+          "name": "SEQNUM",
+          "value": "2012706"
+        },
+        {
+          "enum_value": "",
+          "fid": 379,
+          "name": "SALTIM",
+          "value": "15:55:10.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 3854,
+          "name": "SALTIM_MS",
+          "value": "57310238"
+        },
+        {
+          "enum_value": "",
+          "fid": 372,
+          "name": "IRGPRC",
+          "value": "394.339"
+        },
+        {
+          "enum_value": "",
+          "fid": 373,
+          "name": "IRGVOL",
+          "value": "6"
+        },
+        {
+          "enum_value": "",
+          "fid": 6370,
+          "name": "IRG_SEQNO",
+          "value": "2012706"
+        },
+        {
+          "enum_value": "",
+          "fid": 4346,
+          "name": "IRG_TDTH_X",
+          "value": "X"
+        },
+        {
+          "enum_value": "",
+          "fid": 1002,
+          "name": "GV3_TEXT",
+          "value": "X"
+        },
+        {
+          "enum_value": "",
+          "fid": 1043,
+          "name": "GV3_FLAG",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 3890,
+          "name": "IRG_SUBIND",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 5520,
+          "name": "IRG_TRDID",
+          "value": "20369"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 1018,
+          "name": "IRGXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 8980,
+          "name": "IRG_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 77,
+          "name": "NUM_MOVES",
+          "value": "129939"
+        },
+        {
+          "enum_value": "",
+          "fid": 32,
+          "name": "ACVOL_1",
+          "value": "12341846"
+        },
+        {
+          "enum_value": "",
+          "fid": 3246,
+          "name": "PCT_ABNVOL",
+          "value": "0.3292"
+        },
+        {
+          "enum_value": "",
+          "fid": 4205,
+          "name": "ODD_PRC",
+          "value": "394.339"
+        },
+        {
+          "enum_value": "",
+          "fid": 6922,
+          "name": "ODD_TRDVOL",
+          "value": "6"
+        },
+        {
+          "enum_value": "",
+          "fid": 1404,
+          "name": "ODD_VOLUME",
+          "value": "1933373"
+        },
+        {
+          "enum_value": "",
+          "fid": 7063,
+          "name": "ODD_SEQNO",
+          "value": "2012706"
+        },
+        {
+          "enum_value": "",
+          "fid": 11622,
+          "name": "ODDSALCOND",
+          "value": "@4 I"
+        },
+        {
+          "enum_value": "",
+          "fid": 32582,
+          "name": "ODDTRN_UNS",
+          "value": "764064637.4553"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 13495,
+          "name": "ODD_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 14251,
+          "name": "ODDTIM_MS",
+          "value": "15:55:10.238000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 8667,
+          "name": "ODD_TRDID",
+          "value": "20369"
+        },
+        {
+          "enum_value": "",
+          "fid": 14239,
+          "name": "TRDRECV_MS",
+          "value": "15:55:10.044000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14247,
+          "name": "TRDREC2_MS",
+          "value": "15:55:10.238000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 32741,
+          "name": "TRNOVR_UNS",
+          "value": "4876195485.263269"
+        },
+        {
+          "enum_value": "",
+          "fid": 32743,
+          "name": "ACVOL_UNS",
+          "value": "12341846"
+        },
+        {
+          "enum_value": "",
+          "fid": 6588,
+          "name": "REPORT_VOL",
+          "value": "12642136"
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "27790",
+      "template_number": "",
+      "update_type": "TRADE"
+    },
+    "UPDATE|TRADE|<EMPTY>|6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,13,14239,14247,131": {
+      "date_time": "2021-11-15T16:42:24.579475297Z",
+      "fields": [
+        {
+          "enum_value": "",
+          "fid": 6,
+          "name": "TRDPRC_1",
+          "value": "393.64"
+        },
+        {
+          "enum_value": "",
+          "fid": 178,
+          "name": "TRDVOL_1",
+          "value": "445"
+        },
+        {
+          "enum_value": "",
+          "fid": 32,
+          "name": "ACVOL_1",
+          "value": "14926665"
+        },
+        {
+          "enum_value": "",
+          "fid": 32743,
+          "name": "ACVOL_UNS",
+          "value": "14926665"
+        },
+        {
+          "enum_value": "",
+          "fid": 4756,
+          "name": "LSTSALCOND",
+          "value": "@F  "
+        },
+        {
+          "enum_value": "",
+          "fid": 77,
+          "name": "NUM_MOVES",
+          "value": "156069"
+        },
+        {
+          "enum_value": "#FE#",
+          "fid": 14,
+          "name": "PRCTCK_1",
+          "value": "2"
+        },
+        {
+          "enum_value": "",
+          "fid": 1021,
+          "name": "SEQNUM",
+          "value": "2721603"
+        },
+        {
+          "enum_value": "",
+          "fid": 3404,
+          "name": "VWAP",
+          "value": "394.848"
+        },
+        {
+          "enum_value": "",
+          "fid": 1379,
+          "name": "VOL_X_PRC1",
+          "value": "394.848"
+        },
+        {
+          "enum_value": "",
+          "fid": 11,
+          "name": "NETCHNG_1",
+          "value": "-1.06"
+        },
+        {
+          "enum_value": "",
+          "fid": 56,
+          "name": "PCTCHNG",
+          "value": "-0.2686"
+        },
+        {
+          "enum_value": "",
+          "fid": 379,
+          "name": "SALTIM",
+          "value": "16:42:24.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 18,
+          "name": "TRDTIM_1",
+          "value": "16:42:00.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 3854,
+          "name": "SALTIM_MS",
+          "value": "60144564"
+        },
+        {
+          "enum_value": "MPE",
+          "fid": 44,
+          "name": "TRDXID_1",
+          "value": "233"
+        },
+        {
+          "enum_value": "",
+          "fid": 6242,
+          "name": "VWAP_VOL",
+          "value": "13520111"
+        },
+        {
+          "enum_value": "",
+          "fid": 3246,
+          "name": "PCT_ABNVOL",
+          "value": "0.3981"
+        },
+        {
+          "enum_value": "",
+          "fid": 32741,
+          "name": "TRNOVR_UNS",
+          "value": "5895310658.217269"
+        },
+        {
+          "enum_value": "",
+          "fid": 6588,
+          "name": "REPORT_VOL",
+          "value": "15226955"
+        },
+        {
+          "enum_value": "",
+          "fid": 1067,
+          "name": "EXCHTIM",
+          "value": "16:42:24.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 4345,
+          "name": "TRD_THRU_X",
+          "value": "X"
+        },
+        {
+          "enum_value": "",
+          "fid": 1001,
+          "name": "GV2_TEXT",
+          "value": "X"
+        },
+        {
+          "enum_value": "",
+          "fid": 1042,
+          "name": "GV2_FLAG",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 3889,
+          "name": "LS_SUBIND",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 3900,
+          "name": "TRADE_ID",
+          "value": "5211"
+        },
+        {
+          "enum_value": "",
+          "fid": 3853,
+          "name": "TRDTIM_MS",
+          "value": "60144564"
+        },
+        {
+          "enum_value": "",
+          "fid": 7052,
+          "name": "ELG_NUMMOV",
+          "value": "56018"
+        },
+        {
+          "enum_value": "",
+          "fid": 32482,
+          "name": "ELG_ACVOL",
+          "value": "11202692"
+        },
+        {
+          "enum_value": "",
+          "fid": 32560,
+          "name": "ELG_TNOV",
+          "value": "4423234992.5637"
+        },
+        {
+          "enum_value": "MPE",
+          "fid": 6638,
+          "name": "TRADE_EXID",
+          "value": "1615"
+        },
+        {
+          "enum_value": "",
+          "fid": 13,
+          "name": "LOW_1",
+          "value": "393.64"
+        },
+        {
+          "enum_value": "",
+          "fid": 14239,
+          "name": "TRDRECV_MS",
+          "value": "16:42:24.563000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14247,
+          "name": "TRDREC2_MS",
+          "value": ""
+        },
+        {
+          "enum_value": "MSW",
+          "fid": 131,
+          "name": "PRC_QL2",
+          "value": "142"
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "23966",
+      "template_number": "",
+      "update_type": "TRADE"
+    },
+    "UPDATE|TRADE|<EMPTY>|6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,13,14239,14247,131,53": {
+      "date_time": "2021-11-15T16:42:25.475526123Z",
+      "fields": [
+        {
+          "enum_value": "",
+          "fid": 6,
+          "name": "TRDPRC_1",
+          "value": "393.585"
+        },
+        {
+          "enum_value": "",
+          "fid": 178,
+          "name": "TRDVOL_1",
+          "value": "100"
+        },
+        {
+          "enum_value": "",
+          "fid": 32,
+          "name": "ACVOL_1",
+          "value": "14955531"
+        },
+        {
+          "enum_value": "",
+          "fid": 32743,
+          "name": "ACVOL_UNS",
+          "value": "14955531"
+        },
+        {
+          "enum_value": "",
+          "fid": 4756,
+          "name": "LSTSALCOND",
+          "value": "@   "
+        },
+        {
+          "enum_value": "",
+          "fid": 77,
+          "name": "NUM_MOVES",
+          "value": "156221"
+        },
+        {
+          "enum_value": "#FE#",
+          "fid": 14,
+          "name": "PRCTCK_1",
+          "value": "2"
+        },
+        {
+          "enum_value": "",
+          "fid": 1021,
+          "name": "SEQNUM",
+          "value": "2722183"
+        },
+        {
+          "enum_value": "",
+          "fid": 3404,
+          "name": "VWAP",
+          "value": "394.8454"
+        },
+        {
+          "enum_value": "",
+          "fid": 1379,
+          "name": "VOL_X_PRC1",
+          "value": "394.8454"
+        },
+        {
+          "enum_value": "",
+          "fid": 11,
+          "name": "NETCHNG_1",
+          "value": "-1.115"
+        },
+        {
+          "enum_value": "",
+          "fid": 56,
+          "name": "PCTCHNG",
+          "value": "-0.2825"
+        },
+        {
+          "enum_value": "",
+          "fid": 379,
+          "name": "SALTIM",
+          "value": "16:42:25.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 18,
+          "name": "TRDTIM_1",
+          "value": "16:42:00.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 3854,
+          "name": "SALTIM_MS",
+          "value": "60145461"
+        },
+        {
+          "enum_value": "BAT",
+          "fid": 44,
+          "name": "TRDXID_1",
+          "value": "217"
+        },
+        {
+          "enum_value": "",
+          "fid": 6242,
+          "name": "VWAP_VOL",
+          "value": "13548977"
+        },
+        {
+          "enum_value": "",
+          "fid": 3246,
+          "name": "PCT_ABNVOL",
+          "value": "0.3989"
+        },
+        {
+          "enum_value": "",
+          "fid": 32741,
+          "name": "TRNOVR_UNS",
+          "value": "5906673057.490069"
+        },
+        {
+          "enum_value": "",
+          "fid": 6588,
+          "name": "REPORT_VOL",
+          "value": "15255821"
+        },
+        {
+          "enum_value": "",
+          "fid": 1067,
+          "name": "EXCHTIM",
+          "value": "16:42:25.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 4345,
+          "name": "TRD_THRU_X",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1001,
+          "name": "GV2_TEXT",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1042,
+          "name": "GV2_FLAG",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 3889,
+          "name": "LS_SUBIND",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 3900,
+          "name": "TRADE_ID",
+          "value": "16681"
+        },
+        {
+          "enum_value": "",
+          "fid": 3853,
+          "name": "TRDTIM_MS",
+          "value": "60145461"
+        },
+        {
+          "enum_value": "",
+          "fid": 7052,
+          "name": "ELG_NUMMOV",
+          "value": "56096"
+        },
+        {
+          "enum_value": "",
+          "fid": 32482,
+          "name": "ELG_ACVOL",
+          "value": "11230290"
+        },
+        {
+          "enum_value": "",
+          "fid": 32560,
+          "name": "ELG_TNOV",
+          "value": "4434098273.2105"
+        },
+        {
+          "enum_value": "BAT",
+          "fid": 6638,
+          "name": "TRADE_EXID",
+          "value": "271"
+        },
+        {
+          "enum_value": "",
+          "fid": 13,
+          "name": "LOW_1",
+          "value": "393.585"
+        },
+        {
+          "enum_value": "",
+          "fid": 14239,
+          "name": "TRDRECV_MS",
+          "value": "16:42:25.460000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14247,
+          "name": "TRDREC2_MS",
+          "value": ""
+        },
+        {
+          "enum_value": "   ",
+          "fid": 131,
+          "name": "PRC_QL2",
+          "value": "0"
+        },
+        {
+          "enum_value": "6DP ",
+          "fid": 53,
+          "name": "TRD_UNITS",
+          "value": "6"
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "34990",
+      "template_number": "",
+      "update_type": "TRADE"
+    },
+    "UPDATE|TRADE|<EMPTY>|6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,14239,14247,131": {
+      "date_time": "2021-11-15T15:54:43.151791843Z",
+      "fields": [
+        {
+          "enum_value": "",
+          "fid": 6,
+          "name": "TRDPRC_1",
+          "value": "394.335"
+        },
+        {
+          "enum_value": "",
+          "fid": 178,
+          "name": "TRDVOL_1",
+          "value": "200"
+        },
+        {
+          "enum_value": "",
+          "fid": 32,
+          "name": "ACVOL_1",
+          "value": "12305935"
+        },
+        {
+          "enum_value": "",
+          "fid": 32743,
+          "name": "ACVOL_UNS",
+          "value": "12305935"
+        },
+        {
+          "enum_value": "",
+          "fid": 4756,
+          "name": "LSTSALCOND",
+          "value": "@   "
+        },
+        {
+          "enum_value": "",
+          "fid": 77,
+          "name": "NUM_MOVES",
+          "value": "129634"
+        },
+        {
+          "enum_value": "#FE#",
+          "fid": 14,
+          "name": "PRCTCK_1",
+          "value": "2"
+        },
+        {
+          "enum_value": "",
+          "fid": 1021,
+          "name": "SEQNUM",
+          "value": "2005252"
+        },
+        {
+          "enum_value": "",
+          "fid": 3404,
+          "name": "VWAP",
+          "value": "394.9869"
+        },
+        {
+          "enum_value": "",
+          "fid": 1379,
+          "name": "VOL_X_PRC1",
+          "value": "394.9869"
+        },
+        {
+          "enum_value": "",
+          "fid": 11,
+          "name": "NETCHNG_1",
+          "value": "-0.365"
+        },
+        {
+          "enum_value": "",
+          "fid": 56,
+          "name": "PCTCHNG",
+          "value": "-0.0925"
+        },
+        {
+          "enum_value": "",
+          "fid": 379,
+          "name": "SALTIM",
+          "value": "15:54:43.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 18,
+          "name": "TRDTIM_1",
+          "value": "15:54:00.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 3854,
+          "name": "SALTIM_MS",
+          "value": "57283133"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 44,
+          "name": "TRDXID_1",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 6242,
+          "name": "VWAP_VOL",
+          "value": "10900948"
+        },
+        {
+          "enum_value": "",
+          "fid": 3246,
+          "name": "PCT_ABNVOL",
+          "value": "0.3282"
+        },
+        {
+          "enum_value": "",
+          "fid": 32741,
+          "name": "TRNOVR_UNS",
+          "value": "4862036251.691869"
+        },
+        {
+          "enum_value": "",
+          "fid": 6588,
+          "name": "REPORT_VOL",
+          "value": "12606225"
+        },
+        {
+          "enum_value": "",
+          "fid": 1067,
+          "name": "EXCHTIM",
+          "value": "15:54:43.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 4345,
+          "name": "TRD_THRU_X",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1001,
+          "name": "GV2_TEXT",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1042,
+          "name": "GV2_FLAG",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 3889,
+          "name": "LS_SUBIND",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 3900,
+          "name": "TRADE_ID",
+          "value": "20290"
+        },
+        {
+          "enum_value": "",
+          "fid": 3853,
+          "name": "TRDTIM_MS",
+          "value": "57283133"
+        },
+        {
+          "enum_value": "",
+          "fid": 7052,
+          "name": "ELG_NUMMOV",
+          "value": "45033"
+        },
+        {
+          "enum_value": "",
+          "fid": 32482,
+          "name": "ELG_ACVOL",
+          "value": "8968701"
+        },
+        {
+          "enum_value": "",
+          "fid": 32560,
+          "name": "ELG_TNOV",
+          "value": "3542446080.6817"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 6638,
+          "name": "TRADE_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 14239,
+          "name": "TRDRECV_MS",
+          "value": "15:54:43.131000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14247,
+          "name": "TRDREC2_MS",
+          "value": "15:54:43.133000000"
+        },
+        {
+          "enum_value": "   ",
+          "fid": 131,
+          "name": "PRC_QL2",
+          "value": "0"
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "25502",
+      "template_number": "",
+      "update_type": "TRADE"
+    },
+    "UPDATE|TRADE|<EMPTY>|6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,14239,14247,131,53": {
+      "date_time": "2021-11-15T15:54:40.619923165Z",
+      "fields": [
+        {
+          "enum_value": "",
+          "fid": 6,
+          "name": "TRDPRC_1",
+          "value": "394.3518"
+        },
+        {
+          "enum_value": "",
+          "fid": 178,
+          "name": "TRDVOL_1",
+          "value": "100"
+        },
+        {
+          "enum_value": "",
+          "fid": 32,
+          "name": "ACVOL_1",
+          "value": "12305462"
+        },
+        {
+          "enum_value": "",
+          "fid": 32743,
+          "name": "ACVOL_UNS",
+          "value": "12305462"
+        },
+        {
+          "enum_value": "",
+          "fid": 4756,
+          "name": "LSTSALCOND",
+          "value": "@   "
+        },
+        {
+          "enum_value": "",
+          "fid": 77,
+          "name": "NUM_MOVES",
+          "value": "129624"
+        },
+        {
+          "enum_value": "#FE#",
+          "fid": 14,
+          "name": "PRCTCK_1",
+          "value": "2"
+        },
+        {
+          "enum_value": "",
+          "fid": 1021,
+          "name": "SEQNUM",
+          "value": "2004791"
+        },
+        {
+          "enum_value": "",
+          "fid": 3404,
+          "name": "VWAP",
+          "value": "394.987"
+        },
+        {
+          "enum_value": "",
+          "fid": 1379,
+          "name": "VOL_X_PRC1",
+          "value": "394.987"
+        },
+        {
+          "enum_value": "",
+          "fid": 11,
+          "name": "NETCHNG_1",
+          "value": "-0.3482"
+        },
+        {
+          "enum_value": "",
+          "fid": 56,
+          "name": "PCTCHNG",
+          "value": "-0.0882"
+        },
+        {
+          "enum_value": "",
+          "fid": 379,
+          "name": "SALTIM",
+          "value": "15:54:40.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 18,
+          "name": "TRDTIM_1",
+          "value": "15:54:00.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 3854,
+          "name": "SALTIM_MS",
+          "value": "57280602"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 44,
+          "name": "TRDXID_1",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 6242,
+          "name": "VWAP_VOL",
+          "value": "10900475"
+        },
+        {
+          "enum_value": "",
+          "fid": 3246,
+          "name": "PCT_ABNVOL",
+          "value": "0.3282"
+        },
+        {
+          "enum_value": "",
+          "fid": 32741,
+          "name": "TRNOVR_UNS",
+          "value": "4861849728.906869"
+        },
+        {
+          "enum_value": "",
+          "fid": 6588,
+          "name": "REPORT_VOL",
+          "value": "12605752"
+        },
+        {
+          "enum_value": "",
+          "fid": 1067,
+          "name": "EXCHTIM",
+          "value": "15:54:40.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 4345,
+          "name": "TRD_THRU_X",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1001,
+          "name": "GV2_TEXT",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1042,
+          "name": "GV2_FLAG",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 3889,
+          "name": "LS_SUBIND",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 3900,
+          "name": "TRADE_ID",
+          "value": "20288"
+        },
+        {
+          "enum_value": "",
+          "fid": 3853,
+          "name": "TRDTIM_MS",
+          "value": "57280602"
+        },
+        {
+          "enum_value": "",
+          "fid": 7052,
+          "name": "ELG_NUMMOV",
+          "value": "45032"
+        },
+        {
+          "enum_value": "",
+          "fid": 32482,
+          "name": "ELG_ACVOL",
+          "value": "8968501"
+        },
+        {
+          "enum_value": "",
+          "fid": 32560,
+          "name": "ELG_TNOV",
+          "value": "3542367213.6817"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 6638,
+          "name": "TRADE_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 14239,
+          "name": "TRDRECV_MS",
+          "value": "15:54:40.601000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14247,
+          "name": "TRDREC2_MS",
+          "value": "15:54:40.602000000"
+        },
+        {
+          "enum_value": "   ",
+          "fid": 131,
+          "name": "PRC_QL2",
+          "value": "0"
+        },
+        {
+          "enum_value": "6DP ",
+          "fid": 53,
+          "name": "TRD_UNITS",
+          "value": "6"
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "21614",
+      "template_number": "",
+      "update_type": "TRADE"
+    },
+    "UPDATE|TRADE|<EMPTY>|6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,42,43,3247,3861,6908,14206,7062,11641,13552,8665,4436,14239,14247,131": {
+      "date_time": "2021-11-15T17:02:12.211597315Z",
+      "fields": [
+        {
+          "enum_value": "",
+          "fid": 6,
+          "name": "TRDPRC_1",
+          "value": "393.41"
+        },
+        {
+          "enum_value": "",
+          "fid": 178,
+          "name": "TRDVOL_1",
+          "value": "10500"
+        },
+        {
+          "enum_value": "",
+          "fid": 32,
+          "name": "ACVOL_1",
+          "value": "17767119"
+        },
+        {
+          "enum_value": "",
+          "fid": 32743,
+          "name": "ACVOL_UNS",
+          "value": "17767119"
+        },
+        {
+          "enum_value": "",
+          "fid": 4756,
+          "name": "LSTSALCOND",
+          "value": "@   "
+        },
+        {
+          "enum_value": "",
+          "fid": 77,
+          "name": "NUM_MOVES",
+          "value": "182210"
+        },
+        {
+          "enum_value": "#DE#",
+          "fid": 14,
+          "name": "PRCTCK_1",
+          "value": "1"
+        },
+        {
+          "enum_value": "",
+          "fid": 1021,
+          "name": "SEQNUM",
+          "value": "3055884"
+        },
+        {
+          "enum_value": "",
+          "fid": 3404,
+          "name": "VWAP",
+          "value": "394.5317"
+        },
+        {
+          "enum_value": "",
+          "fid": 1379,
+          "name": "VOL_X_PRC1",
+          "value": "394.5317"
+        },
+        {
+          "enum_value": "",
+          "fid": 11,
+          "name": "NETCHNG_1",
+          "value": "-1.29"
+        },
+        {
+          "enum_value": "",
+          "fid": 56,
+          "name": "PCTCHNG",
+          "value": "-0.3268"
+        },
+        {
+          "enum_value": "",
+          "fid": 379,
+          "name": "SALTIM",
+          "value": "17:02:12.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 18,
+          "name": "TRDTIM_1",
+          "value": "17:02:00.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 3854,
+          "name": "SALTIM_MS",
+          "value": "61332197"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 44,
+          "name": "TRDXID_1",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 6242,
+          "name": "VWAP_VOL",
+          "value": "16359581"
+        },
+        {
+          "enum_value": "",
+          "fid": 3246,
+          "name": "PCT_ABNVOL",
+          "value": "0.4738"
+        },
+        {
+          "enum_value": "",
+          "fid": 32741,
+          "name": "TRNOVR_UNS",
+          "value": "7011681695.645869"
+        },
+        {
+          "enum_value": "",
+          "fid": 6588,
+          "name": "REPORT_VOL",
+          "value": "18067409"
+        },
+        {
+          "enum_value": "",
+          "fid": 1067,
+          "name": "EXCHTIM",
+          "value": "17:02:12.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 4345,
+          "name": "TRD_THRU_X",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1001,
+          "name": "GV2_TEXT",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1042,
+          "name": "GV2_FLAG",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 3889,
+          "name": "LS_SUBIND",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 3900,
+          "name": "TRADE_ID",
+          "value": "31337"
+        },
+        {
+          "enum_value": "",
+          "fid": 3853,
+          "name": "TRDTIM_MS",
+          "value": "61332197"
+        },
+        {
+          "enum_value": "",
+          "fid": 7052,
+          "name": "ELG_NUMMOV",
+          "value": "66633"
+        },
+        {
+          "enum_value": "",
+          "fid": 32482,
+          "name": "ELG_ACVOL",
+          "value": "13379032"
+        },
+        {
+          "enum_value": "",
+          "fid": 32560,
+          "name": "ELG_TNOV",
+          "value": "5278303968.707"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 6638,
+          "name": "TRADE_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 42,
+          "name": "BLKCOUNT",
+          "value": "10"
+        },
+        {
+          "enum_value": "",
+          "fid": 43,
+          "name": "BLKVOLUM",
+          "value": "440088"
+        },
+        {
+          "enum_value": "",
+          "fid": 3247,
+          "name": "BC_10_50K",
+          "value": "8"
+        },
+        {
+          "enum_value": "",
+          "fid": 3861,
+          "name": "BLK_PRC1",
+          "value": "393.41"
+        },
+        {
+          "enum_value": "",
+          "fid": 6908,
+          "name": "BLKTRDVOL",
+          "value": "10500"
+        },
+        {
+          "enum_value": "",
+          "fid": 14206,
+          "name": "BLKTIM_MS",
+          "value": "17:02:12.197000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 7062,
+          "name": "BLK_SEQNO",
+          "value": "3055884"
+        },
+        {
+          "enum_value": "",
+          "fid": 11641,
+          "name": "BLKSALCOND",
+          "value": "@   "
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 13552,
+          "name": "BLK_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 8665,
+          "name": "BLK_TRDID",
+          "value": "31337"
+        },
+        {
+          "enum_value": "",
+          "fid": 4436,
+          "name": "TURN_BLOCK",
+          "value": "173861854.792"
+        },
+        {
+          "enum_value": "",
+          "fid": 14239,
+          "name": "TRDRECV_MS",
+          "value": "17:02:12.195000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14247,
+          "name": "TRDREC2_MS",
+          "value": "17:02:12.197000000"
+        },
+        {
+          "enum_value": "   ",
+          "fid": 131,
+          "name": "PRC_QL2",
+          "value": "0"
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "14142",
+      "template_number": "",
+      "update_type": "TRADE"
+    },
+    "UPDATE|TRADE|<EMPTY>|6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,42,43,3247,3861,6908,14206,7062,11641,13552,8665,4436,14239,14247,131,53": {
+      "date_time": "2021-11-15T17:32:43.679573010Z",
+      "fields": [
+        {
+          "enum_value": "",
+          "fid": 6,
+          "name": "TRDPRC_1",
+          "value": "392.93"
+        },
+        {
+          "enum_value": "",
+          "fid": 178,
+          "name": "TRDVOL_1",
+          "value": "18108"
+        },
+        {
+          "enum_value": "",
+          "fid": 32,
+          "name": "ACVOL_1",
+          "value": "20048400"
+        },
+        {
+          "enum_value": "",
+          "fid": 32743,
+          "name": "ACVOL_UNS",
+          "value": "20048400"
+        },
+        {
+          "enum_value": "",
+          "fid": 4756,
+          "name": "LSTSALCOND",
+          "value": "@   "
+        },
+        {
+          "enum_value": "",
+          "fid": 77,
+          "name": "NUM_MOVES",
+          "value": "202656"
+        },
+        {
+          "enum_value": "#FE#",
+          "fid": 14,
+          "name": "PRCTCK_1",
+          "value": "2"
+        },
+        {
+          "enum_value": "",
+          "fid": 1021,
+          "name": "SEQNUM",
+          "value": "3462726"
+        },
+        {
+          "enum_value": "",
+          "fid": 3404,
+          "name": "VWAP",
+          "value": "394.338"
+        },
+        {
+          "enum_value": "",
+          "fid": 1379,
+          "name": "VOL_X_PRC1",
+          "value": "394.338"
+        },
+        {
+          "enum_value": "",
+          "fid": 11,
+          "name": "NETCHNG_1",
+          "value": "-1.77"
+        },
+        {
+          "enum_value": "",
+          "fid": 56,
+          "name": "PCTCHNG",
+          "value": "-0.4484"
+        },
+        {
+          "enum_value": "",
+          "fid": 379,
+          "name": "SALTIM",
+          "value": "17:32:43.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 18,
+          "name": "TRDTIM_1",
+          "value": "17:32:00.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 3854,
+          "name": "SALTIM_MS",
+          "value": "63163661"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 44,
+          "name": "TRDXID_1",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 6242,
+          "name": "VWAP_VOL",
+          "value": "18639940"
+        },
+        {
+          "enum_value": "",
+          "fid": 3246,
+          "name": "PCT_ABNVOL",
+          "value": "0.5347"
+        },
+        {
+          "enum_value": "",
+          "fid": 32741,
+          "name": "TRNOVR_UNS",
+          "value": "7908107068.050969"
+        },
+        {
+          "enum_value": "",
+          "fid": 6588,
+          "name": "REPORT_VOL",
+          "value": "20348690"
+        },
+        {
+          "enum_value": "",
+          "fid": 1067,
+          "name": "EXCHTIM",
+          "value": "17:32:43.000000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 4345,
+          "name": "TRD_THRU_X",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1001,
+          "name": "GV2_TEXT",
+          "value": " "
+        },
+        {
+          "enum_value": "",
+          "fid": 1042,
+          "name": "GV2_FLAG",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 3889,
+          "name": "LS_SUBIND",
+          "value": "Q"
+        },
+        {
+          "enum_value": "",
+          "fid": 3900,
+          "name": "TRADE_ID",
+          "value": "35574"
+        },
+        {
+          "enum_value": "",
+          "fid": 3853,
+          "name": "TRDTIM_MS",
+          "value": "63163661"
+        },
+        {
+          "enum_value": "",
+          "fid": 7052,
+          "name": "ELG_NUMMOV",
+          "value": "75859"
+        },
+        {
+          "enum_value": "",
+          "fid": 32482,
+          "name": "ELG_ACVOL",
+          "value": "15186324"
+        },
+        {
+          "enum_value": "",
+          "fid": 32560,
+          "name": "ELG_TNOV",
+          "value": "5988397341.6092"
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 6638,
+          "name": "TRADE_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 42,
+          "name": "BLKCOUNT",
+          "value": "12"
+        },
+        {
+          "enum_value": "",
+          "fid": 43,
+          "name": "BLKVOLUM",
+          "value": "619696"
+        },
+        {
+          "enum_value": "",
+          "fid": 3247,
+          "name": "BC_10_50K",
+          "value": "9"
+        },
+        {
+          "enum_value": "",
+          "fid": 3861,
+          "name": "BLK_PRC1",
+          "value": "392.93"
+        },
+        {
+          "enum_value": "",
+          "fid": 6908,
+          "name": "BLKTRDVOL",
+          "value": "18108"
+        },
+        {
+          "enum_value": "",
+          "fid": 14206,
+          "name": "BLKTIM_MS",
+          "value": "17:32:43.661000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 7062,
+          "name": "BLK_SEQNO",
+          "value": "3462726"
+        },
+        {
+          "enum_value": "",
+          "fid": 11641,
+          "name": "BLKSALCOND",
+          "value": "@   "
+        },
+        {
+          "enum_value": "ADF",
+          "fid": 13552,
+          "name": "BLK_EXID",
+          "value": "53"
+        },
+        {
+          "enum_value": "",
+          "fid": 8665,
+          "name": "BLK_TRDID",
+          "value": "35574"
+        },
+        {
+          "enum_value": "",
+          "fid": 4436,
+          "name": "TURN_BLOCK",
+          "value": "244524212.732"
+        },
+        {
+          "enum_value": "",
+          "fid": 14239,
+          "name": "TRDRECV_MS",
+          "value": "17:32:43.656000000"
+        },
+        {
+          "enum_value": "",
+          "fid": 14247,
+          "name": "TRDREC2_MS",
+          "value": "17:32:43.661000000"
+        },
+        {
+          "enum_value": "   ",
+          "fid": 131,
+          "name": "PRC_QL2",
+          "value": "0"
+        },
+        {
+          "enum_value": "2DP ",
+          "fid": 53,
+          "name": "TRD_UNITS",
+          "value": "2"
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "11950",
+      "template_number": "",
+      "update_type": "TRADE"
+    },
+    "UPDATE|UNSPECIFIED|<EMPTY>|75,998,76,999,3132,8936,9060,13583": {
+      "date_time": "2021-11-15T15:55:00.875947665Z",
+      "fields": [
+        {
+          "enum_value": "",
+          "fid": 75,
+          "name": "UPLIMIT",
+          "value": "415.7"
+        },
+        {
+          "enum_value": "",
+          "fid": 998,
+          "name": "GEN_VAL3",
+          "value": "415.7"
+        },
+        {
+          "enum_value": "",
+          "fid": 76,
+          "name": "LOLIMIT",
+          "value": "376.11"
+        },
+        {
+          "enum_value": "",
+          "fid": 999,
+          "name": "GEN_VAL4",
+          "value": "376.11"
+        },
+        {
+          "enum_value": "",
+          "fid": 3132,
+          "name": "IRGVAL",
+          "value": "36"
+        },
+        {
+          "enum_value": "RES",
+          "fid": 8936,
+          "name": "LIMIT_IND2",
+          "value": "36"
+        },
+        {
+          "enum_value": "",
+          "fid": 9060,
+          "name": "LULD_TM_MS",
+          "value": "52202317"
+        },
+        {
+          "enum_value": "",
+          "fid": 13583,
+          "name": "LMT_TYPE",
+          "value": ""
+        }
+      ],
+      "gmt_offset": "-5",
+      "message_class": "UPDATE",
+      "pe_code": "6561",
+      "ric": "QQQ.O",
+      "source_sequence": "4192",
+      "template_number": "",
+      "update_type": "UNSPECIFIED"
+    }
+  },
+  "logical_messages": 958801,
+  "message_classes": {
+    "UPDATE": 958801
+  },
+  "message_combinations": {
+    "UPDATE|QUOTE|<EMPTY>|22,25,30,31,11683,11684,3298,3297,6579,6580,293,296,1000,8937,3887,118,3264,8406,1041,12783,3855,1025,14238,14246": 870630,
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,42,43,3247,3861,6908,14206,7062,11641,13552,8665,4436,77,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": 3,
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,42,43,3248,3861,6908,14206,7062,11641,13552,8665,4436,77,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": 1,
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,42,43,3249,3861,6908,14206,7062,11641,13552,8665,4436,77,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": 2,
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,13,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": 1,
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": 633,
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,1379,3404,6242,32,3246,4205,6922,1404,7063,11622,32582,13495,14251,8667,14239,14247,32741,32743,6588": 50813,
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,32,3246,14239,14247,32741,32743,6588": 23,
+    "UPDATE|TRADE|<EMPTY>|374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,32,3246,4205,6922,1404,7063,11622,32582,13495,14251,8667,14239,14247,32741,32743,6588": 96,
+    "UPDATE|TRADE|<EMPTY>|6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,13,14239,14247,131": 111,
+    "UPDATE|TRADE|<EMPTY>|6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,13,14239,14247,131,53": 16,
+    "UPDATE|TRADE|<EMPTY>|6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,14239,14247,131": 29654,
+    "UPDATE|TRADE|<EMPTY>|6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,14239,14247,131,53": 6551,
+    "UPDATE|TRADE|<EMPTY>|6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,42,43,3247,3861,6908,14206,7062,11641,13552,8665,4436,14239,14247,131": 1,
+    "UPDATE|TRADE|<EMPTY>|6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,42,43,3247,3861,6908,14206,7062,11641,13552,8665,4436,14239,14247,131,53": 1,
+    "UPDATE|UNSPECIFIED|<EMPTY>|75,998,76,999,3132,8936,9060,13583": 265
+  },
+  "physical_rows": 25000021,
+  "rics": {
+    "QQQ.O": 958801
+  },
+  "source": "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/usstock_raw_zstd_shards/shanghai_evolution_equities_raw_ric_list_0_raw_2021-07-01_2022-07-01.building/merged-Data-part-000002-shard-000000.csv.zst",
+  "templates": {
+    "<EMPTY>": 958801
+  },
+  "top_ordered_fid_signatures": {
+    "22,25,30,31,11683,11684,3298,3297,6579,6580,293,296,1000,8937,3887,118,3264,8406,1041,12783,3855,1025,14238,14246": 870630,
+    "374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,42,43,3247,3861,6908,14206,7062,11641,13552,8665,4436,77,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": 3,
+    "374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,42,43,3248,3861,6908,14206,7062,11641,13552,8665,4436,77,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": 1,
+    "374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,42,43,3249,3861,6908,14206,7062,11641,13552,8665,4436,77,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": 2,
+    "374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,13,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": 1,
+    "374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,1379,3404,6242,32,3246,14239,14247,32741,32743,6588": 633,
+    "374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,1379,3404,6242,32,3246,4205,6922,1404,7063,11622,32582,13495,14251,8667,14239,14247,32741,32743,6588": 50813,
+    "374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,32,3246,14239,14247,32741,32743,6588": 23,
+    "374,1003,4757,9063,1021,379,3854,372,373,6370,4346,1002,1043,3890,5520,1018,8980,77,32,3246,4205,6922,1404,7063,11622,32582,13495,14251,8667,14239,14247,32741,32743,6588": 96,
+    "6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,13,14239,14247,131": 111,
+    "6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,13,14239,14247,131,53": 16,
+    "6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,14239,14247,131": 29654,
+    "6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,14239,14247,131,53": 6551,
+    "6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,42,43,3247,3861,6908,14206,7062,11641,13552,8665,4436,14239,14247,131": 1,
+    "6,178,32,32743,4756,77,14,1021,3404,1379,11,56,379,18,3854,44,6242,3246,32741,6588,1067,4345,1001,1042,3889,3900,3853,7052,32482,32560,6638,42,43,3247,3861,6908,14206,7062,11641,13552,8665,4436,14239,14247,131,53": 1,
+    "75,998,76,999,3132,8936,9060,13583": 265
+  },
+  "update_types": {
+    "QUOTE": 870630,
+    "TRADE": 87906,
+    "UNSPECIFIED": 265
+  }
+}

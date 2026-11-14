@@ -1,0 +1,51 @@
+{
+  "scope": "Gate funding-rate spot/futures environments",
+  "changes": [
+    "native ADL fill recording and identity deduplication",
+    "contract multiplier conversion to spot repair quantity",
+    "separate spot-only taker lifecycle with partial-fill retries",
+    "unresolved order quantity retained on query timeout",
+    "base-quantity IOC for reducing Gate spot buys"
+  ],
+  "validation": {
+    "mkt_parsers_library": {
+      "passed": 181
+    },
+    "root_library_before_last_timeout_guard": {
+      "passed": 1462,
+      "ignored": 3
+    },
+    "final_gate_adl_targeted": {
+      "passed": 6
+    },
+    "order_common_library": {
+      "passed": 49
+    },
+    "trade_engine_library": {
+      "passed": 381
+    },
+    "format_check": "passed",
+    "diff_whitespace_check": "passed",
+    "private_ws_subscription": {
+      "env": "gate_fr_arb01",
+      "channel": "futures.usertrades",
+      "event": "subscribe",
+      "result": {
+        "status": "success"
+      },
+      "error": null,
+      "utc": "2026-11-04T06:27:29Z"
+    },
+    "cargo_check_bins": {
+      "pre_trade": "passed",
+      "gate_account_monitor": "passed",
+      "trade_engine": "passed"
+    }
+  },
+  "production_deployed": false,
+  "notes": [
+    "No live orders were submitted in verification.",
+    "Live ADL events are handled; historical ADL rows are not replayed into orders.",
+    "Restarting pre-trade during a repair requires reconciling outstanding orders and real exposure."
+  ]
+}

@@ -16,6 +16,19 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
 
+EXECUTION_BACKEND_LIB="${BASE_DIR}/scripts/execution_backend_lib.sh"
+INTRA_RELEASE_GUARD="${BASE_DIR}/scripts/intra_release_guard.sh"
+for helper in "$EXECUTION_BACKEND_LIB" "$INTRA_RELEASE_GUARD"; do
+  if [[ ! -f "$helper" ]]; then
+    echo "[ERROR] required helper not found: $helper" >&2
+    exit 1
+  fi
+done
+# shellcheck disable=SC1090
+source "$EXECUTION_BACKEND_LIB"
+# shellcheck disable=SC1090
+source "$INTRA_RELEASE_GUARD"
+
 BIN_CANDIDATES=(
   "${BASE_DIR}/trade_signal"
   "${SCRIPT_DIR}/trade_signal"
@@ -39,10 +52,12 @@ dir_name="$(basename "${BASE_DIR}")"
 dir_lc="${dir_name,,}"
 
 EXCHANGE=""
+MODE=""
 ENV_TAG=""
-if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
-  ENV_TAG="${BASH_REMATCH[2]}"
+  MODE="${BASH_REMATCH[2]}"
+  ENV_TAG="${BASH_REMATCH[3]}"
 fi
 if [[ "$EXCHANGE" == "okx" ]]; then
   EXCHANGE="okex"
@@ -53,7 +68,21 @@ if [[ -z "$EXCHANGE" || -z "$ENV_TAG" ]]; then
 fi
 ENV_TAG="$(printf '%s' "$ENV_TAG" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
 
-PROC_NAME="intra_${EXCHANGE}_${ENV_TAG}_trade_signal"
+EXEC_BACKEND="$(execution_backend_for_exchange "$EXCHANGE")" || exit 1
+MONITOR_RELEASE_NAME="$(intra_release_account_monitor_name "$EXCHANGE" "$EXEC_BACKEND")"
+MONITOR_PATH="${BASE_DIR}/account_monitor_${EXCHANGE}"
+PRE_TRADE_PATH="${BASE_DIR}/pre_trade"
+TRADE_ENGINE_PATH="${BASE_DIR}/trade_engine"
+intra_release_verify_file "$BASE_DIR" trade_signal "$BIN_PATH"
+intra_release_verify_file "$BASE_DIR" pre_trade "$PRE_TRADE_PATH"
+intra_release_verify_file "$BASE_DIR" trade_engine "$TRADE_ENGINE_PATH"
+intra_release_verify_file "$BASE_DIR" "$MONITOR_RELEASE_NAME" "$MONITOR_PATH"
+intra_release_verify_running_file "$BASE_DIR" pre_trade "$PRE_TRADE_PATH"
+intra_release_verify_running_file "$BASE_DIR" trade_engine "$TRADE_ENGINE_PATH"
+intra_release_verify_running_file "$BASE_DIR" "$MONITOR_RELEASE_NAME" "$MONITOR_PATH"
+echo "[INFO] release guard passed release_id=$(intra_release_id "$BASE_DIR")"
+
+PROC_NAME="${MODE}_${EXCHANGE}_${ENV_TAG}_trade_signal"
 LEGACY_PROC_NAME="trade_signal_${EXCHANGE}"
 RUST_LOG="${RUST_LOG:-info}"
 QUEUE_POSITION_ENABLED="${TRADE_SIGNAL_ENABLE_QUEUE_POSITION:-0}"

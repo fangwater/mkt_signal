@@ -1,0 +1,7 @@
+{
+  "verification": "native_alignment/verification.json",
+  "unit": "price_x_contracts",
+  "superseded_verification": "verification.json",
+  "reason": "Initial historical-only ctVal conversion differed from live raw-contract classification",
+  "kafka_unit_verification": "kafka_reprobe/verification.json"
+}

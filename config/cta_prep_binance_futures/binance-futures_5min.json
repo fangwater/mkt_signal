@@ -1,0 +1,311 @@
+{
+  "strategy_group": "prep01",
+  "name": "binance-futures_5min",
+  "venue": "binance-futures",
+  "interval": "5min",
+  "factor_rules": [
+    {
+      "标的": "BANDUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_040"
+    },
+    {
+      "标的": "BANDUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_119"
+    },
+    {
+      "标的": "BELUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_033"
+    },
+    {
+      "标的": "BELUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "factor_094"
+    },
+    {
+      "标的": "BELUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "factor_128"
+    },
+    {
+      "标的": "BELUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "sell_avg_price"
+    },
+    {
+      "标的": "DASHUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "TD_MT_032"
+    },
+    {
+      "标的": "DASHUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_118"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "TD_PR_010"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "TD_TI_008"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "TP_VPI_018"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "TP_VPI_019"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_132"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "factor_049"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "TD_MT_032"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_111"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_132"
+    },
+    {
+      "标的": "ETCUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_MT_042"
+    },
+    {
+      "标的": "ETCUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "TP_VPI_018"
+    },
+    {
+      "标的": "ETCUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_013"
+    },
+    {
+      "标的": "ETCUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_104"
+    },
+    {
+      "标的": "ETCUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_141"
+    },
+    {
+      "标的": "IOTAUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_013"
+    },
+    {
+      "标的": "IOTAUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_022"
+    },
+    {
+      "标的": "IOTAUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_132"
+    },
+    {
+      "标的": "IOTAUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_195"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_013"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_051"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "factor_051"
+    },
+    {
+      "标的": "RUNEUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_001"
+    },
+    {
+      "标的": "RUNEUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_138"
+    },
+    {
+      "标的": "SKLUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_033"
+    },
+    {
+      "标的": "SKLUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TP_VPI_006"
+    },
+    {
+      "标的": "SKLUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_040"
+    },
+    {
+      "标的": "SKLUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_120"
+    },
+    {
+      "标的": "SOLUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_104"
+    },
+    {
+      "标的": "SOLUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "factor_032"
+    },
+    {
+      "标的": "VETUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "TD_MT_040"
+    },
+    {
+      "标的": "VETUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_027"
+    },
+    {
+      "标的": "VETUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TP_VPI_001"
+    },
+    {
+      "标的": "VETUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_104"
+    },
+    {
+      "标的": "VETUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_200"
+    },
+    {
+      "标的": "XLMUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TP_VPI_009"
+    },
+    {
+      "标的": "XLMUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "factor_171"
+    },
+    {
+      "标的": "YFIUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "avg_price"
+    },
+    {
+      "标的": "YFIUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_200"
+    },
+    {
+      "标的": "ZENUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_104"
+    },
+    {
+      "标的": "ZENUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_141"
+    }
+  ],
+  "signal": {
+    "enabled": false,
+    "max_pos_u": 200,
+    "entry": {
+      "factor_long_quantile": 0.9,
+      "factor_short_quantile": 0.1,
+      "nq_change_enabled": true,
+      "nq_long_quantile": 0.5,
+      "nq_short_quantile": 0.5
+    },
+    "execution": {
+      "factor_exit_quantile_long": 0.3,
+      "factor_exit_quantile_short": 0.7
+    }
+  }
+}

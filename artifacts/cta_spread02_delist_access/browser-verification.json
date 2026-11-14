@@ -1,0 +1,33 @@
+{
+  "read_only": true,
+  "auth_test": "isolated Nginx tested separately",
+  "spread02_board_links": 9,
+  "checks": [
+    {
+      "interval": "1min",
+      "rules": 48,
+      "enabled": false,
+      "max_pos_u": 100
+    },
+    {
+      "interval": "5min",
+      "rules": 79,
+      "enabled": false,
+      "max_pos_u": 100
+    },
+    {
+      "interval": "15min",
+      "rules": 64,
+      "enabled": false,
+      "max_pos_u": 100
+    },
+    {
+      "interval": "1h",
+      "rules": 128,
+      "enabled": false,
+      "max_pos_u": 100
+    }
+  ],
+  "errors": [],
+  "blockedWrites": 0
+}

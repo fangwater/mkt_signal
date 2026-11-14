@@ -1,0 +1,54 @@
+{
+  "source_commit": "31a7e3581f2700e0e58df428a7e5da313e41f7fb",
+  "environment": "binance-cta-perp-rx01",
+  "files": {
+    "cta_perp_factor_model_15m_pub": {
+      "source": "target/release/cta_perp_factor_model_15m_pub",
+      "sha256": "38ce92f7e704765f98d7e9a4b7d2e75cf0ca21b109afed81f803ff69a6947cf1"
+    },
+    "cta_perp_15m_signal": {
+      "source": "target/release/cta_perp_15m_signal",
+      "sha256": "bbddde127ce3d357204226c0cada956675f58bfbb1beb963f7859ae2bb9111c4"
+    },
+    "web/cta_perp/index.html": {
+      "source": "web/cta_perp/index.html",
+      "sha256": "6a8a2bba8b54ed19a8aa8824302c546e8e74af5e30d8a3dcf31d30b9e7b8371a"
+    },
+    "config/cta_perp.json": {
+      "source": "config/cta_perp_rx01/cta_perp.json",
+      "sha256": "9981c85e8eea4fc5b01cc4ff3cfc88eaa3fb70cf2dae8a5bda4a7b4db0497319"
+    },
+    "config/cta_perp_symbol_factors.json": {
+      "source": "config/cta_perp_rx01/cta_perp_symbol_factors.json",
+      "sha256": "0917ca861ae6f352384df6d2cea4cf408429f86aa3360750044a92a0f20a7479"
+    },
+    "config/cta_perp_factor_model_15m_pub.toml": {
+      "source": "config/cta_perp_rx01/cta_perp_factor_model_15m_pub.toml",
+      "sha256": "c8b159665f6368d5e662ac132f39e54e8196f91752fb645e56cd46b8e3a889c3"
+    },
+    "config/factor_rules.json": {
+      "source": "config/cta_perp_rx01/factor_rules.json",
+      "sha256": "46e009c1a2a74672f948da3eec577136ed5f9d02afe47666a3cae3d78105674b"
+    },
+    "config/README.md": {
+      "source": "config/cta_perp_rx01/README.md",
+      "sha256": "143f83f32bc62b2d0c9a896f2dfdb12883dac27e444d60bcac0992e34136ec5f"
+    },
+    "scripts/cta_perp_config_server.py": {
+      "source": "scripts/cta_perp_config_server.py",
+      "sha256": "7a086b6e2a6d6e95d8bcf8f1fe3153051fc2a45aa4dd6b6e727ad66b02d0f321"
+    },
+    "scripts/cta_perp_dashboard.py": {
+      "source": "scripts/cta_perp_dashboard.py",
+      "sha256": "d153d0470313ba38abe4c032434a93642ef641fe5ffbbfb4b31a0cb3381b372e"
+    },
+    "scripts/cta_perp_factor_config.py": {
+      "source": "scripts/cta_perp_factor_config.py",
+      "sha256": "513cec9967c5cc726bb1bff90d278a2250e8ded9ac151613696408e6e707edd7"
+    },
+    "scripts/cta_perp_position_replay.py": {
+      "source": "scripts/cta_perp_position_replay.py",
+      "sha256": "d0ca34c67a40958f974c2a54f860435d66537c9b25fe57f1f4613e381727da6a"
+    }
+  }
+}

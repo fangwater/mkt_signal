@@ -1,0 +1,68 @@
+{
+  "mkt_commit": "1a10d3b29269caba1c287ea0e845129651c3cb70",
+  "mkt_branch": "arbmm",
+  "manager_commit": "495c8332d35da4c4ec31d9f6f32d12c5cdb8f37f",
+  "mkt_artifacts": {
+    "exec-pre-trade": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/exec-pre-trade",
+      "sha256": "4e770341cc0bfcf4af4ec6c0afac3d8b14772bc76e3d0586f09446e568cc0940"
+    },
+    "trade_engine": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/trade_engine",
+      "sha256": "bb263a467c7aab96bafb5bc1dbe7124c7eefbf7c6ff03ec7d2205497e93a2611"
+    },
+    "okex_account_monitor": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/okex_account_monitor",
+      "sha256": "453a6879e041edeb83842ba0c036419905253a2c13d5c52b30a9a45667170baa"
+    },
+    "binance_account_monitor": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/binance_account_monitor",
+      "sha256": "2ae5e14bb633c7f511cc56d6fa335e8f48a8cab2d30022f2bcd7f81470a0b494"
+    },
+    "trade_signal": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/trade_signal",
+      "sha256": "8bd54fc5fe95ea955fec85372c46a324002628c6fa508e52bd37a40cdc67cc18"
+    },
+    "viz_server": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/viz_server",
+      "sha256": "91a51991279d89f803a858be37d93b9e6d5de2a6c76053b6dff214df26ed4df7"
+    },
+    "persist_manager": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/persist_manager",
+      "sha256": "086a38d8882da147b17f42dd36764e103440b651c8ad3b8561f07687ba5edcd6"
+    },
+    "cta_cross_spread_signal": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/cta_cross_spread_signal",
+      "sha256": "45ee5e451262537603e9ddd0f74287968ef5fb31d98cd31733c7ad80a88999d6"
+    },
+    "cta_cross_spread_factor_model_1m_pub": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/cta_cross_spread_factor_model_1m_pub",
+      "sha256": "406e99ff50c4a3fc5234392ce5789a2e22e1ac4de19e2aa998a1cf787cbf2df1"
+    }
+  },
+  "manager_artifacts": {
+    "cta_web": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/crypto_cta_manager/release/cta_web",
+      "sha256": "685e13506324695baba0bcaf451dfd2ab6729246300078d01f5649cc8666964a"
+    },
+    "cta_monitor": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/crypto_cta_manager/release/cta_monitor",
+      "sha256": "416770eab01c15e3d464a5f181eeb4b0351eef415c85dfc98849eef38c0483ce"
+    },
+    "nav_rebuild": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/crypto_cta_manager/release/nav_rebuild",
+      "sha256": "06bdb7f43ad57f95c5e6272f475c9737e3770244bbad771d7b94af719d980d61"
+    },
+    "nav_snapshot": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/crypto_cta_manager/release/nav_snapshot",
+      "sha256": "0d57264777f86e75410e5967ceea9048b47e794f986cf39a565bcac2ba87ff41"
+    },
+    "nav_strategy_snapshot": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/crypto_cta_manager/release/nav_strategy_snapshot",
+      "sha256": "8826b0e7edef5c5cb7389f47b8b0b983b07789976bccd2bbb4d2f08e2c27f3d7"
+    }
+  },
+  "manager_source_hashes_verified": true,
+  "trading_enabled": false,
+  "worktree_contains_uncommitted_changes": true
+}

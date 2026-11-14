@@ -30,9 +30,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
-SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
+SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate", "hyperliquid"]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-INTRA_RE = re.compile(r"^([a-z0-9]+)[-_]intra([_-].*)?$")
+INTRA_RE = re.compile(r"^([a-z0-9]+)[-_](intra)([_-].*)?$")
 BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S = 300
 BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY = "arb_hedge_order_rate_limit_10s"
 
@@ -47,6 +47,7 @@ EXCHANGE_DEFAULTS = {
     "bybit": ("bybit-margin", "bybit-futures"),
     "bitget": ("bitget-margin", "bitget-futures"),
     "gate": ("gate-margin", "gate-futures"),
+    "hyperliquid": ("hyperliquid-margin", "hyperliquid-futures"),
 }
 
 STRATEGY_BOOL_PARAM_KEYS = [
@@ -864,7 +865,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         <label for="rolling-factors">factors (JSON)</label>
         <textarea id="rolling-factors" class="mono"></textarea>
       </div>
-      <div class="hint" style="margin-top: 8px;">可用 factor: bidask, askbid, spread, hedge_premium_rate, open_vol, hedge_vol。intra 的 funding filter 固定读取 hedge_premium_rate 的 quantiles，无需单独配置 mapping。</div>
+      <div class="hint" style="margin-top: 8px;">可用 factor: bidask, askbid, bidbid_ho, askask_oh, spread, hedge_premium_rate, open_vol, hedge_vol。intra 的 funding filter 固定读取 hedge_premium_rate 的 quantiles，无需单独配置 mapping。</div>
       <div id="rolling-status" class="status"></div>
     </section>
 
@@ -882,7 +883,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <label for="spread-symbol">Symbol (可选)</label>
           <input id="spread-symbol" placeholder="BTCUSDT" />
         </div>
-        <div class="hint">格式: bidask_10 / askbid_90 / spread_15</div>
+        <div class="hint">格式: bidask_10 / askbid_90 / bidbid_ho_90 / askask_oh_90 / spread_15</div>
       </div>
       <div id="spread-table" class="kv-table"></div>
       <div id="spread-status" class="status"></div>
@@ -1378,6 +1379,7 @@ __PER_SYMBOL_PANELS_HTML__
       }
       await loadRollingParams();
       await loadSpreadMapping();
+      await updateIntraTrailingStop(false);
     }
 
     applyFixedContext();
@@ -1908,11 +1910,30 @@ def make_unimmr_close_key_suffix(open_venue: str, hedge_venue: str) -> str:
 
 
 
-def intra_symbol_list_key(env_name: str, name: str, key_suffix: str) -> str:
+def infer_namespace_from_name(name: str) -> Optional[str]:
+    """<exchange>-intra-<tag> -> intra。"""
+    matched = INTRA_RE.match((name or "").strip().lower())
+    if not matched:
+        return None
+    return matched.group(2)
+
+
+def current_namespace() -> str:
+    """进程 CWD 推断配置命名空间；缺省 intra（旧行为）。"""
+    return infer_namespace_from_name(infer_dir_prefix_from_cwd() or "") or "intra"
+
+
+def intra_symbol_list_key(
+    env_name: str,
+    name: str,
+    key_suffix: str,
+    namespace: Optional[str] = None,
+) -> str:
     env = (env_name or "").strip().lower()
     if not env:
         raise ValueError("env_name unavailable (no cwd prefix)")
-    return f"{env}:intra_{name}:{key_suffix.strip().lower()}"
+    ns = (namespace or current_namespace()).strip().lower()
+    return f"{env}:{ns}_{name}:{key_suffix.strip().lower()}"
 
 
 def current_env_name() -> str:
@@ -2093,7 +2114,7 @@ def ensure_intra_runtime_quantiles(
 
 
 def threshold_mapping_key(kind: str, open_venue: str, hedge_venue: str) -> str:
-    return f"intra_{kind}_thresholds_config_{open_venue}_{hedge_venue}"
+    return f"{current_namespace()}_{kind}_thresholds_config_{open_venue}_{hedge_venue}"
 
 
 def normalize_threshold_mapping(values: Dict[str, Any]) -> Dict[str, str]:
@@ -2153,7 +2174,7 @@ def write_threshold_mapping(
             existing = {}
     payload = {
         "schema_version": 1,
-        "namespace": "intra",
+        "namespace": current_namespace(),
         "kind": kind,
         "open_venue": open_venue,
         "hedge_venue": hedge_venue,
@@ -2206,7 +2227,7 @@ def sync_thresholds(
     symbol: Optional[str] = None,
 ) -> Dict[str, Any]:
     rolling_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
-    write_key = f"intra_{kind}_thresholds_{open_venue}_{hedge_venue}"
+    write_key = f"{current_namespace()}_{kind}_thresholds_{open_venue}_{hedge_venue}"
 
     mapping = normalize_threshold_mapping(mapping or {})
     if not mapping:
@@ -2362,12 +2383,14 @@ def render_index_html(
     html = html.replace(
         "__PER_SYMBOL_PANELS_HTML__",
         ps_overrides.render_per_symbol_panels_html()
-        + ps_overrides.render_taker_decision_model_panel_html(),
+        + ps_overrides.render_taker_decision_model_panel_html()
+        + ps_overrides.render_intra_trailing_stop_panel_html(),
     )
     html = html.replace(
         "__PER_SYMBOL_PANELS_JS__",
         ps_overrides.render_per_symbol_panels_js()
-        + ps_overrides.render_taker_decision_model_panel_js(),
+        + ps_overrides.render_taker_decision_model_panel_js()
+        + ps_overrides.render_intra_trailing_stop_panel_js(),
     )
     return html
 
@@ -2543,7 +2566,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            key = f"intra_strategy_params_{open_venue}_{hedge_venue}"
+            key = f"{current_namespace()}_strategy_params_{open_venue}_{hedge_venue}"
             raw_values = read_hash(self.server.context.redis_client, key)
             values, stale_values = filter_mapping_by_schema(
                 raw_values,
@@ -2638,6 +2661,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/hedge-offset-limits",
             "/api/open-offset-lower",
             "/api/taker-decision-model",
+            "/api/intra-trailing-stop",
         ):
             try:
                 _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
@@ -2652,6 +2676,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 if parsed.path == "/api/amount-u":
                     data = ps_overrides.read_amount_u(rds, env_name, open_venue, hedge_venue)
+                elif parsed.path == "/api/intra-trailing-stop":
+                    data = ps_overrides.read_intra_trailing_stop(rds, env_name, open_venue, hedge_venue)
                 elif parsed.path == "/api/max-pos-u":
                     data = ps_overrides.read_max_pos_u(rds, env_name, open_venue, hedge_venue)
                 elif parsed.path == "/api/hedge-offset-limits":
@@ -2700,70 +2726,84 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            raw_dump = payload.get("dump_symbols") or []
-            raw_fwd = payload.get("fwd_trade_symbols") or []
-            raw_bwd = payload.get("bwd_trade_symbols") or []
-            raw_vol_gate = payload.get("vol_gate_symbols") or []
-            dump_symbols = normalize_symbol_list_for_intra(raw_dump)
-            fwd_symbols = normalize_symbol_list_for_intra(raw_fwd)
-            bwd_symbols = normalize_symbol_list_for_intra(raw_bwd)
-            vol_gate_symbols = normalize_symbol_list_for_intra(raw_vol_gate)
-            raw_dump_len, raw_dump_sample = summarize_symbol_payload(raw_dump)
-            raw_fwd_len, raw_fwd_sample = summarize_symbol_payload(raw_fwd)
-            raw_bwd_len, raw_bwd_sample = summarize_symbol_payload(raw_bwd)
-            raw_vol_gate_len, raw_vol_gate_sample = summarize_symbol_payload(raw_vol_gate)
+            # 字段缺省（未传或 null）跳过对应 Redis key，避免空 body / 部分字段
+            # 请求把线上已有列表清成 []；显式传 [] 仍是合法的清空操作。
+            field_specs = (
+                ("dump_symbols", "dump"),
+                ("fwd_trade_symbols", "fwd"),
+                ("bwd_trade_symbols", "bwd"),
+                ("vol_gate_symbols", "vol_gate"),
+            )
+            provided = [
+                (name, payload[name])
+                for name, _ in field_specs
+                if payload.get(name) is not None
+            ]
+            if not provided:
+                self._send_error(
+                    400,
+                    "symbol-lists 未携带任何列表字段（{}），未写入任何 key".format(
+                        "/".join(name for name, _ in field_specs)
+                    ),
+                )
+                return
+            invalid_fields = [
+                name
+                for name, value in provided
+                if not isinstance(value, (list, str))
+            ]
+            if invalid_fields:
+                self._send_error(
+                    400,
+                    "字段必须是字符串或数组: {}".format(", ".join(invalid_fields)),
+                )
+                return
+            normalized_lists: Dict[str, List[str]] = {
+                name: normalize_symbol_list_for_intra(value)
+                for name, value in provided
+            }
+            skipped_fields = [name for name, _ in field_specs if name not in normalized_lists]
             print(
-                "[symbol-lists] exchange={} open={} hedge={} key_suffix={}".format(
-                    exchange, open_v, hedge_v, key_suffix
+                "[symbol-lists] exchange={} open={} hedge={} key_suffix={} skipped={}".format(
+                    exchange, open_v, hedge_v, key_suffix, ",".join(skipped_fields) or "-"
                 )
             )
-            print(
-                "[symbol-lists] dump raw={} norm={} sample_raw={} sample_norm={}".format(
-                    raw_dump_len, len(dump_symbols), raw_dump_sample, dump_symbols[:5]
+            for name, label in field_specs:
+                if name not in normalized_lists:
+                    continue
+                raw_len, raw_sample = summarize_symbol_payload(payload[name])
+                symbols = normalized_lists[name]
+                print(
+                    "[symbol-lists] {} raw={} norm={} sample_raw={} sample_norm={}".format(
+                        label, raw_len, len(symbols), raw_sample, symbols[:5]
+                    )
                 )
-            )
-            print(
-                "[symbol-lists] fwd  raw={} norm={} sample_raw={} sample_norm={}".format(
-                    raw_fwd_len, len(fwd_symbols), raw_fwd_sample, fwd_symbols[:5]
-                )
-            )
-            print(
-                "[symbol-lists] bwd  raw={} norm={} sample_raw={} sample_norm={}".format(
-                    raw_bwd_len, len(bwd_symbols), raw_bwd_sample, bwd_symbols[:5]
-                )
-            )
-            print(
-                "[symbol-lists] vol_gate raw={} norm={} sample_raw={} sample_norm={}".format(
-                    raw_vol_gate_len,
-                    len(vol_gate_symbols),
-                    raw_vol_gate_sample,
-                    vol_gate_symbols[:5],
-                )
-            )
             sys.stdout.flush()
 
             rds = self.server.context.redis_client
             try:
                 env_name = current_env_name()
-                rds.set(intra_symbol_list_key(env_name, "dump_symbols", key_suffix), json.dumps(dump_symbols, ensure_ascii=False))
-                rds.set(intra_symbol_list_key(env_name, "fwd_trade_symbols", key_suffix), json.dumps(fwd_symbols, ensure_ascii=False))
-                rds.set(intra_symbol_list_key(env_name, "bwd_trade_symbols", key_suffix), json.dumps(bwd_symbols, ensure_ascii=False))
-                rds.set(intra_symbol_list_key(env_name, "vol_gate_symbols", key_suffix), json.dumps(vol_gate_symbols, ensure_ascii=False))
+                ns = current_namespace()
+                for name, _ in field_specs:
+                    if name not in normalized_lists:
+                        continue
+                    rds.set(
+                        intra_symbol_list_key(env_name, name, key_suffix, ns),
+                        json.dumps(normalized_lists[name], ensure_ascii=False),
+                    )
             except Exception as exc:
                 self._send_error(500, f"redis write failed: {exc}")
                 return
 
-            self._send_json(
-                200,
-                {
-                    "exchange": exchange,
-                    "key_suffix": key_suffix,
-                    "dump_count": len(dump_symbols),
-                    "fwd_count": len(fwd_symbols),
-                    "bwd_count": len(bwd_symbols),
-                    "vol_gate_count": len(vol_gate_symbols),
-                },
-            )
+            response: Dict[str, Any] = {
+                "exchange": exchange,
+                "key_suffix": key_suffix,
+                "skipped_fields": skipped_fields,
+            }
+            for name, label in field_specs:
+                if name in normalized_lists:
+                    response[f"{label}_count"] = len(normalized_lists[name])
+            self._send_json(200, response)
             return
 
         if parsed.path == "/api/risk-params":
@@ -2799,7 +2839,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             values = payload.get("values") or {}
-            key = f"intra_strategy_params_{open_v}_{hedge_v}"
+            key = f"{current_namespace()}_strategy_params_{open_v}_{hedge_v}"
             try:
                 mapping = sanitize_mapping_by_schema(
                     values,
@@ -2920,6 +2960,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/hedge-offset-limits",
             "/api/open-offset-lower",
             "/api/taker-decision-model",
+            "/api/intra-trailing-stop",
         ):
             try:
                 _, open_v, hedge_v, _ = self._resolve_payload_context(payload)
@@ -2935,6 +2976,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 if parsed.path == "/api/amount-u":
                     result = ps_overrides.write_amount_u(rds, env_name, open_v, hedge_v, values)
+                elif parsed.path == "/api/intra-trailing-stop":
+                    result = ps_overrides.write_intra_trailing_stop(rds, env_name, open_v, hedge_v, values)
                 elif parsed.path == "/api/max-pos-u":
                     result = ps_overrides.write_max_pos_u(rds, env_name, open_v, hedge_v, values)
                 elif parsed.path == "/api/hedge-offset-limits":

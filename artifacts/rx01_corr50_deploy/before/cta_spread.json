@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "max_pos_u": 100.0,
+  "entry": {
+    "factor_long_quantile": 0.9,
+    "factor_short_quantile": 0.1,
+    "spread_lower_quantile": 0.3,
+    "spread_upper_quantile": 0.7
+  },
+  "execution": {
+    "factor_exit_quantile_long": 0.7,
+    "factor_exit_quantile_short": 0.3
+  }
+}

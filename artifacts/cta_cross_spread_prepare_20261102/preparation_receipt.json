@@ -1,0 +1,32 @@
+{
+  "configuration_only": true,
+  "manager_live_config_changed": false,
+  "manager_restarted": false,
+  "manager_pids": [
+    828467
+  ],
+  "protected_files_unchanged": {
+    "/home/ubuntu/crypto_cta_manager/config/cta-manager.toml": "375dfc294784ff50e9bdf418122f3337bdf9a5c43aae71d0d31588bb2c7b7708",
+    "/home/ubuntu/crypto_cta_manager/bin/cta_web": "ffb015bcbb4cafcaa4e4a417df1e39cd6976aad1b035597232daa000caad709f",
+    "/home/ubuntu/okex_mm_alpha/env.sh": "abbaaccb7225bba4c4fb45d522dbd67e491ae2f9b18981cd9711b19e090fcc29",
+    "/home/ubuntu/okex_mm_alpha/trade_engine.toml": "fb6bee9dd17af4baf8dda52157d0b03bcf67efdbffb2029a65a9328bc4c4ad8c",
+    "/home/ubuntu/binance_exec_trade08/env.sh": "b30b2239e7142914e796701d57708a16fb4eb018209543fdc4863248a037964a",
+    "/home/ubuntu/binance_exec_trade08/trade_engine.toml": "aab1b4a75f872872f74268ccbf44ecf2000469a6a7f22b9295e37ba8fbfac42f"
+  },
+  "created_envs": [
+    "/home/ubuntu/okex_exec_trade01",
+    "/home/ubuntu/okex-binance-cta-spread-rx01"
+  ],
+  "manager_candidate": "/home/ubuntu/crypto_cta_manager/maintenance-backups/cta_cross_spread_prepare_20261102/cta-manager.toml.candidate",
+  "binance_source_enabled": false,
+  "okex_source_enabled": false,
+  "credential_source": "okex_mm_alpha/env.sh (three OKX variables only)",
+  "pending": [
+    "live Manager release with cross-spread support",
+    "resolve IOTAUSDT -0.1 residual",
+    "reviewed symbol/factor list",
+    "build/publish Exec and signal binaries",
+    "account rules/risk configuration and paired strategy bindings",
+    "authenticated gateway route for /exec_okex01"
+  ]
+}

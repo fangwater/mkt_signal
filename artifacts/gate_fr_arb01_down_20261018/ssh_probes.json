@@ -1,0 +1,30 @@
+[
+  {
+    "utc": "2026-10-18T06:42:21.014915+00:00",
+    "route": "VPN direct",
+    "exit_code": 255,
+    "stdout": "",
+    "stderr": "Connection closed by 10.61.20.5 port 10022\n",
+    "duration_seconds": 5.07
+  },
+  {
+    "utc": "2026-10-18T06:42:21.015771+00:00",
+    "route": "Public direct",
+    "exit_code": 255,
+    "stdout": "",
+    "stderr": "ssh: connect to host 13.115.227.29 port 22: Connection timed out\n",
+    "duration_seconds": 12.025
+  },
+  {
+    "utc": "2026-10-18T06:42:21.016550+00:00",
+    "route": "Public via jp-vpn",
+    "error": "probe exceeded 20s",
+    "duration_seconds": 20.006
+  },
+  {
+    "utc": "2026-10-18T06:42:21.017505+00:00",
+    "route": "Public via sg",
+    "error": "probe exceeded 20s",
+    "duration_seconds": 20.01
+  }
+]

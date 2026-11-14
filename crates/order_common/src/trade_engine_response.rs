@@ -1,12 +1,21 @@
-use crate::trade_error_code::{binance, bitget, bybit, gate};
+use crate::trade_error_code::{binance, bitget, bybit, gate, hyperliquid};
 use crate::TradeRequestType;
 /// TradeEngineResponse trait 提供 trade engine 返回结果的通用访问接口
 use symbol_utils::Exchange;
+
+/// Hyperliquid action acknowledgements do not carry fill lifecycle fields; fills and terminal
+/// states come from the authenticated private stream. Reuse that otherwise-empty tail to bind an
+/// acknowledgement to the exact account and network that produced it.
+pub const HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_OFFSET: usize = 31;
+pub const HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_LEN: usize = 32;
+pub const HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_END: usize =
+    HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_OFFSET + HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_LEN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TradeRequestKind {
     Open,
     Cancel,
+    Modify,
     Other,
 }
 
@@ -58,6 +67,7 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::BinanceWsNewMarginOrder
                 | TradeRequestType::BinanceNewUMConditionalOrder
                 | TradeRequestType::BinanceNewMarginOrder
+                | TradeRequestType::BinanceLtpNewSpotOrder
                 | TradeRequestType::OkexNewMarginOrder
                 | TradeRequestType::OkexNewUMOrder
                 | TradeRequestType::GateUnifiedNewOrder
@@ -67,7 +77,9 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::BitgetNewMarginOrder
                 | TradeRequestType::BitgetNewUMOrder
                 | TradeRequestType::BitgetNewSpotOrder
-                | TradeRequestType::BitgetNewCoinFuturesOrder,
+                | TradeRequestType::BitgetNewCoinFuturesOrder
+                | TradeRequestType::HyperliquidNewMarginOrder
+                | TradeRequestType::HyperliquidNewUMOrder,
             ) => TradeRequestKind::Open,
             Ok(
                 TradeRequestType::BinanceCancelUMOrder
@@ -75,6 +87,7 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::BinanceWsCancelMarginOrder
                 | TradeRequestType::BinanceCancelUMConditionalOrder
                 | TradeRequestType::BinanceCancelMarginOrder
+                | TradeRequestType::BinanceLtpCancelSpotOrder
                 | TradeRequestType::OkexCancelMarginOrder
                 | TradeRequestType::OkexCancelUMOrder
                 | TradeRequestType::GateUnifiedCancelOrder
@@ -84,8 +97,19 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::BitgetCancelMarginOrder
                 | TradeRequestType::BitgetCancelUMOrder
                 | TradeRequestType::BitgetCancelSpotOrder
-                | TradeRequestType::BitgetCancelCoinFuturesOrder,
+                | TradeRequestType::BitgetCancelCoinFuturesOrder
+                | TradeRequestType::HyperliquidCancelMarginOrder
+                | TradeRequestType::HyperliquidCancelUMOrder,
             ) => TradeRequestKind::Cancel,
+            Ok(
+                TradeRequestType::BinanceModifyUMOrder
+                | TradeRequestType::BinanceStdModifyUMOrder
+                | TradeRequestType::BinanceStdBatchModifyUMOrders
+                | TradeRequestType::BinanceWsModifyUMOrder
+                | TradeRequestType::BinanceModifyCmOrder
+                | TradeRequestType::BinancePmModifyCmOrder
+                | TradeRequestType::OkexModifyUMOrder,
+            ) => TradeRequestKind::Modify,
             _ => TradeRequestKind::Other,
         }
     }
@@ -98,8 +122,47 @@ pub trait TradeEngineResponse {
         self.request_kind() == TradeRequestKind::Cancel
     }
 
+    fn is_modify_request(&self) -> bool {
+        self.request_kind() == TradeRequestKind::Modify
+    }
+
     fn is_open_rejected(&self) -> bool {
         self.is_open_request() && !self.is_request_success()
+    }
+
+    /// RapidX borrowing-pool exhaustion is a terminal constraint for this target.
+    /// Keep transport failures and rate limits on their ordinary retry paths.
+    fn is_rapidx_borrow_unavailable(&self) -> bool {
+        self.is_open_rejected()
+            && matches!(
+                self.exchange_enum(),
+                Some(Exchange::Binance | Exchange::Okex)
+            )
+            && matches!(self.error_code(), 401126 | 406017)
+    }
+
+    /// The Hyperliquid action may have reached the exchange, but its WS acknowledgement was not
+    /// usable. The local order must remain non-terminal until orderStatus reconciliation completes.
+    fn is_hyperliquid_action_ambiguous(&self) -> bool {
+        matches!(self.exchange_enum(), Some(Exchange::Hyperliquid))
+            && matches!(
+                self.request_kind(),
+                TradeRequestKind::Open | TradeRequestKind::Cancel | TradeRequestKind::Modify
+            )
+            && self.error_code() == hyperliquid::ACTION_AMBIGUOUS
+    }
+
+    fn is_action_result_unknown(&self) -> bool {
+        self.is_hyperliquid_action_ambiguous()
+            || (matches!(
+                self.request_kind(),
+                TradeRequestKind::Open | TradeRequestKind::Cancel | TradeRequestKind::Modify
+            ) && (self.error_code() == crate::trade_error_code::ACTION_RESULT_UNKNOWN
+                || (self.exchange_enum() == Some(Exchange::Binance)
+                    && matches!(
+                        self.error_code(),
+                        binance::UNEXPECTED_RESP | binance::TIMEOUT
+                    ))))
     }
 
     /// Whether the order is rejected because maker-only/post-only would cross.
@@ -120,6 +183,7 @@ pub trait TradeEngineResponse {
             Some(Exchange::Gate) => self.error_code() == gate::ORDER_POC,
             Some(Exchange::Bybit) => matches!(self.error_code(), 170217 | 170218),
             Some(Exchange::Bitget) => false,
+            Some(Exchange::Hyperliquid) => self.error_code() == hyperliquid::POST_ONLY_REJECTED,
             _ => false,
         }
     }
@@ -129,6 +193,7 @@ pub trait TradeEngineResponse {
         match self.exchange_enum() {
             Some(Exchange::Okex) => matches!(self.error_code(), 51006 | 51137),
             Some(Exchange::Bybit) => matches!(self.error_code(), 110003 | 170132 | 170193),
+            Some(Exchange::Hyperliquid) => self.error_code() == hyperliquid::PRICE_LIMIT_REJECTED,
             Some(Exchange::Bitget) => matches!(
                 self.error_code(),
                 40815 | 40816 | 22006 | 22007 | 22008 | 22009 | 22046 | 22047
@@ -177,6 +242,12 @@ pub trait TradeEngineResponse {
             && self.error_code() == bitget::POSITION_TIER_LIMIT_EXCEEDED
     }
 
+    fn is_hyperliquid_position_limit_exceeded(&self) -> bool {
+        matches!(self.exchange_enum(), Some(Exchange::Hyperliquid))
+            && self.is_open_request()
+            && self.error_code() == hyperliquid::POSITION_LIMIT_EXCEEDED
+    }
+
     fn is_bitget_max_possible_leverage_exceeded(&self) -> bool {
         matches!(self.exchange_enum(), Some(Exchange::Bitget))
             && self.is_open_request()
@@ -221,6 +292,10 @@ pub trait TradeEngineResponse {
                     | gate::AUTO_BORROW_TOO_MUCH
                     | gate::INITIAL_MARGIN_TOO_LOW
             ),
+            Some(Exchange::Hyperliquid) => matches!(
+                self.error_code(),
+                hyperliquid::INSUFFICIENT_MARGIN | hyperliquid::INSUFFICIENT_SPOT_BALANCE
+            ),
             _ => false,
         }
     }
@@ -253,6 +328,7 @@ pub trait TradeEngineResponse {
                     22001 | 25204 | 43001 | 43004 | 45031 | 45055 | 45057
                 )
             }
+            Some(Exchange::Hyperliquid) => self.error_code() == hyperliquid::ORDER_NOT_FOUND,
             _ => false,
         }
     }
@@ -290,6 +366,7 @@ pub trait TradeEngineResponse {
                     22001 | 25204 | 43001 | 43004 | 45031 | 45055 | 45057
                 )
             }
+            Some(Exchange::Hyperliquid) => self.error_code() == hyperliquid::ORDER_NOT_FOUND,
             _ => false,
         }
     }
@@ -303,6 +380,51 @@ pub trait TradeEngineResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rapidx_borrow_exhaustion_only_classifies_rejected_opens() {
+        for (exchange, open, cancel) in [
+            (
+                Exchange::Binance,
+                TradeRequestType::BinanceLtpNewSpotOrder,
+                TradeRequestType::BinanceLtpCancelSpotOrder,
+            ),
+            (
+                Exchange::Okex,
+                TradeRequestType::OkexNewMarginOrder,
+                TradeRequestType::OkexCancelMarginOrder,
+            ),
+        ] {
+            for code in [401126, 406017] {
+                for status in [200, 400] {
+                    let response = TradeEngineResponseMessage::new(
+                        status,
+                        open as u32,
+                        exchange as u32,
+                        123,
+                        code,
+                    );
+                    assert!(response.is_rapidx_borrow_unavailable());
+                }
+                let response =
+                    TradeEngineResponseMessage::new(400, cancel as u32, exchange as u32, 123, code);
+                assert!(!response.is_rapidx_borrow_unavailable());
+            }
+            for code in [0, 429, 401034, -2019, 51008] {
+                let response =
+                    TradeEngineResponseMessage::new(200, open as u32, exchange as u32, 123, code);
+                assert!(!response.is_rapidx_borrow_unavailable());
+            }
+        }
+        let unrelated = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BybitNewUMOrder as u32,
+            Exchange::Bybit as u32,
+            123,
+            401126,
+        );
+        assert!(!unrelated.is_rapidx_borrow_unavailable());
+    }
 
     #[test]
     fn is_success_requires_http_ok_and_no_error_code() {
@@ -321,6 +443,27 @@ mod tests {
         let http_err = TradeEngineResponseMessage::new(400, 1, 1, 123, -2011);
         assert!(!http_err.is_http_ok());
         assert!(!http_err.is_request_success());
+    }
+
+    #[test]
+    fn classifies_all_binance_modify_transports() {
+        for req_type in [
+            TradeRequestType::BinanceModifyUMOrder,
+            TradeRequestType::BinanceStdModifyUMOrder,
+            TradeRequestType::BinanceStdBatchModifyUMOrders,
+            TradeRequestType::BinanceWsModifyUMOrder,
+        ] {
+            let response = TradeEngineResponseMessage::new(
+                200,
+                req_type as u32,
+                symbol_utils::Exchange::Binance as u32,
+                42,
+                0,
+            );
+            assert!(response.is_modify_request());
+            assert!(!response.is_open_request());
+            assert!(!response.is_cancel_request());
+        }
     }
 
     #[test]
@@ -384,6 +527,134 @@ mod tests {
         assert!(resp.is_cancel_request());
         assert!(resp.is_cancel_rejected());
         assert!(resp.is_cancel_not_cancellable());
+    }
+
+    #[test]
+    fn detects_hyperliquid_order_not_found_cancel() {
+        let resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::HyperliquidCancelUMOrder as u32,
+            symbol_utils::Exchange::Hyperliquid as u32,
+            123,
+            hyperliquid::ORDER_NOT_FOUND,
+        );
+        assert!(resp.is_cancel_request());
+        assert!(resp.is_cancel_rejected());
+        assert!(resp.is_cancel_not_cancellable());
+    }
+
+    #[test]
+    fn detects_hyperliquid_insufficient_margin() {
+        let resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::HyperliquidNewUMOrder as u32,
+            symbol_utils::Exchange::Hyperliquid as u32,
+            123,
+            hyperliquid::INSUFFICIENT_MARGIN,
+        );
+        assert!(resp.is_open_request());
+        assert!(resp.is_open_rejected());
+        assert!(resp.is_insufficient_margin());
+    }
+
+    #[test]
+    fn hyperliquid_position_limit_is_open_only_and_exchange_scoped() {
+        for (request, exchange, expected) in [
+            (
+                TradeRequestType::HyperliquidNewUMOrder,
+                Exchange::Hyperliquid,
+                true,
+            ),
+            (
+                TradeRequestType::HyperliquidCancelUMOrder,
+                Exchange::Hyperliquid,
+                false,
+            ),
+            (TradeRequestType::BybitNewUMOrder, Exchange::Bybit, false),
+        ] {
+            let response = TradeEngineResponseMessage::new(
+                400,
+                request as u32,
+                exchange as u32,
+                42,
+                hyperliquid::POSITION_LIMIT_EXCEEDED,
+            );
+            assert_eq!(response.is_hyperliquid_position_limit_exceeded(), expected);
+            assert!(!response.is_insufficient_margin());
+        }
+    }
+
+    #[test]
+    fn detects_hyperliquid_ambiguous_open_and_cancel_only() {
+        for req_type in [
+            TradeRequestType::HyperliquidNewUMOrder,
+            TradeRequestType::HyperliquidCancelMarginOrder,
+        ] {
+            let resp = TradeEngineResponseMessage::new(
+                503,
+                req_type as u32,
+                symbol_utils::Exchange::Hyperliquid as u32,
+                123,
+                hyperliquid::ACTION_AMBIGUOUS,
+            );
+            assert!(resp.is_hyperliquid_action_ambiguous());
+        }
+
+        let wrong_exchange = TradeEngineResponseMessage::new(
+            503,
+            TradeRequestType::BinanceWsNewUMOrder as u32,
+            symbol_utils::Exchange::Binance as u32,
+            123,
+            hyperliquid::ACTION_AMBIGUOUS,
+        );
+        assert!(!wrong_exchange.is_hyperliquid_action_ambiguous());
+    }
+
+    #[test]
+    fn binance_unknown_execution_errors_require_query_only_for_order_actions() {
+        for code in [binance::UNEXPECTED_RESP, binance::TIMEOUT] {
+            for req_type in [
+                TradeRequestType::BinanceNewMarginOrder,
+                TradeRequestType::BinanceNewUMOrder,
+                TradeRequestType::BinanceCancelMarginOrder,
+                TradeRequestType::BinanceModifyUMOrder,
+            ] {
+                let response = TradeEngineResponseMessage::new(
+                    400,
+                    req_type as u32,
+                    Exchange::Binance as u32,
+                    42,
+                    code,
+                );
+                assert!(response.is_action_result_unknown(), "{req_type:?} {code}");
+            }
+            let wrong_exchange = TradeEngineResponseMessage::new(
+                400,
+                TradeRequestType::OkexNewUMOrder as u32,
+                Exchange::Okex as u32,
+                42,
+                code,
+            );
+            assert!(!wrong_exchange.is_action_result_unknown());
+            let non_order = TradeEngineResponseMessage::new(
+                400,
+                TradeRequestType::BinanceUMSetLeverage as u32,
+                Exchange::Binance as u32,
+                42,
+                code,
+            );
+            assert!(!non_order.is_action_result_unknown());
+        }
+        for code in [-2010, -2027, -1008] {
+            let rejected = TradeEngineResponseMessage::new(
+                400,
+                TradeRequestType::BinanceNewMarginOrder as u32,
+                Exchange::Binance as u32,
+                42,
+                code,
+            );
+            assert!(!rejected.is_action_result_unknown());
+        }
     }
 
     #[test]

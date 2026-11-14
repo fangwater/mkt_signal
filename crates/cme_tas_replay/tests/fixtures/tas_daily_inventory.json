@@ -1,0 +1,51 @@
+{
+  "events": [
+    {
+      "ric": "TYM26",
+      "published_ns": 1772837700000000000,
+      "exchange_hms_ns": null,
+      "volume": 4,
+      "price_e9": 100
+    },
+    {
+      "ric": "TYM26",
+      "published_ns": 1773007200000000000,
+      "exchange_hms_ns": null,
+      "volume": 7,
+      "price_e9": 100
+    },
+    {
+      "ric": "TYM26",
+      "published_ns": 1773014400000000000,
+      "exchange_hms_ns": null,
+      "volume": 3,
+      "price_e9": null
+    }
+  ],
+  "expected": [
+    {
+      "ric": "TYM26",
+      "trading_day": "2026-03-06",
+      "volume": 4,
+      "trades": 1,
+      "invalid_price": 0,
+      "max_published_ns": 1772837700000000000,
+      "min_event_ns": 1772837700000000000,
+      "max_event_ns": 1772837700000000000,
+      "exchange_time_fallback": 1,
+      "late_after_1655": 1
+    },
+    {
+      "ric": "TYM26",
+      "trading_day": "2026-03-09",
+      "volume": 7,
+      "trades": 1,
+      "invalid_price": 1,
+      "max_published_ns": 1773014400000000000,
+      "min_event_ns": 1773007200000000000,
+      "max_event_ns": 1773014400000000000,
+      "exchange_time_fallback": 2,
+      "late_after_1655": 0
+    }
+  ]
+}

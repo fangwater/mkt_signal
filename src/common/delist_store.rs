@@ -1,0 +1,1416 @@
+//! Postgres 持久化：原始公告 + 拉取 / LLM 状态，便于重启恢复与失败查询。
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio_postgres::{Client, NoTls};
+
+use crate::common::announcement_llm::LlmExtractInput;
+use crate::common::announcement_watch::RawAnnouncement;
+use crate::common::exchange_info::ListingSnapshotRow;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceStatus {
+    pub source: String,
+    pub kind: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_success_ms: Option<i64>,
+    pub last_attempt_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmRunStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_fingerprint: Option<String>,
+    pub exchange: String,
+    pub announcement_id: String,
+    #[serde(default)]
+    pub title: String,
+    pub ok: bool,
+    pub last_attempt_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_success_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+impl LlmRunStatus {
+    pub fn should_extract(&self, input: &LlmExtractInput, now_ms: i64, force: bool) -> bool {
+        if force {
+            return true;
+        }
+        let same_content = self.input_fingerprint.as_deref() == Some(input.fingerprint().as_str());
+        if same_content && self.ok {
+            return false;
+        }
+        // Bound failure retries even when a source repeatedly changes its metadata or content.
+        self.ok || now_ms.saturating_sub(self.last_attempt_ms) >= 300_000
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StatusSnapshot {
+    pub ok: bool,
+    pub as_of_ms: i64,
+    pub degraded: bool,
+    pub postgres: bool,
+    pub sources: Vec<SourceStatus>,
+    pub llm_failures: Vec<LlmRunStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RedisRemovalAudit {
+    pub id: i64,
+    pub detected_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_ms: Option<i64>,
+    pub account_slug: String,
+    pub exchange: String,
+    pub redis_site: String,
+    pub symbol: String,
+    pub venues: Value,
+    pub changes: Value,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RedisDumpAudit {
+    pub id: i64,
+    pub detected_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_ms: Option<i64>,
+    pub account_slug: String,
+    pub exchange: String,
+    pub redis_site: String,
+    pub symbol: String,
+    pub event: Value,
+    pub snapshot_ms: i64,
+    pub open_usdt: f64,
+    pub hedge_usdt: f64,
+    pub impacted_position_usdt: f64,
+    pub threshold_usdt: f64,
+    pub changes: Value,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FlattenExecutionAudit {
+    pub id: i64,
+    pub requested_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_ms: Option<i64>,
+    pub dedup_key: String,
+    pub trigger: String,
+    pub account_slug: String,
+    pub exchange: String,
+    pub symbol: String,
+    pub delist_utc: String,
+    pub deadline_ms: i64,
+    pub snapshot_ms: i64,
+    pub open_usdt: f64,
+    pub hedge_usdt: f64,
+    pub position_usdt: f64,
+    pub manual_threshold_usdt: f64,
+    pub command: Value,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notification_status: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct StatusBook {
+    sources: BTreeMap<String, SourceStatus>,
+    llm: BTreeMap<(String, String), LlmRunStatus>,
+}
+
+impl StatusBook {
+    pub fn snapshot(&self, postgres: bool) -> StatusSnapshot {
+        let as_of_ms = chrono::Utc::now().timestamp_millis();
+        let mut sources: Vec<SourceStatus> = self.sources.values().cloned().collect();
+        sources.sort_by(|left, right| left.source.cmp(&right.source));
+        let mut llm_failures: Vec<LlmRunStatus> =
+            self.llm.values().filter(|item| !item.ok).cloned().collect();
+        llm_failures.sort_by(|left, right| right.last_attempt_ms.cmp(&left.last_attempt_ms));
+        llm_failures.truncate(50);
+        let degraded = sources.iter().any(|item| !item.ok) || !llm_failures.is_empty();
+        StatusSnapshot {
+            ok: true,
+            as_of_ms,
+            degraded,
+            postgres,
+            sources,
+            llm_failures,
+        }
+    }
+
+    pub fn replace_sources(&mut self, rows: Vec<SourceStatus>) {
+        self.sources = rows
+            .into_iter()
+            .map(|row| (row.source.clone(), row))
+            .collect();
+    }
+
+    pub fn replace_llm(&mut self, rows: Vec<LlmRunStatus>) {
+        self.llm = rows
+            .into_iter()
+            .map(|row| ((row.exchange.clone(), row.announcement_id.clone()), row))
+            .collect();
+    }
+
+    pub fn mark_ok(&mut self, source: &str, kind: &str) {
+        let now = chrono::Utc::now().timestamp_millis();
+        self.sources.insert(
+            source.to_string(),
+            SourceStatus {
+                source: source.to_string(),
+                kind: kind.to_string(),
+                ok: true,
+                last_success_ms: Some(now),
+                last_attempt_ms: now,
+                last_error: None,
+                last_error_ms: None,
+            },
+        );
+    }
+
+    pub fn mark_err(&mut self, source: &str, kind: &str, err: &str) {
+        let now = chrono::Utc::now().timestamp_millis();
+        let previous = self.sources.get(source);
+        self.sources.insert(
+            source.to_string(),
+            SourceStatus {
+                last_success_ms: previous.and_then(|item| item.last_success_ms),
+                source: source.to_string(),
+                kind: kind.to_string(),
+                ok: false,
+                last_attempt_ms: now,
+                last_error: Some(truncate_error(err)),
+                last_error_ms: Some(now),
+            },
+        );
+    }
+
+    pub fn mark_llm(
+        &mut self,
+        exchange: &str,
+        announcement_id: &str,
+        title: &str,
+        ok: bool,
+        err: Option<&str>,
+        input_fingerprint: String,
+    ) {
+        let now = chrono::Utc::now().timestamp_millis();
+        let key = (exchange.to_string(), announcement_id.to_string());
+        let previous = self.llm.get(&key);
+        self.llm.insert(
+            key,
+            LlmRunStatus {
+                last_success_ms: if ok {
+                    Some(now)
+                } else {
+                    previous.and_then(|item| item.last_success_ms)
+                },
+                input_fingerprint: Some(input_fingerprint),
+                exchange: exchange.to_string(),
+                announcement_id: announcement_id.to_string(),
+                title: title.to_string(),
+                ok,
+                last_attempt_ms: now,
+                last_error: if ok { None } else { err.map(truncate_error) },
+            },
+        );
+        if ok {
+            self.mark_ok("llm", "llm");
+        } else if let Some(err) = err {
+            self.mark_err("llm", "llm", err);
+        }
+    }
+
+    pub fn source(&self, name: &str) -> Option<&SourceStatus> {
+        self.sources.get(name)
+    }
+
+    pub fn llm(&self, exchange: &str, announcement_id: &str) -> Option<&LlmRunStatus> {
+        self.llm
+            .get(&(exchange.to_string(), announcement_id.to_string()))
+    }
+
+    /// Most recent LLM extraction attempt for each exchange, including failures.
+    pub fn llm_latest_by_exchange(&self) -> BTreeMap<String, LlmRunStatus> {
+        let mut latest: BTreeMap<String, LlmRunStatus> = BTreeMap::new();
+        for row in self.llm.values() {
+            let previous = latest
+                .entry(row.exchange.clone())
+                .or_insert_with(|| row.clone());
+            if row.last_attempt_ms > previous.last_attempt_ms {
+                *previous = row.clone();
+            }
+        }
+        latest
+    }
+}
+
+pub struct DelistStore {
+    url: String,
+    client: Mutex<Option<Client>>,
+}
+
+impl DelistStore {
+    pub fn new(url: String) -> Arc<Self> {
+        Arc::new(Self {
+            url,
+            client: Mutex::new(None),
+        })
+    }
+
+    pub async fn connect(url: &str) -> Result<Arc<Self>> {
+        let store = Self::new(url.to_string());
+        store.ensure_client().await?;
+        store.migrate().await?;
+        Ok(store)
+    }
+
+    async fn ensure_client(&self) -> Result<()> {
+        let mut slot = self.client.lock().await;
+        if slot.is_some() {
+            return Ok(());
+        }
+        let (client, connection) = tokio_postgres::connect(&self.url, NoTls)
+            .await
+            .with_context(|| format!("connect postgres failed: {}", sanitize_url(&self.url)))?;
+        tokio::spawn(async move {
+            if let Err(err) = connection.await {
+                log::warn!("postgres connection closed: {err:#}");
+            }
+        });
+        *slot = Some(client);
+        Ok(())
+    }
+
+    async fn run<T, F, Fut>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(Client) -> Fut,
+        Fut: std::future::Future<Output = Result<(Client, T)>>,
+    {
+        self.ensure_client().await?;
+        let mut slot = self.client.lock().await;
+        let client = slot.take().context("postgres client missing")?;
+        match f(client).await {
+            Ok((client, value)) => {
+                *slot = Some(client);
+                Ok(value)
+            }
+            Err(err) => {
+                *slot = None;
+                Err(err)
+            }
+        }
+    }
+
+    pub async fn migrate(&self) -> Result<()> {
+        self.run(|client| async move {
+            client
+                .batch_execute(
+                    r#"
+                    CREATE TABLE IF NOT EXISTS announcements (
+                        exchange TEXT NOT NULL,
+                        id TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        url TEXT NOT NULL,
+                        published_ms BIGINT NOT NULL,
+                        source TEXT NOT NULL,
+                        extra JSONB,
+                        raw JSONB NOT NULL,
+                        first_fetched_ms BIGINT NOT NULL,
+                        last_fetched_ms BIGINT NOT NULL,
+                        PRIMARY KEY (exchange, id)
+                    );
+                    CREATE TABLE IF NOT EXISTS source_status (
+                        source TEXT PRIMARY KEY,
+                        kind TEXT NOT NULL,
+                        ok BOOLEAN NOT NULL,
+                        last_success_ms BIGINT,
+                        last_attempt_ms BIGINT NOT NULL,
+                        last_error TEXT,
+                        last_error_ms BIGINT
+                    );
+                    CREATE TABLE IF NOT EXISTS llm_status (
+                        exchange TEXT NOT NULL,
+                        announcement_id TEXT NOT NULL,
+                        title TEXT NOT NULL DEFAULT '',
+                        ok BOOLEAN NOT NULL,
+                        last_attempt_ms BIGINT NOT NULL,
+                        last_success_ms BIGINT,
+                        last_error TEXT,
+                        PRIMARY KEY (exchange, announcement_id)
+                    );
+                    ALTER TABLE llm_status ADD COLUMN IF NOT EXISTS input_fingerprint TEXT;
+                    CREATE TABLE IF NOT EXISTS redis_symbol_removal_audit (
+                        id BIGSERIAL PRIMARY KEY,
+                        detected_ms BIGINT NOT NULL,
+                        completed_ms BIGINT,
+                        account_slug TEXT NOT NULL,
+                        exchange TEXT NOT NULL,
+                        redis_site TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        venues JSONB NOT NULL,
+                        changes JSONB NOT NULL,
+                        status TEXT NOT NULL,
+                        error TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS redis_symbol_removal_audit_detected_idx
+                        ON redis_symbol_removal_audit (detected_ms DESC);
+                    CREATE TABLE IF NOT EXISTS redis_symbol_dump_audit (
+                        id BIGSERIAL PRIMARY KEY,
+                        detected_ms BIGINT NOT NULL,
+                        completed_ms BIGINT,
+                        account_slug TEXT NOT NULL,
+                        exchange TEXT NOT NULL,
+                        redis_site TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        event JSONB NOT NULL,
+                        snapshot_ms BIGINT NOT NULL,
+                        open_usdt DOUBLE PRECISION NOT NULL,
+                        hedge_usdt DOUBLE PRECISION NOT NULL,
+                        impacted_position_usdt DOUBLE PRECISION NOT NULL,
+                        threshold_usdt DOUBLE PRECISION NOT NULL,
+                        changes JSONB NOT NULL,
+                        status TEXT NOT NULL,
+                        error TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS redis_symbol_dump_audit_detected_idx
+                        ON redis_symbol_dump_audit (detected_ms DESC);
+                    CREATE TABLE IF NOT EXISTS delist_flatten_audit (
+                        id BIGSERIAL PRIMARY KEY,
+                        requested_ms BIGINT NOT NULL,
+                        completed_ms BIGINT,
+                        dedup_key TEXT NOT NULL UNIQUE,
+                        trigger TEXT NOT NULL,
+                        account_slug TEXT NOT NULL,
+                        exchange TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        delist_utc TEXT NOT NULL,
+                        deadline_ms BIGINT NOT NULL,
+                        snapshot_ms BIGINT NOT NULL,
+                        open_usdt DOUBLE PRECISION NOT NULL,
+                        hedge_usdt DOUBLE PRECISION NOT NULL,
+                        position_usdt DOUBLE PRECISION NOT NULL,
+                        manual_threshold_usdt DOUBLE PRECISION NOT NULL,
+                        command JSONB NOT NULL,
+                        status TEXT NOT NULL,
+                        exit_code INTEGER,
+                        stdout TEXT,
+                        stderr TEXT,
+                        error TEXT,
+                        notification_status TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS delist_flatten_audit_requested_idx
+                        ON delist_flatten_audit (requested_ms DESC);
+                    CREATE TABLE IF NOT EXISTS exchange_symbol_snapshot_runs (
+                        snapshot_date DATE PRIMARY KEY,
+                        scheduled_ms BIGINT NOT NULL,
+                        captured_ms BIGINT NOT NULL,
+                        completed_ms BIGINT,
+                        status TEXT NOT NULL,
+                        venue_count INTEGER NOT NULL DEFAULT 0,
+                        symbol_count INTEGER NOT NULL DEFAULT 0,
+                        error TEXT
+                    );
+                    CREATE TABLE IF NOT EXISTS exchange_symbol_snapshots (
+                        snapshot_date DATE NOT NULL REFERENCES exchange_symbol_snapshot_runs(snapshot_date)
+                            ON DELETE CASCADE,
+                        captured_ms BIGINT NOT NULL,
+                        exchange TEXT NOT NULL,
+                        venue TEXT NOT NULL,
+                        market_type TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        normalized_symbol TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        listed BOOLEAN NOT NULL,
+                        pending BOOLEAN NOT NULL,
+                        PRIMARY KEY (snapshot_date, venue, normalized_symbol)
+                    );
+                    CREATE INDEX IF NOT EXISTS exchange_symbol_snapshots_lookup_idx
+                        ON exchange_symbol_snapshots (venue, normalized_symbol, snapshot_date DESC);
+                    "#,
+                )
+                .await
+                .context("migrate delist_risk schema failed")?;
+            Ok((client, ()))
+        })
+        .await
+    }
+
+    pub async fn upsert_announcement(&self, item: &RawAnnouncement) -> Result<()> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let raw = serde_json::to_value(item).context("serialize raw announcement failed")?;
+        let extra = item.extra.clone();
+        let exchange = item.exchange.clone();
+        let id = item.id.clone();
+        let title = item.title.clone();
+        let url = item.url.clone();
+        let source = item.source.clone();
+        let published_ms = item.published_ms;
+        self.run(move |client| async move {
+            client
+                .execute(
+                    r#"
+                    INSERT INTO announcements (
+                        exchange, id, title, url, published_ms, source, extra, raw,
+                        first_fetched_ms, last_fetched_ms
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+                    ON CONFLICT (exchange, id) DO UPDATE SET
+                        title = EXCLUDED.title,
+                        url = EXCLUDED.url,
+                        published_ms = EXCLUDED.published_ms,
+                        source = EXCLUDED.source,
+                        extra = EXCLUDED.extra,
+                        raw = EXCLUDED.raw,
+                        last_fetched_ms = EXCLUDED.last_fetched_ms
+                    "#,
+                    &[
+                        &exchange,
+                        &id,
+                        &title,
+                        &url,
+                        &published_ms,
+                        &source,
+                        &extra,
+                        &raw,
+                        &now,
+                    ],
+                )
+                .await
+                .context("upsert announcement failed")?;
+            Ok((client, ()))
+        })
+        .await
+    }
+
+    pub async fn load_announcements(&self) -> Result<Vec<RawAnnouncement>> {
+        self.run(|client| async move {
+            let rows = client
+                .query(
+                    "SELECT raw FROM announcements ORDER BY last_fetched_ms DESC",
+                    &[],
+                )
+                .await
+                .context("load announcements failed")?;
+            let mut out = Vec::new();
+            for row in rows {
+                let raw: Value = row.get(0);
+                match serde_json::from_value::<RawAnnouncement>(raw) {
+                    Ok(item) => out.push(item),
+                    Err(err) => log::warn!("skip stored announcement: {err:#}"),
+                }
+            }
+            Ok((client, out))
+        })
+        .await
+    }
+
+    pub async fn upsert_source(&self, status: &SourceStatus) -> Result<()> {
+        let source = status.source.clone();
+        let kind = status.kind.clone();
+        let ok = status.ok;
+        let last_success_ms = status.last_success_ms;
+        let last_attempt_ms = status.last_attempt_ms;
+        let last_error = status.last_error.clone();
+        let last_error_ms = status.last_error_ms;
+        self.run(move |client| async move {
+            client
+                .execute(
+                    r#"
+                    INSERT INTO source_status (
+                        source, kind, ok, last_success_ms, last_attempt_ms, last_error, last_error_ms
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ON CONFLICT (source) DO UPDATE SET
+                        kind = EXCLUDED.kind,
+                        ok = EXCLUDED.ok,
+                        last_success_ms = EXCLUDED.last_success_ms,
+                        last_attempt_ms = EXCLUDED.last_attempt_ms,
+                        last_error = EXCLUDED.last_error,
+                        last_error_ms = EXCLUDED.last_error_ms
+                    "#,
+                    &[
+                        &source,
+                        &kind,
+                        &ok,
+                        &last_success_ms,
+                        &last_attempt_ms,
+                        &last_error,
+                        &last_error_ms,
+                    ],
+                )
+                .await
+                .context("upsert source_status failed")?;
+            Ok((client, ()))
+        })
+        .await
+    }
+
+    pub async fn load_sources(&self) -> Result<Vec<SourceStatus>> {
+        self.run(|client| async move {
+            let rows = client
+                .query(
+                    r#"
+                    SELECT source, kind, ok, last_success_ms, last_attempt_ms, last_error, last_error_ms
+                    FROM source_status
+                    ORDER BY source
+                    "#,
+                    &[],
+                )
+                .await
+                .context("load source_status failed")?;
+            let out = rows
+                .into_iter()
+                .map(|row| SourceStatus {
+                    source: row.get(0),
+                    kind: row.get(1),
+                    ok: row.get(2),
+                    last_success_ms: row.get(3),
+                    last_attempt_ms: row.get(4),
+                    last_error: row.get(5),
+                    last_error_ms: row.get(6),
+                })
+                .collect();
+            Ok((client, out))
+        })
+        .await
+    }
+
+    pub async fn upsert_llm(&self, status: &LlmRunStatus) -> Result<()> {
+        let exchange = status.exchange.clone();
+        let announcement_id = status.announcement_id.clone();
+        let title = status.title.clone();
+        let ok = status.ok;
+        let last_attempt_ms = status.last_attempt_ms;
+        let last_success_ms = status.last_success_ms;
+        let last_error = status.last_error.clone();
+        let input_fingerprint = status.input_fingerprint.clone();
+        self.run(move |client| async move {
+            client
+                .execute(
+                    r#"
+                    INSERT INTO llm_status (
+                        exchange, announcement_id, title, ok, last_attempt_ms, last_success_ms, last_error, input_fingerprint
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    ON CONFLICT (exchange, announcement_id) DO UPDATE SET
+                        title = EXCLUDED.title,
+                        ok = EXCLUDED.ok,
+                        last_attempt_ms = EXCLUDED.last_attempt_ms,
+                        last_success_ms = EXCLUDED.last_success_ms,
+                        last_error = EXCLUDED.last_error,
+                        input_fingerprint = EXCLUDED.input_fingerprint
+                    "#,
+                    &[
+                        &exchange,
+                        &announcement_id,
+                        &title,
+                        &ok,
+                        &last_attempt_ms,
+                        &last_success_ms,
+                        &last_error,
+                        &input_fingerprint,
+                    ],
+                )
+                .await
+                .context("upsert llm_status failed")?;
+            Ok((client, ()))
+        })
+        .await
+    }
+
+    pub async fn load_llm(&self) -> Result<Vec<LlmRunStatus>> {
+        self.run(|client| async move {
+            let rows = client
+                .query(
+                    r#"
+                    SELECT l.exchange, l.announcement_id, l.title, l.ok, l.last_attempt_ms, l.last_success_ms,
+                           l.last_error, l.input_fingerprint, a.raw
+                    FROM llm_status l LEFT JOIN announcements a
+                      ON a.exchange = l.exchange AND a.id = l.announcement_id
+                    ORDER BY l.last_attempt_ms DESC
+                    "#,
+                    &[],
+                )
+                .await
+                .context("load llm_status failed")?;
+            let out = rows
+                .into_iter()
+                .map(|row| LlmRunStatus {
+                    input_fingerprint: row.get::<_, Option<String>>(7).or_else(|| {
+                        row.get::<_, Option<Value>>(8)
+                            .and_then(|raw| serde_json::from_value::<RawAnnouncement>(raw).ok())
+                            .map(|raw| LlmExtractInput::from_raw(&raw).fingerprint())
+                    }),
+                    exchange: row.get(0),
+                    announcement_id: row.get(1),
+                    title: row.get(2),
+                    ok: row.get(3),
+                    last_attempt_ms: row.get(4),
+                    last_success_ms: row.get(5),
+                    last_error: row.get(6),
+                })
+                .collect();
+            Ok((client, out))
+        })
+        .await
+    }
+
+    pub async fn begin_redis_removal(
+        &self,
+        account_slug: &str,
+        exchange: &str,
+        redis_site: &str,
+        symbol: &str,
+        venues: Value,
+        changes: Value,
+    ) -> Result<i64> {
+        let detected_ms = chrono::Utc::now().timestamp_millis();
+        let account_slug = account_slug.to_string();
+        let exchange = exchange.to_string();
+        let redis_site = redis_site.to_string();
+        let symbol = symbol.to_string();
+        self.run(move |client| async move {
+            let row = client
+                .query_one(
+                    r#"
+                    INSERT INTO redis_symbol_removal_audit (
+                        detected_ms, account_slug, exchange, redis_site, symbol,
+                        venues, changes, status
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+                    RETURNING id
+                    "#,
+                    &[
+                        &detected_ms,
+                        &account_slug,
+                        &exchange,
+                        &redis_site,
+                        &symbol,
+                        &venues,
+                        &changes,
+                    ],
+                )
+                .await
+                .context("insert Redis removal audit failed")?;
+            Ok((client, row.get(0)))
+        })
+        .await
+    }
+
+    pub async fn finish_redis_removal(
+        &self,
+        id: i64,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let completed_ms = chrono::Utc::now().timestamp_millis();
+        let status = status.to_string();
+        let error = error.map(truncate_error);
+        self.run(move |client| async move {
+            client
+                .execute(
+                    r#"
+                    UPDATE redis_symbol_removal_audit
+                    SET completed_ms = $2, status = $3, error = $4
+                    WHERE id = $1
+                    "#,
+                    &[&id, &completed_ms, &status, &error],
+                )
+                .await
+                .context("finish Redis removal audit failed")?;
+            Ok((client, ()))
+        })
+        .await
+    }
+
+    pub async fn load_redis_removals(&self, limit: i64) -> Result<Vec<RedisRemovalAudit>> {
+        let limit = limit.clamp(1, 1_000);
+        self.run(move |client| async move {
+            let rows = client
+                .query(
+                    r#"
+                    SELECT id, detected_ms, completed_ms, account_slug, exchange,
+                           redis_site, symbol, venues, changes, status, error
+                    FROM redis_symbol_removal_audit
+                    ORDER BY id DESC
+                    LIMIT $1
+                    "#,
+                    &[&limit],
+                )
+                .await
+                .context("load Redis removal audits failed")?;
+            let out = rows
+                .into_iter()
+                .map(|row| RedisRemovalAudit {
+                    id: row.get(0),
+                    detected_ms: row.get(1),
+                    completed_ms: row.get(2),
+                    account_slug: row.get(3),
+                    exchange: row.get(4),
+                    redis_site: row.get(5),
+                    symbol: row.get(6),
+                    venues: row.get(7),
+                    changes: row.get(8),
+                    status: row.get(9),
+                    error: row.get(10),
+                })
+                .collect();
+            Ok((client, out))
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn begin_redis_dump(
+        &self,
+        account_slug: &str,
+        exchange: &str,
+        redis_site: &str,
+        symbol: &str,
+        event: Value,
+        snapshot_ms: i64,
+        open_usdt: f64,
+        hedge_usdt: f64,
+        impacted_position_usdt: f64,
+        threshold_usdt: f64,
+        changes: Value,
+    ) -> Result<i64> {
+        let detected_ms = chrono::Utc::now().timestamp_millis();
+        let account_slug = account_slug.to_string();
+        let exchange = exchange.to_string();
+        let redis_site = redis_site.to_string();
+        let symbol = symbol.to_string();
+        self.run(move |client| async move {
+            let row = client
+                .query_one(
+                    r#"
+                    INSERT INTO redis_symbol_dump_audit (
+                        detected_ms, account_slug, exchange, redis_site, symbol,
+                        event, snapshot_ms, open_usdt, hedge_usdt,
+                        impacted_position_usdt, threshold_usdt, changes, status
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                        'pending'
+                    )
+                    RETURNING id
+                    "#,
+                    &[
+                        &detected_ms,
+                        &account_slug,
+                        &exchange,
+                        &redis_site,
+                        &symbol,
+                        &event,
+                        &snapshot_ms,
+                        &open_usdt,
+                        &hedge_usdt,
+                        &impacted_position_usdt,
+                        &threshold_usdt,
+                        &changes,
+                    ],
+                )
+                .await
+                .context("insert Redis dump audit failed")?;
+            Ok((client, row.get(0)))
+        })
+        .await
+    }
+
+    pub async fn finish_redis_dump(
+        &self,
+        id: i64,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let completed_ms = chrono::Utc::now().timestamp_millis();
+        let status = status.to_string();
+        let error = error.map(truncate_error);
+        self.run(move |client| async move {
+            client
+                .execute(
+                    r#"
+                    UPDATE redis_symbol_dump_audit
+                    SET completed_ms = $2, status = $3, error = $4
+                    WHERE id = $1
+                    "#,
+                    &[&id, &completed_ms, &status, &error],
+                )
+                .await
+                .context("finish Redis dump audit failed")?;
+            Ok((client, ()))
+        })
+        .await
+    }
+
+    pub async fn load_redis_dumps(&self, limit: i64) -> Result<Vec<RedisDumpAudit>> {
+        let limit = limit.clamp(1, 1_000);
+        self.run(move |client| async move {
+            let rows = client
+                .query(
+                    r#"
+                    SELECT id, detected_ms, completed_ms, account_slug, exchange,
+                           redis_site, symbol, event, snapshot_ms, open_usdt,
+                           hedge_usdt, impacted_position_usdt, threshold_usdt,
+                           changes, status, error
+                    FROM redis_symbol_dump_audit
+                    ORDER BY id DESC
+                    LIMIT $1
+                    "#,
+                    &[&limit],
+                )
+                .await
+                .context("load Redis dump audits failed")?;
+            let out = rows
+                .into_iter()
+                .map(|row| RedisDumpAudit {
+                    id: row.get(0),
+                    detected_ms: row.get(1),
+                    completed_ms: row.get(2),
+                    account_slug: row.get(3),
+                    exchange: row.get(4),
+                    redis_site: row.get(5),
+                    symbol: row.get(6),
+                    event: row.get(7),
+                    snapshot_ms: row.get(8),
+                    open_usdt: row.get(9),
+                    hedge_usdt: row.get(10),
+                    impacted_position_usdt: row.get(11),
+                    threshold_usdt: row.get(12),
+                    changes: row.get(13),
+                    status: row.get(14),
+                    error: row.get(15),
+                })
+                .collect();
+            Ok((client, out))
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn claim_flatten_execution(
+        &self,
+        dedup_key: &str,
+        trigger: &str,
+        account_slug: &str,
+        exchange: &str,
+        symbol: &str,
+        delist_utc: &str,
+        deadline_ms: i64,
+        snapshot_ms: i64,
+        open_usdt: f64,
+        hedge_usdt: f64,
+        position_usdt: f64,
+        manual_threshold_usdt: f64,
+        command: Value,
+        initial_status: &str,
+    ) -> Result<Option<i64>> {
+        let requested_ms = chrono::Utc::now().timestamp_millis();
+        let dedup_key = dedup_key.to_string();
+        let trigger = trigger.to_string();
+        let account_slug = account_slug.to_string();
+        let exchange = exchange.to_string();
+        let symbol = symbol.to_string();
+        let delist_utc = delist_utc.to_string();
+        let initial_status = initial_status.to_string();
+        self.run(move |client| async move {
+            let row = client
+                .query_opt(
+                    r#"
+                    INSERT INTO delist_flatten_audit (
+                        requested_ms, dedup_key, trigger, account_slug, exchange,
+                        symbol, delist_utc, deadline_ms, snapshot_ms, open_usdt,
+                        hedge_usdt, position_usdt, manual_threshold_usdt, command,
+                        status
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                        $13, $14, $15
+                    )
+                    ON CONFLICT (dedup_key) DO NOTHING
+                    RETURNING id
+                    "#,
+                    &[
+                        &requested_ms,
+                        &dedup_key,
+                        &trigger,
+                        &account_slug,
+                        &exchange,
+                        &symbol,
+                        &delist_utc,
+                        &deadline_ms,
+                        &snapshot_ms,
+                        &open_usdt,
+                        &hedge_usdt,
+                        &position_usdt,
+                        &manual_threshold_usdt,
+                        &command,
+                        &initial_status,
+                    ],
+                )
+                .await
+                .context("claim delist flatten audit failed")?;
+            Ok((client, row.map(|row| row.get(0))))
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finish_flatten_execution(
+        &self,
+        id: i64,
+        status: &str,
+        exit_code: Option<i32>,
+        stdout: Option<&str>,
+        stderr: Option<&str>,
+        error: Option<&str>,
+        notification_status: Option<&str>,
+    ) -> Result<()> {
+        let completed_ms = chrono::Utc::now().timestamp_millis();
+        let status = status.to_string();
+        let stdout = stdout.map(truncate_output);
+        let stderr = stderr.map(truncate_output);
+        let error = error.map(truncate_error);
+        let notification_status = notification_status.map(str::to_string);
+        self.run(move |client| async move {
+            client
+                .execute(
+                    r#"
+                    UPDATE delist_flatten_audit
+                    SET completed_ms = $2, status = $3, exit_code = $4,
+                        stdout = $5, stderr = $6, error = $7,
+                        notification_status = $8
+                    WHERE id = $1
+                    "#,
+                    &[
+                        &id,
+                        &completed_ms,
+                        &status,
+                        &exit_code,
+                        &stdout,
+                        &stderr,
+                        &error,
+                        &notification_status,
+                    ],
+                )
+                .await
+                .context("finish delist flatten audit failed")?;
+            Ok((client, ()))
+        })
+        .await
+    }
+
+    pub async fn load_flatten_executions(&self, limit: i64) -> Result<Vec<FlattenExecutionAudit>> {
+        let limit = limit.clamp(1, 1_000);
+        self.run(move |client| async move {
+            let rows = client
+                .query(
+                    r#"
+                    SELECT id, requested_ms, completed_ms, dedup_key, trigger,
+                           account_slug, exchange, symbol, delist_utc, deadline_ms,
+                           snapshot_ms, open_usdt, hedge_usdt, position_usdt,
+                           manual_threshold_usdt, command, status, exit_code,
+                           stdout, stderr, error, notification_status
+                    FROM delist_flatten_audit
+                    ORDER BY id DESC
+                    LIMIT $1
+                    "#,
+                    &[&limit],
+                )
+                .await
+                .context("load delist flatten audits failed")?;
+            let out = rows
+                .into_iter()
+                .map(|row| FlattenExecutionAudit {
+                    id: row.get(0),
+                    requested_ms: row.get(1),
+                    completed_ms: row.get(2),
+                    dedup_key: row.get(3),
+                    trigger: row.get(4),
+                    account_slug: row.get(5),
+                    exchange: row.get(6),
+                    symbol: row.get(7),
+                    delist_utc: row.get(8),
+                    deadline_ms: row.get(9),
+                    snapshot_ms: row.get(10),
+                    open_usdt: row.get(11),
+                    hedge_usdt: row.get(12),
+                    position_usdt: row.get(13),
+                    manual_threshold_usdt: row.get(14),
+                    command: row.get(15),
+                    status: row.get(16),
+                    exit_code: row.get(17),
+                    stdout: row.get(18),
+                    stderr: row.get(19),
+                    error: row.get(20),
+                    notification_status: row.get(21),
+                })
+                .collect();
+            Ok((client, out))
+        })
+        .await
+    }
+
+    pub async fn flatten_execution_state(
+        &self,
+        dedup_key: &str,
+    ) -> Result<Option<(i64, String, Option<String>)>> {
+        let dedup_key = dedup_key.to_string();
+        self.run(move |client| async move {
+            let row = client
+                .query_opt(
+                    "SELECT id, status, notification_status FROM delist_flatten_audit WHERE dedup_key = $1",
+                    &[&dedup_key],
+                )
+                .await
+                .context("query delist flatten audit status failed")?;
+            Ok((
+                client,
+                row.map(|row| (row.get(0), row.get(1), row.get(2))),
+            ))
+        })
+        .await
+    }
+
+    pub async fn flatten_success_covers_snapshot(
+        &self,
+        account_slug: &str,
+        symbol: &str,
+        deadline_ms: i64,
+        snapshot_ms: i64,
+    ) -> Result<bool> {
+        let account_slug = account_slug.to_string();
+        let symbol = symbol.to_string();
+        self.run(move |client| async move {
+            let row = client
+                .query_one(
+                    r#"
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM delist_flatten_audit
+                        WHERE account_slug = $1 AND symbol = $2
+                          AND deadline_ms = $3 AND status = 'success'
+                          AND completed_ms >= $4
+                    )
+                    "#,
+                    &[&account_slug, &symbol, &deadline_ms, &snapshot_ms],
+                )
+                .await
+                .context("query covered flatten snapshot failed")?;
+            Ok((client, row.get(0)))
+        })
+        .await
+    }
+
+    pub async fn write_symbol_snapshot(
+        &self,
+        snapshot_date: chrono::NaiveDate,
+        scheduled_ms: i64,
+        captured_ms: i64,
+        rows: &[ListingSnapshotRow],
+    ) -> Result<bool> {
+        let rows = rows.to_vec();
+        self.run(move |mut client| async move {
+            let transaction = client
+                .transaction()
+                .await
+                .context("begin exchange symbol snapshot transaction failed")?;
+            let exists = transaction
+                .query_opt(
+                    "SELECT 1 FROM exchange_symbol_snapshot_runs WHERE snapshot_date = $1 AND status = 'success'",
+                    &[&snapshot_date],
+                )
+                .await
+                .context("query exchange symbol snapshot run failed")?
+                .is_some();
+            if exists {
+                drop(transaction);
+                return Ok((client, false));
+            }
+
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO exchange_symbol_snapshot_runs (
+                        snapshot_date, scheduled_ms, captured_ms, status,
+                        venue_count, symbol_count, error
+                    ) VALUES ($1, $2, $3, 'pending', 0, 0, NULL)
+                    ON CONFLICT (snapshot_date) DO UPDATE SET
+                        scheduled_ms = EXCLUDED.scheduled_ms,
+                        captured_ms = EXCLUDED.captured_ms,
+                        completed_ms = NULL,
+                        status = 'pending',
+                        venue_count = 0,
+                        symbol_count = 0,
+                        error = NULL
+                    "#,
+                    &[&snapshot_date, &scheduled_ms, &captured_ms],
+                )
+                .await
+                .context("upsert pending exchange symbol snapshot run failed")?;
+            transaction
+                .execute(
+                    "DELETE FROM exchange_symbol_snapshots WHERE snapshot_date = $1",
+                    &[&snapshot_date],
+                )
+                .await
+                .context("clear incomplete exchange symbol snapshot failed")?;
+            for row in &rows {
+                transaction
+                    .execute(
+                        r#"
+                        INSERT INTO exchange_symbol_snapshots (
+                            snapshot_date, captured_ms, exchange, venue, market_type,
+                            symbol, normalized_symbol, status, listed, pending
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                        "#,
+                        &[
+                            &snapshot_date,
+                            &captured_ms,
+                            &row.exchange,
+                            &row.venue,
+                            &row.market_type,
+                            &row.symbol,
+                            &row.normalized_symbol,
+                            &row.status,
+                            &row.listed,
+                            &row.pending,
+                        ],
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "insert exchange symbol snapshot failed: venue={} symbol={}",
+                            row.venue, row.symbol
+                        )
+                    })?;
+            }
+            let completed_ms = chrono::Utc::now().timestamp_millis();
+            let venue_count = rows
+                .iter()
+                .map(|row| row.venue.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len() as i32;
+            let symbol_count = rows.len() as i32;
+            transaction
+                .execute(
+                    r#"
+                    UPDATE exchange_symbol_snapshot_runs
+                    SET completed_ms = $2, status = 'success', venue_count = $3,
+                        symbol_count = $4, error = NULL
+                    WHERE snapshot_date = $1
+                    "#,
+                    &[&snapshot_date, &completed_ms, &venue_count, &symbol_count],
+                )
+                .await
+                .context("complete exchange symbol snapshot run failed")?;
+            transaction
+                .commit()
+                .await
+                .context("commit exchange symbol snapshot failed")?;
+            Ok((client, true))
+        })
+        .await
+    }
+
+    pub async fn record_symbol_snapshot_failure(
+        &self,
+        snapshot_date: chrono::NaiveDate,
+        scheduled_ms: i64,
+        error: &str,
+    ) -> Result<()> {
+        let captured_ms = chrono::Utc::now().timestamp_millis();
+        let error = truncate_error(error);
+        self.run(move |client| async move {
+            client
+                .execute(
+                    r#"
+                    INSERT INTO exchange_symbol_snapshot_runs (
+                        snapshot_date, scheduled_ms, captured_ms, completed_ms,
+                        status, venue_count, symbol_count, error
+                    ) VALUES ($1, $2, $3, $3, 'failed', 0, 0, $4)
+                    ON CONFLICT (snapshot_date) DO UPDATE SET
+                        scheduled_ms = EXCLUDED.scheduled_ms,
+                        captured_ms = EXCLUDED.captured_ms,
+                        completed_ms = EXCLUDED.completed_ms,
+                        status = 'failed',
+                        venue_count = 0,
+                        symbol_count = 0,
+                        error = EXCLUDED.error
+                    WHERE exchange_symbol_snapshot_runs.status <> 'success'
+                    "#,
+                    &[&snapshot_date, &scheduled_ms, &captured_ms, &error],
+                )
+                .await
+                .context("record exchange symbol snapshot failure failed")?;
+            Ok((client, ()))
+        })
+        .await
+    }
+}
+
+fn truncate_error(err: &str) -> String {
+    const LIMIT: usize = 2_000;
+    let trimmed = err.trim();
+    if trimmed.chars().count() <= LIMIT {
+        trimmed.to_string()
+    } else {
+        trimmed.chars().take(LIMIT).collect::<String>() + "…"
+    }
+}
+
+fn truncate_output(output: &str) -> String {
+    const LIMIT: usize = 8_000;
+    let trimmed = output.trim();
+    if trimmed.chars().count() <= LIMIT {
+        trimmed.to_string()
+    } else {
+        trimmed.chars().take(LIMIT).collect::<String>() + "..."
+    }
+}
+
+fn sanitize_url(url: &str) -> String {
+    match url.find('@') {
+        Some(at) => format!("postgres://***@{}", &url[at + 1..]),
+        None => url.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latest_analysis_is_selected_per_exchange_including_failed_attempts() {
+        let mut book = StatusBook::default();
+        let row = |exchange: &str, id: &str, checked_ms, ok| LlmRunStatus {
+            exchange: exchange.into(),
+            announcement_id: id.into(),
+            title: id.into(),
+            input_fingerprint: None,
+            ok,
+            last_attempt_ms: checked_ms,
+            last_success_ms: ok.then_some(checked_ms),
+            last_error: (!ok).then_some("timeout".into()),
+        };
+        book.replace_llm(vec![
+            row("gate", "a", 100, true),
+            row("gate", "b", 300, false),
+            row("bybit", "a", 250, true),
+            row("bybit", "b", 200, true),
+        ]);
+        let latest = book.llm_latest_by_exchange();
+        assert_eq!(latest.len(), 2);
+        assert_eq!(latest["gate"].announcement_id, "b");
+        assert!(!latest["gate"].ok);
+        assert_eq!(latest["bybit"].announcement_id, "a");
+        assert!(latest["bybit"].ok);
+    }
+
+    #[test]
+    fn extraction_reuses_success_across_restart_and_retries_changed_content() {
+        let mut input = LlmExtractInput {
+            exchange: "gate".into(),
+            id: "101657".into(),
+            title: "Delist CDL".into(),
+            url: String::new(),
+            published_ms: 1,
+            body: "CDL trading ends at 08:00 UTC".into(),
+        };
+        let mut book = StatusBook::default();
+        book.mark_llm(
+            "gate",
+            "101657",
+            &input.title,
+            true,
+            None,
+            input.fingerprint(),
+        );
+        let saved = serde_json::to_string(book.llm("gate", "101657").unwrap()).unwrap();
+        let row: LlmRunStatus = serde_json::from_str(&saved).unwrap();
+        input.published_ms = 2;
+        assert!(!row.should_extract(&input, row.last_attempt_ms + 600_000, false));
+        assert!(row.should_extract(&input, row.last_attempt_ms, true));
+        input.body = "CDL trading ends at 09:00 UTC".into();
+        assert!(row.should_extract(&input, row.last_attempt_ms, false));
+        book.mark_llm(
+            "gate",
+            "101657",
+            &input.title,
+            false,
+            Some("timeout"),
+            input.fingerprint(),
+        );
+        let failed = book.llm("gate", "101657").unwrap();
+        assert!(!failed.should_extract(&input, failed.last_attempt_ms + 299_999, false));
+        assert!(failed.should_extract(&input, failed.last_attempt_ms + 300_000, false));
+    }
+
+    #[test]
+    fn mark_err_keeps_last_success() {
+        let mut book = StatusBook::default();
+        book.mark_ok("binance_cms", "fetch");
+        let success = book.source("binance_cms").unwrap().last_success_ms;
+        book.mark_err("binance_cms", "fetch", "timeout");
+        let row = book.source("binance_cms").unwrap();
+        assert!(!row.ok);
+        assert_eq!(row.last_success_ms, success);
+        assert_eq!(row.last_error.as_deref(), Some("timeout"));
+        let snap = book.snapshot(false);
+        assert!(snap.degraded);
+        assert_eq!(snap.sources.len(), 1);
+    }
+
+    #[test]
+    fn llm_success_clears_error() {
+        let mut book = StatusBook::default();
+        book.mark_llm(
+            "binance",
+            "a1",
+            "title",
+            false,
+            Some("401 unauthorized"),
+            "hash".into(),
+        );
+        book.mark_llm("binance", "a1", "title", true, None, "hash".into());
+        let snap = book.snapshot(true);
+        assert!(snap.llm_failures.is_empty());
+        assert!(snap
+            .sources
+            .iter()
+            .any(|item| item.source == "llm" && item.ok));
+        assert!(snap.postgres);
+    }
+
+    #[test]
+    fn sanitize_hides_password() {
+        assert_eq!(
+            sanitize_url("postgres://u:secret@127.0.0.1:5432/db"),
+            "postgres://***@127.0.0.1:5432/db"
+        );
+    }
+}

@@ -1,0 +1,8 @@
+{
+  "verified": true,
+  "source_month": "2026-10",
+  "apply_month": "2026-11",
+  "binance_futures_thresholds": 51,
+  "okex_and_spot_and_factor_plans_unchanged": true,
+  "csv_sha256": "59eb3dd17a35901589327d2ffebd7c15f4b07cb5fa5393c518684e3b7ad81efc"
+}

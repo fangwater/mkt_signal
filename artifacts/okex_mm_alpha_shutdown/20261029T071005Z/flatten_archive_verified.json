@@ -1,0 +1,11 @@
+{
+  "utc": "2026-10-29T07:25:40.872363+00:00",
+  "archive": "/home/ubuntu/retired_data/okex_mm_alpha_20261029T071005Z/okex_mm_alpha_flatten_evidence.tar.zst",
+  "archive_bytes": 10557,
+  "archive_sha256": "e3b513b3df56783b358f0c9d68efd1b21930eaafd3c03f52276aee3666209718",
+  "file_count": 10,
+  "file_list_sizes_and_sha256_verified": true,
+  "original_order_archive_unchanged": true,
+  "closing_trades_stored_as_exchange_evidence": true,
+  "credentials_included": false
+}

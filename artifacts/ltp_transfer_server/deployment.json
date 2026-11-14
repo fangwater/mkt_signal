@@ -1,0 +1,8 @@
+{
+  "host": "ip-172-31-35-228",
+  "source_commit": "05425d6e4284f2347e047a304f3e773b2e84eb65",
+  "binary_sha256": "e544ac67f01b6ecd4444081074308ba772f060e7826e544e3bfdcb7ed4026845",
+  "backup": "/home/ubuntu/ltp_transfer_server/run/deploy_20261112T110116Z/before",
+  "unrelated_process_changes": {},
+  "health": true
+}

@@ -1,0 +1,505 @@
+{
+  "host": "jp-meta-elvpn",
+  "build_commit": "78150e7a",
+  "binary_sha256": "4c8c6319fb97a60f34f8fd4fbe04b2551bb04f8f6a53f6077dce99ff13a02b90",
+  "window_start_utc": "2026-10-09T03:04:38Z",
+  "window_end_utc": "2026-10-09T03:09:38Z",
+  "duration_seconds": 300,
+  "sample_every": 1024,
+  "notes": [
+    "First 30 seconds after start excluded",
+    "Gate timestamp is engine t; Bitget timestamp is stream push sts, so cross-venue values have different starting points",
+    "Logged means are truncated to integer microseconds; true means are in [lower_bound, lower_bound+1)",
+    "Maxima are sampled maxima, not maxima of all messages",
+    "No exchange-clock synchronization guarantee; host chrony offset below 1us during audit"
+  ],
+  "summary": {
+    "gate-futures": {
+      "exchange_to_recv": {
+        "samples": 703,
+        "weighted_mean_us_lower_bound": 2155.468,
+        "max_us": 210880,
+        "min_us": 420,
+        "negative": 0
+      },
+      "recv_to_ipc": {
+        "samples": 703,
+        "weighted_mean_us_lower_bound": 0.0,
+        "max_us": 2
+      }
+    },
+    "bitget-futures": {
+      "exchange_to_recv": {
+        "samples": 829,
+        "weighted_mean_us_lower_bound": 7349.45,
+        "max_us": 157280,
+        "min_us": 1968,
+        "negative": 0
+      },
+      "recv_to_ipc": {
+        "samples": 829,
+        "weighted_mean_us_lower_bound": 0.0,
+        "max_us": 2
+      }
+    }
+  },
+  "cpu_summary": {
+    "mean_percent": 57.25,
+    "max_percent": 59.8,
+    "rss_mib": 40.82
+  },
+  "cpu_samples": [
+    {
+      "utc": "2026-10-09T03:05:07.588478+00:00",
+      "cpu_percent": 55.93,
+      "rss_mib": 40.82
+    },
+    {
+      "utc": "2026-10-09T03:05:37.590998+00:00",
+      "cpu_percent": 58.49,
+      "rss_mib": 40.82
+    },
+    {
+      "utc": "2026-10-09T03:06:07.591332+00:00",
+      "cpu_percent": 55.5,
+      "rss_mib": 40.82
+    },
+    {
+      "utc": "2026-10-09T03:06:37.591682+00:00",
+      "cpu_percent": 54.1,
+      "rss_mib": 40.82
+    },
+    {
+      "utc": "2026-10-09T03:07:07.592181+00:00",
+      "cpu_percent": 57.6,
+      "rss_mib": 40.82
+    },
+    {
+      "utc": "2026-10-09T03:07:37.594014+00:00",
+      "cpu_percent": 59.8,
+      "rss_mib": 40.82
+    },
+    {
+      "utc": "2026-10-09T03:08:07.594794+00:00",
+      "cpu_percent": 59.47,
+      "rss_mib": 40.82
+    },
+    {
+      "utc": "2026-10-09T03:08:37.595673+00:00",
+      "cpu_percent": 57.87,
+      "rss_mib": 40.82
+    },
+    {
+      "utc": "2026-10-09T03:09:07.596009+00:00",
+      "cpu_percent": 57.3,
+      "rss_mib": 40.82
+    },
+    {
+      "utc": "2026-10-09T03:09:37.596464+00:00",
+      "cpu_percent": 56.47,
+      "rss_mib": 40.82
+    }
+  ],
+  "latency_windows": [
+    {
+      "utc": "2026-10-09T03:05:08Z",
+      "venue": "gate-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 69,
+      "mean": 0,
+      "max": 2
+    },
+    {
+      "utc": "2026-10-09T03:05:08Z",
+      "venue": "gate-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 69,
+      "mean": 4387,
+      "min": 490,
+      "max": 210880,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:05:08Z",
+      "venue": "bitget-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 85,
+      "mean": 0,
+      "max": 2
+    },
+    {
+      "utc": "2026-10-09T03:05:08Z",
+      "venue": "bitget-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 85,
+      "mean": 7183,
+      "min": 2029,
+      "max": 53914,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:05:38Z",
+      "venue": "gate-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 69,
+      "mean": 0,
+      "max": 2
+    },
+    {
+      "utc": "2026-10-09T03:05:38Z",
+      "venue": "gate-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 69,
+      "mean": 1316,
+      "min": 459,
+      "max": 6903,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:05:38Z",
+      "venue": "bitget-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 87,
+      "mean": 0,
+      "max": 2
+    },
+    {
+      "utc": "2026-10-09T03:05:38Z",
+      "venue": "bitget-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 87,
+      "mean": 6815,
+      "min": 2026,
+      "max": 53083,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:06:08Z",
+      "venue": "gate-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 66,
+      "mean": 0,
+      "max": 1
+    },
+    {
+      "utc": "2026-10-09T03:06:08Z",
+      "venue": "gate-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 66,
+      "mean": 2630,
+      "min": 549,
+      "max": 91966,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:06:08Z",
+      "venue": "bitget-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 87,
+      "mean": 0,
+      "max": 1
+    },
+    {
+      "utc": "2026-10-09T03:06:08Z",
+      "venue": "bitget-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 87,
+      "mean": 7294,
+      "min": 2088,
+      "max": 55638,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:06:38Z",
+      "venue": "gate-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 67,
+      "mean": 0,
+      "max": 1
+    },
+    {
+      "utc": "2026-10-09T03:06:38Z",
+      "venue": "gate-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 67,
+      "mean": 4497,
+      "min": 468,
+      "max": 164021,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:06:38Z",
+      "venue": "bitget-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 84,
+      "mean": 0,
+      "max": 1
+    },
+    {
+      "utc": "2026-10-09T03:06:38Z",
+      "venue": "bitget-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 84,
+      "mean": 14052,
+      "min": 2065,
+      "max": 157280,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:07:08Z",
+      "venue": "gate-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 74,
+      "mean": 0,
+      "max": 2
+    },
+    {
+      "utc": "2026-10-09T03:07:08Z",
+      "venue": "gate-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 74,
+      "mean": 1303,
+      "min": 437,
+      "max": 8885,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:07:08Z",
+      "venue": "bitget-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 73,
+      "mean": 0,
+      "max": 2
+    },
+    {
+      "utc": "2026-10-09T03:07:08Z",
+      "venue": "bitget-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 73,
+      "mean": 6495,
+      "min": 2073,
+      "max": 33968,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:07:38Z",
+      "venue": "gate-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 79,
+      "mean": 0,
+      "max": 2
+    },
+    {
+      "utc": "2026-10-09T03:07:38Z",
+      "venue": "gate-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 79,
+      "mean": 1555,
+      "min": 479,
+      "max": 13531,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:07:38Z",
+      "venue": "bitget-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 90,
+      "mean": 0,
+      "max": 1
+    },
+    {
+      "utc": "2026-10-09T03:07:38Z",
+      "venue": "bitget-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 90,
+      "mean": 8835,
+      "min": 2030,
+      "max": 108693,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:08:08Z",
+      "venue": "gate-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 77,
+      "mean": 0,
+      "max": 1
+    },
+    {
+      "utc": "2026-10-09T03:08:08Z",
+      "venue": "gate-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 77,
+      "mean": 2014,
+      "min": 477,
+      "max": 48979,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:08:08Z",
+      "venue": "bitget-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 88,
+      "mean": 0,
+      "max": 2
+    },
+    {
+      "utc": "2026-10-09T03:08:08Z",
+      "venue": "bitget-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 88,
+      "mean": 5238,
+      "min": 2068,
+      "max": 40315,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:08:38Z",
+      "venue": "gate-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 69,
+      "mean": 0,
+      "max": 1
+    },
+    {
+      "utc": "2026-10-09T03:08:38Z",
+      "venue": "gate-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 69,
+      "mean": 1437,
+      "min": 555,
+      "max": 12948,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:08:38Z",
+      "venue": "bitget-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 76,
+      "mean": 0,
+      "max": 2
+    },
+    {
+      "utc": "2026-10-09T03:08:38Z",
+      "venue": "bitget-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 76,
+      "mean": 5519,
+      "min": 2045,
+      "max": 51651,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:09:08Z",
+      "venue": "gate-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 68,
+      "mean": 0,
+      "max": 1
+    },
+    {
+      "utc": "2026-10-09T03:09:08Z",
+      "venue": "gate-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 68,
+      "mean": 1275,
+      "min": 472,
+      "max": 2284,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:09:08Z",
+      "venue": "bitget-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 81,
+      "mean": 0,
+      "max": 2
+    },
+    {
+      "utc": "2026-10-09T03:09:08Z",
+      "venue": "bitget-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 81,
+      "mean": 6267,
+      "min": 1968,
+      "max": 50011,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:09:38Z",
+      "venue": "gate-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 65,
+      "mean": 0,
+      "max": 1
+    },
+    {
+      "utc": "2026-10-09T03:09:38Z",
+      "venue": "gate-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 65,
+      "mean": 1334,
+      "min": 420,
+      "max": 3184,
+      "negative": 0
+    },
+    {
+      "utc": "2026-10-09T03:09:38Z",
+      "venue": "bitget-futures",
+      "metric": "recv_to_ipc",
+      "sample_every": 1024,
+      "samples": 78,
+      "mean": 0,
+      "max": 1
+    },
+    {
+      "utc": "2026-10-09T03:09:38Z",
+      "venue": "bitget-futures",
+      "metric": "exchange_to_recv",
+      "sample_every": 1024,
+      "samples": 78,
+      "mean": 5346,
+      "min": 2026,
+      "max": 46607,
+      "negative": 0
+    }
+  ]
+}

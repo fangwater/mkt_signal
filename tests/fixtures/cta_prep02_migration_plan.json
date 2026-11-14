@@ -1,0 +1,881 @@
+{
+  "purpose": "Historical three-frequency Prep02 pool migration, before 1min retirement. Never a deployment source.",
+  "combinations": [
+    {
+      "strategy_group": "prep02",
+      "name": "top-5_prep02_binance-futures_1min",
+      "venue": "binance-futures",
+      "interval": "1min",
+      "factor_rules": [
+        {
+          "标的": "BTCUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "baseline_200"
+        },
+        {
+          "标的": "ETHUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "baseline_200"
+        },
+        {
+          "标的": "DOGEUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "baseline_200"
+        },
+        {
+          "标的": "SOLUSDT",
+          "nq": "0.50",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "DOGEUSDT",
+          "nq": "0.50",
+          "符号": 1,
+          "因子": "baseline_141"
+        }
+      ],
+      "signal": {
+        "enabled": false,
+        "max_pos_u": 100.0,
+        "position_algorithm": "v0",
+        "symbol_overrides": {},
+        "entry": {
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_quantile_long": 0.7,
+          "factor_exit_quantile_short": 0.3
+        }
+      },
+      "symbol_group": "top-5"
+    },
+    {
+      "strategy_group": "prep02",
+      "name": "top-5_prep02_binance-futures_5min",
+      "venue": "binance-futures",
+      "interval": "5min",
+      "factor_rules": [
+        {
+          "标的": "SOLUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "factor_049"
+        },
+        {
+          "标的": "DOGEUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "factor_049"
+        }
+      ],
+      "signal": {
+        "enabled": false,
+        "max_pos_u": 200,
+        "entry": {
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_quantile_long": 0.3,
+          "factor_exit_quantile_short": 0.7
+        },
+        "symbol_overrides": {}
+      },
+      "symbol_group": "top-5"
+    },
+    {
+      "strategy_group": "prep02",
+      "name": "top-5_prep02_binance-futures_15min",
+      "venue": "binance-futures",
+      "interval": "15min",
+      "factor_rules": [
+        {
+          "标的": "SOLUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "TD_MT_040"
+        },
+        {
+          "标的": "DOGEUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "TD_MT_040"
+        },
+        {
+          "标的": "BTCUSDT",
+          "nq": "0.2/0.8",
+          "符号": -1,
+          "因子": "baseline_022"
+        },
+        {
+          "标的": "XRPUSDT",
+          "nq": "0.2/0.8",
+          "符号": -1,
+          "因子": "baseline_022"
+        },
+        {
+          "标的": "SOLUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "baseline_104"
+        },
+        {
+          "标的": "ETHUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "factor_125"
+        },
+        {
+          "标的": "SOLUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "factor_125"
+        }
+      ],
+      "signal": {
+        "enabled": false,
+        "max_pos_u": 200.0,
+        "position_algorithm": "v0",
+        "symbol_overrides": {},
+        "entry": {
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_quantile_long": 0.3,
+          "factor_exit_quantile_short": 0.7
+        }
+      },
+      "symbol_group": "top-5"
+    },
+    {
+      "strategy_group": "prep02",
+      "name": "top-20_prep02_binance-futures_1min",
+      "venue": "binance-futures",
+      "interval": "1min",
+      "factor_rules": [
+        {
+          "标的": "DOGEUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "ADAUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "LINKUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "LTCUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "ETCUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "DOTUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "FILUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "NEARUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "AXSUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "ATOMUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "UNIUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "ETHUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "SOLUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "XRPUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "DOGEUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "BNBUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "ADAUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "AVAXUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "LINKUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "LTCUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "ETCUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "BCHUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "NEARUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "AXSUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "ATOMUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "AAVEUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        },
+        {
+          "标的": "UNIUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_024"
+        }
+      ],
+      "signal": {
+        "enabled": false,
+        "max_pos_u": 100.0,
+        "position_algorithm": "v0",
+        "symbol_overrides": {},
+        "entry": {
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_quantile_long": 0.7,
+          "factor_exit_quantile_short": 0.3
+        }
+      },
+      "symbol_group": "top-20"
+    },
+    {
+      "strategy_group": "prep02",
+      "name": "top-20_prep02_binance-futures_5min",
+      "venue": "binance-futures",
+      "interval": "5min",
+      "factor_rules": [],
+      "signal": {
+        "enabled": false,
+        "max_pos_u": 200,
+        "entry": {
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_quantile_long": 0.3,
+          "factor_exit_quantile_short": 0.7
+        },
+        "symbol_overrides": {}
+      },
+      "symbol_group": "top-20"
+    },
+    {
+      "strategy_group": "prep02",
+      "name": "top-20_prep02_binance-futures_15min",
+      "venue": "binance-futures",
+      "interval": "15min",
+      "factor_rules": [
+        {
+          "标的": "SOLUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "baseline_104"
+        },
+        {
+          "标的": "BNBUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "baseline_104"
+        },
+        {
+          "标的": "LINKUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "baseline_104"
+        },
+        {
+          "标的": "ETCUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "baseline_104"
+        },
+        {
+          "标的": "AXSUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "baseline_104"
+        },
+        {
+          "标的": "BTCUSDT",
+          "nq": "0.2/0.8",
+          "符号": -1,
+          "因子": "baseline_022"
+        },
+        {
+          "标的": "XRPUSDT",
+          "nq": "0.2/0.8",
+          "符号": -1,
+          "因子": "baseline_022"
+        },
+        {
+          "标的": "LTCUSDT",
+          "nq": "0.2/0.8",
+          "符号": -1,
+          "因子": "baseline_022"
+        },
+        {
+          "标的": "ETCUSDT",
+          "nq": "0.2/0.8",
+          "符号": -1,
+          "因子": "baseline_022"
+        },
+        {
+          "标的": "NEARUSDT",
+          "nq": "0.2/0.8",
+          "符号": -1,
+          "因子": "baseline_022"
+        }
+      ],
+      "signal": {
+        "enabled": false,
+        "max_pos_u": 200.0,
+        "position_algorithm": "v0",
+        "symbol_overrides": {},
+        "entry": {
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_quantile_long": 0.3,
+          "factor_exit_quantile_short": 0.7
+        }
+      },
+      "symbol_group": "top-20"
+    },
+    {
+      "strategy_group": "prep02",
+      "name": "last-20_prep02_binance-futures_1min",
+      "venue": "binance-futures",
+      "interval": "1min",
+      "factor_rules": [
+        {
+          "标的": "1INCHUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "EGLDUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "YFIUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "KNCUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "RSRUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "KAVAUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "ZENUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "QTUMUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "BELUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "RLCUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "DASHUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "ZRXUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "IOTAUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "ONTUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "SKLUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "IOSTUSDT",
+          "nq": "0.50",
+          "符号": -1,
+          "因子": "TD_TI_043"
+        },
+        {
+          "标的": "YFIUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "KNCUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "RSRUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "KAVAUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "ZENUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "QTUMUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "DASHUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "KSMUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "IOTAUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        },
+        {
+          "标的": "ONTUSDT",
+          "nq": "0.2/0.8",
+          "符号": 1,
+          "因子": "baseline_141"
+        }
+      ],
+      "signal": {
+        "enabled": false,
+        "max_pos_u": 100.0,
+        "position_algorithm": "v0",
+        "symbol_overrides": {},
+        "entry": {
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_quantile_long": 0.7,
+          "factor_exit_quantile_short": 0.3
+        }
+      },
+      "symbol_group": "last-20"
+    },
+    {
+      "strategy_group": "prep02",
+      "name": "last-20_prep02_binance-futures_5min",
+      "venue": "binance-futures",
+      "interval": "5min",
+      "factor_rules": [
+        {
+          "标的": "1INCHUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "TD_MT_021"
+        },
+        {
+          "标的": "DASHUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "TD_MT_021"
+        },
+        {
+          "标的": "EGLDUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "TD_MT_019"
+        },
+        {
+          "标的": "DASHUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "TD_MT_019"
+        },
+        {
+          "标的": "IOTAUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "TD_MT_019"
+        }
+      ],
+      "signal": {
+        "enabled": false,
+        "max_pos_u": 200,
+        "entry": {
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_quantile_long": 0.3,
+          "factor_exit_quantile_short": 0.7
+        },
+        "symbol_overrides": {}
+      },
+      "symbol_group": "last-20"
+    },
+    {
+      "strategy_group": "prep02",
+      "name": "last-20_prep02_binance-futures_15min",
+      "venue": "binance-futures",
+      "interval": "15min",
+      "factor_rules": [
+        {
+          "标的": "ZENUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "TD_TI_027"
+        },
+        {
+          "标的": "DASHUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "TD_TI_027"
+        },
+        {
+          "标的": "KSMUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "TD_TI_027"
+        },
+        {
+          "标的": "IOTAUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "TD_TI_027"
+        },
+        {
+          "标的": "YFIUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "baseline_104"
+        },
+        {
+          "标的": "KNCUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "baseline_104"
+        },
+        {
+          "标的": "ZENUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "baseline_104"
+        },
+        {
+          "标的": "QTUMUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "baseline_104"
+        },
+        {
+          "标的": "KSMUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "baseline_104"
+        },
+        {
+          "标的": "IOTAUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "baseline_104"
+        },
+        {
+          "标的": "BATUSDT",
+          "nq": "关闭",
+          "符号": 1,
+          "因子": "baseline_104"
+        },
+        {
+          "标的": "BELUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "baseline_040"
+        },
+        {
+          "标的": "RLCUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "baseline_040"
+        },
+        {
+          "标的": "KSMUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "baseline_040"
+        },
+        {
+          "标的": "ZRXUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "baseline_040"
+        },
+        {
+          "标的": "IOTAUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "baseline_040"
+        },
+        {
+          "标的": "SKLUSDT",
+          "nq": "关闭",
+          "符号": -1,
+          "因子": "baseline_040"
+        }
+      ],
+      "signal": {
+        "enabled": false,
+        "max_pos_u": 200.0,
+        "position_algorithm": "v0",
+        "symbol_overrides": {},
+        "entry": {
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_quantile_long": 0.3,
+          "factor_exit_quantile_short": 0.7
+        }
+      },
+      "symbol_group": "last-20"
+    }
+  ],
+  "symbol_groups": {
+    "top-5": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT",
+      "DOGEUSDT"
+    ],
+    "top-20": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT",
+      "DOGEUSDT",
+      "BNBUSDT",
+      "ADAUSDT",
+      "AVAXUSDT",
+      "LINKUSDT",
+      "LTCUSDT",
+      "ETCUSDT",
+      "DOTUSDT",
+      "BCHUSDT",
+      "FILUSDT",
+      "NEARUSDT",
+      "AXSUSDT",
+      "ATOMUSDT",
+      "AAVEUSDT",
+      "TRXUSDT",
+      "UNIUSDT"
+    ],
+    "last-20": [
+      "1INCHUSDT",
+      "EGLDUSDT",
+      "YFIUSDT",
+      "KNCUSDT",
+      "RSRUSDT",
+      "KAVAUSDT",
+      "ZENUSDT",
+      "QTUMUSDT",
+      "BELUSDT",
+      "RLCUSDT",
+      "DASHUSDT",
+      "KSMUSDT",
+      "ZRXUSDT",
+      "IOTAUSDT",
+      "ONTUSDT",
+      "BANDUSDT",
+      "SKLUSDT",
+      "IOSTUSDT",
+      "BATUSDT"
+    ]
+  }
+}

@@ -1,0 +1,158 @@
+{
+  "built_at_utc": "2026-10-23T05:05:55.784028+00:00",
+  "commit": "f9424e8d804ac76265643849ec0a5ef570485b2d",
+  "environment": "binance_exec_rx04_5m05",
+  "build": "cargo build --release -p mkt_signal -p trade_signal -p viz_server -p persist_manager --features persist_manager/runtime --bin exec-pre-trade --bin trade_engine --bin rapidx_account_monitor --bin trade_signal --bin viz_server --bin persist_manager",
+  "files": [
+    {
+      "path": "exec-pre-trade",
+      "sha256": "c79c5873fc193c40588cb8abe732d48c42b9102b5b1b53145d2291e99408a280"
+    },
+    {
+      "path": "trade_signal",
+      "sha256": "25a6981fe050048d017175f41ec3f48e6e110287b9b90dc46634364ff76d07ec"
+    },
+    {
+      "path": "rapidx_account_monitor",
+      "sha256": "3842e36f7ba7735f6fa93fae9c088e8a43088ebb957e820e3ae4d2e59d4a7524"
+    },
+    {
+      "path": "viz_server",
+      "sha256": "c090b3042dd525fa3992f788447fa00e9576c6c31d6bdfe90cfb5b9bacec51fb"
+    },
+    {
+      "path": "trade_engine",
+      "sha256": "7eb60b571bfe4bf0a3866c9cd6f9eeaa8580a19018f4af466332420a233f316d"
+    },
+    {
+      "path": "persist_manager",
+      "sha256": "852d5805d292e7d146a8ee59acf5795ee7295acac4a8899ffbaf58cf1a6478da"
+    },
+    {
+      "path": "scripts/exec_config_server.py",
+      "sha256": "91de363464120f9cfa1755622e8d7c4d169e71aaa02eeb462c84f9c655273195"
+    },
+    {
+      "path": "scripts/mm_process_name.sh",
+      "sha256": "3dc325e1fb20af0e21910ab0ec85408a730988dd4e06225f8c37a3bcbb949238"
+    },
+    {
+      "path": "scripts/process_match_lib.sh",
+      "sha256": "d00385fa02f8070b341440b740e2e9e00403fd9af3e53265f14d87394ec0d714"
+    },
+    {
+      "path": "scripts/execution_backend_lib.sh",
+      "sha256": "029d79c4db43bc142e08c171017084698405ca95be26e4ab65523fcf8f0926e4"
+    },
+    {
+      "path": "scripts/start_exec_config_server.sh",
+      "sha256": "74d4c01f3f5fb3e620cd5a05beab02e2d5ca6199dcdafee22ac6bc54a4e9132c"
+    },
+    {
+      "path": "scripts/stop_exec_config_server.sh",
+      "sha256": "5ab31d69370d2870b1e8e0cd4424a4ef8879829b9fdfb8e266934fc8307c11ee"
+    },
+    {
+      "path": "scripts/start_exec_viz_server.sh",
+      "sha256": "2de94737a7ab544bf6a432386e183a0b8a032b4f36ceee84b874664de6658bd2"
+    },
+    {
+      "path": "scripts/stop_exec_viz_server.sh",
+      "sha256": "4842787732cd98671d2eb7400fa68858cb2acb26e6012e3366abaf18f28231d5"
+    },
+    {
+      "path": "scripts/start_exec_persist_manager.sh",
+      "sha256": "009456293a6993c65ffdd9d8b6db57d7fadb2a43c09eb75aaeb6725a294ac1ae"
+    },
+    {
+      "path": "scripts/stop_exec_persist_manager.sh",
+      "sha256": "ff6a58ba4b476dcf40f3d402c29cbb102f161d5471d6869d384b1bb950db5a30"
+    },
+    {
+      "path": "scripts/start_exec_trade_engine.sh",
+      "sha256": "37144e38745cae41eaf3d6320fb2b1c789e705483c77874bf286b62e5252071b"
+    },
+    {
+      "path": "scripts/stop_exec_trade_engine.sh",
+      "sha256": "02c8ecfbb88ea8155c5e4257887f8b83c4ad758babd47300fd282aea3e3284e3"
+    },
+    {
+      "path": "scripts/start_exec_pre_trade.sh",
+      "sha256": "8f7f13ba9f88a7d83ad09d188a429f68d2411f1fe3b873f5cbb2cd97f7a9fa20"
+    },
+    {
+      "path": "scripts/stop_exec_pre_trade.sh",
+      "sha256": "94a1d720c9a8147a67643c8a7e5a89d60504d00542d35f21abc7bcb40ee1185a"
+    },
+    {
+      "path": "scripts/start_exec_trade_signal.sh",
+      "sha256": "7f7ab4d5b32359916813015e50d3a22b74264f8e928b1ff8eb1c72211d92eb26"
+    },
+    {
+      "path": "scripts/stop_exec_trade_signal.sh",
+      "sha256": "3e8af1482fd9dfb1138d9a45def0d7098beabcf9084a76e14cd1048ff166b5a6"
+    },
+    {
+      "path": "scripts/start_account_monitor.sh",
+      "sha256": "55998b5bf424489611d960184b5c080ad4e0b8f6c887a07458877878be7faac9"
+    },
+    {
+      "path": "scripts/stop_account_monitor.sh",
+      "sha256": "259081358abc1de69eb74135ccbf47af59d03158cd16ce199c48a35eda8a35c1"
+    },
+    {
+      "path": "scripts/start_trade_engine.sh",
+      "sha256": "f2395fffa55fc468c9067334104f6c67379be75835f9fd8e8b21f99b990b768a"
+    },
+    {
+      "path": "scripts/stop_trade_engine.sh",
+      "sha256": "2ca3ba5abefa8771782a32f505374f76ddf73c96810f0694e7abb4468ba6f1bb"
+    },
+    {
+      "path": "scripts/start_fr_persist_manager.sh",
+      "sha256": "1c499b2424d56e66cac8881a129f8cdb41eb47fc7bfbc96d6f84467a3b550bc1"
+    },
+    {
+      "path": "scripts/stop_fr_persist_manager.sh",
+      "sha256": "e71e8c63e119739e46ae173408f05878122ca465914c5d545acdd7e506018a3f"
+    },
+    {
+      "path": "scripts/print_exec_risk_params.py",
+      "sha256": "f7db27ab7c1d24b11853f02eea7b71e7085406710474a9b2ef76797e0516796c"
+    },
+    {
+      "path": "scripts/sync_exec_risk_params.py",
+      "sha256": "60c44e7089f90bf5e6e8a6c057babc1e103b913065006af6a0153f0b16aa2e99"
+    },
+    {
+      "path": "scripts/print_exec_max_pos_u.py",
+      "sha256": "9321f6f721d196b9567bb07c97915fbdcca35a3ee20a1a4e5be496711ba5a67c"
+    },
+    {
+      "path": "scripts/sync_exec_max_pos_u.py",
+      "sha256": "b098651740061574107ca57e2bd6aed65f28b83a54b0ead7dfcd31632f7c33c5"
+    },
+    {
+      "path": "scripts/binance_cancel_all_std_um_ws_orders.py",
+      "sha256": "df9643705fc769166430fdc509882a163b7c9f5844a53326d2eb9b5aff383210"
+    },
+    {
+      "path": "scripts/binance_cancel_all_std_cm_orders.py",
+      "sha256": "e8e4eb24bab7968b032d5017534e0e2e0e7ba720aa558859fe0847fbd559e778"
+    },
+    {
+      "path": "scripts/binance_cancel_all_unified_open_orders.py",
+      "sha256": "3c06df64413284683800b8d2e2f848cb14b17060029a066bc0e9d335857540aa"
+    },
+    {
+      "path": "scripts/binance_local_ip.py",
+      "sha256": "eb4d46043db3311be909dbecda3b605f0e18c56410016b3d038b91e77eb2d02f"
+    },
+    {
+      "path": "scripts/sell_margin_spot.py",
+      "sha256": "e0158b7dc70fd7ae623faacafa8b310118abbeb21bdd7730ef24668da929297a"
+    }
+  ],
+  "uploaded_checksums_verified": true,
+  "processes_started": false
+}

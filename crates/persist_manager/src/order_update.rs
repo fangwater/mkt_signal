@@ -4,7 +4,7 @@ use anyhow::Result;
 use bytes::Buf;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{debug, warn};
 
 use crate::iceoryx::{create_record_subscriber, trim_order_update_payload};
 use crate::polling::{PollStats, MAX_DRAIN_PER_CHANNEL};
@@ -51,7 +51,7 @@ impl OrderUpdatePersistor {
                         let mut cursor = &payload[..];
                         let ts = cursor.get_i64_le() as u64;
                         let key = format!("{:020}", ts);
-                        info!(
+                        debug!(
                             "persist order update: key={} payload_len={}",
                             key,
                             payload.len()
@@ -112,7 +112,7 @@ impl OrderUpdateUnmatchedPersistor {
                         let mut cursor = &payload[..];
                         let ts = cursor.get_i64_le() as u64;
                         let key = format!("{:020}", ts);
-                        info!(
+                        debug!(
                             "persist order update unmatched: key={} payload_len={}",
                             key,
                             payload.len()

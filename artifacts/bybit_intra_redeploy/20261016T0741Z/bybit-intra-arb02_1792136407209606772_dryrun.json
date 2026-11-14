@@ -1,0 +1,117 @@
+{
+  "env": "bybit-intra-arb02",
+  "mode": "dryrun",
+  "time": 1792136407.2096107,
+  "plan": [
+    {
+      "payload": {
+        "category": "spot",
+        "symbol": "BNBUSDT",
+        "side": "Buy",
+        "orderType": "Market",
+        "qty": "0.0238",
+        "slippageToleranceType": "Percent",
+        "slippageTolerance": "0.50",
+        "marketUnit": "baseCoin",
+        "isLeverage": 0
+      },
+      "before_net_usdt": "-17.4102245680",
+      "expected_abs_residual_usdt": "0.0133765680",
+      "notional": "17.396848"
+    },
+    {
+      "payload": {
+        "category": "spot",
+        "symbol": "ETHUSDT",
+        "side": "Buy",
+        "orderType": "Market",
+        "qty": "0.00571",
+        "slippageToleranceType": "Percent",
+        "slippageTolerance": "0.50",
+        "marketUnit": "baseCoin",
+        "isLeverage": 0
+      },
+      "before_net_usdt": "-14.0228086776",
+      "expected_abs_residual_usdt": "0.0234874776",
+      "notional": "13.9993212"
+    },
+    {
+      "payload": {
+        "category": "linear",
+        "symbol": "XRPUSDT",
+        "side": "Buy",
+        "orderType": "Market",
+        "qty": "3.6",
+        "slippageToleranceType": "Percent",
+        "slippageTolerance": "0.50",
+        "reduceOnly": true,
+        "positionIdx": 0
+      },
+      "before_net_usdt": "-4.907293281408",
+      "expected_abs_residual_usdt": "0.089053281408",
+      "notional": "4.81824"
+    }
+  ],
+  "before": [
+    {
+      "asset": "BNB",
+      "spot": "-6.65381830",
+      "hedge": "6.63",
+      "net": "-0.02381830",
+      "price": "730.96",
+      "net_usdt": "-17.4102245680",
+      "wallet": "-0.01342797",
+      "locked": "0"
+    },
+    {
+      "asset": "BTC",
+      "spot": "-0.07595569",
+      "hedge": "0.076",
+      "net": "0.00004431",
+      "price": "82143.4",
+      "net_usdt": "3.639774054",
+      "wallet": "-0.00002232",
+      "locked": "0"
+    },
+    {
+      "asset": "DOGE",
+      "spot": "2762.28915862",
+      "hedge": "-2753",
+      "net": "9.28915862",
+      "price": "0.08217",
+      "net_usdt": "0.7632901638054",
+      "wallet": "2762.28915862",
+      "locked": "0"
+    },
+    {
+      "asset": "ETH",
+      "spot": "-2.61571958",
+      "hedge": "2.61",
+      "net": "-0.00571958",
+      "price": "2451.72",
+      "net_usdt": "-14.0228086776",
+      "wallet": "-0.00260051",
+      "locked": "0"
+    },
+    {
+      "asset": "SOL",
+      "spot": "48.66113364",
+      "hedge": "-48.7",
+      "net": "-0.03886636",
+      "price": "106.19",
+      "net_usdt": "-4.1272187684",
+      "wallet": "48.66113364",
+      "locked": "0"
+    },
+    {
+      "asset": "XRP",
+      "spot": "3659.63346288",
+      "hedge": "-3663.3",
+      "net": "-3.66653712",
+      "price": "1.3384",
+      "net_usdt": "-4.907293281408",
+      "wallet": "3659.63346288",
+      "locked": "0"
+    }
+  ]
+}

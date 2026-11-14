@@ -1,7 +1,9 @@
-use crate::okex::{OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest};
+use crate::okex::{
+    OkexCancelOrderRequest, OkexModifyOrderParams, OkexNewOrderParams, OkexNewOrderRequest,
+};
 use crate::trade_request::{
-    BinanceCancelOrderParams, BinanceNewOrderParams, TradeRequestHeader, TradeRequestMsg,
-    TradeRequestType,
+    BinanceCancelOrderParams, BinanceModifyOrderParams, BinanceNewOrderParams, TradeRequestHeader,
+    TradeRequestMsg, TradeRequestType,
 };
 use anyhow::{anyhow, Context, Result};
 use hmac::{Hmac, Mac};
@@ -76,6 +78,7 @@ pub struct LtpWsResponse {
     pub id: Option<i64>,
     pub event: Option<String>,
     pub code: i32,
+    pub has_code: bool,
     pub msg: String,
     pub data: Value,
     pub channel: Option<String>,
@@ -98,7 +101,11 @@ impl LtpWsResponse {
             .get("event")
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        let code = val.get("code").and_then(parse_i32_value).unwrap_or(0);
+        let has_code = val.get("code").and_then(parse_i32_value).is_some();
+        let code = val
+            .get("code")
+            .and_then(parse_i32_value)
+            .unwrap_or_default();
         let msg = val
             .get("msg")
             .or_else(|| val.get("message"))
@@ -110,6 +117,7 @@ impl LtpWsResponse {
             id,
             event,
             code,
+            has_code,
             msg,
             data,
             channel,
@@ -124,16 +132,62 @@ impl LtpWsResponse {
     pub fn is_trade_ack(&self) -> bool {
         matches!(
             self.event.as_deref(),
-            Some("place_order") | Some("cancel_order")
-        )
+            Some("place_order") | Some("cancel_order") | Some("replace_order")
+        ) || (self.event.as_deref() == Some("error") && self.id.is_some())
+    }
+
+    pub fn action_matches_request(&self, req_type: TradeRequestType) -> bool {
+        match self.event.as_deref() {
+            Some("place_order") => req_type.is_new_order(),
+            Some("cancel_order") => matches!(
+                req_type,
+                TradeRequestType::BinanceCancelUMOrder
+                    | TradeRequestType::BinanceCancelMarginOrder
+                    | TradeRequestType::BinanceLtpCancelSpotOrder
+                    | TradeRequestType::BinanceWsCancelUMOrder
+                    | TradeRequestType::BinanceWsCancelMarginOrder
+                    | TradeRequestType::OkexCancelMarginOrder
+                    | TradeRequestType::OkexCancelUMOrder
+            ),
+            Some("replace_order") => matches!(
+                req_type,
+                TradeRequestType::BinanceModifyUMOrder
+                    | TradeRequestType::BinanceWsModifyUMOrder
+                    | TradeRequestType::OkexModifyUMOrder
+            ),
+            // RapidX reports rejected trade actions as `event: "error"`; the
+            // echoed request id is the only action correlation in that shape.
+            Some("error") => self.id.is_some(),
+            _ => false,
+        }
+    }
+
+    pub fn requires_order_query(&self) -> bool {
+        // These responses describe an existing order, not its current lifecycle.
+        self.has_code && matches!(self.code, 401009 | 401117)
     }
 
     pub fn is_success(&self) -> bool {
-        self.code == 0 || self.code == 200000
+        self.has_code
+            && match self.event.as_deref() {
+                Some("login") => self.code == 0,
+                Some("place_order") | Some("cancel_order") | Some("replace_order") => {
+                    self.code == 200000
+                }
+                _ => false,
+            }
     }
 
     pub fn is_order_push(&self) -> bool {
         self.channel.as_deref() == Some("Orders") && self.data.is_object()
+    }
+
+    pub fn order_action(&self) -> Option<&str> {
+        self.data.get("action").and_then(Value::as_str)
+    }
+
+    pub fn is_amend_failed(&self) -> bool {
+        self.is_order_push() && self.order_action() == Some("AMEND_FAILED")
     }
 
     pub fn order_id_i64(&self) -> i64 {
@@ -163,11 +217,10 @@ impl LtpWsResponse {
     }
 
     pub fn response_price(&self) -> f64 {
-        self.data
-            .get("lastExecutedPrice")
-            .or_else(|| self.data.get("executedAvgPrice"))
-            .or_else(|| self.data.get("limitPrice"))
-            .and_then(parse_f64_value)
+        ["executedAvgPrice", "lastExecutedPrice", "limitPrice"]
+            .iter()
+            .filter_map(|field| self.data.get(*field).and_then(parse_f64_value))
+            .find(|price| price.is_finite() && *price > 0.0)
             .unwrap_or(0.0)
     }
 
@@ -187,10 +240,178 @@ impl LtpWsResponse {
     pub fn error_code_for_trade_response(&self) -> i32 {
         if self.is_success() {
             0
+        } else if self.is_amend_failed() && self.code == 0 {
+            -1
         } else {
             self.code
         }
     }
+}
+
+/// A fully validated LTP private user-data push. Numeric protocol values remain
+/// strings so downstream persistence does not lose precision or fee identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LtpUserData {
+    Order(LtpOrderPush),
+    Trade(LtpTradePush),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LtpOrderPush {
+    pub action: String,
+    pub portfolio_id: String,
+    pub order_id: String,
+    pub client_order_id: String,
+    pub exchange_type: String,
+    pub business_type: String,
+    pub sym: String,
+    pub limit_price: String,
+    pub order_qty: String,
+    pub quote_order_qty: String,
+    pub side: String,
+    pub exchange_order_type: String,
+    pub time_in_force: String,
+    pub executed_qty: String,
+    pub executed_amount: String,
+    pub executed_avg_price: String,
+    pub last_executed_qty: String,
+    pub last_executed_price: String,
+    pub last_executed_amount: String,
+    pub fee: String,
+    pub fee_coin: String,
+    pub rebate: String,
+    pub rebate_coin: String,
+    pub order_state: String,
+    pub update_at_ms: i64,
+    pub create_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LtpTradePush {
+    pub transaction_id: String,
+    pub portfolio_id: String,
+    pub order_id: String,
+    pub client_order_id: String,
+    pub exchange_type: String,
+    pub business_type: String,
+    pub sym: String,
+    pub side: String,
+    pub quantity: String,
+    pub price: String,
+    pub trading_fee: String,
+    pub trading_fee_coin: String,
+    pub rpnl: String,
+    pub create_at_ms: i64,
+    pub exec_type: String,
+}
+
+pub fn parse_ltp_user_data(payload: &str) -> Result<Option<LtpUserData>> {
+    let value: Value =
+        serde_json::from_str(payload).with_context(|| "decode LTP user-data push")?;
+    let Some(channel) = value.get("channel").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if !matches!(channel, "Orders" | "Trades") {
+        return Ok(None);
+    }
+    let data = value
+        .get("data")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("LTP {channel} push missing object data"))?;
+
+    match channel {
+        "Orders" => Ok(Some(LtpUserData::Order(LtpOrderPush {
+            action: data
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            portfolio_id: required_protocol_string(data, "portfolioId")?,
+            order_id: required_protocol_string(data, "orderId")?,
+            client_order_id: required_protocol_string(data, "clientOrderId")?,
+            exchange_type: required_protocol_string(data, "exchangeType")?,
+            business_type: required_protocol_string(data, "businessType")?,
+            sym: required_protocol_string(data, "sym")?,
+            limit_price: required_optional_decimal_string(data, "limitPrice")?,
+            order_qty: required_optional_decimal_string(data, "orderQty")?,
+            quote_order_qty: required_decimal_string(data, "quoteOrderQty")?,
+            side: required_protocol_string(data, "side")?,
+            exchange_order_type: required_protocol_string(data, "exchangeOrderType")?,
+            time_in_force: required_protocol_string(data, "timeInForce")?,
+            executed_qty: required_decimal_string(data, "executedQty")?,
+            executed_amount: required_decimal_string(data, "executedAmount")?,
+            executed_avg_price: required_decimal_string(data, "executedAvgPrice")?,
+            last_executed_qty: required_decimal_string(data, "lastExecutedQty")?,
+            last_executed_price: required_decimal_string(data, "lastExecutedPrice")?,
+            last_executed_amount: required_decimal_string(data, "lastExecutedAmount")?,
+            fee: required_decimal_string(data, "fee")?,
+            fee_coin: required_protocol_string(data, "feeCoin")?,
+            rebate: required_decimal_string(data, "rebate")?,
+            rebate_coin: required_protocol_string(data, "rebateCoin")?,
+            order_state: required_protocol_string(data, "orderState")?,
+            update_at_ms: required_millis_timestamp(data, "updateAt")?,
+            create_at_ms: required_millis_timestamp(data, "createAt")?,
+        }))),
+        "Trades" => Ok(Some(LtpUserData::Trade(LtpTradePush {
+            transaction_id: required_protocol_string(data, "transactionId")?,
+            portfolio_id: required_protocol_string(data, "portfolioId")?,
+            order_id: required_protocol_string(data, "orderId")?,
+            client_order_id: required_protocol_string(data, "clientOrderId")?,
+            exchange_type: required_protocol_string(data, "exchangeType")?,
+            business_type: required_protocol_string(data, "businessType")?,
+            sym: required_protocol_string(data, "sym")?,
+            side: required_protocol_string(data, "side")?,
+            quantity: required_decimal_string(data, "quantity")?,
+            price: required_decimal_string(data, "price")?,
+            trading_fee: required_decimal_string(data, "tradingFee")?,
+            trading_fee_coin: required_protocol_string(data, "tradingFeeCoin")?,
+            rpnl: required_decimal_string(data, "rpnl")?,
+            create_at_ms: required_millis_timestamp(data, "createAt")?,
+            exec_type: required_protocol_string(data, "execType")?,
+        }))),
+        _ => Ok(None),
+    }
+}
+
+fn required_protocol_string(data: &serde_json::Map<String, Value>, field: &str) -> Result<String> {
+    let value = data
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("LTP user-data field {field} must be a string"))?;
+    Ok(value.to_string())
+}
+
+fn required_decimal_string(data: &serde_json::Map<String, Value>, field: &str) -> Result<String> {
+    let value = required_protocol_string(data, field)?;
+    let number = value
+        .parse::<f64>()
+        .with_context(|| format!("LTP user-data field {field} is not decimal"))?;
+    if !number.is_finite() {
+        return Err(anyhow!("LTP user-data field {field} is not finite"));
+    }
+    Ok(value)
+}
+
+fn required_optional_decimal_string(
+    data: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<String> {
+    let value = required_protocol_string(data, field)?;
+    if value.is_empty() {
+        return Ok(value);
+    }
+    required_decimal_string(data, field)
+}
+
+fn required_millis_timestamp(data: &serde_json::Map<String, Value>, field: &str) -> Result<i64> {
+    let value = required_protocol_string(data, field)?;
+    let timestamp = value
+        .parse::<i64>()
+        .with_context(|| format!("LTP user-data field {field} is not an integer timestamp"))?;
+    if timestamp <= 0 {
+        return Err(anyhow!("LTP user-data field {field} must be positive"));
+    }
+    Ok(timestamp)
 }
 
 pub fn is_text_pong(payload: &str) -> bool {
@@ -202,9 +423,38 @@ pub fn build_order_payload(
     msg: &TradeRequestMsg,
     transport_id: i64,
 ) -> Result<String> {
+    let expected_exchange = match msg.req_type {
+        TradeRequestType::BinanceNewUMOrder
+        | TradeRequestType::BinanceNewMarginOrder
+        | TradeRequestType::BinanceLtpNewSpotOrder
+        | TradeRequestType::BinanceWsNewUMOrder
+        | TradeRequestType::BinanceWsNewMarginOrder
+        | TradeRequestType::BinanceCancelUMOrder
+        | TradeRequestType::BinanceCancelMarginOrder
+        | TradeRequestType::BinanceLtpCancelSpotOrder
+        | TradeRequestType::BinanceWsCancelUMOrder
+        | TradeRequestType::BinanceWsCancelMarginOrder
+        | TradeRequestType::BinanceModifyUMOrder
+        | TradeRequestType::BinanceWsModifyUMOrder => Exchange::Binance,
+        TradeRequestType::OkexNewUMOrder
+        | TradeRequestType::OkexNewMarginOrder
+        | TradeRequestType::OkexCancelUMOrder
+        | TradeRequestType::OkexCancelMarginOrder
+        | TradeRequestType::OkexModifyUMOrder => Exchange::Okex,
+        _ => return Err(anyhow!("unsupported RapidX request type")),
+    };
+    if logical_exchange != expected_exchange {
+        return Err(anyhow!("RapidX request does not match logical exchange"));
+    }
+    if msg.client_order_id <= 0 {
+        return Err(anyhow!(
+            "RapidX request requires a positive client order ID"
+        ));
+    }
     let (action, args) = match msg.req_type {
         TradeRequestType::BinanceNewUMOrder
         | TradeRequestType::BinanceNewMarginOrder
+        | TradeRequestType::BinanceLtpNewSpotOrder
         | TradeRequestType::BinanceWsNewUMOrder
         | TradeRequestType::BinanceWsNewMarginOrder => {
             let params = BinanceNewOrderParams::from_bytes(&msg.params)
@@ -216,6 +466,7 @@ pub fn build_order_payload(
         }
         TradeRequestType::BinanceCancelUMOrder
         | TradeRequestType::BinanceCancelMarginOrder
+        | TradeRequestType::BinanceLtpCancelSpotOrder
         | TradeRequestType::BinanceWsCancelUMOrder
         | TradeRequestType::BinanceWsCancelMarginOrder => {
             let params = BinanceCancelOrderParams::from_bytes(&msg.params)
@@ -223,6 +474,22 @@ pub fn build_order_payload(
             (
                 "cancel_order",
                 build_ltp_cancel_args_from_binance(msg.client_order_id, params),
+            )
+        }
+        TradeRequestType::BinanceModifyUMOrder | TradeRequestType::BinanceWsModifyUMOrder => {
+            let params = BinanceModifyOrderParams::from_bytes(&msg.params)
+                .ok_or_else(|| anyhow!("decode binance modify order params failed"))?;
+            if params.order_id <= 0 {
+                return Err(anyhow!(
+                    "RapidX replace_order requires an exchange order ID"
+                ));
+            }
+            (
+                "replace_order",
+                json!({
+                    "orderId": params.order_id.to_string(),
+                    "replacePrice": params.price_qv.decimal_string(),
+                }),
             )
         }
         TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => {
@@ -246,6 +513,22 @@ pub fn build_order_payload(
             .ok_or_else(|| anyhow!("decode okex cancel order params failed"))?;
             ("cancel_order", build_ltp_cancel_args_from_okex(msg, params))
         }
+        TradeRequestType::OkexModifyUMOrder => {
+            let params = OkexModifyOrderParams::from_bytes(&msg.params)
+                .ok_or_else(|| anyhow!("decode okex modify order params failed"))?;
+            if params.ord_id <= 0 {
+                return Err(anyhow!(
+                    "RapidX replace_order requires an exchange order ID"
+                ));
+            }
+            (
+                "replace_order",
+                json!({
+                    "orderId": params.ord_id.to_string(),
+                    "replacePrice": params.new_price_qv.decimal_string(),
+                }),
+            )
+        }
         _ => {
             return Err(anyhow!(
                 "unsupported LTP ws request type: {:?}",
@@ -257,9 +540,14 @@ pub fn build_order_payload(
     serde_json::to_string(&json!({
         "id": transport_id.to_string(),
         "action": action,
+        "ts": ltp_timestamp_us(),
         "args": args,
     }))
     .with_context(|| "serialize LTP ws payload")
+}
+
+fn ltp_timestamp_us() -> String {
+    chrono::Utc::now().timestamp_micros().to_string()
 }
 
 fn header_for_msg(msg: &TradeRequestMsg) -> TradeRequestHeader {
@@ -278,9 +566,10 @@ fn build_ltp_new_order_args_from_binance(
     params: BinanceNewOrderParams,
 ) -> Result<Value> {
     let business = match req_type {
-        TradeRequestType::BinanceNewMarginOrder | TradeRequestType::BinanceWsNewMarginOrder => {
+        TradeRequestType::BinanceLtpNewSpotOrder | TradeRequestType::BinanceWsNewMarginOrder => {
             "SPOT"
         }
+        TradeRequestType::BinanceNewMarginOrder => "MARGIN",
         TradeRequestType::BinanceNewUMOrder | TradeRequestType::BinanceWsNewUMOrder => "PERP",
         _ => return Err(anyhow!("unsupported binance LTP request: {:?}", req_type)),
     };
@@ -290,6 +579,24 @@ fn build_ltp_new_order_args_from_binance(
         other => return Err(anyhow!("LTP backend does not support exchange {}", other)),
     };
     let sym = ltp_sym(exchange, business, &params.symbol);
+    let cash_market_buy = business != "PERP"
+        && params.order_type == OrderType::Market
+        && params.side == order_common::Side::Buy;
+    let quantity = if cash_market_buy {
+        if params.quote_order_qty_qv.is_zero() || !params.quantity_qv.is_zero() {
+            return Err(anyhow!(
+                "RapidX cash market buy requires quoteOrderQty and forbids orderQty"
+            ));
+        }
+        String::new()
+    } else {
+        if !params.quote_order_qty_qv.is_zero() || params.quantity_qv.is_zero() {
+            return Err(anyhow!(
+                "RapidX order requires orderQty and forbids quoteOrderQty"
+            ));
+        }
+        params.quantity_qv.decimal_string()
+    };
     let mut args = json!({
         "clientOrderId": msg.client_order_id.to_string(),
         "sym": sym,
@@ -299,14 +606,15 @@ fn build_ltp_new_order_args_from_binance(
     fill_ltp_order_common_args(
         &mut args,
         params.order_type,
-        params.quantity_qv.decimal_string(),
+        quantity,
         params.price_qv.decimal_string(),
         params.reduce_only,
         if params.order_type.is_limit() {
             if matches!(
                 req_type,
                 TradeRequestType::BinanceNewUMOrder | TradeRequestType::BinanceWsNewUMOrder
-            ) {
+            ) || params.ws_margin_limit_maker
+            {
                 Some("GTX")
             } else {
                 Some("GTC")
@@ -315,6 +623,14 @@ fn build_ltp_new_order_args_from_binance(
             None
         },
     );
+    if cash_market_buy {
+        args.as_object_mut()
+            .expect("LTP order args must be an object")
+            .insert(
+                "quoteOrderQty".to_string(),
+                json!(params.quote_order_qty_qv.decimal_string()),
+            );
+    }
     Ok(args)
 }
 
@@ -469,7 +785,8 @@ pub fn ltp_status_for_response(resp: &LtpWsResponse) -> u16 {
         .and_then(|v| v.as_str())
         .map(|s| matches!(s.to_ascii_uppercase().as_str(), "FAIL" | "REJECT"))
         .unwrap_or(false);
-    if !resp.is_success() || order_state_failed {
+    if order_state_failed || resp.is_amend_failed() || (!resp.is_order_push() && !resp.is_success())
+    {
         400
     } else {
         206
@@ -493,6 +810,19 @@ pub fn warn_if_unsupported_ltp_exchange(exchange: Exchange) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn existing_order_acknowledgements_require_a_query() {
+        for code in [401009, 401117] {
+            let payload = serde_json::json!({"event":"place_order", "code":code});
+            assert!(super::LtpWsResponse::from_json_str(&payload.to_string())
+                .unwrap()
+                .requires_order_query());
+        }
+        let response =
+            super::LtpWsResponse::from_json_str(r#"{"event":"place_order","code":200000}"#)
+                .unwrap();
+        assert!(!response.requires_order_query());
+    }
     use super::*;
     use signal_common::tick_math::QuantizedValue;
 
@@ -517,6 +847,7 @@ mod tests {
             side: order_common::Side::Buy,
             order_type: OrderType::Limit,
             quantity_qv: QuantizedValue::from_decimal(0.01).unwrap(),
+            quote_order_qty_qv: QuantizedValue::zero(),
             price_qv: QuantizedValue::from_decimal(60000.0).unwrap(),
             reduce_only: true,
             margin_buy: false,
@@ -531,10 +862,86 @@ mod tests {
         let value: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(value["id"], "9");
         assert_eq!(value["action"], "place_order");
+        let ts = value["ts"].as_str().expect("microsecond action timestamp");
+        assert!(ts.parse::<i64>().unwrap() > 1_000_000_000_000_000);
         assert_eq!(value["args"]["clientOrderId"], "123");
         assert_eq!(value["args"]["sym"], "BINANCE_PERP_BTC_USDT");
         assert_eq!(value["args"]["timeInForce"], "GTX");
         assert_eq!(value["args"]["reduceOnly"], "true");
+    }
+
+    #[test]
+    fn distinguishes_binance_spot_and_margin_and_honors_post_only() {
+        let params = BinanceNewOrderParams {
+            symbol: "XRPUSDT".to_string(),
+            side: order_common::Side::Buy,
+            order_type: OrderType::Limit,
+            quantity_qv: QuantizedValue::from_decimal(10.0).unwrap(),
+            quote_order_qty_qv: QuantizedValue::zero(),
+            price_qv: QuantizedValue::from_decimal(0.5).unwrap(),
+            reduce_only: false,
+            margin_buy: false,
+            ws_response_full: false,
+            ws_um_response_result: false,
+            ws_margin_limit_maker: true,
+        };
+        let params = params.to_bytes().unwrap();
+        for (req_type, expected_sym) in [
+            (
+                TradeRequestType::BinanceLtpNewSpotOrder,
+                "BINANCE_SPOT_XRP_USDT",
+            ),
+            (
+                TradeRequestType::BinanceNewMarginOrder,
+                "BINANCE_MARGIN_XRP_USDT",
+            ),
+        ] {
+            let msg = TradeRequestMsg::create(req_type, 1, 123, &params).unwrap();
+            let payload = build_order_payload(Exchange::Binance, &msg, 9).unwrap();
+            let value: Value = serde_json::from_str(&payload).unwrap();
+            assert_eq!(value["args"]["sym"], expected_sym);
+            assert_eq!(value["args"]["timeInForce"], "GTX");
+        }
+    }
+
+    #[test]
+    fn binance_cash_market_buy_uses_quote_quantity_only() {
+        let params = BinanceNewOrderParams {
+            symbol: "XRPUSDT".to_string(),
+            side: order_common::Side::Buy,
+            order_type: OrderType::Market,
+            quantity_qv: QuantizedValue::zero(),
+            quote_order_qty_qv: QuantizedValue::from_decimal(5.5).unwrap(),
+            price_qv: QuantizedValue::zero(),
+            reduce_only: false,
+            margin_buy: false,
+            ws_response_full: false,
+            ws_um_response_result: false,
+            ws_margin_limit_maker: false,
+        };
+        for req_type in [
+            TradeRequestType::BinanceLtpNewSpotOrder,
+            TradeRequestType::BinanceNewMarginOrder,
+        ] {
+            let msg = TradeRequestMsg::create(req_type, 1, 123, &params.to_bytes().unwrap())
+                .expect("trade request");
+            let payload = build_order_payload(Exchange::Binance, &msg, 9).unwrap();
+            let value: Value = serde_json::from_str(&payload).unwrap();
+            assert_eq!(value["args"]["quoteOrderQty"], "5.5");
+            assert!(value["args"].get("orderQty").is_none());
+            assert!(value["args"].get("timeInForce").is_none());
+        }
+
+        let mut invalid = params;
+        invalid.side = order_common::Side::Sell;
+        let msg = TradeRequestMsg::create(
+            TradeRequestType::BinanceLtpNewSpotOrder,
+            1,
+            124,
+            &invalid.to_bytes().unwrap(),
+        )
+        .expect("trade request");
+        assert!(build_order_payload(Exchange::Binance, &msg, 10).is_err());
     }
 
     #[test]
@@ -545,5 +952,129 @@ mod tests {
         assert_eq!(resp.client_order_id_i64(), Some(123));
         assert_eq!(resp.order_status_u8(), OrderStatus::Filled.to_u8());
         assert_eq!(resp.order_update_time_ms(), 1703213979731);
+    }
+
+    #[test]
+    fn requires_action_specific_success_codes() {
+        let login = LtpWsResponse::from_json_str(r#"{"event":"login","code":0}"#).unwrap();
+        assert!(login.is_success());
+        let login_action_code =
+            LtpWsResponse::from_json_str(r#"{"event":"login","code":200000}"#).unwrap();
+        assert!(!login_action_code.is_success());
+        let action =
+            LtpWsResponse::from_json_str(r#"{"event":"place_order","code":200000,"data":{}}"#)
+                .unwrap();
+        assert!(action.is_success());
+        let missing_code =
+            LtpWsResponse::from_json_str(r#"{"event":"place_order","data":{}}"#).unwrap();
+        assert!(!missing_code.is_success());
+    }
+
+    #[test]
+    fn builds_binance_and_okx_replace_order_payloads() {
+        let binance = BinanceModifyOrderParams::with_price(
+            "BTCUSDT",
+            order_common::Side::Buy,
+            QuantizedValue::from_decimal(0.01).unwrap(),
+            QuantizedValue::from_decimal(60_001.0).unwrap(),
+            77,
+            123,
+            None,
+        );
+        let msg = TradeRequestMsg::create(
+            TradeRequestType::BinanceWsModifyUMOrder,
+            1,
+            123,
+            &binance.to_bytes().unwrap(),
+        )
+        .unwrap();
+        let value: Value =
+            serde_json::from_str(&build_order_payload(Exchange::Binance, &msg, 9).unwrap())
+                .unwrap();
+        assert_eq!(value["action"], "replace_order");
+        assert_eq!(value["args"]["orderId"], "77");
+        assert_eq!(value["args"]["replacePrice"], "60001");
+
+        let okx = OkexModifyOrderParams {
+            ord_id: 88,
+            cl_ord_id: 124,
+            new_price_qv: QuantizedValue::from_decimal(2_345.5).unwrap(),
+            inst_id: "BTC-USDT-SWAP".to_string(),
+        };
+        let msg = TradeRequestMsg::create(
+            TradeRequestType::OkexModifyUMOrder,
+            1,
+            124,
+            &okx.to_bytes().unwrap(),
+        )
+        .unwrap();
+        let value: Value =
+            serde_json::from_str(&build_order_payload(Exchange::Okex, &msg, 10).unwrap()).unwrap();
+        assert_eq!(value["action"], "replace_order");
+        assert_eq!(value["args"]["orderId"], "88");
+        assert_eq!(value["args"]["replacePrice"], "2345.5");
+    }
+
+    #[test]
+    fn recognizes_replace_ack_and_async_failure() {
+        let ack = LtpWsResponse::from_json_str(
+            r#"{"id":"9","event":"replace_order","code":200000,"data":{"orderId":"77","orderState":"OPEN"}}"#,
+        )
+        .unwrap();
+        assert!(ack.is_trade_ack());
+        assert!(ack.is_success());
+        assert!(ack.action_matches_request(TradeRequestType::BinanceWsModifyUMOrder));
+
+        let rejected = LtpWsResponse::from_json_str(
+            r#"{"id":"9","event":"error","code":"60009","msg":"ReplaceOrder failed."}"#,
+        )
+        .unwrap();
+        assert!(rejected.is_trade_ack());
+        assert!(!rejected.is_success());
+        assert!(rejected.action_matches_request(TradeRequestType::OkexModifyUMOrder));
+        assert_eq!(ltp_status_for_response(&rejected), 400);
+
+        let failed = LtpWsResponse::from_json_str(
+            r#"{"channel":"Orders","data":{"action":"AMEND_FAILED","orderState":"OPEN"}}"#,
+        )
+        .unwrap();
+        assert!(failed.is_amend_failed());
+        assert_eq!(ltp_status_for_response(&failed), 400);
+        assert_ne!(failed.error_code_for_trade_response(), 0);
+    }
+
+    #[test]
+    fn parses_documented_order_and_trade_pushes_without_lossy_coercion() {
+        let order = parse_ltp_user_data(
+            r#"{"channel":"Orders","data":{"portfolioId":"1702884522340000","orderId":"1703213979730000","clientOrderId":"abc123","exchangeType":"BINANCE","businessType":"PERP","sym":"BINANCE_PERP_ETH_USDT","limitPrice":"2346.00000001","orderQty":"0.01","quoteOrderQty":"0","side":"BUY","exchangeOrderType":"LIMIT","timeInForce":"GTC","executedQty":"0","executedAmount":"0","executedAvgPrice":"0","lastExecutedQty":"0","lastExecutedPrice":"0","lastExecutedAmount":"0","fee":"10","feeCoin":"USDT","rebate":"0.1","rebateCoin":"USDT","orderState":"NEW","updateAt":"1703213979731","createAt":"1703213979731"}}"#,
+        )
+        .unwrap();
+        let Some(LtpUserData::Order(order)) = order else {
+            panic!("expected order push");
+        };
+        assert_eq!(order.order_id, "1703213979730000");
+        assert_eq!(order.client_order_id, "abc123");
+        assert_eq!(order.limit_price, "2346.00000001");
+        assert_eq!(order.fee_coin, "USDT");
+        assert_eq!(order.update_at_ms, 1_703_213_979_731);
+
+        let trade = parse_ltp_user_data(
+            r#"{"channel":"Trades","data":{"transactionId":"38132969466022978","portfolioId":"2066376093138754","orderId":"2104172237333826","exchangeType":"BINANCE","businessType":"PERP","sym":"BINANCE_PERP_APT_USDT","side":"BUY","quantity":"4","price":"2.24509925","tradingFee":"-0.00089804","tradingFeeCoin":"USDT","rpnl":"0","clientOrderId":"abc123","createAt":"1763977805203","execType":"MAKER"}}"#,
+        )
+        .unwrap();
+        let Some(LtpUserData::Trade(trade)) = trade else {
+            panic!("expected trade push");
+        };
+        assert_eq!(trade.transaction_id, "38132969466022978");
+        assert_eq!(trade.trading_fee, "-0.00089804");
+        assert_eq!(trade.trading_fee_coin, "USDT");
+        assert_eq!(trade.create_at_ms, 1_763_977_805_203);
+    }
+
+    #[test]
+    fn rejects_lossy_or_incomplete_user_data() {
+        let err = parse_ltp_user_data(r#"{"channel":"Trades","data":{"transactionId":1}}"#)
+            .expect_err("numeric protocol identity must not be coerced");
+        assert!(err.to_string().contains("transactionId"));
     }
 }

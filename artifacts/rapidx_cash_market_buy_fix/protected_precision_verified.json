@@ -1,0 +1,8 @@
+{
+  "protected_processes": 44,
+  "identical": true,
+  "hashes_unchanged": true,
+  "old_pid": 375418,
+  "new_pid": 448295,
+  "signal_enabled": true
+}

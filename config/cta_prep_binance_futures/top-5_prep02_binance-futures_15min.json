@@ -1,0 +1,68 @@
+{
+  "strategy_group": "prep02",
+  "name": "top-5_prep02_binance-futures_15min",
+  "venue": "binance-futures",
+  "interval": "15min",
+  "factor_rules": [
+    {
+      "标的": "SOLUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "TD_MT_040"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "TD_MT_040"
+    },
+    {
+      "标的": "BTCUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "baseline_022"
+    },
+    {
+      "标的": "XRPUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "baseline_022"
+    },
+    {
+      "标的": "SOLUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "baseline_104"
+    },
+    {
+      "标的": "ETHUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "factor_125"
+    },
+    {
+      "标的": "SOLUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "factor_125"
+    }
+  ],
+  "signal": {
+    "enabled": false,
+    "max_pos_u": 200.0,
+    "position_algorithm": "v0",
+    "symbol_overrides": {},
+    "entry": {
+      "factor_long_quantile": 0.9,
+      "factor_short_quantile": 0.1,
+      "nq_change_enabled": true,
+      "nq_long_quantile": 0.5,
+      "nq_short_quantile": 0.5
+    },
+    "execution": {
+      "factor_exit_quantile_long": 0.3,
+      "factor_exit_quantile_short": 0.7
+    }
+  },
+  "symbol_group": "top-5"
+}

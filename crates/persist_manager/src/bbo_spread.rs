@@ -13,8 +13,8 @@ use log::{debug, info, warn};
 use parking_lot::RwLock;
 
 use crate::runtime_common::{
-    normalize_symbol_for_whitelist, spread_f64, spread_symbol, spread_timestamp, RedisClient,
-    RedisSettings, ASK_BID_SPREAD_MSG_TYPE, SPREAD_PAYLOAD_BYTES,
+    spread_f64, spread_symbol, spread_timestamp, RedisClient, RedisSettings,
+    ASK_BID_SPREAD_MSG_TYPE, SPREAD_PAYLOAD_BYTES,
 };
 use order_common::TradingVenue;
 
@@ -83,6 +83,10 @@ impl BboSpreadRuntime {
         let config = BboSpreadConfig::from_env();
         if !config.enabled {
             info!("bbo_spread enrichment disabled by env");
+            return None;
+        }
+        if !bbo_enrichment_supported(&config.namespace) {
+            info!("bbo_spread enrichment disabled for ns={}", config.namespace);
             return None;
         }
 
@@ -341,7 +345,9 @@ impl SymbolBboRing {
 }
 
 impl SpreadBboSubscriber {
-    fn new(open_venue_slug: &str, hedge_venue_slug: &str) -> Result<Self> {
+    fn new(open_venue: TradingVenue, hedge_venue: TradingVenue) -> Result<Self> {
+        let open_venue_slug = open_venue.data_pub_slug();
+        let hedge_venue_slug = hedge_venue.data_pub_slug();
         let node_name = format!(
             "persist_bbo_spread_{}_{}",
             sanitize_suffix(open_venue_slug),
@@ -354,7 +360,8 @@ impl SpreadBboSubscriber {
 
         let mut subscribers = Vec::new();
         let mut seen = HashSet::new();
-        for venue_slug in [open_venue_slug, hedge_venue_slug] {
+        for venue in [open_venue, hedge_venue] {
+            let venue_slug = venue.market_data_pub_slug();
             if !seen.insert(venue_slug.to_string()) {
                 continue;
             }
@@ -409,10 +416,7 @@ impl SpreadBboSubscriber {
 
 fn spawn_bbo_collector_task(store: Arc<BboSpreadStore>, config: BboSpreadConfig) {
     tokio::task::spawn_local(async move {
-        let subscriber = match SpreadBboSubscriber::new(
-            config.open_venue.data_pub_slug(),
-            config.hedge_venue.data_pub_slug(),
-        ) {
+        let subscriber = match SpreadBboSubscriber::new(config.open_venue, config.hedge_venue) {
             Ok(s) => s,
             Err(err) => {
                 warn!("bbo_spread subscriber disabled: {err:#}");
@@ -429,7 +433,14 @@ fn spawn_bbo_collector_task(store: Arc<BboSpreadStore>, config: BboSpreadConfig)
 
             for (venue_slug, payload) in messages {
                 if let Some((symbol, sample)) = decode_bbo_payload(&payload) {
-                    store.push(&venue_slug, &symbol, sample);
+                    let venue_slug = if venue_slug == "binance-futures" {
+                        TradingVenue::BinanceFutures
+                            .market_data_venue_for_symbol(&symbol)
+                            .data_pub_slug()
+                    } else {
+                        &venue_slug
+                    };
+                    store.push(venue_slug, &symbol, sample);
                 }
             }
             tokio::task::yield_now().await;
@@ -466,12 +477,7 @@ async fn load_online_symbols(config: &BboSpreadConfig) -> Result<HashSet<String>
     let mut client = RedisClient::connect(config.redis.clone()).await?;
     let mut symbols = HashSet::new();
 
-    for list_name in [
-        "dump_symbols",
-        "fwd_trade_symbols",
-        "bwd_trade_symbols",
-        "unimmr_close_symbols",
-    ] {
+    for list_name in online_symbol_list_names(&config.namespace) {
         let key = symbol_list_redis_key(
             config.key_prefix.as_deref(),
             &config.namespace,
@@ -490,6 +496,19 @@ async fn load_online_symbols(config: &BboSpreadConfig) -> Result<HashSet<String>
     }
 
     Ok(symbols)
+}
+
+fn online_symbol_list_names(namespace: &str) -> &'static [&'static str] {
+    if namespace == "mm" {
+        &["trade_symbols"]
+    } else {
+        &[
+            "dump_symbols",
+            "fwd_trade_symbols",
+            "bwd_trade_symbols",
+            "unimmr_close_symbols",
+        ]
+    }
 }
 
 fn decode_bbo_payload(payload: &[u8]) -> Option<(String, BboSample)> {
@@ -556,7 +575,7 @@ fn fmt_f64(value: f64) -> String {
 }
 
 fn normalize_symbol(symbol: &str) -> String {
-    normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
+    runtime_common::symbol_util::normalize_symbol_for_internal(symbol)
 }
 
 fn symbol_list_redis_key(
@@ -613,6 +632,10 @@ fn infer_venues(namespace: &str, key_suffix: &str) -> Option<(TradingVenue, Trad
         "cross" => infer_cross_venues_from_key_suffix(key_suffix),
         _ => None,
     }
+}
+
+fn bbo_enrichment_supported(namespace: &str) -> bool {
+    !matches!(namespace, "fr" | "exec")
 }
 
 fn infer_fr_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, TradingVenue)> {
@@ -673,6 +696,7 @@ fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
     match slug.as_str() {
         "binance-margin" => Some(TradingVenue::BinanceMargin),
         "binance-futures" => Some(TradingVenue::BinanceFutures),
+        "binance-coin-futures" => Some(TradingVenue::BinanceCoinFutures),
         "okex-margin" => Some(TradingVenue::OkexMargin),
         "okex-futures" => Some(TradingVenue::OkexFutures),
         "bybit-margin" => Some(TradingVenue::BybitMargin),
@@ -759,12 +783,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mm_bbo_reads_the_shared_market_making_symbol_list() {
+        let keys: Vec<_> = online_symbol_list_names("mm")
+            .iter()
+            .map(|name| symbol_list_redis_key(None, "mm", name, "okex-futures"))
+            .collect();
+        assert_eq!(keys, ["mm_trade_symbols:okex-futures"]);
+        assert_eq!(online_symbol_list_names("intra").len(), 4);
+    }
+
+    #[test]
+    fn combined_coin_bbo_retains_native_market_and_target_key() {
+        let venue = venue_from_slug("binance-coin-futures").unwrap();
+        assert_eq!(venue.market_data_pub_slug(), "binance-futures");
+        let store = BboSpreadStore::new(4, "binance-futures", "binance-coin-futures");
+        store.set_online_symbols(HashSet::from(["BTCUSD".to_string()]));
+        let raw_symbol = "BTCUSD_PERP";
+        let source = TradingVenue::BinanceFutures.market_data_venue_for_symbol(raw_symbol);
+        store.push(
+            source.data_pub_slug(),
+            raw_symbol,
+            BboSample {
+                tp_us: 100,
+                bid_px: 50_000.0,
+                bid_qty: 100.0,
+                ask_px: 50_001.0,
+                ask_qty: 200.0,
+            },
+        );
+        let spread = store.format_spread_for_symbol("BTCUSD", 100);
+        assert!(spread.contains("50000"), "{spread}");
+        assert_eq!(normalize_symbol(raw_symbol), "BTCUSD");
+    }
+
+    #[test]
     fn binance_fr_directory_infers_margin_and_futures_venues() {
         let (namespace, suffix) = parse_namespace_and_key_suffix("binance_fr_arb03").unwrap();
         let venues = infer_venues(&namespace, &suffix).unwrap();
 
         assert_eq!(venues.0, TradingVenue::BinanceMargin);
         assert_eq!(venues.1, TradingVenue::BinanceFutures);
+    }
+
+    #[test]
+    fn fr_and_exec_skip_bbo_enrichment() {
+        let (fr_namespace, _) = parse_namespace_and_key_suffix("binance_fr_arb03").unwrap();
+        let (exec_namespace, _) = parse_namespace_and_key_suffix("binance_exec_trade04").unwrap();
+        assert!(!bbo_enrichment_supported(&fr_namespace));
+        assert!(!bbo_enrichment_supported(&exec_namespace));
+        assert!(bbo_enrichment_supported("intra"));
+        assert!(bbo_enrichment_supported("cross"));
     }
 
     #[test]

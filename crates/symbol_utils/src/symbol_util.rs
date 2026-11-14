@@ -1,6 +1,15 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::convert::TryFrom;
+
+/// Canonical venue component for spread_pbs market-data IPC, including test/proxy roots.
+pub fn market_data_pub_slug(venue_slug: &str) -> &str {
+    match venue_slug {
+        "binance-coin-futures" => "binance-futures",
+        other => other,
+    }
+}
 
 /// Trading venue across exchange and market type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
@@ -69,6 +78,36 @@ impl TradingVenue {
         Self::from_u8(value)
             .map(|venue| format!("{:?}", venue))
             .unwrap_or_else(|| format!("Unknown({})", value))
+    }
+
+    /// Binance USD-M and COIN-M share the same public market-data services.
+    pub fn market_data_pub_slug(&self) -> &'static str {
+        market_data_pub_slug(self.data_pub_slug())
+    }
+
+    /// Recover the native market from an uppercase symbol on a combined Binance feed.
+    /// Quantities remain in the source market's units (COIN-M contract counts).
+    pub fn market_data_venue_for_symbol(self, symbol: &str) -> Self {
+        match self {
+            Self::BinanceFutures | Self::BinanceCoinFutures => {
+                let delivery_root = symbol.len().checked_sub(6).and_then(|end| {
+                    let date = symbol.get(end..)?;
+                    date.bytes()
+                        .all(|b| b.is_ascii_digit())
+                        .then(|| symbol[..end].trim_end_matches('_'))
+                });
+                if symbol.ends_with("USD")
+                    || symbol.ends_with("USD_PERP")
+                    || symbol.ends_with("USDPERP")
+                    || delivery_root.is_some_and(|root| root.ends_with("USD"))
+                {
+                    Self::BinanceCoinFutures
+                } else {
+                    Self::BinanceFutures
+                }
+            }
+            _ => self,
+        }
     }
 
     pub fn to_u8(self) -> u8 {
@@ -210,6 +249,8 @@ impl TradingVenue {
                 | TradingVenue::BitgetCoinFutures
                 | TradingVenue::GateMargin
                 | TradingVenue::GateFutures
+                | TradingVenue::HyperliquidMargin
+                | TradingVenue::HyperliquidFutures
         )
     }
 }
@@ -254,16 +295,19 @@ pub fn normalize_symbol_for_internal(symbol: &str) -> String {
     if out.ends_with("SWAP") {
         out.truncate(out.len().saturating_sub("SWAP".len()));
     }
+    if out.ends_with("USDPERP") {
+        out.truncate(out.len() - "PERP".len());
+    }
     out
 }
 
 /// Restore Binance COIN-M symbols after internal normalization removes separators.
 ///
-/// Examples: BTCUSDPERP -> BTCUSD_PERP, ETHUSD260925 -> ETHUSD_260925.
+/// Examples: BTCUSD -> BTCUSD_PERP, ETHUSD260925 -> ETHUSD_260925.
 pub fn binance_coin_futures_symbol(symbol: &str) -> String {
     let normalized = normalize_symbol_for_internal(symbol);
-    if let Some(prefix) = normalized.strip_suffix("PERP") {
-        return format!("{prefix}_PERP");
+    if normalized.ends_with("USD") && normalized.len() > "USD".len() {
+        return format!("{normalized}_PERP");
     }
     if normalized.len() > 6 {
         let split_at = normalized.len() - 6;
@@ -374,6 +418,54 @@ pub fn min_qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
     }
 }
 
+/// Resolves the small, explicit set of Hyperliquid spot token aliases used by
+/// HyperCore/UI to the corresponding perpetual base name.
+///
+/// This intentionally does not remove a leading `U` in general: names such as
+/// `UPUMP`, `UMON`, `UNIT`, and `USDE` are distinct assets. If Hyperliquid lists
+/// both the alias target and its wrapped name, the wrapped name is retained to
+/// avoid collapsing two spot assets into one internal symbol.
+#[derive(Debug, Clone)]
+pub struct HyperliquidSpotBaseResolver {
+    raw_bases: HashSet<String>,
+}
+
+impl HyperliquidSpotBaseResolver {
+    pub fn new<I, S>(raw_bases: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self {
+            raw_bases: raw_bases
+                .into_iter()
+                .map(|base| base.as_ref().trim().to_ascii_uppercase())
+                .collect(),
+        }
+    }
+
+    pub fn canonical_base(&self, raw_base: &str) -> String {
+        let normalized = raw_base.trim().to_ascii_uppercase();
+        let Some(target) = hyperliquid_spot_alias_target(&normalized) else {
+            return normalized;
+        };
+        if self.raw_bases.contains(target) {
+            normalized
+        } else {
+            target.to_string()
+        }
+    }
+}
+
+fn hyperliquid_spot_alias_target(raw_base: &str) -> Option<&'static str> {
+    match raw_base {
+        "UBTC" => Some("BTC"),
+        "UETH" => Some("ETH"),
+        "USOL" => Some("SOL"),
+        _ => None,
+    }
+}
+
 fn split_internal_symbol_assets(symbol_upper: &str) -> (&str, &str) {
     const QUOTE_ASSETS: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY", "USD"];
 
@@ -410,6 +502,46 @@ fn split_internal_symbol_assets(symbol_upper: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combined_binance_market_data_retains_native_contract_identity() {
+        for source in [
+            TradingVenue::BinanceFutures,
+            TradingVenue::BinanceCoinFutures,
+        ] {
+            assert_eq!(source.market_data_pub_slug(), "binance-futures");
+            for symbol in ["BTCUSDT", "BTCUSDC", "BTCUSDT_261225"] {
+                assert_eq!(
+                    source.market_data_venue_for_symbol(symbol),
+                    TradingVenue::BinanceFutures
+                );
+            }
+            for symbol in [
+                "BTCUSD",
+                "BTCUSD_PERP",
+                "BTCUSDPERP",
+                "ETHUSD_261225",
+                "ETHUSD261225",
+            ] {
+                assert_eq!(
+                    source.market_data_venue_for_symbol(symbol),
+                    TradingVenue::BinanceCoinFutures
+                );
+            }
+        }
+        assert_eq!(
+            TradingVenue::BinanceCoinFutures.data_pub_slug(),
+            "binance-coin-futures"
+        );
+        assert_eq!(
+            TradingVenue::BitgetCoinFutures.market_data_pub_slug(),
+            "bitget-coin-futures"
+        );
+        assert_eq!(
+            TradingVenue::BinanceMargin.market_data_venue_for_symbol("BTCUSDC"),
+            TradingVenue::BinanceMargin
+        );
+    }
 
     #[test]
     fn test_extract_assets_from_symbol() {
@@ -481,7 +613,33 @@ mod tests {
     }
 
     #[test]
+    fn hyperliquid_spot_aliases_are_explicit_and_collision_safe() {
+        let resolver = HyperliquidSpotBaseResolver::new([
+            "UBTC", "UETH", "USOL", "UPUMP", "UMON", "UNIT", "USDE",
+        ]);
+        assert_eq!(resolver.canonical_base("UBTC"), "BTC");
+        assert_eq!(resolver.canonical_base("ueth"), "ETH");
+        assert_eq!(resolver.canonical_base("USOL"), "SOL");
+        assert_eq!(resolver.canonical_base("UPUMP"), "UPUMP");
+        assert_eq!(resolver.canonical_base("UMON"), "UMON");
+        assert_eq!(resolver.canonical_base("UNIT"), "UNIT");
+        assert_eq!(resolver.canonical_base("USDE"), "USDE");
+
+        let collision = HyperliquidSpotBaseResolver::new(["BTC", "UBTC"]);
+        assert_eq!(collision.canonical_base("BTC"), "BTC");
+        assert_eq!(collision.canonical_base("UBTC"), "UBTC");
+    }
+
+    #[test]
     fn test_normalize_symbol_for_binance_coin_futures() {
+        assert_eq!(normalize_symbol_for_internal("btcUSD_perp"), "BTCUSD");
+        assert_eq!(normalize_symbol_for_internal("BTCUSDPERP"), "BTCUSD");
+        assert_eq!(normalize_symbol_for_internal("BTCUSDC"), "BTCUSDC");
+        assert_eq!(normalize_symbol_for_internal("BTCUSDT"), "BTCUSDT");
+        assert_eq!(
+            normalize_symbol_for_venue("BTCUSD", TradingVenue::BinanceCoinFutures),
+            "BTCUSD_PERP"
+        );
         assert_eq!(
             normalize_symbol_for_venue("BTCUSD_PERP", TradingVenue::BinanceCoinFutures),
             "BTCUSD_PERP"

@@ -1,0 +1,89 @@
+{
+  "completed_at": "2026-11-12T07:46:52Z",
+  "orders": 38,
+  "minimum_exchange_creation_interval_sec": "5.079",
+  "fills": {
+    "gate_fr_arb01": {
+      "orders": 6,
+      "contracts": "673",
+      "base": "6730",
+      "notional_usdt": "530.12130",
+      "fee_usdt": "0.10602426",
+      "trades": 10
+    },
+    "gate_fr_arb02": {
+      "orders": 21,
+      "contracts": "2549",
+      "base": "25490",
+      "notional_usdt": "2006.85500",
+      "fee_usdt": "0.40137100",
+      "trades": 39
+    },
+    "gate_fr_arb04": {
+      "orders": 11,
+      "contracts": "1342",
+      "base": "13420",
+      "notional_usdt": "1056.83370",
+      "fee_usdt": "0.21136674",
+      "trades": 12
+    }
+  },
+  "final": [
+    {
+      "event": "final",
+      "time": "2026-11-12T07:46:51Z",
+      "env": "gate_fr_arb01",
+      "state": {
+        "spot": "7098.93765",
+        "futures_contracts": "-709",
+        "futures_base": "-7090",
+        "net": "8.93765",
+        "risk_limit": "5000",
+        "mark": "0.07882"
+      },
+      "open_orders": 0
+    },
+    {
+      "event": "final",
+      "time": "2026-11-12T07:46:51Z",
+      "env": "gate_fr_arb02",
+      "state": {
+        "spot": "25511.984875",
+        "futures_contracts": "-2551",
+        "futures_base": "-25510",
+        "net": "1.984875",
+        "risk_limit": "5000",
+        "mark": "0.07882"
+      },
+      "open_orders": 0
+    },
+    {
+      "event": "final",
+      "time": "2026-11-12T07:46:52Z",
+      "env": "gate_fr_arb03",
+      "state": {
+        "spot": "0.551875",
+        "futures_contracts": "0",
+        "futures_base": "0",
+        "net": "0.551875",
+        "risk_limit": "5000",
+        "mark": "0.07882"
+      },
+      "open_orders": 0
+    },
+    {
+      "event": "final",
+      "time": "2026-11-12T07:46:52Z",
+      "env": "gate_fr_arb04",
+      "state": {
+        "spot": "13422.26252596",
+        "futures_contracts": "-1342",
+        "futures_base": "-13420",
+        "net": "2.26252596",
+        "risk_limit": "5000",
+        "mark": "0.07882"
+      },
+      "open_orders": 0
+    }
+  ]
+}

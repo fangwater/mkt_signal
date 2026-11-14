@@ -1,0 +1,943 @@
+{
+  "checked_at": "2026-10-23T04:32:59.804144+00:00",
+  "shared_unchanged": {
+    "binance-futures:amount-thresholds": true,
+    "binance-futures:amount-thresholds:meta": true,
+    "binance-margin:amount-thresholds": true,
+    "binance-margin:amount-thresholds:meta": true
+  },
+  "factor_plans_unchanged": {
+    "binance-futures:factor-plan": true,
+    "binance-futures:factor-plan-1m": true,
+    "binance-margin:factor-plan": true,
+    "binance-margin:factor-plan-1m": true
+  },
+  "retired_absent": {
+    "binance-futures:amount-thresholds-1m": true,
+    "binance-futures:amount-thresholds-1m:meta": true,
+    "binance-margin:amount-thresholds-1m": true,
+    "binance-margin:amount-thresholds-1m:meta": true
+  },
+  "http": {
+    "binance-futures/amount_thresholds": {
+      "status": 200,
+      "count": 43,
+      "matches": true
+    },
+    "binance-futures/factor_plan": {
+      "status": 200,
+      "count": 43,
+      "configured_symbols": 4
+    },
+    "binance-futures/factor_plan_1m": {
+      "status": 200,
+      "count": 43,
+      "configured_symbols": 13
+    },
+    "binance-futures/amount_thresholds_1m": {
+      "status": 400,
+      "body": {
+        "error": "unsupported config_type"
+      }
+    },
+    "binance-margin/amount_thresholds": {
+      "status": 200,
+      "count": 43,
+      "matches": true
+    },
+    "binance-margin/factor_plan": {
+      "status": 200,
+      "count": 43,
+      "configured_symbols": 0
+    },
+    "binance-margin/factor_plan_1m": {
+      "status": 200,
+      "count": 43,
+      "configured_symbols": 0
+    },
+    "binance-margin/amount_thresholds_1m": {
+      "status": 400,
+      "body": {
+        "error": "unsupported config_type"
+      }
+    }
+  },
+  "rx_tables": {
+    "binance-cta-spread-rx01": "{\"ALGOUSDT\":{\"TD_MT_019\":-1.0,\"TD_MT_021\":-1.0,\"TD_PR_008\":1.0,\"baseline_005\":-1.0,\"baseline_140\":1.0,\"baseline_169\":-1.0},\"AXSUSDT\":{\"TD_MT_019\":-1.0,\"TD_MT_021\":-1.0,\"TD_PR_008\":1.0,\"TD_PT_003\":1.0,\"TD_TI_027\":-1.0,\"TD_TI_038\":-1.0,\"baseline_005\":-1.0,\"baseline_028\":-1.0,\"baseline_105\":-1.0,\"baseline_169\":-1.0,\"factor_trades_008\":-1.0,\"factor_trades_045\":-1.0,\"factor_trades_050\":-1.0},\"BELUSDT\":{\"TD_MT_019\":-1.0,\"TD_TI_038\":-1.0,\"baseline_105\":-1.0,\"baseline_169\":-1.0,\"factor_trades_008\":-1.0,\"factor_trades_045\":-1.0,\"factor_trades_050\":-1.0},\"DASHUSDT\":{\"TD_MT_019\":-1.0,\"TD_TI_027\":-1.0,\"baseline_028\":-1.0,\"baseline_105\":-1.0,\"baseline_169\":-1.0},\"ENJUSDT\":{\"TD_MT_019\":-1.0,\"TD_MT_021\":-1.0,\"TD_PR_008\":1.0,\"TD_TI_027\":-1.0,\"baseline_005\":-1.0,\"baseline_028\":-1.0,\"baseline_105\":-1.0,\"baseline_140\":1.0,\"baseline_169\":-1.0,\"factor_trades_045\":-1.0,\"factor_trades_050\":-1.0},\"IOSTUSDT\":{\"baseline_005\":-1.0,\"baseline_105\":-1.0,\"baseline_140\":1.0,\"factor_trades_008\":-1.0,\"factor_trades_045\":-1.0,\"factor_trades_050\":-1.0},\"IOTAUSDT\":{\"TD_MT_019\":-1.0,\"TD_MT_021\":-1.0,\"TD_PR_008\":1.0,\"TD_TI_027\":-1.0,\"baseline_005\":-1.0,\"baseline_105\":-1.0,\"baseline_140\":1.0,\"baseline_169\":-1.0,\"factor_trades_045\":-1.0,\"factor_trades_050\":-1.0},\"KAVAUSDT\":{\"TD_MT_019\":-1.0,\"TD_MT_021\":-1.0,\"TD_PR_008\":1.0,\"TD_PT_003\":1.0,\"TD_TI_038\":-1.0,\"baseline_005\":-1.0,\"baseline_028\":-1.0,\"baseline_105\":-1.0,\"baseline_140\":1.0,\"baseline_169\":-1.0,\"factor_trades_008\":-1.0,\"factor_trades_049\":-1.0,\"factor_trades_050\":-1.0},\"KNCUSDT\":{\"TD_MT_019\":-1.0,\"TD_PT_003\":1.0,\"baseline_105\":-1.0,\"baseline_140\":1.0,\"factor_trades_008\":-1.0,\"factor_trades_045\":-1.0},\"KSMUSDT\":{\"TD_MT_019\":-1.0,\"TD_MT_021\":-1.0,\"TD_PR_008\":1.0,\"TD_PT_003\":1.0,\"baseline_028\":-1.0,\"baseline_169\":-1.0,\"factor_trades_050\":-1.0},\"ONTUSDT\":{\"TD_MT_019\":-1.0,\"TD_MT_021\":-1.0,\"TD_PR_008\":1.0,\"TD_PT_003\":1.0,\"TD_TI_027\":-1.0,\"TD_TI_038\":-1.0,\"baseline_005\":-1.0,\"baseline_028\":-1.0,\"baseline_105\":-1.0,\"baseline_140\":1.0,\"baseline_169\":-1.0,\"factor_trades_008\":-1.0,\"factor_trades_045\":-1.0,\"factor_trades_050\":-1.0},\"QTUMUSDT\":{\"TD_MT_019\":-1.0,\"TD_PR_008\":1.0,\"TD_TI_038\":-1.0,\"baseline_105\":-1.0,\"baseline_140\":1.0,\"factor_trades_045\":-1.0,\"factor_trades_050\":-1.0},\"RSRUSDT\":{\"TD_PR_008\":1.0,\"TD_TI_027\":-1.0,\"TD_TI_038\":-1.0,\"baseline_105\":-1.0,\"factor_trades_045\":-1.0,\"factor_trades_050\":-1.0},\"SKLUSDT\":{\"TD_MT_019\":-1.0,\"TD_MT_021\":-1.0,\"TD_PR_008\":1.0,\"TD_PT_003\":1.0,\"baseline_028\":-1.0,\"baseline_105\":-1.0,\"baseline_169\":-1.0,\"factor_trades_008\":-1.0,\"factor_trades_045\":-1.0,\"factor_trades_050\":-1.0},\"SNXUSDT\":{\"TD_MT_019\":-1.0,\"TD_PR_008\":1.0,\"TD_TI_027\":-1.0,\"TD_TI_038\":-1.0,\"baseline_105\":-1.0,\"factor_trades_008\":-1.0,\"factor_trades_045\":-1.0,\"factor_trades_050\":-1.0},\"TRBUSDT\":{\"TD_MT_019\":-1.0,\"TD_MT_021\":-1.0,\"TD_TI_027\":-1.0,\"TD_TI_038\":-1.0,\"baseline_005\":-1.0,\"baseline_028\":-1.0,\"baseline_105\":-1.0,\"baseline_169\":-1.0},\"ZENUSDT\":{\"TD_MT_019\":-1.0,\"TD_MT_021\":-1.0,\"TD_TI_027\":-1.0,\"baseline_005\":-1.0,\"baseline_028\":-1.0,\"baseline_105\":-1.0,\"factor_trades_045\":-1.0},\"ZRXUSDT\":{\"TD_MT_019\":-1.0,\"TD_PR_008\":1.0,\"TD_PT_003\":1.0,\"TD_TI_038\":-1.0,\"baseline_105\":-1.0,\"baseline_169\":-1.0,\"factor_trades_008\":-1.0,\"factor_trades_045\":-1.0,\"factor_trades_050\":-1.0}}",
+    "binance-cta-perp-rx02": "{\"1INCHUSDT\":{\"baseline_200\":-1.0},\"ALGOUSDT\":{\"baseline_140\":1.0,\"baseline_200\":-1.0,\"factor_051\":-1.0},\"ATOMUSDT\":{\"baseline_141\":1.0,\"baseline_200\":-1.0},\"AXSUSDT\":{\"baseline_141\":1.0,\"baseline_200\":-1.0},\"BELUSDT\":{\"TD_PR_013\":-1.0,\"baseline_200\":-1.0,\"sell_avg_price\":-1.0},\"COMPUSDT\":{\"TD_TI_033\":-1.0,\"baseline_200\":-1.0},\"DASHUSDT\":{\"baseline_028\":-1.0,\"baseline_141\":1.0,\"baseline_200\":-1.0},\"DOGEUSDT\":{\"TD_TI_008\":1.0,\"TD_TI_013\":1.0,\"baseline_195\":-1.0,\"baseline_200\":-1.0},\"EGLDUSDT\":{\"baseline_028\":-1.0,\"baseline_200\":-1.0},\"ETCUSDT\":{\"baseline_141\":1.0,\"baseline_200\":-1.0},\"IOTAUSDT\":{\"baseline_005\":-1.0,\"baseline_141\":1.0,\"baseline_200\":-1.0},\"KAVAUSDT\":{\"TD_TI_008\":-1.0,\"baseline_200\":-1.0},\"KNCUSDT\":{\"baseline_141\":1.0,\"baseline_200\":-1.0},\"NEARUSDT\":{\"TD_TI_018\":-1.0,\"baseline_005\":-1.0,\"baseline_028\":-1.0,\"baseline_141\":1.0,\"baseline_200\":-1.0,\"factor_051\":-1.0},\"QTUMUSDT\":{\"baseline_028\":-1.0,\"baseline_200\":-1.0},\"RLCUSDT\":{\"baseline_005\":-1.0,\"baseline_200\":-1.0,\"factor_114\":-1.0},\"RSRUSDT\":{\"TD_TI_027\":-1.0,\"baseline_141\":1.0,\"baseline_195\":-1.0,\"baseline_200\":-1.0},\"SKLUSDT\":{\"baseline_005\":-1.0,\"baseline_028\":-1.0,\"baseline_091\":-1.0,\"baseline_200\":-1.0},\"SUSHIUSDT\":{\"baseline_028\":-1.0,\"baseline_200\":-1.0},\"XTZUSDT\":{\"baseline_091\":-1.0,\"baseline_160\":1.0,\"baseline_200\":-1.0},\"ZECUSDT\":{\"TD_PR_013\":-1.0,\"TD_TI_027\":-1.0,\"baseline_020\":-1.0,\"baseline_028\":-1.0,\"baseline_169\":-1.0,\"baseline_195\":-1.0,\"baseline_200\":-1.0},\"ZENUSDT\":{\"TP_VPI_006\":-1.0,\"baseline_005\":-1.0,\"baseline_141\":1.0,\"baseline_200\":-1.0},\"ZRXUSDT\":{\"baseline_200\":-1.0,\"buy_avg_price\":-1.0,\"factor_128\":-1.0}}",
+    "binance-cta-perp-rx03": "{\"AAVEUSDT\":{\"baseline_085\":-1.0,\"baseline_164\":1.0,\"baseline_200\":-1.0},\"ADAUSDT\":{\"baseline_085\":-1.0,\"baseline_164\":1.0},\"AVAXUSDT\":{\"baseline_141\":1.0},\"BTCUSDT\":{\"baseline_085\":-1.0,\"baseline_200\":-1.0},\"DASHUSDT\":{\"TD_MT_029\":-1.0,\"baseline_085\":-1.0,\"baseline_141\":1.0,\"baseline_164\":1.0,\"baseline_200\":-1.0},\"DOGEUSDT\":{\"baseline_085\":-1.0,\"baseline_164\":1.0,\"baseline_200\":-1.0},\"DOTUSDT\":{\"baseline_141\":1.0,\"baseline_164\":1.0},\"ETHUSDT\":{\"baseline_085\":-1.0,\"baseline_200\":-1.0},\"LTCUSDT\":{\"baseline_141\":1.0},\"NEARUSDT\":{\"baseline_085\":-1.0,\"baseline_141\":1.0,\"baseline_164\":1.0,\"baseline_200\":-1.0},\"SOLUSDT\":{\"baseline_141\":1.0,\"baseline_164\":1.0},\"UNIUSDT\":{\"baseline_164\":1.0},\"XLMUSDT\":{\"baseline_164\":1.0,\"baseline_200\":-1.0},\"ZECUSDT\":{\"TD_MT_029\":-1.0,\"baseline_085\":-1.0,\"baseline_164\":1.0,\"baseline_200\":-1.0}}",
+    "binance-cta-perp-rx04": "{\"BANDUSDT\":{\"baseline_040\":-1.0,\"baseline_119\":-1.0},\"BELUSDT\":{\"TD_TI_033\":-1.0,\"factor_094\":-1.0,\"factor_128\":-1.0,\"sell_avg_price\":-1.0},\"DASHUSDT\":{\"TD_MT_032\":1.0,\"baseline_118\":1.0},\"DOGEUSDT\":{\"TD_PR_010\":1.0,\"TD_TI_008\":1.0,\"TP_VPI_018\":1.0,\"TP_VPI_019\":1.0,\"baseline_132\":1.0,\"factor_049\":1.0},\"DOTUSDT\":{\"TD_MT_032\":1.0,\"baseline_111\":1.0,\"baseline_132\":1.0},\"ETCUSDT\":{\"TD_MT_042\":-1.0,\"TP_VPI_018\":1.0,\"baseline_013\":-1.0,\"baseline_104\":1.0,\"baseline_141\":1.0},\"IOTAUSDT\":{\"baseline_013\":-1.0,\"baseline_022\":-1.0,\"baseline_132\":1.0,\"baseline_195\":-1.0},\"NEARUSDT\":{\"baseline_013\":-1.0,\"baseline_051\":-1.0,\"factor_051\":-1.0},\"RUNEUSDT\":{\"baseline_001\":1.0,\"baseline_138\":1.0},\"SKLUSDT\":{\"TD_TI_033\":-1.0,\"TP_VPI_006\":-1.0,\"baseline_040\":-1.0,\"baseline_120\":-1.0},\"SOLUSDT\":{\"baseline_104\":1.0,\"factor_032\":-1.0},\"VETUSDT\":{\"TD_MT_040\":1.0,\"TD_TI_027\":-1.0,\"TP_VPI_001\":-1.0,\"baseline_104\":1.0,\"baseline_200\":-1.0},\"XLMUSDT\":{\"TP_VPI_009\":-1.0,\"factor_171\":-1.0},\"YFIUSDT\":{\"avg_price\":1.0,\"baseline_200\":-1.0},\"ZENUSDT\":{\"baseline_104\":1.0,\"baseline_141\":1.0}}"
+  },
+  "other_threshold_hashes": {
+    "bitget-futures:amount-thresholds": "6acd997230b787650c933328f412eec0302d2162386e55eb2bfa0c0aa6f68048",
+    "bitget-margin:amount-thresholds": "6acd997230b787650c933328f412eec0302d2162386e55eb2bfa0c0aa6f68048",
+    "gate-futures:amount-thresholds": "6acd997230b787650c933328f412eec0302d2162386e55eb2bfa0c0aa6f68048",
+    "gate-margin:amount-thresholds": "6acd997230b787650c933328f412eec0302d2162386e55eb2bfa0c0aa6f68048",
+    "okex-futures:amount-thresholds": "818faaeeb69004a79687275a9d9485acdc914abfcfa6039a6ee895dc7d967098"
+  },
+  "processes": {
+    "1403": {
+      "comm": "ops_monitor",
+      "cwd": "/home/ubuntu/crypto_nav_manager",
+      "start_ticks": "1270"
+    },
+    "29832": {
+      "comm": "node /home/ubun",
+      "cwd": "/home/ubuntu/.pm2/modules/pm2-logrotate/node_modules/pm2-logrotate",
+      "start_ticks": "89927"
+    },
+    "30584": {
+      "comm": "spread_pbs",
+      "cwd": "/home/ubuntu/spread_pbs/bitget-both",
+      "start_ticks": "93927"
+    },
+    "30676": {
+      "comm": "spread_pbs",
+      "cwd": "/home/ubuntu/spread_pbs/gate-both",
+      "start_ticks": "93955"
+    },
+    "30763": {
+      "comm": "spread_pbs",
+      "cwd": "/home/ubuntu/spread_pbs/binance-margin",
+      "start_ticks": "93983"
+    },
+    "30865": {
+      "comm": "spread_pbs",
+      "cwd": "/home/ubuntu/spread_pbs/binance-futures",
+      "start_ticks": "94015"
+    },
+    "30974": {
+      "comm": "spread_pbs",
+      "cwd": "/home/ubuntu/spread_pbs/binance-futures",
+      "start_ticks": "94047"
+    },
+    "31052": {
+      "comm": "spread_pbs",
+      "cwd": "/home/ubuntu/spread_pbs/gate-bitget-futures-bbo",
+      "start_ticks": "94075"
+    },
+    "31341": {
+      "comm": "spread_bbo_zmq_",
+      "cwd": "/home/ubuntu/spread_bbo_zmq_pub/binance-futures",
+      "start_ticks": "94148"
+    },
+    "32664": {
+      "comm": "rolling_metrics",
+      "cwd": "/home/ubuntu/rolling_metrics/bitget-margin-bitget-futures",
+      "start_ticks": "96989"
+    },
+    "32774": {
+      "comm": "rolling_metrics",
+      "cwd": "/home/ubuntu/rolling_metrics/gate-margin-gate-futures",
+      "start_ticks": "97022"
+    },
+    "32996": {
+      "comm": "rolling_metrics",
+      "cwd": "/home/ubuntu/rolling_metrics/bitget-futures-gate-futures",
+      "start_ticks": "97092"
+    },
+    "37086": {
+      "comm": "spread_pbs",
+      "cwd": "/home/ubuntu/spread_pbs/okex-both",
+      "start_ticks": "101449"
+    },
+    "37225": {
+      "comm": "trade_flow_feat",
+      "cwd": "/home/ubuntu/trade_flow_feature/bitget-margin",
+      "start_ticks": "101532"
+    },
+    "37298": {
+      "comm": "depth_pub_gener",
+      "cwd": "/home/ubuntu/depth_pub/general",
+      "start_ticks": "101553"
+    },
+    "37325": {
+      "comm": "trade_flow_feat",
+      "cwd": "/home/ubuntu/trade_flow_feature/bitget-futures",
+      "start_ticks": "101577"
+    },
+    "37415": {
+      "comm": "trade_flow_feat",
+      "cwd": "/home/ubuntu/trade_flow_feature/gate-margin",
+      "start_ticks": "101620"
+    },
+    "37507": {
+      "comm": "trade_flow_feat",
+      "cwd": "/home/ubuntu/trade_flow_feature/gate-futures",
+      "start_ticks": "101665"
+    },
+    "37598": {
+      "comm": "trade_flow_feat",
+      "cwd": "/home/ubuntu/trade_flow_feature/binance-margin",
+      "start_ticks": "101707"
+    },
+    "37684": {
+      "comm": "trade_flow_feat",
+      "cwd": "/home/ubuntu/trade_flow_feature/binance-futures",
+      "start_ticks": "101746"
+    },
+    "43876": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "start_ticks": "120794"
+    },
+    "43996": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "start_ticks": "120838"
+    },
+    "44293": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "start_ticks": "120880"
+    },
+    "44350": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "start_ticks": "121007"
+    },
+    "44461": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "start_ticks": "121075"
+    },
+    "44581": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "start_ticks": "121121"
+    },
+    "44889": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "start_ticks": "121163"
+    },
+    "44946": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "start_ticks": "121223"
+    },
+    "45056": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "start_ticks": "121291"
+    },
+    "45178": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "start_ticks": "121335"
+    },
+    "45486": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "start_ticks": "121378"
+    },
+    "45543": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "start_ticks": "121435"
+    },
+    "47756": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "start_ticks": "127645"
+    },
+    "47920": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "start_ticks": "127772"
+    },
+    "48089": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "start_ticks": "127907"
+    },
+    "58430": {
+      "comm": "binance_futures",
+      "cwd": "/home/ubuntu/binance_futures_ipc_proxy",
+      "start_ticks": "151094"
+    },
+    "58459": {
+      "comm": "crypto_nav_mana",
+      "cwd": "/home/ubuntu/crypto_nav_manager",
+      "start_ticks": "152543"
+    },
+    "60648": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "start_ticks": "154400"
+    },
+    "60809": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "start_ticks": "154458"
+    },
+    "60856": {
+      "comm": "fr_signal_dashb",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "start_ticks": "154461"
+    },
+    "61143": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "start_ticks": "154502"
+    },
+    "61245": {
+      "comm": "fr_signal_dashb",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "start_ticks": "154569"
+    },
+    "61465": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "start_ticks": "154651"
+    },
+    "61528": {
+      "comm": "fr_signal_dashb",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "start_ticks": "154691"
+    },
+    "61632": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "start_ticks": "154723"
+    },
+    "61710": {
+      "comm": "fr_signal_dashb",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "start_ticks": "154784"
+    },
+    "61805": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "start_ticks": "154841"
+    },
+    "61932": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "start_ticks": "154892"
+    },
+    "62192": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "start_ticks": "154940"
+    },
+    "62350": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "start_ticks": "155082"
+    },
+    "62407": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "start_ticks": "155146"
+    },
+    "62454": {
+      "comm": "fr_signal_dashb",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "start_ticks": "155210"
+    },
+    "62577": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "start_ticks": "155286"
+    },
+    "62705": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "start_ticks": "155341"
+    },
+    "62997": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "start_ticks": "155389"
+    },
+    "63195": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "start_ticks": "155547"
+    },
+    "63265": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "start_ticks": "155614"
+    },
+    "63312": {
+      "comm": "fr_signal_dashb",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "start_ticks": "155675"
+    },
+    "63432": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "start_ticks": "155752"
+    },
+    "63556": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "start_ticks": "155807"
+    },
+    "63801": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "start_ticks": "155855"
+    },
+    "63990": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "start_ticks": "156020"
+    },
+    "64049": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "start_ticks": "156086"
+    },
+    "64097": {
+      "comm": "fr_signal_dashb",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "start_ticks": "156151"
+    },
+    "64192": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "start_ticks": "156213"
+    },
+    "64315": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "start_ticks": "156269"
+    },
+    "64572": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "start_ticks": "156319"
+    },
+    "64734": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "start_ticks": "156468"
+    },
+    "64795": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "start_ticks": "156533"
+    },
+    "64843": {
+      "comm": "fr_signal_dashb",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "start_ticks": "156594"
+    },
+    "64965": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "start_ticks": "156678"
+    },
+    "65088": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "start_ticks": "156734"
+    },
+    "65382": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "start_ticks": "156789"
+    },
+    "65577": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "start_ticks": "156955"
+    },
+    "65640": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "start_ticks": "157023"
+    },
+    "65688": {
+      "comm": "fr_signal_dashb",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "start_ticks": "157087"
+    },
+    "84400": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "start_ticks": "210038"
+    },
+    "85012": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "start_ticks": "210855"
+    },
+    "85308": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "start_ticks": "211587"
+    },
+    "85514": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "start_ticks": "212000"
+    },
+    "85925": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "start_ticks": "212630"
+    },
+    "86311": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "start_ticks": "212990"
+    },
+    "86546": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "start_ticks": "213437"
+    },
+    "87496": {
+      "comm": "exec-pre-trade",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "start_ticks": "213798"
+    },
+    "88791": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "start_ticks": "214165"
+    },
+    "89027": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "start_ticks": "214577"
+    },
+    "89461": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "start_ticks": "215210"
+    },
+    "89855": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "start_ticks": "215575"
+    },
+    "90108": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "start_ticks": "216023"
+    },
+    "90287": {
+      "comm": "exec-pre-trade",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "start_ticks": "216388"
+    },
+    "90416": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "start_ticks": "216755"
+    },
+    "90639": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "start_ticks": "217177"
+    },
+    "91219": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "start_ticks": "217835"
+    },
+    "91622": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "start_ticks": "218209"
+    },
+    "91888": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "start_ticks": "218673"
+    },
+    "92076": {
+      "comm": "exec-pre-trade",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "start_ticks": "219049"
+    },
+    "92209": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "start_ticks": "219424"
+    },
+    "94386": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "start_ticks": "219845"
+    },
+    "99911": {
+      "comm": "pre_trade",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "start_ticks": "225809"
+    },
+    "100495": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "start_ticks": "226487"
+    },
+    "100556": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "start_ticks": "226546"
+    },
+    "100626": {
+      "comm": "cta_perp_signal",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "start_ticks": "226601"
+    },
+    "100976": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "start_ticks": "228124"
+    },
+    "101151": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "start_ticks": "228554"
+    },
+    "101408": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "start_ticks": "228968"
+    },
+    "101876": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "start_ticks": "229388"
+    },
+    "102229": {
+      "comm": "pre_trade",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "start_ticks": "229816"
+    },
+    "102472": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "start_ticks": "230278"
+    },
+    "105323": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "start_ticks": "233435"
+    },
+    "105844": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "start_ticks": "233835"
+    },
+    "106116": {
+      "comm": "rapidx_account_",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "start_ticks": "234315"
+    },
+    "106434": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "start_ticks": "235085"
+    },
+    "106578": {
+      "comm": "cta_perp_factor",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "start_ticks": "235264"
+    },
+    "116154": {
+      "comm": "pre_trade",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "start_ticks": "259314"
+    },
+    "120760": {
+      "comm": "trade_flow_feat",
+      "cwd": "/home/ubuntu/trade_flow_feature/okex-futures",
+      "start_ticks": "269947"
+    },
+    "120900": {
+      "comm": "pre_trade",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "start_ticks": "271130"
+    },
+    "121148": {
+      "comm": "trade_signal",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "start_ticks": "272769"
+    },
+    "123262": {
+      "comm": "pre_trade",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "start_ticks": "275868"
+    },
+    "129512": {
+      "comm": "pre_trade",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "start_ticks": "293239"
+    },
+    "142609": {
+      "comm": "pre_trade",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "start_ticks": "328583"
+    },
+    "142765": {
+      "comm": "pre_trade",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "start_ticks": "330008"
+    },
+    "143127": {
+      "comm": "ssh",
+      "cwd": "/home/ubuntu/delist_risk_server",
+      "start_ticks": "36402847"
+    },
+    "143152": {
+      "comm": "delist_risk_ser",
+      "cwd": "/home/ubuntu/delist_risk_server",
+      "start_ticks": "36402993"
+    },
+    "144946": {
+      "comm": "pre_trade",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "start_ticks": "337482"
+    },
+    "147066": {
+      "comm": "pre_trade",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "start_ticks": "342776"
+    },
+    "149220": {
+      "comm": "trade_signal",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "start_ticks": "346996"
+    },
+    "149309": {
+      "comm": "trade_signal",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "start_ticks": "347336"
+    },
+    "149403": {
+      "comm": "trade_signal",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "start_ticks": "347669"
+    },
+    "149496": {
+      "comm": "trade_signal",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "start_ticks": "348011"
+    },
+    "149584": {
+      "comm": "trade_signal",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "start_ticks": "348347"
+    },
+    "149679": {
+      "comm": "trade_signal",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "start_ticks": "348691"
+    },
+    "149767": {
+      "comm": "trade_signal",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "start_ticks": "349037"
+    },
+    "149857": {
+      "comm": "trade_signal",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "start_ticks": "349371"
+    },
+    "149949": {
+      "comm": "trade_signal",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "start_ticks": "349719"
+    },
+    "157817": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_exec_trade08",
+      "start_ticks": "36450478"
+    },
+    "160373": {
+      "comm": "cta_perp_factor",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "start_ticks": "36462034"
+    },
+    "163885": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "start_ticks": "24985600"
+    },
+    "166080": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "start_ticks": "24986565"
+    },
+    "168550": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "start_ticks": "36485530"
+    },
+    "168607": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "start_ticks": "36485862"
+    },
+    "315020": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_exec_trade08",
+      "start_ticks": "36931678"
+    },
+    "315038": {
+      "comm": "cta_web",
+      "cwd": "/home/ubuntu/crypto_cta_manager",
+      "start_ticks": "36932503"
+    },
+    "342673": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_exec_trade08",
+      "start_ticks": "37027029"
+    },
+    "343474": {
+      "comm": "exec-pre-trade",
+      "cwd": "/home/ubuntu/binance_exec_trade08",
+      "start_ticks": "37027459"
+    },
+    "351338": {
+      "comm": "cta_perp_signal",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "start_ticks": "37052327"
+    },
+    "384621": {
+      "comm": "exec-pre-trade",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "start_ticks": "25632810"
+    },
+    "502412": {
+      "comm": "exec-pre-trade",
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "start_ticks": "25957038"
+    },
+    "502880": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "start_ticks": "25957302"
+    },
+    "620503": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx04",
+      "start_ticks": "26293163"
+    },
+    "620577": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx04",
+      "start_ticks": "26293433"
+    },
+    "620641": {
+      "comm": "cta_perp_5m_sig",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx04",
+      "start_ticks": "26293738"
+    },
+    "697198": {
+      "comm": "rolling_metrics",
+      "cwd": "/home/ubuntu/rolling_metrics/binance-margin-binance-futures",
+      "start_ticks": "1966147"
+    },
+    "705737": {
+      "comm": "cta_perp_factor",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx04",
+      "start_ticks": "26538366"
+    },
+    "1642219": {
+      "comm": "MainThread",
+      "cwd": "/home/ubuntu/.vscode-server/extensions/ms-python.vscode-pylance-2026.4.1/dist",
+      "start_ticks": "41219697"
+    },
+    "1643703": {
+      "comm": "python",
+      "cwd": "/home/ubuntu/liang_torch/all_exchange_select_symbol",
+      "start_ticks": "41220693"
+    },
+    "1857882": {
+      "comm": "sync_history",
+      "cwd": "/home/ubuntu/crypto_nav_manager",
+      "start_ticks": "41899359"
+    },
+    "1858037": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/tlen_config_shared",
+      "start_ticks": "41901453"
+    },
+    "1859834": {
+      "comm": "ssh",
+      "cwd": "/home/ubuntu/crypto_nav_manager",
+      "start_ticks": "41905335"
+    },
+    "1859835": {
+      "comm": "ssh",
+      "cwd": "/home/ubuntu/crypto_nav_manager",
+      "start_ticks": "41905335"
+    },
+    "2879569": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "start_ticks": "8388285"
+    },
+    "2879622": {
+      "comm": "cta_spread_sign",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "start_ticks": "8388408"
+    },
+    "3199097": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "start_ticks": "9324950"
+    },
+    "3199439": {
+      "comm": "rapidx_account_",
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "start_ticks": "9325179"
+    },
+    "3207816": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "start_ticks": "9346838"
+    },
+    "3207923": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "start_ticks": "9349113"
+    },
+    "3715536": {
+      "comm": "MainThread",
+      "cwd": "/home/ubuntu/.vscode-server/extensions/ms-python.vscode-pylance-2026.4.1/dist",
+      "start_ticks": "34474146"
+    },
+    "3919545": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_exec_trade08",
+      "start_ticks": "35043720"
+    },
+    "3919789": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_exec_trade08",
+      "start_ticks": "35044586"
+    },
+    "3973994": {
+      "comm": "cta_spread_fact",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "start_ticks": "35227235"
+    },
+    "4064693": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "start_ticks": "24133156"
+    },
+    "4066760": {
+      "comm": "exec-pre-trade",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "start_ticks": "24135215"
+    }
+  },
+  "config_types": [
+    "tlen",
+    "amount_thresholds",
+    "factor_plan",
+    "zscore",
+    "factor_plan_1m",
+    "zscore_1m"
+  ]
+}

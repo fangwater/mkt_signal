@@ -1,0 +1,19 @@
+{
+  "cta_library_tests": 69,
+  "config_server_tests": 4,
+  "hourly_history_tests": 2,
+  "scoped_archive_tests": 1,
+  "cargo_fmt_check": "passed",
+  "git_diff_check": "passed",
+  "browser": {
+    "frequencies": {
+      "1min": 28,
+      "5min": 56,
+      "15min": 18,
+      "1h": 107
+    },
+    "symbol_pools": 0,
+    "mobile_overflow": false,
+    "errors": []
+  }
+}

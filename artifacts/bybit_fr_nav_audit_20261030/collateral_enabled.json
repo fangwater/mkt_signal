@@ -1,0 +1,43 @@
+{
+  "targets": [
+    "BASED",
+    "EDGE",
+    "BSB",
+    "WET",
+    "VELO",
+    "QTUM",
+    "RECALL",
+    "BILL"
+  ],
+  "before": {
+    "totalEquity": "54960.3433151",
+    "totalMarginBalance": "24928.28457758",
+    "totalAvailableBalance": "19048.25955536",
+    "totalInitialMargin": "5880.02502222",
+    "totalMaintenanceMargin": "4601.20593087",
+    "accountMMRate": "0.1845",
+    "unimmr": 5.420054200542006,
+    "ts_ms": 1793333004920
+  },
+  "after": {
+    "totalEquity": "54962.19505509",
+    "totalMarginBalance": "42279.44520852",
+    "totalAvailableBalance": "36401.24831378",
+    "totalInitialMargin": "5878.19689473",
+    "totalMaintenanceMargin": "4599.67320488",
+    "accountMMRate": "0.1087",
+    "unimmr": 9.19963201471941,
+    "ts_ms": 1793333009201
+  },
+  "verified_switches": {
+    "BASED": true,
+    "EDGE": true,
+    "BSB": true,
+    "WET": true,
+    "VELO": true,
+    "QTUM": true,
+    "RECALL": true,
+    "BILL": true
+  },
+  "source_ip": "172.31.7.124"
+}

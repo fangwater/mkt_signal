@@ -1,0 +1,200 @@
+{
+  "captured_ts_us": 1792072595213244,
+  "environments": {
+    "rx02": {
+      "algorithm": "v1",
+      "symbols": 47,
+      "factor_pairs": 192,
+      "recovery_completed": true,
+      "generation": "8230843e-20d4-4a04-b7cc-8afd8b48bae9",
+      "runtime_target_count": 47,
+      "clear_count": 34,
+      "nonzero_count": 13
+    },
+    "rx03": {
+      "algorithm": "v0",
+      "symbols": 14,
+      "factor_pairs": 34,
+      "recovery_completed": true,
+      "generation": "37f6e2b5-526a-46e6-a05c-ad5883843536",
+      "runtime_target_count": 34,
+      "clear_count": 33,
+      "nonzero_count": 1
+    }
+  },
+  "execution": {
+    "binance_exec_trade05": {
+      "position_ready": true,
+      "completion_reasons": {
+        "target_reached": 17,
+        "exchange_minimum": 19
+      },
+      "unfinished": [],
+      "flat_target_residuals": [
+        {
+          "strategy_name": "lgq_cta_TD_TI_002",
+          "symbol": "BNBUSDT",
+          "current_qty": -0.003892109737973132,
+          "delta_usdt": 2.784940741360605,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "lgq_cta_TD_TI_002",
+          "symbol": "LINKUSDT",
+          "current_qty": -0.008740133106329928,
+          "delta_usdt": 0.103924552700816,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "lgq_cta_factor_036",
+          "symbol": "FILUSDT",
+          "current_qty": -0.05193798449612075,
+          "delta_usdt": 0.05243918604650832,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "lgq_cta_factor_051",
+          "symbol": "BNBUSDT",
+          "current_qty": -0.006107890262026877,
+          "delta_usdt": 4.370409258639401,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "lgq_cta_factor_051",
+          "symbol": "FILUSDT",
+          "current_qty": -0.04806201550390199,
+          "delta_usdt": 0.04852581395351465,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "lgq_cta_factor_170",
+          "symbol": "LINKUSDT",
+          "current_qty": -0.0012598668936671942,
+          "delta_usdt": 0.014980447299149772,
+          "completion_reason": "exchange_minimum"
+        }
+      ]
+    },
+    "binance_exec_trade07": {
+      "position_ready": true,
+      "completion_reasons": {
+        "exchange_minimum": 14,
+        "target_reached": 2
+      },
+      "unfinished": [],
+      "flat_target_residuals": [
+        {
+          "strategy_name": "binance_cta_perp_rx03_TD_MT_029",
+          "symbol": "DASHUSDT",
+          "current_qty": 0.0009592569136578356,
+          "delta_usdt": -0.04485964956720868,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "binance_cta_perp_rx03_TD_MT_029",
+          "symbol": "ZECUSDT",
+          "current_qty": 0.0007650081670857178,
+          "delta_usdt": -0.8337173756125217,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "binance_cta_perp_rx03_baseline_085",
+          "symbol": "ADAUSDT",
+          "current_qty": -0.07353608715385462,
+          "delta_usdt": 0.01611543349976724,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "binance_cta_perp_rx03_baseline_085",
+          "symbol": "BTCUSDT",
+          "current_qty": -0.0007597406865827508,
+          "delta_usdt": 60.87919881394003,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "binance_cta_perp_rx03_baseline_085",
+          "symbol": "DASHUSDT",
+          "current_qty": 4.074308634161028e-05,
+          "delta_usdt": -0.0019053504327654048,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "binance_cta_perp_rx03_baseline_085",
+          "symbol": "ETHUSDT",
+          "current_qty": -0.00048335473337812046,
+          "delta_usdt": 1.130564304597757,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "binance_cta_perp_rx03_baseline_085",
+          "symbol": "ZECUSDT",
+          "current_qty": 0.0007650081670857178,
+          "delta_usdt": -0.8337173756125217,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "binance_cta_perp_rx03_baseline_164",
+          "symbol": "ADAUSDT",
+          "current_qty": -0.9264639128461454,
+          "delta_usdt": 0.20303456650023277,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "binance_cta_perp_rx03_baseline_164",
+          "symbol": "XLMUSDT",
+          "current_qty": -0.9331435906020716,
+          "delta_usdt": 0.1659829161783435,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "binance_cta_perp_rx03_baseline_200",
+          "symbol": "BTCUSDT",
+          "current_qty": -0.00024025931341724923,
+          "delta_usdt": 19.25235118605998,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "binance_cta_perp_rx03_baseline_200",
+          "symbol": "ETHUSDT",
+          "current_qty": -0.0005166452666218804,
+          "delta_usdt": 1.2084306954022452,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "binance_cta_perp_rx03_baseline_200",
+          "symbol": "XLMUSDT",
+          "current_qty": -0.06685640939792847,
+          "delta_usdt": 0.011892083821656529,
+          "completion_reason": "exchange_minimum"
+        },
+        {
+          "strategy_name": "binance_cta_perp_rx03_baseline_200",
+          "symbol": "ZECUSDT",
+          "current_qty": 0.0004699836658285661,
+          "delta_usdt": -0.5121952487749588,
+          "completion_reason": "exchange_minimum"
+        }
+      ]
+    }
+  },
+  "retired": {
+    "strategies": 9,
+    "explicit_clears": 55,
+    "shares": 0
+  },
+  "authorized_exec05_restarts": {
+    "exec05_leverage_cap": {
+      "old_pid": 3477503,
+      "new_pid": 341167
+    },
+    "exec05_engine_match": {
+      "old_pid": 3175453,
+      "new_pid": 440232
+    }
+  },
+  "protected": {
+    "rx01_configuration_unchanged": true,
+    "processes_unchanged": 44,
+    "rx01_rx03_bindings_unchanged": true
+  }
+}

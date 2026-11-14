@@ -1,0 +1,267 @@
+{
+  "observed_utc": "2026-10-13T08:25:56.607228+00:00",
+  "enabled": false,
+  "old_enabled": true,
+  "symbol_count": 9,
+  "binding_count": 24,
+  "max_pos_u": 100.0,
+  "live_ready": 24,
+  "nq_ready_symbols": 9,
+  "observations": [
+    {
+      "factor": "TD_TI_024",
+      "symbol": "AAVEUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "DASHUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "DOGEUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "NEARUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "XLMUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "ZECUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "AAVEUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "DASHUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "ETHUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "NEARUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "SOLUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "XLMUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "XRPUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "ZECUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "AAVEUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "DASHUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "ZECUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "AAVEUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "DASHUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "DOGEUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "SOLUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "XLMUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "ZECUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    },
+    {
+      "factor": "factor_036",
+      "symbol": "NEARUSDT",
+      "model_ts_ms": 1791879900000,
+      "score_ready": true
+    }
+  ],
+  "processes": [
+    {
+      "pid": 140816,
+      "env": "binance-cta-special-rx02",
+      "exe": "cta_special_signal",
+      "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 147320,
+      "env": "binance-cta-special-rx02",
+      "exe": "python3.12",
+      "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 945585,
+      "env": "binance-cta-special-rx02",
+      "exe": "python3.12",
+      "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 1975542,
+      "env": "binance-cta-special-rx02",
+      "exe": "cta_special_factor_model_1m_pub",
+      "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3973622,
+      "env": "binance-cta-perp-rx02",
+      "exe": "python3.12",
+      "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3979991,
+      "env": "binance-cta-perp-rx02",
+      "exe": "python3.12",
+      "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3985389,
+      "env": "binance-cta-perp-rx02",
+      "exe": "cta_perp_signal",
+      "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 4133794,
+      "env": "binance-cta-perp-rx02",
+      "exe": "cta_perp_factor_model_1m_pub",
+      "cores": [
+        18
+      ]
+    }
+  ],
+  "journal_states": {
+    "observed": 48
+  },
+  "cutover_started": false,
+  "simulation_closed_trades": 53,
+  "simulation_error": null,
+  "binaries": {
+    "cta_perp_signal": "e4600b7948abd8aabe9e50817d9dfe1574e6cf2185bac333843a55df0b511081",
+    "cta_perp_factor_model_1m_pub": "b238b5a28b82532c041e2ae746ffff1b1456418c8519d62e2db763c3e2ab087e"
+  }
+}

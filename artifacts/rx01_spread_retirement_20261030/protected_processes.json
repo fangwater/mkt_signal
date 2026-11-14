@@ -1,0 +1,402 @@
+[
+  {
+    "pid": 30584,
+    "executable": "spread_pbs",
+    "start_ticks": "93927"
+  },
+  {
+    "pid": 30676,
+    "executable": "spread_pbs",
+    "start_ticks": "93955"
+  },
+  {
+    "pid": 30763,
+    "executable": "spread_pbs",
+    "start_ticks": "93983"
+  },
+  {
+    "pid": 30865,
+    "executable": "spread_pbs",
+    "start_ticks": "94015"
+  },
+  {
+    "pid": 30974,
+    "executable": "spread_pbs",
+    "start_ticks": "94047"
+  },
+  {
+    "pid": 31052,
+    "executable": "spread_pbs",
+    "start_ticks": "94075"
+  },
+  {
+    "pid": 32664,
+    "executable": "rolling_metrics",
+    "start_ticks": "96989"
+  },
+  {
+    "pid": 32774,
+    "executable": "rolling_metrics",
+    "start_ticks": "97022"
+  },
+  {
+    "pid": 32996,
+    "executable": "rolling_metrics",
+    "start_ticks": "97092"
+  },
+  {
+    "pid": 37086,
+    "executable": "spread_pbs",
+    "start_ticks": "101449"
+  },
+  {
+    "pid": 37225,
+    "executable": "trade_flow_feature_pub",
+    "start_ticks": "101532"
+  },
+  {
+    "pid": 37325,
+    "executable": "trade_flow_feature_pub",
+    "start_ticks": "101577"
+  },
+  {
+    "pid": 37415,
+    "executable": "trade_flow_feature_pub",
+    "start_ticks": "101620"
+  },
+  {
+    "pid": 37507,
+    "executable": "trade_flow_feature_pub",
+    "start_ticks": "101665"
+  },
+  {
+    "pid": 37598,
+    "executable": "trade_flow_feature_pub",
+    "start_ticks": "101707"
+  },
+  {
+    "pid": 37684,
+    "executable": "trade_flow_feature_pub",
+    "start_ticks": "101746"
+  },
+  {
+    "pid": 43876,
+    "executable": "account_monitor",
+    "start_ticks": "120794"
+  },
+  {
+    "pid": 43996,
+    "executable": "persist_manager",
+    "start_ticks": "120838"
+  },
+  {
+    "pid": 44461,
+    "executable": "account_monitor",
+    "start_ticks": "121075"
+  },
+  {
+    "pid": 44581,
+    "executable": "persist_manager",
+    "start_ticks": "121121"
+  },
+  {
+    "pid": 45056,
+    "executable": "account_monitor",
+    "start_ticks": "121291"
+  },
+  {
+    "pid": 45178,
+    "executable": "persist_manager",
+    "start_ticks": "121335"
+  },
+  {
+    "pid": 47756,
+    "executable": "trade_engine",
+    "start_ticks": "127645"
+  },
+  {
+    "pid": 47920,
+    "executable": "trade_engine",
+    "start_ticks": "127772"
+  },
+  {
+    "pid": 48089,
+    "executable": "trade_engine",
+    "start_ticks": "127907"
+  },
+  {
+    "pid": 60648,
+    "executable": "account_monitor",
+    "start_ticks": "154400"
+  },
+  {
+    "pid": 60809,
+    "executable": "persist_manager",
+    "start_ticks": "154458"
+  },
+  {
+    "pid": 61143,
+    "executable": "trade_engine",
+    "start_ticks": "154502"
+  },
+  {
+    "pid": 61805,
+    "executable": "account_monitor",
+    "start_ticks": "154841"
+  },
+  {
+    "pid": 61932,
+    "executable": "persist_manager",
+    "start_ticks": "154892"
+  },
+  {
+    "pid": 62192,
+    "executable": "trade_engine",
+    "start_ticks": "154940"
+  },
+  {
+    "pid": 62577,
+    "executable": "account_monitor",
+    "start_ticks": "155286"
+  },
+  {
+    "pid": 62705,
+    "executable": "persist_manager",
+    "start_ticks": "155341"
+  },
+  {
+    "pid": 62997,
+    "executable": "trade_engine",
+    "start_ticks": "155389"
+  },
+  {
+    "pid": 63432,
+    "executable": "account_monitor",
+    "start_ticks": "155752"
+  },
+  {
+    "pid": 63556,
+    "executable": "persist_manager",
+    "start_ticks": "155807"
+  },
+  {
+    "pid": 63801,
+    "executable": "trade_engine",
+    "start_ticks": "155855"
+  },
+  {
+    "pid": 64192,
+    "executable": "account_monitor",
+    "start_ticks": "156213"
+  },
+  {
+    "pid": 64315,
+    "executable": "persist_manager",
+    "start_ticks": "156269"
+  },
+  {
+    "pid": 64572,
+    "executable": "trade_engine",
+    "start_ticks": "156319"
+  },
+  {
+    "pid": 64965,
+    "executable": "account_monitor",
+    "start_ticks": "156678"
+  },
+  {
+    "pid": 65088,
+    "executable": "persist_manager",
+    "start_ticks": "156734"
+  },
+  {
+    "pid": 65382,
+    "executable": "trade_engine",
+    "start_ticks": "156789"
+  },
+  {
+    "pid": 105323,
+    "executable": "persist_manager",
+    "start_ticks": "233435"
+  },
+  {
+    "pid": 105844,
+    "executable": "trade_engine",
+    "start_ticks": "233835"
+  },
+  {
+    "pid": 106116,
+    "executable": "rapidx_account_monitor",
+    "start_ticks": "234315"
+  },
+  {
+    "pid": 120760,
+    "executable": "trade_flow_feature_pub",
+    "start_ticks": "269947"
+  },
+  {
+    "pid": 157817,
+    "executable": "account_monitor",
+    "start_ticks": "36450478"
+  },
+  {
+    "pid": 160373,
+    "executable": "cta_perp_factor_model_1m_pub",
+    "start_ticks": "36462034"
+  },
+  {
+    "pid": 342673,
+    "executable": "trade_engine",
+    "start_ticks": "37027029"
+  },
+  {
+    "pid": 343474,
+    "executable": "exec-pre-trade",
+    "start_ticks": "37027459"
+  },
+  {
+    "pid": 351338,
+    "executable": "cta_perp_signal",
+    "start_ticks": "37052327"
+  },
+  {
+    "pid": 697198,
+    "executable": "rolling_metrics",
+    "start_ticks": "1966147"
+  },
+  {
+    "pid": 705737,
+    "executable": "cta_perp_factor_model_5m_pub",
+    "start_ticks": "26538366"
+  },
+  {
+    "pid": 1505185,
+    "executable": "persist_manager",
+    "start_ticks": "52152462"
+  },
+  {
+    "pid": 1505483,
+    "executable": "trade_engine",
+    "start_ticks": "52153023"
+  },
+  {
+    "pid": 1505753,
+    "executable": "account_monitor",
+    "start_ticks": "52153977"
+  },
+  {
+    "pid": 1505836,
+    "executable": "exec-pre-trade",
+    "start_ticks": "52154559"
+  },
+  {
+    "pid": 2010605,
+    "executable": "cta_perp_5m_signal",
+    "start_ticks": "42396942"
+  },
+  {
+    "pid": 2011312,
+    "executable": "persist_manager",
+    "start_ticks": "42400388"
+  },
+  {
+    "pid": 2011593,
+    "executable": "trade_engine",
+    "start_ticks": "42401143"
+  },
+  {
+    "pid": 2011864,
+    "executable": "rapidx_account_monitor",
+    "start_ticks": "42402170"
+  },
+  {
+    "pid": 2012013,
+    "executable": "exec-pre-trade",
+    "start_ticks": "42402922"
+  },
+  {
+    "pid": 2144386,
+    "executable": "persist_manager",
+    "start_ticks": "53846790"
+  },
+  {
+    "pid": 2144685,
+    "executable": "trade_engine",
+    "start_ticks": "53847404"
+  },
+  {
+    "pid": 2145909,
+    "executable": "account_monitor",
+    "start_ticks": "53848522"
+  },
+  {
+    "pid": 2147178,
+    "executable": "exec-pre-trade",
+    "start_ticks": "53849211"
+  },
+  {
+    "pid": 2217069,
+    "executable": "persist_manager",
+    "start_ticks": "54010734"
+  },
+  {
+    "pid": 2218344,
+    "executable": "trade_engine",
+    "start_ticks": "54011373"
+  },
+  {
+    "pid": 2218472,
+    "executable": "account_monitor",
+    "start_ticks": "54012293"
+  },
+  {
+    "pid": 2218560,
+    "executable": "exec-pre-trade",
+    "start_ticks": "54012904"
+  },
+  {
+    "pid": 2228427,
+    "executable": "persist_manager",
+    "start_ticks": "54034668"
+  },
+  {
+    "pid": 2229697,
+    "executable": "trade_engine",
+    "start_ticks": "54035295"
+  },
+  {
+    "pid": 2229828,
+    "executable": "account_monitor",
+    "start_ticks": "54036212"
+  },
+  {
+    "pid": 2229916,
+    "executable": "exec-pre-trade",
+    "start_ticks": "54036836"
+  },
+  {
+    "pid": 2307925,
+    "executable": "cta_perp_factor_model_1m_pub",
+    "start_ticks": "87067249"
+  },
+  {
+    "pid": 3919545,
+    "executable": "persist_manager",
+    "start_ticks": "35043720"
+  },
+  {
+    "pid": 4175337,
+    "executable": "account_monitor",
+    "start_ticks": "92929650"
+  },
+  {
+    "pid": 4181089,
+    "executable": "cta_perp_signal",
+    "start_ticks": "92945164"
+  },
+  {
+    "pid": 4183206,
+    "executable": "exec-pre-trade",
+    "start_ticks": "92953919"
+  }
+]

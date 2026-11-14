@@ -1,3 +1,6 @@
+#[path = "spread_pbs/tmpfs_log.rs"]
+mod tmpfs_log;
+
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use futures_util::stream::{FuturesUnordered, StreamExt};
@@ -5,8 +8,8 @@ use std::path::{Path, PathBuf};
 use tokio::sync::watch;
 
 use mkt_signal::cfg::Config;
-use mkt_signal::spread_pbs::publisher::SpreadPbsPublishRoots;
-use mkt_signal::spread_pbs::{BinanceFuturesRole, BybitRole, SpreadPbsApp};
+use mkt_signal::spread_pbs::publisher::{SpreadPbsPublishRoots, SpreadPbsPublisherPool};
+use mkt_signal::spread_pbs::{BinanceFuturesRole, BybitRole, MarketDataProvider, SpreadPbsApp};
 use order_common::TradingVenue;
 use runtime_common::affinity::pin_to_core;
 
@@ -14,7 +17,7 @@ use runtime_common::affinity::pin_to_core;
 #[command(name = "spread_pbs")]
 #[command(about = "Dedicated high-speed askbidspread publisher (pinned core).")]
 struct Args {
-    /// Trading venue. Also accepts <exchange>-both.
+    /// Venue, <exchange>-both, or gate-bitget-futures-bbo (independent BBO-only IPC).
     #[arg(short, long, value_parser = parse_venue_selection)]
     venue: SpreadVenueSelection,
 
@@ -33,13 +36,23 @@ struct Args {
     /// Bybit only: full, market, or bookticker.
     #[arg(long, value_parser = parse_bybit_role, default_value = "full")]
     bybit_role: BybitRole,
+
+    /// Public market-data provider. Native exchange feeds remain the default.
+    #[arg(long, value_parser = parse_market_data_provider, default_value = "native")]
+    market_data_provider: MarketDataProvider,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    env_logger::init();
-
     let args = Args::parse();
+    if matches!(
+        args.venue,
+        SpreadVenueSelection::Single(TradingVenue::BinanceFutures)
+    ) {
+        tmpfs_log::init(args.binance_futures_role.as_str(), args.test)?;
+    } else {
+        env_logger::init();
+    }
     pin_to_core(args.core)?;
 
     let config_path = resolve_cfg_path()?;
@@ -47,23 +60,37 @@ async fn main() -> Result<()> {
     let config_str = config_path.to_string_lossy();
     log::info!("spread_pbs venue selection: {}", args.venue.label());
     validate_role_selection(&args.venue, args.binance_futures_role, args.bybit_role)?;
+    let futures_bbo_only = matches!(args.venue, SpreadVenueSelection::GateBitgetFuturesBbo);
+    if futures_bbo_only && args.market_data_provider != MarketDataProvider::Native {
+        bail!("gate-bitget-futures-bbo requires native SBE feeds");
+    }
+    if args.market_data_provider == MarketDataProvider::RapidX
+        && (args.binance_futures_role != BinanceFuturesRole::Full
+            || args.bybit_role != BybitRole::Full)
+    {
+        bail!("--market-data-provider rapidx requires full venue roles");
+    }
     log::info!(
-        "spread_pbs binance_futures_role={} bybit_role={}",
+        "spread_pbs binance_futures_role={} bybit_role={} market_data_provider={}",
         args.binance_futures_role.as_str(),
         args.bybit_role.as_str(),
+        args.market_data_provider.as_str(),
     );
-    let publish_roots = if args.test {
+    let publish_roots = if futures_bbo_only {
+        SpreadPbsPublishRoots::futures_bbo(args.test)
+    } else if args.test {
         SpreadPbsPublishRoots::test()
     } else {
         SpreadPbsPublishRoots::production()
     };
-    log::info!(
-        "spread_pbs publish roots: spread_root={} dat_root={} test={}",
-        publish_roots.spread_root(),
-        publish_roots.dat_root(),
-        args.test
-    );
-    let configs = load_selected_configs(&config_str, &args.venue).await?;
+    let raw_symbols = std::env::var("SPREAD_PBS_SYMBOLS").ok();
+    let configs = load_selected_configs(
+        &config_str,
+        &args.venue,
+        args.market_data_provider,
+        raw_symbols.as_deref(),
+    )
+    .await?;
 
     // current_thread runtime + spawn_local 需要 LocalSet 上下文
     let local = tokio::task::LocalSet::new();
@@ -73,12 +100,15 @@ async fn main() -> Result<()> {
             publish_roots,
             args.binance_futures_role,
             args.bybit_role,
+            args.market_data_provider,
+            futures_bbo_only,
         ))
         .await
 }
 
 #[derive(Debug, Clone, Copy)]
 enum SpreadVenueSelection {
+    GateBitgetFuturesBbo,
     Single(TradingVenue),
     Both {
         exchange: &'static str,
@@ -90,15 +120,77 @@ enum SpreadVenueSelection {
 impl SpreadVenueSelection {
     fn venues(self) -> Vec<TradingVenue> {
         match self {
+            Self::GateBitgetFuturesBbo => {
+                vec![TradingVenue::GateFutures, TradingVenue::BitgetFutures]
+            }
+            Self::Single(TradingVenue::BinanceFutures) => vec![
+                TradingVenue::BinanceFutures,
+                TradingVenue::BinanceCoinFutures,
+            ],
             Self::Single(venue) => vec![venue],
+            Self::Both {
+                exchange: "binance",
+                margin,
+                futures,
+            } => vec![margin, futures, TradingVenue::BinanceCoinFutures],
             Self::Both {
                 margin, futures, ..
             } => vec![margin, futures],
         }
     }
 
+    fn venues_for_run(
+        self,
+        provider: MarketDataProvider,
+        raw_symbols: Option<&str>,
+    ) -> Result<Vec<TradingVenue>> {
+        let mut venues = self.venues();
+        if !matches!(
+            self,
+            Self::Single(TradingVenue::BinanceFutures)
+                | Self::Both {
+                    exchange: "binance",
+                    ..
+                }
+        ) {
+            return Ok(venues);
+        }
+        // RapidX exposes USD-M public feeds, but has no COIN-M adapter.
+        if provider == MarketDataProvider::RapidX {
+            venues.retain(|venue| *venue != TradingVenue::BinanceCoinFutures);
+        }
+        let wanted: Vec<String> = raw_symbols
+            .unwrap_or_default()
+            .split(',')
+            .map(runtime_common::symbol_util::normalize_symbol_for_internal)
+            .filter(|symbol| !symbol.is_empty())
+            .collect();
+        if !wanted.is_empty() {
+            venues.retain(|venue| {
+                wanted.iter().any(|symbol| match venue {
+                    TradingVenue::BinanceFutures => {
+                        symbol.ends_with("USDT") || symbol.ends_with("USDC")
+                    }
+                    TradingVenue::BinanceCoinFutures => symbol.ends_with("USD"),
+                    TradingVenue::BinanceMargin => symbol.ends_with("USDT"),
+                    _ => true,
+                })
+            });
+        }
+        if venues.is_empty() {
+            bail!(
+                "{} has no markets for SPREAD_PBS_SYMBOLS={:?} with provider {}",
+                self.label(),
+                raw_symbols.unwrap_or_default(),
+                provider.as_str(),
+            );
+        }
+        Ok(venues)
+    }
+
     fn label(self) -> String {
         match self {
+            Self::GateBitgetFuturesBbo => "gate-bitget-futures-bbo".to_string(),
             Self::Single(venue) => venue.data_pub_slug().to_string(),
             Self::Both { exchange, .. } => format!("{exchange}-both"),
         }
@@ -107,10 +199,13 @@ impl SpreadVenueSelection {
 
 fn parse_venue_selection(raw: &str) -> std::result::Result<SpreadVenueSelection, String> {
     let normalized = raw.trim().to_ascii_lowercase().replace('_', "-");
+    if normalized == "gate-bitget-futures-bbo" {
+        return Ok(SpreadVenueSelection::GateBitgetFuturesBbo);
+    }
     if let Some(exchange) = normalized.strip_suffix("-both") {
         return both_selection_for_exchange(exchange).ok_or_else(|| {
             format!(
-                "unsupported spread_pbs both venue '{raw}', expected one of binance-both/okex-both/bybit-both/bitget-both/gate-both"
+                "unsupported spread_pbs both venue '{raw}', expected one of binance-both/okex-both/bybit-both/bitget-both/gate-both/hyperliquid-both"
             )
         });
     }
@@ -127,6 +222,10 @@ fn parse_bybit_role(raw: &str) -> std::result::Result<BybitRole, String> {
     BybitRole::parse(raw)
 }
 
+fn parse_market_data_provider(raw: &str) -> std::result::Result<MarketDataProvider, String> {
+    MarketDataProvider::parse(raw)
+}
+
 fn validate_role_selection(
     selection: &SpreadVenueSelection,
     role: BinanceFuturesRole,
@@ -134,9 +233,11 @@ fn validate_role_selection(
 ) -> Result<()> {
     if role != BinanceFuturesRole::Full {
         match selection {
-            SpreadVenueSelection::Single(TradingVenue::BinanceFutures) => {}
+            SpreadVenueSelection::Single(
+                TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures,
+            ) => {}
             _ => bail!(
-                "--binance-futures-role={} only supports --venue binance-futures",
+                "--binance-futures-role={} only supports --venue binance-futures/binance-coin-futures",
                 role.as_str()
             ),
         }
@@ -179,6 +280,11 @@ fn both_selection_for_exchange(exchange: &str) -> Option<SpreadVenueSelection> {
             TradingVenue::BitgetFutures,
         ),
         "gate" => ("gate", TradingVenue::GateMargin, TradingVenue::GateFutures),
+        "hyperliquid" => (
+            "hyperliquid",
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ),
         _ => return None,
     };
     Some(SpreadVenueSelection::Both {
@@ -213,9 +319,11 @@ fn single_venue_from_slug(slug: &str) -> Option<TradingVenue> {
 async fn load_selected_configs(
     config_path: &str,
     selection: &SpreadVenueSelection,
+    provider: MarketDataProvider,
+    raw_symbols: Option<&str>,
 ) -> Result<Vec<Config>> {
     let mut configs = Vec::new();
-    for venue in selection.venues() {
+    for venue in selection.venues_for_run(provider, raw_symbols)? {
         configs.push(Config::load_config(config_path, venue).await?);
     }
     Ok(configs)
@@ -226,6 +334,8 @@ async fn run_selected(
     publish_roots: SpreadPbsPublishRoots,
     binance_futures_role: BinanceFuturesRole,
     bybit_role: BybitRole,
+    market_data_provider: MarketDataProvider,
+    futures_bbo_only: bool,
 ) -> Result<()> {
     let labels: Vec<&'static str> = configs
         .iter()
@@ -235,10 +345,14 @@ async fn run_selected(
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut tasks = FuturesUnordered::new();
+    let publishers = SpreadPbsPublisherPool::default();
     for config in configs {
         let venue_slug = config.venue.data_pub_slug();
         let rx = shutdown_rx.clone();
-        let role = if config.venue == TradingVenue::BinanceFutures {
+        let role = if matches!(
+            config.venue,
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
+        ) {
             binance_futures_role
         } else {
             BinanceFuturesRole::Full
@@ -256,7 +370,14 @@ async fn run_selected(
             publish_roots.clone(),
             role,
             bybit_role,
-        );
+        )
+        .with_market_data_provider(market_data_provider)
+        .with_publishers(publishers.clone());
+        let app = if futures_bbo_only {
+            app.with_futures_bbo_only()
+        } else {
+            app
+        };
         tasks.push(tokio::task::spawn_local(async move {
             (venue_slug, app.run_with_shutdown(rx).await)
         }));
@@ -342,6 +463,44 @@ fn resolve_cfg_path_from(current_dir: &Path) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn combined_futures_bbo_loads_exactly_two_futures_venues() {
+        let args = Args::try_parse_from([
+            "spread_pbs",
+            "--venue",
+            "gate-bitget-futures-bbo",
+            "--core",
+            "0",
+        ])
+        .unwrap();
+        assert!(matches!(
+            args.venue,
+            SpreadVenueSelection::GateBitgetFuturesBbo
+        ));
+        let configs = load_selected_configs(
+            "config/mkt_cfg.yaml",
+            &args.venue,
+            args.market_data_provider,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            configs.iter().map(|c| c.venue).collect::<Vec<_>>(),
+            [TradingVenue::GateFutures, TradingVenue::BitgetFutures]
+        );
+        assert!(validate_role_selection(
+            &args.venue,
+            BinanceFuturesRole::BookTicker,
+            BybitRole::Full
+        )
+        .is_err());
+        assert!(
+            validate_role_selection(&args.venue, BinanceFuturesRole::Full, BybitRole::Market)
+                .is_err()
+        );
+    }
+
     #[test]
     fn resolves_config_from_current_venue_directory() {
         let repo_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -389,6 +548,94 @@ mod tests {
             }
         ));
         assert_eq!(selection.label(), "binance-both");
+        assert_eq!(
+            selection.venues(),
+            [
+                TradingVenue::BinanceMargin,
+                TradingVenue::BinanceFutures,
+                TradingVenue::BinanceCoinFutures,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn binance_futures_loads_both_markets_from_one_config() {
+        let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/mkt_cfg.yaml");
+        let selection = parse_venue_selection("binance-futures").unwrap();
+        let configs = load_selected_configs(
+            config_path.to_str().unwrap(),
+            &selection,
+            MarketDataProvider::Native,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].venue, TradingVenue::BinanceFutures);
+        assert_eq!(configs[1].venue, TradingVenue::BinanceCoinFutures);
+        assert_eq!(configs[0].primary_local_ip, configs[1].primary_local_ip);
+        assert_eq!(configs[0].secondary_local_ip, configs[1].secondary_local_ip);
+        assert_eq!(
+            configs[0].restart_duration_secs,
+            configs[1].restart_duration_secs
+        );
+    }
+
+    #[test]
+    fn binance_futures_symbol_filter_selects_markets_by_perpetual_quote() {
+        let selection = parse_venue_selection("binance-futures").unwrap();
+        let both = vec![
+            TradingVenue::BinanceFutures,
+            TradingVenue::BinanceCoinFutures,
+        ];
+        for (filter, expected) in [
+            (None, both.clone()),
+            (Some(" , "), both.clone()),
+            (Some("BTCUSDT,BTCUSDC,BTCUSD"), both),
+            (Some("BTCUSDT,BTCUSDC"), vec![TradingVenue::BinanceFutures]),
+            (
+                Some("btcusd,BTCUSD_PERP"),
+                vec![TradingVenue::BinanceCoinFutures],
+            ),
+        ] {
+            assert_eq!(
+                selection
+                    .venues_for_run(MarketDataProvider::Native, filter)
+                    .unwrap(),
+                expected
+            );
+        }
+        assert!(selection
+            .venues_for_run(MarketDataProvider::Native, Some("INVALID"))
+            .is_err());
+    }
+
+    #[test]
+    fn rapidx_binance_futures_uses_only_supported_linear_market() {
+        let selection = parse_venue_selection("binance-futures").unwrap();
+        assert_eq!(
+            selection
+                .venues_for_run(MarketDataProvider::RapidX, Some("BTCUSDC"))
+                .unwrap(),
+            [TradingVenue::BinanceFutures]
+        );
+        assert!(selection
+            .venues_for_run(MarketDataProvider::RapidX, Some("BTCUSD"))
+            .is_err());
+    }
+
+    #[test]
+    fn parses_hyperliquid_both() {
+        let selection = parse_venue_selection("hyperliquid-both").unwrap();
+        assert!(matches!(
+            selection,
+            SpreadVenueSelection::Both {
+                exchange: "hyperliquid",
+                margin: TradingVenue::HyperliquidMargin,
+                futures: TradingVenue::HyperliquidFutures
+            }
+        ));
+        assert_eq!(selection.label(), "hyperliquid-both");
     }
 
     #[test]
@@ -406,10 +653,13 @@ mod tests {
 
     #[test]
     fn validates_binance_futures_split_roles() {
-        let selection = parse_venue_selection("binance-futures").unwrap();
-        validate_role_selection(&selection, BinanceFuturesRole::Market, BybitRole::Full).unwrap();
-        validate_role_selection(&selection, BinanceFuturesRole::BookTicker, BybitRole::Full)
-            .unwrap();
+        for venue in ["binance-futures", "binance-coin-futures"] {
+            let selection = parse_venue_selection(venue).unwrap();
+            validate_role_selection(&selection, BinanceFuturesRole::Market, BybitRole::Full)
+                .unwrap();
+            validate_role_selection(&selection, BinanceFuturesRole::BookTicker, BybitRole::Full)
+                .unwrap();
+        }
 
         let both = parse_venue_selection("binance-both").unwrap();
         assert!(

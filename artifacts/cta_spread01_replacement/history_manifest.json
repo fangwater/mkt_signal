@@ -1,0 +1,226 @@
+{
+  "package": "data/ops/cta_spread01_replacement/spread01_history.tar.gz",
+  "sha256": "53c9580ea0a3f048d644be130fffd40595e6ef7167af10ae998374ce246ea1be",
+  "bytes": 6491157,
+  "symbols": 12,
+  "rows": 9216,
+  "manifest": {
+    "market": "binance-futures",
+    "interval": "1h",
+    "start_ms": 1791417600000,
+    "end_ms": 1794182400000,
+    "source": "Tardis trades + incremental_book_L2; current Redis thresholds and historical previous-month hourly KLL",
+    "symbols": {
+      "AAVEUSDT": {
+        "file": "AAVEUSDT.bin.gz",
+        "rows": 768,
+        "sha256": "da9e0663cb9a668bc39507544d4a36a9ab2d8894eb1d9f12967197c4ab6073e8",
+        "first_end_ms": 1791421200000,
+        "last_end_ms": 1794182400000,
+        "source_book_events": 59480620,
+        "source_trades": 17728702,
+        "thresholds": {
+          "2026-10": [
+            25.446,
+            363.02399999999994
+          ],
+          "2026-11": [
+            27.246,
+            431.976
+          ]
+        }
+      },
+      "ADAUSDT": {
+        "file": "ADAUSDT.bin.gz",
+        "rows": 768,
+        "sha256": "045030ea6b68790c2e3fd7917cba9769399e0eb3d44e9bf10f3a969d0513bb1f",
+        "first_end_ms": 1791421200000,
+        "last_end_ms": 1794182400000,
+        "source_book_events": 61037376,
+        "source_trades": 13622756,
+        "thresholds": {
+          "2026-10": [
+            16.5645,
+            639.2189999999999
+          ],
+          "2026-11": [
+            20.1195,
+            750.7305
+          ]
+        }
+      },
+      "ATOMUSDT": {
+        "file": "ATOMUSDT.bin.gz",
+        "rows": 768,
+        "sha256": "d63ecb01358216c757520568513542c247197bd2a44e54c2ead58ff4f80c60b1",
+        "first_end_ms": 1791421200000,
+        "last_end_ms": 1794182400000,
+        "source_book_events": 29906374,
+        "source_trades": 5259759,
+        "thresholds": {}
+      },
+      "BCHUSDT": {
+        "file": "BCHUSDT.bin.gz",
+        "rows": 768,
+        "sha256": "2de6ca86cadc2bb180261fea130a371cc3f118e2ca986c769d0c6593b95b759b",
+        "first_end_ms": 1791421200000,
+        "last_end_ms": 1794182400000,
+        "source_book_events": 65607658,
+        "source_trades": 16180654,
+        "thresholds": {
+          "2026-10": [
+            24.26886,
+            308.06048
+          ],
+          "2026-11": [
+            30.11405,
+            400.8759999999999
+          ]
+        }
+      },
+      "CRVUSDT": {
+        "file": "CRVUSDT.bin.gz",
+        "rows": 768,
+        "sha256": "e8b4b8205f32a5dbf03c2b85bdbb9d7cdfb0623df206df8ca91fdfd6f9d991f2",
+        "first_end_ms": 1791421200000,
+        "last_end_ms": 1794182400000,
+        "source_book_events": 33600393,
+        "source_trades": 9571288,
+        "thresholds": {}
+      },
+      "DOGEUSDT": {
+        "file": "DOGEUSDT.bin.gz",
+        "rows": 768,
+        "sha256": "945f961ca9ab37712255ed39e2eb34bcadffb855699f8e9c18c5f9fa2315ee55",
+        "first_end_ms": 1791421200000,
+        "last_end_ms": 1794182400000,
+        "source_book_events": 0,
+        "source_trades": 27796707,
+        "thresholds": {
+          "2026-10": [
+            10.09188,
+            691.2801
+          ],
+          "2026-11": [
+            16.07112,
+            700.1651999999999
+          ]
+        }
+      },
+      "DOTUSDT": {
+        "file": "DOTUSDT.bin.gz",
+        "rows": 768,
+        "sha256": "e81887b5f8c3e70a4295ea55ccbc5e2c4de4fd6e115019ed1361b65cb3d947c0",
+        "first_end_ms": 1791421200000,
+        "last_end_ms": 1794182400000,
+        "source_book_events": 58377147,
+        "source_trades": 19036128,
+        "thresholds": {
+          "2026-10": [
+            16.271220000000003,
+            212.37671
+          ],
+          "2026-11": [
+            16.55175,
+            219.55552000000003
+          ]
+        }
+      },
+      "ETCUSDT": {
+        "file": "ETCUSDT.bin.gz",
+        "rows": 768,
+        "sha256": "0e787b6e086808060ff8c0f68527f931cbd7ca1e152f089267dd239908b9f159",
+        "first_end_ms": 1791421200000,
+        "last_end_ms": 1794182400000,
+        "source_book_events": 31708605,
+        "source_trades": 4815379,
+        "thresholds": {
+          "2026-10": [
+            30.060449999999996,
+            301.03999999999996
+          ],
+          "2026-11": [
+            30.0934,
+            317.37834000000004
+          ]
+        }
+      },
+      "FILUSDT": {
+        "file": "FILUSDT.bin.gz",
+        "rows": 768,
+        "sha256": "b4f5e7f0bcb6777bf203e2af856f173225dc0a91d1989ca0df97fdbe190a1767",
+        "first_end_ms": 1791421200000,
+        "last_end_ms": 1794182400000,
+        "source_book_events": 58153630,
+        "source_trades": 24714051,
+        "thresholds": {
+          "2026-10": [
+            16.556639999999998,
+            315.19936000000007
+          ],
+          "2026-11": [
+            16.59735,
+            363.72
+          ]
+        }
+      },
+      "NEARUSDT": {
+        "file": "NEARUSDT.bin.gz",
+        "rows": 768,
+        "sha256": "e96181078ce1307ea16725e43aad544058e0c5ff5c4bca0769a46ce9f36d03d9",
+        "first_end_ms": 1791421200000,
+        "last_end_ms": 1794182400000,
+        "source_book_events": 73979098,
+        "source_trades": 47198209,
+        "thresholds": {
+          "2026-10": [
+            20.632,
+            851.548
+          ],
+          "2026-11": [
+            29.418,
+            1076.715
+          ]
+        }
+      },
+      "TRBUSDT": {
+        "file": "TRBUSDT.bin.gz",
+        "rows": 768,
+        "sha256": "fc12975614eca6deacd6decd4b12d60a34581fce7bcad89c5f77d2f098df8b81",
+        "first_end_ms": 1791421200000,
+        "last_end_ms": 1794182400000,
+        "source_book_events": 23221826,
+        "source_trades": 3680251,
+        "thresholds": {
+          "2026-10": [
+            16.9191,
+            119.613
+          ],
+          "2026-11": [
+            16.852500000000003,
+            106.9796
+          ]
+        }
+      },
+      "UNIUSDT": {
+        "file": "UNIUSDT.bin.gz",
+        "rows": 768,
+        "sha256": "8ef9348d9b86df687fdadfcddcee2edbda29412a6f52841570abb0824c8fcfa7",
+        "first_end_ms": 1791421200000,
+        "last_end_ms": 1794182400000,
+        "source_book_events": 65649879,
+        "source_trades": 24696358,
+        "thresholds": {
+          "2026-10": [
+            21.099,
+            635.732
+          ],
+          "2026-11": [
+            22.716,
+            718.382
+          ]
+        }
+      }
+    }
+  }
+}

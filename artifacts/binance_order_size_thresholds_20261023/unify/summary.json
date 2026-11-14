@@ -1,0 +1,15 @@
+{
+  "checked_at": "2026-10-23T04:32:59.804144+00:00",
+  "shared_amounts_unchanged": true,
+  "duplicate_amount_keys_absent": true,
+  "factor_plans_unchanged": true,
+  "rx_tables_unchanged": true,
+  "other_venues_unchanged": true,
+  "python_tests_passed": 9,
+  "rust_library_tests_passed": 1354,
+  "rust_library_tests_ignored": 3,
+  "installed": {
+    "tlen_config_server.py": "7fa05763d078d576ad0aa4e47d6c60ea9ad4850f7609180c9a0b4c45643b3e4d",
+    "publish_binance_order_size_thresholds.py": "3ab923b48df2d6a089eb6cd10955a28c826325b3dd07037487b16a6e43d09a99"
+  }
+}

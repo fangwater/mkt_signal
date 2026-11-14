@@ -76,6 +76,7 @@ order_exports/
 # local notebook analysis outputs
 notebooks/
 analysis_outputs/
+/research/
 persist_read_bybit_intra_arb01_20260612_new_latency.ipynb
 persist_read_bybit_intra_arb01_20260612_new_latency.executed.ipynb
 
@@ -88,3 +89,114 @@ binance_intra_arb01_latency_*.ipynb
 
 # local Binance Ed25519 auth sandbox
 local_binance_ed25519_test/
+
+# Local browser screenshots, run reports and deployment scratch data.
+# Keep the release evidence explicitly cited by the living ops docs.
+/artifacts/*.png
+/artifacts/cta_*.json
+/artifacts/lgq_cta_*.json
+/artifacts/trade05_*.json
+/artifacts/cta_special_random_factors/
+!/artifacts/cta_special_factor_pairs_live_browser.json
+!/artifacts/cta_special_factor_pairs_live_validation.json
+!/artifacts/cta_special_factor_pairs_release_manifest.json
+!/artifacts/cta_special_global_amount_chart_live_browser.json
+!/artifacts/cta_special_global_amount_live_browser.json
+!/artifacts/cta_special_global_amount_live_validation.json
+!/artifacts/cta_special_global_amount_release_manifest.json
+!/artifacts/cta_special_simplified_config_browser.json
+!/artifacts/cta_special_simplified_live_browser.json
+!/artifacts/cta_special_simplified_live_validation.json
+!/artifacts/cta_special_simplified_release_manifest.json
+!/artifacts/lgq_cta_browser_validation.json
+!/artifacts/lgq_cta_fill_validation.json
+!/artifacts/lgq_cta_live_validation.json
+!/artifacts/lgq_cta_manager_browser_validation.json
+!/artifacts/lgq_cta_release_manifest.json
+!/artifacts/trade05_completion_browser.json
+!/artifacts/trade05_completion_live_validation.json
+!/artifacts/trade05_completion_release_manifest.json
+!/artifacts/trade05_pending_equity_live_browser.json
+!/artifacts/trade05_pending_equity_live_validation.json
+!/artifacts/trade05_pending_equity_release_manifest.json
+
+# Machine-specific CME LL2 replay runs (keep local, like TAS run configs).
+/config/cme_ll2_replay_2025_supplement.toml
+/config/cme_ll2_shard_2025_supplement.toml
+/config/cme_raw_ll2_2025_15s.toml
+/config/cme_raw_ll2_2026_15s.toml
+/config/cme_raw_ll2_replay.toml
+/config/cme_raw_ll2_2024_15s.toml
+
+# Local replay reports, release staging and account reconciliation output.
+/artifacts/cme_rates_baseline_*/
+/artifacts/cta_special_per_pair_*_release/
+/artifacts/cta_symbol_groups_20261104/
+/artifacts/rx*_equity_reconciliation_*.json
+/artifacts/rx*_manager_fee_update_*.json
+
+# Private JP recovery bundles (contain credentials and live strategy settings).
+/backups/jp_recovery/
+/config/delist_access.json
+/artifacts/delist_risk_server/
+
+# Reproducible deployment payloads and temporary source snapshots.
+/artifacts/**/*.tar
+/artifacts/**/*.tar.gz
+/artifacts/**/*.frozen
+/artifacts/**/bundle/
+/artifacts/**/staging/
+/artifacts/**/before-files/
+/artifacts/**/commit-files/
+/artifacts/**/before-docs/
+
+# Locally built CTA binaries copied into deployment staging directories.
+/artifacts/**/stage/cta_spread_signal
+/artifacts/**/stage/cta_spread_factor_model_1m_pub
+# Temporary source snapshots; release manifests retain their checksums.
+/artifacts/**/*.patch
+
+# Local observation snapshots from the RX01/RX04 cutovers. Keep release
+# manifests, final verification, reviewed configs and historical operation code.
+/artifacts/cta_spread_rx01_factor_update_20261026/execution_before.json
+/artifacts/cta_spread_rx01_factor_update_20261026/execution_after.json
+/artifacts/cta_spread_rx01_factor_update_20261026/execution_legacy_review.json
+/artifacts/cta_spread_rx01_factor_update_20261026/legacy_coin_exposures.json
+/artifacts/cta_spread_rx01_factor_update_20261026/legacy_position_inputs.json
+/artifacts/cta_spread_rx01_factor_update_20261026/post_activation_timeline.json
+/artifacts/cta_spread_rx01_factor_update_20261026/retirement_latest_exec.json
+/artifacts/cta_spread_rx01_factor_update_20261026/retirement_progress.json
+/artifacts/cta_spread_rx01_factor_update_20261026/warmup_probe.rs
+/artifacts/rx04_5min_slot05_20261023/preflight.json
+/artifacts/rx04_5min_slot05_20261023/activate_100/preflight.json
+/artifacts/rx04_5min_slot05_20261023/activate_100/recovered.json
+/artifacts/rx04_5min_slot05_20261023/activate_100/exec_before_enable.json
+/artifacts/rx04_5min_slot05_20261023/activate_100/execution_*.json
+
+# Local diagnostics: raw exchange/order streams, capture binaries and duplicate
+# source/payload trees. Keep reviewed reports and release verification records.
+/artifacts/**/*.jsonl
+/artifacts/**/*.diff
+/artifacts/**/*.stderr
+/artifacts/**/*.stdout
+/artifacts/**/calculation/
+/artifacts/**/kafka_reprobe/**/*.value
+/artifacts/**/kafka_reprobe/**/*.pb
+/artifacts/**/kafka_reprobe/**/period_kafka_consumer
+/artifacts/**/kafka_reprobe/**/*.toml
+/artifacts/**/kafka_reprobe/**/messages.json
+/artifacts/**/kafka_reprobe/native_trades.json
+/artifacts/**/unit_audit/
+/artifacts/**/reanalysis/
+/artifacts/**/stage/
+/artifacts/**/payload/
+/artifacts/**/prior_scripts/
+/artifacts/**/source_before_current_mapping/
+
+# Local account operations and raw CTA replay/audit snapshots.
+# Keep reviewed deployment receipts and configuration sources tracked.
+/artifacts/binance_fr_arb02_withdraw_20261110/
+/artifacts/cta_1h_kline_audit/
+/artifacts/cta_rx03_1h_audit/
+/artifacts/cta_history_continuation_audit/
+/artifacts/cta_spread01_replacement/*.png

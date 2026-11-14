@@ -1,0 +1,907 @@
+use super::{
+    config::{
+        Combination, Config, Interval, Market, Plan, SymbolGroups, Worker, SYMBOL_GROUPS_FILE,
+    },
+    engine::{Engine, FactorEvent, FactorPoint},
+    hourly_nq_seed::HourlyNqSeed,
+};
+use crate::factor_pub::model_output_publisher::ModelPublisher;
+use anyhow::{ensure, Context, Result};
+use clap::{ArgGroup, Parser};
+use log::{info, warn};
+use period_pbs::kafka::{decode_period_payload, RawKafkaConsumer};
+use period_pbs::pb::PeriodMessage;
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::{
+    collections::BTreeMap,
+    fs::{self, File, OpenOptions},
+    io::{BufWriter, Write},
+    os::fd::AsRawFd,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+#[derive(Parser)]
+#[command(group(ArgGroup::new("action").args(["check", "put_combination", "put_symbol_groups", "delete_combination", "import_symbol_factors", "replay_only"])))]
+struct Args {
+    #[arg(long)]
+    config: Option<PathBuf>,
+    /// Validate and print the merged plan without Kafka, IPC, or filesystem writes.
+    #[arg(long)]
+    check: bool,
+    /// Install or replace one named combination from JSON.
+    #[arg(long)]
+    put_combination: Option<PathBuf>,
+    /// Replace the symbol-group JSON after validating all combination memberships.
+    #[arg(long)]
+    put_symbol_groups: Option<PathBuf>,
+    /// Convert the existing symbol -> factor -> weight JSON table.
+    #[arg(long, requires_all=["name","strategy_group","market","interval"])]
+    import_symbol_factors: Option<PathBuf>,
+    #[arg(long, requires = "import_symbol_factors")]
+    name: Option<String>,
+    #[arg(long, requires = "import_symbol_factors")]
+    strategy_group: Option<String>,
+    #[arg(long, requires = "import_symbol_factors")]
+    market: Option<String>,
+    #[arg(long, requires = "import_symbol_factors")]
+    interval: Option<String>,
+    #[arg(long, requires = "import_symbol_factors")]
+    include_nq: bool,
+    #[arg(long)]
+    delete_combination: Option<String>,
+    /// Apply the requested configuration edit; otherwise print its merged plan.
+    #[arg(long)]
+    execute: bool,
+    /// Replay a fixed head into history and exit without creating IPC.
+    #[arg(long)]
+    replay_only: bool,
+    /// Native hourly input archive; also accepts CTA_HOURLY_HISTORY_DIR.
+    #[arg(long)]
+    hourly_history: Option<PathBuf>,
+    /// Dedicated factor IPC output for an independent runtime instance.
+    #[arg(long)]
+    output_service: Option<String>,
+    #[arg(long)]
+    core: Option<usize>,
+}
+
+pub fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+pub fn service_path(worker: Worker) -> String {
+    format!("factor_output/{}", worker.name())
+}
+
+pub fn output_service_path(worker: Worker, requested: Option<&str>) -> Result<String> {
+    let value = requested
+        .map(str::to_owned)
+        .unwrap_or_else(|| service_path(worker));
+    let suffix = value
+        .strip_prefix("factor_output/")
+        .context("factor output must use factor_output/")?;
+    ensure!(
+        !suffix.is_empty()
+            && suffix.len() <= 100
+            && suffix
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-')),
+        "invalid factor output service"
+    );
+    Ok(value)
+}
+
+pub(crate) struct FileLock(File);
+#[derive(Debug)]
+pub struct CatalogConflict(pub &'static str);
+impl std::fmt::Display for CatalogConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for CatalogConflict {}
+
+pub fn catalog_revision(plan: &Plan) -> Result<String> {
+    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(plan)?)))
+}
+impl FileLock {
+    pub(crate) fn acquire(path: &Path) -> Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(path)?;
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(CatalogConflict("configuration is busy; reload and retry").into());
+        }
+        Ok(Self(file))
+    }
+}
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+pub fn atomic_json(path: &Path, value: &impl serde::Serialize) -> Result<()> {
+    let parent = path.parent().context("file has no parent directory")?;
+    fs::create_dir_all(parent)?;
+    let temp = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name().unwrap().to_string_lossy(),
+        uuid::Uuid::new_v4()
+    ));
+    let result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp)?;
+        serde_json::to_writer_pretty(&mut file, value)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        fs::rename(&temp, path)?;
+        File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
+/// Edits affect only the named JSON configuration. Shared calculations survive
+/// removal until no remaining combination references them. History is untouched.
+pub fn edit_combination(
+    config: &Config,
+    put: Option<Combination>,
+    delete: Option<&str>,
+    execute: bool,
+    worker: Worker,
+) -> Result<Plan> {
+    edit_combination_checked(config, put, delete, execute, worker, None)
+}
+
+pub fn edit_combination_checked(
+    config: &Config,
+    put: Option<Combination>,
+    delete: Option<&str>,
+    execute: bool,
+    worker: Worker,
+    expected_revision: Option<&str>,
+) -> Result<Plan> {
+    ensure!(
+        put.is_some() != delete.is_some(),
+        "choose one configuration edit"
+    );
+    if execute {
+        fs::create_dir_all(&config.combinations_dir)?;
+    }
+    let _lock = execute
+        .then(|| FileLock::acquire(&config.combinations_dir.join(".catalog.lock")))
+        .transpose()?;
+    let current = Plan::load(&config.combinations_dir)?;
+    if let Some(expected) = expected_revision {
+        if expected != catalog_revision(&current)? {
+            return Err(CatalogConflict("configuration changed; reload before saving").into());
+        }
+    }
+    let mut combinations = current.combinations;
+    let name = if let Some(value) = &put {
+        value.validate()?;
+        if let Some(previous) = combinations.get(&value.name) {
+            ensure!(
+                (previous.signal.is_none() && value.signal.is_none())
+                    || previous.manager_strategy_name() == value.manager_strategy_name(),
+                "signal strategy group/symbol group/market/frequency cannot change in place; create a new combination"
+            );
+        }
+        combinations.insert(value.name.clone(), value.clone());
+        value.name.clone()
+    } else {
+        let name = delete.unwrap();
+        ensure!(
+            combinations.remove(name).is_some(),
+            "unknown combination {name}"
+        );
+        name.to_owned()
+    };
+    let plan = Plan::merge_with_symbol_groups(combinations.into_values(), current.symbol_groups)?;
+    worker.validate_plan(&plan)?;
+    if execute {
+        let path = config.combinations_dir.join(format!("{name}.json"));
+        if let Some(value) = put {
+            atomic_json(&path, &value)?;
+        } else {
+            fs::remove_file(path)?;
+            File::open(&config.combinations_dir)?.sync_all()?;
+        }
+    }
+    Ok(plan)
+}
+
+pub fn edit_symbol_groups_checked(
+    config: &Config,
+    groups: SymbolGroups,
+    execute: bool,
+    worker: Worker,
+    expected_revision: Option<&str>,
+) -> Result<Plan> {
+    let _lock = execute
+        .then(|| FileLock::acquire(&config.combinations_dir.join(".catalog.lock")))
+        .transpose()?;
+    let current = Plan::load(&config.combinations_dir)?;
+    if let Some(expected) = expected_revision {
+        if expected != catalog_revision(&current)? {
+            return Err(CatalogConflict("configuration changed; reload before saving").into());
+        }
+    }
+    let plan = Plan::merge_with_symbol_groups(current.combinations.into_values(), groups)?;
+    worker.validate_plan(&plan)?;
+    if execute {
+        atomic_json(
+            &config.combinations_dir.join(SYMBOL_GROUPS_FILE),
+            &plan.symbol_groups,
+        )?;
+    }
+    Ok(plan)
+}
+
+struct Journal {
+    root: PathBuf,
+    writer: Option<(String, BufWriter<File>)>,
+}
+impl Journal {
+    fn new(root: PathBuf, plan: &Plan) -> Result<Self> {
+        fs::create_dir_all(&root)?;
+        atomic_json(&root.join("plan.json"), plan)?;
+        Ok(Self { root, writer: None })
+    }
+    fn record(&mut self, point: &FactorPoint) -> Result<()> {
+        let date = chrono::DateTime::from_timestamp_millis(point.ts_ms)
+            .context("invalid factor time")?
+            .format("%Y%m%d")
+            .to_string();
+        if self.writer.as_ref().is_none_or(|(old, _)| old != &date) {
+            if let Some((_, writer)) = &mut self.writer {
+                writer.flush()?;
+            }
+            self.writer = Some((
+                date.clone(),
+                BufWriter::new(
+                    OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(self.root.join(format!("{date}.jsonl")))?,
+                ),
+            ));
+        }
+        let writer = &mut self.writer.as_mut().unwrap().1;
+        serde_json::to_writer(&mut *writer, point)?;
+        writer.write_all(b"\n")?;
+        Ok(())
+    }
+    fn flush(&mut self) -> Result<()> {
+        if let Some((_, writer)) = &mut self.writer {
+            writer.flush()?;
+        }
+        Ok(())
+    }
+}
+
+struct PendingPeriod {
+    market: Market,
+    topic: String,
+    partition: i32,
+    offset: i64,
+    period: PeriodMessage,
+}
+
+struct Generation {
+    id: String,
+    engine: Engine,
+    consumer: Option<RawKafkaConsumer>,
+    targets: BTreeMap<(String, i32), i64>,
+    consumed: BTreeMap<(String, i32), i64>,
+    deadline: Instant,
+    journal: Journal,
+    publish_from: i64,
+    records: u64,
+    hourly_nq_seed: HourlyNqSeed,
+    pending_period: Option<PendingPeriod>,
+    hourly_history: Option<super::hourly_history::HourlyHistory>,
+    hourly_history_status: Option<super::hourly_history::SeedSummary>,
+}
+impl Generation {
+    fn new(
+        plan: Plan,
+        config: &Config,
+        worker: Worker,
+        history_path: Option<&Path>,
+    ) -> Result<Self> {
+        worker.validate_plan(&plan)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let topics = plan.topics();
+        let mut kafka = config.kafka.clone();
+        kafka.topics = topics.clone();
+        kafka.offset_reset = "earliest".into();
+        kafka.enable_auto_commit = false;
+        kafka.group_id = format!("{}-{id}", worker.name());
+        kafka.client_id = kafka.group_id.clone();
+        let consumer = (!topics.is_empty())
+            .then(|| RawKafkaConsumer::new(&kafka))
+            .transpose()?;
+        let mut targets = BTreeMap::new();
+        let mut retained_offsets = Vec::new();
+        if let Some(consumer) = &consumer {
+            for mark in consumer.query_topic_watermarks(
+                &topics,
+                kafka.metadata_timeout_ms,
+                kafka.watermark_timeout_ms,
+            )? {
+                ensure!(
+                    mark.high > mark.low,
+                    "required Kafka topic {} partition {} has no retained records",
+                    mark.topic,
+                    mark.partition
+                );
+                retained_offsets.push((mark.topic.clone(), mark.partition, mark.low));
+                targets.insert((mark.topic, mark.partition), mark.high - 1);
+            }
+        }
+        if history_path.is_some() {
+            if let Some(consumer) = &consumer {
+                consumer.assign_offsets(&retained_offsets)?;
+            }
+        }
+        let journal = Journal::new(config.history_dir.join("generations").join(&id), &plan)?;
+        let hourly_nq_seed = HourlyNqSeed::new(&plan);
+        let hourly_history = history_path
+            .filter(|_| {
+                plan.calculations.values().any(|c| {
+                    c.id.interval == Interval::Hour && c.id.market == Market::BinanceFutures
+                })
+            })
+            .map(super::hourly_history::HourlyHistory::load)
+            .transpose()?;
+        Ok(Self {
+            id,
+            engine: Engine::new(plan, config)?,
+            consumer,
+            targets,
+            consumed: BTreeMap::new(),
+            deadline: Instant::now() + Duration::from_secs(config.catchup_timeout_secs),
+            journal,
+            publish_from: now_ms().saturating_sub(
+                (config.lookback_secs.saturating_mul(1000)).min(i64::MAX as u64) as i64,
+            ),
+            records: 0,
+            hourly_nq_seed,
+            pending_period: None,
+            hourly_history,
+            hourly_history_status: None,
+        })
+    }
+    fn caught_up(&self) -> bool {
+        self.targets
+            .iter()
+            .all(|(key, target)| self.consumed.get(key).is_some_and(|n| n >= target))
+    }
+    fn update_head(&mut self, config: &Config) -> Result<()> {
+        if let Some(consumer) = &self.consumer {
+            for mark in consumer.query_topic_watermarks(
+                &self.engine.plan.topics(),
+                config.kafka.metadata_timeout_ms,
+                config.kafka.watermark_timeout_ms,
+            )? {
+                ensure!(
+                    mark.high > mark.low,
+                    "required Kafka topic is empty during replay"
+                );
+                self.targets
+                    .insert((mark.topic, mark.partition), mark.high - 1);
+            }
+        }
+        Ok(())
+    }
+    fn poll(&mut self, config: &Config, timeout: u64) -> Result<Vec<FactorPoint>> {
+        if let Some(batch) = self.hourly_nq_seed.poll() {
+            let cutoff = self
+                .hourly_nq_seed
+                .status
+                .cutoff_ms
+                .context("missing hourly NQ seed cutoff")?;
+            let mut errors = batch.errors;
+            let mut rows = BTreeMap::new();
+            for (id, history) in &batch.histories {
+                match self.engine.seed_hourly_nq(id, history, cutoff) {
+                    Ok(()) => {
+                        rows.insert(id.clone(), history.len());
+                    }
+                    Err(error) => {
+                        errors.insert(id.clone(), format!("{error:#}"));
+                    }
+                }
+            }
+            for (id, error) in &errors {
+                warn!("hourly NQ close bootstrap {id}: {error}");
+            }
+            self.hourly_nq_seed.finish(rows, errors);
+            atomic_json(
+                &self.journal.root.join("hourly_nq_seed.json"),
+                &json!({
+                    "source":"binance-futures-hourly-kline-close", "cutoff_ms":cutoff,
+                    "histories":batch.histories, "status":self.hourly_nq_seed.status,
+                }),
+            )?;
+        }
+        if self.hourly_nq_seed.loading() {
+            return Ok(Vec::new());
+        }
+        if let Some(pending) = self.pending_period.take() {
+            return self.process_period(pending);
+        }
+        let Some(consumer) = &self.consumer else {
+            return Ok(Vec::new());
+        };
+        let Some(record) = consumer.poll(timeout) else {
+            return Ok(Vec::new());
+        };
+        let record = record.context("poll factor Kafka consumer")?;
+        let market = Market::ALL
+            .into_iter()
+            .find(|m| m.topic() == record.topic)
+            .context("unexpected factor Kafka topic")?;
+        let (_, _, period) =
+            decode_period_payload(&record.payload, config.kafka.payload_compression)
+                .context("decode factor PeriodMessage")?;
+        let pending = PendingPeriod {
+            market,
+            period,
+            topic: record.topic,
+            partition: record.partition,
+            offset: record.offset,
+        };
+        if market == Market::BinanceFutures {
+            if let Some(history) = self.hourly_history.take() {
+                let first_hour = super::hourly_history::cutoff_ms(pending.period.ts)?;
+                ensure!(
+                    first_hour <= history.manifest.end_ms,
+                    "hourly history ends before retained Kafka; refresh the history package"
+                );
+                let cutoff = history.manifest.end_ms;
+                let summary = self.engine.seed_hourly_history(&history, cutoff)?;
+                self.hourly_nq_seed.exclude_seeded(&summary.nq_rows);
+                atomic_json(
+                    &self.journal.root.join("hourly_history_seed.json"),
+                    &summary,
+                )?;
+                self.hourly_history_status = Some(summary);
+            }
+        }
+        if self.hourly_nq_seed.needs_start(market) {
+            self.hourly_nq_seed.start(pending.period.ts)?;
+            self.pending_period = Some(pending);
+            return Ok(Vec::new());
+        }
+        self.process_period(pending)
+    }
+    fn process_period(&mut self, pending: PendingPeriod) -> Result<Vec<FactorPoint>> {
+        let points = self.engine.on_period(pending.market, &pending.period)?;
+        self.consumed
+            .insert((pending.topic, pending.partition), pending.offset);
+        self.records += 1;
+        let points = points
+            .into_iter()
+            .filter(|p| p.ts_ms >= self.publish_from)
+            .collect::<Vec<_>>();
+        for point in &points {
+            self.journal.record(point)?;
+        }
+        Ok(points)
+    }
+}
+
+fn send_event(publisher: &ModelPublisher, event: &FactorEvent) -> Result<()> {
+    let payload = serde_json::to_vec(event)?;
+    ensure!(
+        payload.len() <= mkt_parsers::msg::model_ipc::MODEL_PAYLOAD_MAX_BYTES,
+        "factor output exceeds IPC capacity"
+    );
+    ensure!(publisher.publish(&payload), "factor output delivery failed");
+    Ok(())
+}
+
+fn send(publisher: &ModelPublisher, generation: &str, point: &FactorPoint) -> Result<()> {
+    send_event(
+        publisher,
+        &FactorEvent::Point {
+            generation: generation.into(),
+            point: point.clone(),
+        },
+    )
+}
+
+/// The same engine drives both workers. Perp/Spread select configuration roots,
+/// and own their frequency position tables in the same process.
+pub async fn main(worker: Worker) -> Result<()> {
+    // Position sizing starts the thread-local BBO consumers when the first
+    // table is enabled, including after a configuration hot reload.
+    tokio::task::LocalSet::new().run_until(run(worker)).await
+}
+
+async fn run(worker: Worker) -> Result<()> {
+    env_logger::init();
+    let args = Args::parse();
+    let output_service = output_service_path(worker, args.output_service.as_deref())?;
+    ensure!(
+        !args.execute
+            || args.put_combination.is_some()
+            || args.put_symbol_groups.is_some()
+            || args.delete_combination.is_some()
+            || args.import_symbol_factors.is_some(),
+        "--execute requires a configuration edit"
+    );
+    let config_path = args
+        .config
+        .unwrap_or_else(|| PathBuf::from(worker.default_config()));
+    let mut config = Config::load(&config_path)?;
+    let hourly_history_path = args
+        .hourly_history
+        .clone()
+        .or_else(|| std::env::var_os("CTA_HOURLY_HISTORY_DIR").map(PathBuf::from));
+    let mut excluded_symbols = Vec::new();
+    let editing = args.put_combination.is_some()
+        || args.put_symbol_groups.is_some()
+        || args.delete_combination.is_some()
+        || args.import_symbol_factors.is_some();
+    let plan = if let Some(path) = &args.put_symbol_groups {
+        let groups = serde_json::from_slice(&fs::read(path)?).context("parse symbol groups")?;
+        edit_symbol_groups_checked(&config, groups, args.execute, worker, None)?
+    } else if editing {
+        let mut put = args
+            .put_combination
+            .as_ref()
+            .map(|path| -> Result<Combination> {
+                serde_json::from_slice(&fs::read(path)?).context("parse requested combination")
+            })
+            .transpose()?;
+        if let Some(path) = &args.import_symbol_factors {
+            let market: Market = serde_json::from_value(json!(args.market.as_ref().unwrap()))?;
+            let interval: Interval =
+                serde_json::from_value(json!(args.interval.as_ref().unwrap()))?;
+            put = Some(Combination::from_symbol_factors(
+                args.name.as_ref().unwrap().clone(),
+                args.strategy_group.as_ref().unwrap().clone(),
+                market,
+                interval,
+                serde_json::from_slice(&fs::read(path)?)?,
+                args.include_nq,
+            )?);
+        }
+        if let Some(combination) = put {
+            let (combination, excluded) =
+                super::symbol_filter::ConfigurationSymbolFilter::from_env()?
+                    .filter(combination)
+                    .await?;
+            put = Some(combination);
+            excluded_symbols = excluded;
+        }
+        edit_combination(
+            &config,
+            put,
+            args.delete_combination.as_deref(),
+            args.execute,
+            worker,
+        )?
+    } else {
+        Plan::load(&config.combinations_dir)?
+    };
+    worker.validate_plan(&plan)?;
+    if args.check || editing {
+        let position_tables=plan.combinations.values().filter_map(|c|c.signal.as_ref().map(|p|
+            json!({"strategy_name":c.manager_strategy_name(),"strategy_group":c.strategy_group,"symbol_group":c.symbol_group,"combination_name":c.name,"interval":c.interval,"enabled":p.enabled,"max_pos_u":p.max_pos_u}))).collect::<Vec<_>>();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &json!({"worker":worker,"topics":plan.topics(),"position_tables":position_tables,"plan":plan,"excluded_symbols":excluded_symbols})
+            )?
+        );
+        return Ok(());
+    }
+    runtime_common::affinity::maybe_pin_current_thread(
+        args.core,
+        &format!(
+            "{}_CORE",
+            worker.name().replace('-', "_").to_ascii_uppercase()
+        ),
+    )?;
+    fs::create_dir_all(&config.history_dir)?;
+    let _runtime_lock = FileLock::acquire(&config.history_dir.join(".worker.lock"))?;
+    let mut thresholds_error = None;
+    match super::thresholds::load(&plan) {
+        Ok(values) => {
+            info!(
+                "shared monthly amount thresholds loaded: {} symbols",
+                values.len()
+            );
+            config.amount_thresholds = values;
+        }
+        Err(e) => {
+            warn!("shared amount thresholds unavailable: {e:#}");
+            thresholds_error = Some(format!("amount thresholds: {e:#}"));
+        }
+    }
+    let mut last_threshold_reload = Instant::now();
+    let mut active: Option<Generation> = None;
+    let mut candidate = Some(Generation::new(
+        plan,
+        &config,
+        worker,
+        hourly_history_path.as_deref(),
+    )?);
+    let publisher = if args.replay_only {
+        None
+    } else {
+        Some(ModelPublisher::with_capacity(
+            &format!("cta_factor_{}", output_service.replace('/', "_")),
+            &output_service,
+            8192,
+            8192,
+        )?)
+    };
+    let mut last_status = Instant::now();
+    let mut error: Option<String> = None;
+    let mut kafka_error: Option<String> = None;
+    let mut observed_plan = candidate.as_ref().unwrap().engine.plan.clone();
+    let mut position_tables = if args.replay_only {
+        None
+    } else {
+        Some(super::positions::PositionTables::new(&config, worker)?)
+    };
+    let mut last_position_poll = Instant::now() - Duration::from_secs(1);
+    let mut positions_error: Option<String> = None;
+    loop {
+        let mut progressed = false;
+        if let Some(generation) = &mut active {
+            let records = generation.records;
+            match generation.poll(&config, 0) {
+                Ok(points) => {
+                    if generation.records > records {
+                        kafka_error = None;
+                    }
+                    progressed |= !points.is_empty();
+                    if let Some(publisher) = &publisher {
+                        for point in points {
+                            if let Err(e) = send(publisher, &generation.id, &point) {
+                                error = Some(e.to_string());
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    kafka_error = Some(format!("active Kafka: {e:#}"));
+                }
+            }
+        }
+        if let Some(generation) = &mut candidate {
+            let result = (|| -> Result<bool> {
+                ensure!(
+                    Instant::now() < generation.deadline,
+                    "factor replay timed out"
+                );
+                let records = generation.records;
+                generation.poll(&config, 0)?;
+                progressed |= records != generation.records;
+                if !generation.caught_up() {
+                    return Ok(false);
+                }
+                if !args.replay_only {
+                    generation.update_head(&config)?;
+                }
+                Ok(generation.caught_up())
+            })();
+            match result {
+                Ok(true) => {
+                    generation.journal.flush()?;
+                    info!(
+                        "factor worker={} generation={} replay complete records={} calculations={}",
+                        worker.name(),
+                        generation.id,
+                        generation.records,
+                        generation.engine.plan.calculations.len()
+                    );
+                    if let Some(publisher) = &publisher {
+                        for point in generation
+                            .engine
+                            .latest
+                            .values()
+                            .filter(|p| p.ts_ms >= generation.publish_from)
+                        {
+                            send(publisher, &generation.id, point)?;
+                        }
+                    }
+                    if let Some(tables) = &mut position_tables {
+                        tables.activate_generation(now_ms() * 1000);
+                    }
+                    active = candidate.take();
+                    error = None;
+                    kafka_error = None;
+                    if args.replay_only {
+                        write_status(
+                            &config,
+                            worker,
+                            &output_service,
+                            active.as_ref(),
+                            None,
+                            thresholds_error.as_deref(),
+                            None,
+                            None,
+                        )?;
+                        return Ok(());
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    if active.is_none() {
+                        return Err(e);
+                    }
+                    warn!("factor replacement replay failed: {e:#}");
+                    error = Some(format!("replacement replay: {e:#}"));
+                    candidate = None;
+                }
+            }
+        }
+        if last_status.elapsed() >= Duration::from_secs(1) {
+            if let Some(generation) = &mut active {
+                generation.journal.flush()?;
+            }
+            let next_plan = Plan::load(&config.combinations_dir).and_then(|p| {
+                worker.validate_plan(&p)?;
+                Ok(p)
+            });
+            let mut next_thresholds = None;
+            if last_threshold_reload.elapsed() >= Duration::from_secs(180)
+                || next_plan.as_ref().is_ok_and(|p| p != &observed_plan)
+            {
+                if let Ok(plan) = &next_plan {
+                    match super::thresholds::load(plan) {
+                        Ok(values) => {
+                            next_thresholds = Some(values);
+                            thresholds_error = None;
+                        }
+                        Err(e) => thresholds_error = Some(format!("amount thresholds: {e:#}")),
+                    }
+                }
+                last_threshold_reload = Instant::now();
+            }
+            let thresholds_changed = next_thresholds
+                .as_ref()
+                .is_some_and(|v| v != &config.amount_thresholds);
+            match next_plan {
+                Ok(next) if next != observed_plan || thresholds_changed => {
+                    let changed_definitions = thresholds_changed
+                        || next.calculations.iter().any(|(id, new)| {
+                            active
+                                .as_ref()
+                                .and_then(|g| g.engine.plan.calculations.get(id))
+                                .is_none_or(|old| old.parameters != new.parameters)
+                        });
+                    if changed_definitions || active.is_none() {
+                        let mut replay_config = config.clone();
+                        if let Some(values) = next_thresholds {
+                            replay_config.amount_thresholds = values;
+                        }
+                        match Generation::new(
+                            next.clone(),
+                            &replay_config,
+                            worker,
+                            hourly_history_path.as_deref(),
+                        ) {
+                            Ok(g) => {
+                                config = replay_config;
+                                candidate = Some(g);
+                                observed_plan = next;
+                                error = None;
+                            }
+                            Err(e) => {
+                                error = Some(format!("configuration replay preparation: {e:#}"))
+                            }
+                        }
+                    } else {
+                        candidate = None;
+                        error = None;
+                        let generation = active.as_mut().unwrap();
+                        if let Some(publisher) = &publisher {
+                            for id in generation
+                                .engine
+                                .plan
+                                .calculations
+                                .keys()
+                                .filter(|id| !next.calculations.contains_key(*id))
+                            {
+                                if let Err(e) = send_event(
+                                    publisher,
+                                    &FactorEvent::Removed {
+                                        generation: generation.id.clone(),
+                                        factor_id: id.clone(),
+                                    },
+                                ) {
+                                    error = Some(e.to_string());
+                                }
+                            }
+                        }
+                        generation.engine.retain_plan(next.clone())?;
+                        observed_plan = next;
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => error = Some(format!("configuration: {e:#}")),
+            }
+            let positions = position_tables.as_ref().map(|p| p.snapshot()).transpose()?;
+            write_status(
+                &config,
+                worker,
+                &output_service,
+                active.as_ref(),
+                candidate.as_ref(),
+                error
+                    .as_deref()
+                    .or(kafka_error.as_deref())
+                    .or(thresholds_error.as_deref()),
+                positions.as_ref(),
+                positions_error.as_deref(),
+            )?;
+            last_status = Instant::now();
+        }
+        if last_position_poll.elapsed() >= Duration::from_secs(1) {
+            if let Some(tables) = &mut position_tables {
+                match tables.tick(
+                    &observed_plan,
+                    active.as_ref().map(|g| &g.engine),
+                    now_ms() * 1000,
+                ) {
+                    Ok(()) => positions_error = None,
+                    Err(e) => {
+                        tables.pause();
+                        let message = format!("position tables: {e:#}");
+                        if positions_error.as_ref() != Some(&message) {
+                            warn!("{message}");
+                        }
+                        positions_error = Some(message);
+                    }
+                }
+            }
+            last_position_poll = Instant::now();
+        }
+        // Yield both replay and network tasks, without imposing a per-record sleep.
+        if !progressed {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        } else {
+            tokio::task::yield_now().await;
+        }
+    }
+}
+
+fn write_status(
+    config: &Config,
+    worker: Worker,
+    output_service: &str,
+    active: Option<&Generation>,
+    candidate: Option<&Generation>,
+    error: Option<&str>,
+    position_tables: Option<&serde_json::Value>,
+    positions_error: Option<&str>,
+) -> Result<()> {
+    let seed_error = active
+        .and_then(|g| g.hourly_nq_seed.status.errors.values().next())
+        .or_else(|| candidate.and_then(|g| g.hourly_nq_seed.status.errors.values().next()));
+    let error = error.or(seed_error.map(String::as_str));
+    atomic_json(
+        &config.history_dir.join("state.json"),
+        &json!({"worker":worker,"service":output_service,"updated_ms":now_ms(),"generation":active.map(|g| &g.id),"warming":candidate.is_some(),"warm_records":candidate.map(|g| g.records),"plan":active.map(|g| &g.engine.plan),"pending_plan":candidate.map(|g| &g.engine.plan),"latest":active.map(|g| &g.engine.latest),"error":error,"position_tables":position_tables,"positions_error":positions_error,"amount_threshold_symbols":config.amount_thresholds.len(),"hourly_nq_warmup":{"active":active.map(|g| &g.hourly_nq_seed.status),"candidate":candidate.map(|g| &g.hourly_nq_seed.status)},"hourly_history_warmup":{"active":active.and_then(|g| g.hourly_history_status.as_ref()),"candidate":candidate.and_then(|g| g.hourly_history_status.as_ref())}}),
+    )
+}

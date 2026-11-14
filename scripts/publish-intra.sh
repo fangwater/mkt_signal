@@ -99,6 +99,45 @@ for command_name in ssh scp sha256sum awk mktemp readlink; do
   fi
 done
 
+if [[ "$CHECK_ONLY" -eq 0 ]]; then
+  # shellcheck source=scripts/intra_release_guard.sh
+  source "$ROOT_DIR/scripts/intra_release_guard.sh"
+  for release_name in \
+    trade_signal "$INTRA_ACCOUNT_MONITOR_BIN" viz_server pre_trade trade_engine persist_manager; do
+    intra_release_verify_file \
+      "$ROOT_DIR/target/release" \
+      "$release_name" \
+      "$ROOT_DIR/target/release/$release_name"
+  done
+  if [[ "$INTRA_EXEC_BACKEND" == "ltp" ]]; then
+    intra_release_verify_file \
+      "$ROOT_DIR/target/release" \
+      rapidx_open_orders \
+      "$ROOT_DIR/target/release/rapidx_open_orders"
+    intra_release_verify_file \
+      "$ROOT_DIR/target/release" \
+      rapidx_order_smoke \
+      "$ROOT_DIR/target/release/rapidx_order_smoke"
+    intra_release_verify_file \
+      "$ROOT_DIR/target/release" \
+      rapidx_intra_signal_smoke \
+      "$ROOT_DIR/target/release/rapidx_intra_signal_smoke"
+    intra_release_verify_file \
+      "$ROOT_DIR/target/release" \
+      rapidx_loan \
+      "$ROOT_DIR/target/release/rapidx_loan"
+    intra_release_verify_file \
+      "$ROOT_DIR/target/release" \
+      rapidx_query_smoke \
+      "$ROOT_DIR/target/release/rapidx_query_smoke"
+    intra_release_verify_file \
+      "$ROOT_DIR/target/release" \
+      rapidx_transfer \
+      "$ROOT_DIR/target/release/rapidx_transfer"
+  fi
+  echo "[INFO] local release guard passed release_id=$(intra_release_id "$ROOT_DIR/target/release")"
+fi
+
 intra_configure_transport "$ROOT_DIR" "$SSH_KEY"
 SSH=("${INTRA_SSH[@]}")
 SCP=("${INTRA_SCP[@]}")
@@ -146,26 +185,22 @@ target_executables=(
 config_server="$target/scripts/intra_config_server.py"
 found=0
 
-while read -r pid; do
-  [[ -n "$pid" ]] || continue
-  exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-  exe="${exe% (deleted)}"
-  for target_exe in "${target_executables[@]}"; do
-    if [[ "$exe" == "$target_exe" ]]; then
-      args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
-      echo "[WARN] running publish target pid=$pid exe=$exe args=$args"
-      found=1
-      break
-    fi
-  done
-done < <(ps -eo pid=)
-
 while read -r pid args; do
   [[ -n "$pid" ]] || continue
   if [[ "$args" == *"$config_server"* ]]; then
     echo "[WARN] running publish target pid=$pid config_server=$args"
     found=1
   fi
+  [[ "$args" == *"$target/"* ]] || continue
+  exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+  exe="${exe% (deleted)}"
+  for target_exe in "${target_executables[@]}"; do
+    if [[ "$exe" == "$target_exe" ]]; then
+      echo "[WARN] running publish target pid=$pid exe=$exe args=$args"
+      found=1
+      break
+    fi
+  done
 done < <(ps -eo pid=,args=)
 
 if [[ "$found" -ne 0 ]]; then
@@ -184,6 +219,7 @@ if [[ "$CHECK_ONLY" -eq 1 ]]; then
 fi
 
 LOCAL_RELATIVE=(
+  "target/release/intra-release.manifest"
   "target/release/trade_signal"
   "target/release/${INTRA_ACCOUNT_MONITOR_BIN}"
   "target/release/viz_server"
@@ -201,6 +237,8 @@ LOCAL_RELATIVE=(
   "scripts/start_intra_config_server.sh"
   "scripts/stop_intra_config_server.sh"
   "scripts/process_match_lib.sh"
+  "scripts/intra_release_guard.sh"
+  "scripts/execution_backend_lib.sh"
   "intra_scripts/intra_monitor_process_lib.sh"
   "intra_scripts/start_intra_monitors.sh"
   "intra_scripts/stop_intra_monitors.sh"
@@ -216,6 +254,7 @@ LOCAL_RELATIVE=(
   "intra_scripts/stop_intra_viz_server.sh"
 )
 UPLOAD_NAMES=(
+  "intra-release.manifest"
   "trade_signal"
   "$INTRA_ACCOUNT_MONITOR_BIN"
   "viz_server"
@@ -233,6 +272,8 @@ UPLOAD_NAMES=(
   "start_intra_config_server.sh"
   "stop_intra_config_server.sh"
   "process_match_lib.sh"
+  "intra_release_guard.sh"
+  "execution_backend_lib.sh"
   "intra_monitor_process_lib.sh"
   "start_intra_monitors.sh"
   "stop_intra_monitors.sh"
@@ -249,26 +290,57 @@ UPLOAD_NAMES=(
 )
 case "$INTRA_EXCHANGE" in
   bybit)
-    LOCAL_RELATIVE+=("scripts/cancel_bybit_pm_orders.py")
-    UPLOAD_NAMES+=("cancel_bybit_pm_orders.py")
+    LOCAL_RELATIVE+=(
+      "scripts/cancel_bybit_pm_orders.py"
+      "scripts/bybit_repay_probe.py"
+      "scripts/lib/bybit_external_order_link.py"
+      "scripts/lib/exchange_signing.py"
+      "scripts/lib/exchange_state.py"
+      "scripts/lib/intra_symbols.py"
+      "intra_scripts/flatten_intra_bybit_futures_exposure.py"
+    )
+    UPLOAD_NAMES+=(
+      "cancel_bybit_pm_orders.py"
+      "bybit_repay_probe.py"
+      "bybit_external_order_link.py"
+      "exchange_signing.py"
+      "exchange_state.py"
+      "intra_symbols.py"
+      "flatten_intra_bybit_futures_exposure.py"
+    )
     ;;
   okex)
     LOCAL_RELATIVE+=("scripts/cancel_okex_pm_orders.py")
     UPLOAD_NAMES+=("cancel_okex_pm_orders.py")
     ;;
   binance)
-    LOCAL_RELATIVE+=(
-      "scripts/cancel_binance_std_orders.py"
-      "scripts/binance_cancel_all_std_spot_orders.py"
-      "scripts/binance_cancel_all_std_um_ws_orders.py"
-      "scripts/binance_local_ip.py"
-    )
-    UPLOAD_NAMES+=(
-      "cancel_binance_std_orders.py"
-      "binance_cancel_all_std_spot_orders.py"
-      "binance_cancel_all_std_um_ws_orders.py"
-      "binance_local_ip.py"
-    )
+    if [[ "$INTRA_EXEC_BACKEND" == "ltp" ]]; then
+      LOCAL_RELATIVE+=("target/release/rapidx_open_orders")
+      UPLOAD_NAMES+=("rapidx_open_orders")
+      LOCAL_RELATIVE+=("target/release/rapidx_order_smoke")
+      UPLOAD_NAMES+=("rapidx_order_smoke")
+      LOCAL_RELATIVE+=("target/release/rapidx_intra_signal_smoke")
+      UPLOAD_NAMES+=("rapidx_intra_signal_smoke")
+      LOCAL_RELATIVE+=("target/release/rapidx_loan")
+      UPLOAD_NAMES+=("rapidx_loan")
+      LOCAL_RELATIVE+=("target/release/rapidx_query_smoke")
+      UPLOAD_NAMES+=("rapidx_query_smoke")
+      LOCAL_RELATIVE+=("target/release/rapidx_transfer")
+      UPLOAD_NAMES+=("rapidx_transfer")
+    else
+      LOCAL_RELATIVE+=(
+        "scripts/cancel_binance_std_orders.py"
+        "scripts/binance_cancel_all_std_spot_orders.py"
+        "scripts/binance_cancel_all_std_um_ws_orders.py"
+        "scripts/binance_local_ip.py"
+      )
+      UPLOAD_NAMES+=(
+        "cancel_binance_std_orders.py"
+        "binance_cancel_all_std_spot_orders.py"
+        "binance_cancel_all_std_um_ws_orders.py"
+        "binance_local_ip.py"
+      )
+    fi
     ;;
 esac
 if [[ "${#LOCAL_RELATIVE[@]}" -ne "${#UPLOAD_NAMES[@]}" ]]; then
@@ -328,13 +400,15 @@ check_remote_stopped
 
 "${SSH[@]}" "$INTRA_SSH_HOST" bash -s -- \
   "$REMOTE_DIR" "$REMOTE_STAGE" "$INTRA_EXCHANGE" \
-  "$INTRA_ACCOUNT_MONITOR_BIN" "$INTRA_ACCOUNT_MONITOR_DEST" <<'REMOTE_PUBLISH'
+  "$INTRA_ACCOUNT_MONITOR_BIN" "$INTRA_ACCOUNT_MONITOR_DEST" \
+  "$INTRA_EXEC_BACKEND" <<'REMOTE_PUBLISH'
 set -euo pipefail
 target="$1"
 stage="$2"
 exchange="$3"
 account_monitor_bin="$4"
 account_monitor_dest="$5"
+exec_backend="$6"
 case "$stage" in
   "$target"/.publish-intra.*) ;;
   *) echo "[ERROR] invalid staging path: $stage" >&2; exit 1 ;;
@@ -346,6 +420,7 @@ esac
 publish_file() {
   local upload_name="$1"
   local destination="$2"
+  local mode="${3:-755}"
   local source="$stage/$upload_name"
   local expected=""
   local actual=""
@@ -354,13 +429,14 @@ publish_file() {
   [[ -n "$expected" && -f "$source" ]]
   actual="$(sha256sum "$source" | awk '{print $1}')"
   [[ "$actual" == "$expected" ]]
-  chmod 755 "$source"
+  chmod "$mode" "$source"
   mv -f "$source" "$target/$destination"
   actual="$(sha256sum "$target/$destination" | awk '{print $1}')"
   [[ "$actual" == "$expected" ]]
   echo "[INFO] published $destination sha256=$actual"
 }
 
+publish_file intra-release.manifest intra-release.manifest 644
 publish_file trade_signal trade_signal
 publish_file "$account_monitor_bin" "$account_monitor_dest"
 publish_file viz_server viz_server
@@ -378,6 +454,8 @@ publish_file sync_rolling_metrics_params.py scripts/sync_rolling_metrics_params.
 publish_file start_intra_config_server.sh scripts/start_intra_config_server.sh
 publish_file stop_intra_config_server.sh scripts/stop_intra_config_server.sh
 publish_file process_match_lib.sh scripts/process_match_lib.sh
+publish_file intra_release_guard.sh scripts/intra_release_guard.sh
+publish_file execution_backend_lib.sh scripts/execution_backend_lib.sh
 publish_file intra_monitor_process_lib.sh intra_scripts/intra_monitor_process_lib.sh
 publish_file start_intra_monitors.sh intra_scripts/start_intra_monitors.sh
 publish_file stop_intra_monitors.sh intra_scripts/stop_intra_monitors.sh
@@ -391,19 +469,35 @@ publish_file start_intra_persist_manager.sh intra_scripts/start_intra_persist_ma
 publish_file stop_intra_persist_manager.sh intra_scripts/stop_intra_persist_manager.sh
 publish_file start_intra_viz_server.sh intra_scripts/start_intra_viz_server.sh
 publish_file stop_intra_viz_server.sh intra_scripts/stop_intra_viz_server.sh
+if [[ "$exec_backend" == "ltp" ]]; then
+  publish_file rapidx_open_orders rapidx_open_orders
+  publish_file rapidx_order_smoke rapidx_order_smoke
+  publish_file rapidx_intra_signal_smoke rapidx_intra_signal_smoke
+  publish_file rapidx_loan rapidx_loan
+  publish_file rapidx_query_smoke rapidx_query_smoke
+  publish_file rapidx_transfer rapidx_transfer
+fi
 
 case "$exchange" in
   bybit)
     publish_file cancel_bybit_pm_orders.py scripts/cancel_bybit_pm_orders.py
+    publish_file bybit_repay_probe.py scripts/bybit_repay_probe.py
+    publish_file bybit_external_order_link.py scripts/lib/bybit_external_order_link.py
+    publish_file exchange_signing.py scripts/lib/exchange_signing.py
+    publish_file exchange_state.py scripts/lib/exchange_state.py
+    publish_file intra_symbols.py scripts/lib/intra_symbols.py
+    publish_file flatten_intra_bybit_futures_exposure.py intra_scripts/flatten_intra_bybit_futures_exposure.py
     ;;
   okex)
     publish_file cancel_okex_pm_orders.py scripts/cancel_okex_pm_orders.py
     ;;
   binance)
-    publish_file cancel_binance_std_orders.py scripts/cancel_binance_std_orders.py
-    publish_file binance_cancel_all_std_spot_orders.py scripts/binance_cancel_all_std_spot_orders.py
-    publish_file binance_cancel_all_std_um_ws_orders.py scripts/binance_cancel_all_std_um_ws_orders.py
-    publish_file binance_local_ip.py scripts/binance_local_ip.py
+    if [[ "$exec_backend" != "ltp" ]]; then
+      publish_file cancel_binance_std_orders.py scripts/cancel_binance_std_orders.py
+      publish_file binance_cancel_all_std_spot_orders.py scripts/binance_cancel_all_std_spot_orders.py
+      publish_file binance_cancel_all_std_um_ws_orders.py scripts/binance_cancel_all_std_um_ws_orders.py
+      publish_file binance_local_ip.py scripts/binance_local_ip.py
+    fi
     ;;
   *)
     echo "[ERROR] unsupported exchange in publish stage: $exchange" >&2

@@ -1,0 +1,153 @@
+{
+  "mkt_commit": "1a10d3b29269caba1c287ea0e845129651c3cb70",
+  "mkt_branch": "arbmm",
+  "manager_commit": "495c8332d35da4c4ec31d9f6f32d12c5cdb8f37f",
+  "mkt_artifacts": {
+    "exec-pre-trade": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/exec-pre-trade",
+      "sha256": "4e770341cc0bfcf4af4ec6c0afac3d8b14772bc76e3d0586f09446e568cc0940"
+    },
+    "trade_engine": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/trade_engine",
+      "sha256": "bb263a467c7aab96bafb5bc1dbe7124c7eefbf7c6ff03ec7d2205497e93a2611"
+    },
+    "okex_account_monitor": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/okex_account_monitor",
+      "sha256": "6e236cd0470f575c9d896c2c504bcf6ed966328199f0c145e20eabb0faf14f37"
+    },
+    "binance_account_monitor": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/binance_account_monitor",
+      "sha256": "2ae5e14bb633c7f511cc56d6fa335e8f48a8cab2d30022f2bcd7f81470a0b494"
+    },
+    "trade_signal": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/trade_signal",
+      "sha256": "8bd54fc5fe95ea955fec85372c46a324002628c6fa508e52bd37a40cdc67cc18"
+    },
+    "viz_server": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/viz_server",
+      "sha256": "91a51991279d89f803a858be37d93b9e6d5de2a6c76053b6dff214df26ed4df7"
+    },
+    "persist_manager": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/persist_manager",
+      "sha256": "086a38d8882da147b17f42dd36764e103440b651c8ad3b8561f07687ba5edcd6"
+    },
+    "cta_cross_spread_signal": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/cta_cross_spread_signal",
+      "sha256": "45ee5e451262537603e9ddd0f74287968ef5fb31d98cd31733c7ad80a88999d6"
+    },
+    "cta_cross_spread_factor_model_1m_pub": {
+      "path": "/home/fanghaizhou/mkt_signal/target/release/cta_cross_spread_factor_model_1m_pub",
+      "sha256": "406e99ff50c4a3fc5234392ce5789a2e22e1ac4de19e2aa998a1cf787cbf2df1"
+    }
+  },
+  "manager_artifacts": {
+    "cta_web": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/crypto_cta_manager/release/cta_web",
+      "sha256": "d740c03a519ba25e8211c996b463bb60fbdf8dc5bbf828769817f29b933cc275"
+    },
+    "cta_monitor": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/crypto_cta_manager/release/cta_monitor",
+      "sha256": "10856d729a6c63519deabe94d9517eb4456681c178f379fc0b4913a6704f98ff"
+    },
+    "nav_rebuild": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/crypto_cta_manager/release/nav_rebuild",
+      "sha256": "cf84935c779b091eb772cccbb6dc17c78b1b30b30e14caea499018abad49fce7"
+    },
+    "nav_snapshot": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/crypto_cta_manager/release/nav_snapshot",
+      "sha256": "e6666b58ad6b11d9ffa78dfd8f88d2964cfef750aad7718ead9e67e6e5dd283d"
+    },
+    "nav_strategy_snapshot": {
+      "path": "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/crypto_cta_manager/release/nav_strategy_snapshot",
+      "sha256": "e741e23a93b04a370913b26fbf346e91eb56abc9f5d3c56ca529cbbb5c049549"
+    }
+  },
+  "manager_source_hashes_verified": true,
+  "trading_enabled": false,
+  "worktree_contains_uncommitted_changes": true,
+  "manager_build_args": [
+    "--release",
+    "--locked",
+    "--no-default-features"
+  ],
+  "daily_fifo_enabled": false,
+  "okex_exec_rest_bound": true,
+  "manager_source_hashes_final": {
+    "src/account_ipc.rs": "fb7c29497f0c7b8ca3b85e0e1d0744be1fe46fb2539d04b30409150089b86851",
+    "src/account_overview/daily.rs": "72e92fef7cac2888e3a0fbe06017a46c135e92abaf143a30e8f04c390eb82284",
+    "src/account_overview/export.rs": "21ce9ad04958efae8b051441caf26cd77434d192ef142310eeb70c6c3d460cd2",
+    "src/account_overview/external.rs": "6f347281c9dc5a94c540ea853ae0879cad89ba0d92503185dc55f48182722314",
+    "src/account_overview/margin.rs": "1697de463885433cdd86fa6e721584b254cf94a1d3dee2c98edb463b87819d32",
+    "src/account_overview/nav.rs": "41539852be1a9552be6ba1e3521a02502e9519de61f80a05c5945a4cac8e4b38",
+    "src/account_overview.rs": "df65edfe8ec6068ee634c60fb1a7c96ec15ed6855ed47feacaf0aaa8fd3ec30f",
+    "src/acquisition_cost.rs": "c1e598fd5ea426394734e1363512b337eccdfb256fbda31d1478b397161d11c9",
+    "src/analysis.rs": "b0438f0a99f07fe8ef8775bc41285943979f70cdfc2d7be64a8523dde516bf29",
+    "src/auth.rs": "46840f620349f9b8dcefc095c0cbde768595e5d309916f0cb7696976db84cee4",
+    "src/bbo.rs": "8f332012003459e64260e507a6e12f7a910cc2ad48572e8839845dd341983578",
+    "src/bfusd_auto.rs": "8942a9b7ae738763badec30850d634413473c8a8f0b13cd9bf3fd778a7f66c5d",
+    "src/bin/cta_monitor.rs": "760acd388b024a16915800c41e6b8dc14b71f627787051885c144e6f9ecc3957",
+    "src/bin/cta_web.rs": "5786515fc6232b2e7918fa16d43cb14245563a0e781a509b7ffe8e515b559c6a",
+    "src/bin/fill_reconcile.rs": "67188b79be8d6a7ac2ffdb4c25e1b190969226d1e337a92aa667af101250cb5a",
+    "src/bin/nav_allocation_history.rs": "e0f5f77b8bd6badbe31790a954639cf7d81e18d32aedab62509938c11288a73e",
+    "src/bin/nav_allocation_reconcile.rs": "2fe4e56ee309c6f610c9159ed0b2d6fef2cd89985d5dc48811627fc276ba0a71",
+    "src/bin/nav_cached_marks.rs": "ed52c2084dd28cc414d586e8bca023db729d5cc68dab8c622d5cb450d23e7594",
+    "src/bin/nav_funding_check.rs": "cb7eac8a281a93107ce84c09a622e33ce39548c2dc7497edb400b7c1bca44aca",
+    "src/bin/nav_rebuild.rs": "876fa9e324387c09c71e4adf8bf15a3f436459665619fc277905129fa46672cc",
+    "src/bin/nav_rx01_anchor_preview.rs": "790a3778b96636195f6bf0bfab0a586fda47dbf93f976ded82f900cc51e19541",
+    "src/bin/nav_rx01_price_preview.rs": "bddc1cce9d162947c9e03cc2b8c33cdb6832972d4c2c71536a61fb3ae9007497",
+    "src/bin/nav_snapshot.rs": "d590d29786cb3ee00a028b1d4f186f6f03d327c8402b69de33be0e973fa9c116",
+    "src/bin/nav_strategy_report.rs": "b2e9ad1575bd00936b26157d25b8b5907832afe73a6aa803fc51492ba8efe060",
+    "src/bin/nav_strategy_snapshot.rs": "7c54d1bf2592bc228381f0944d1ef0c3142bb90607cdf427eb3b0b6256b886e0",
+    "src/bin/nav_symbol_fills.rs": "827cec04b668f3beaa2d931e738f8de8326ddfc4ab9f1619be747a60514dd9aa",
+    "src/bin/unmatched_dump.rs": "58a5baf6396773fca18628ba38438ef6adab0196a7a22725a69468849c02a7a1",
+    "src/bnb_auto/history.rs": "35a0f5ad8ff9598a1d9a4a943dc8f4523d9c3b388e26f66cbc209528032ae568",
+    "src/bnb_auto.rs": "6433c966af9d27c57d50707ec6047efd871f1611f7a643f9e769ced5fdea0544",
+    "src/config.rs": "7b450b6b878c08bcd514869db877ee2ef350b75b873168eaa2e7a484c920fac3",
+    "src/exchange_leverage/unified.rs": "fe14be917c1b912223ea1a15d2a471840bfe8a593f838c864e3dc30de36cc2e7",
+    "src/exchange_leverage.rs": "b9e7fc016aa6085a0f417c636afdffc5648f227c4b215e1f9e8f7bfc0ca55cb4",
+    "src/exec_routing.rs": "bee495d480c8e3a35e393c1c6689f95d2cb339f434496c9304930a424351ac08",
+    "src/execution_slippage.rs": "550e436582d1b2ca35ef820ad3cf2e862c89bb9b98293da8f2ec1f24e1c2fcb6",
+    "src/funding/rapidx.rs": "8ce11b57d83b0afe687217449b49bd9b5407016a34c37bfc84cc03b6c8c16ef8",
+    "src/funding.rs": "4a78c4fb32def75ac91bc6d590964bf177339bc1c99b2d41e15df3aac6824256",
+    "src/funding_daily.rs": "18c5c13246e1aeb3a4d719e854385bbd01c2363f63668cc030667912bc3c082d",
+    "src/funding_rates.rs": "b8f40b26aa65782cce8758f3417b055fce805d03bad88c1f372e45b45747871e",
+    "src/kline.rs": "4cd5eeeb293cf2d31fc38bf30e13dcad0b37e3d3b0d143473393ce3ca89d15b0",
+    "src/lib.rs": "cec216305ffecf99398f9603461ae69684ff7bb7865cde03dbd4940ec79ae32d",
+    "src/manager_db.rs": "e9470a936f43fd84a94f2c7844cc1c7216722b50dd0283e8a0b470d4e8c1f0cc",
+    "src/market_data.rs": "fefbea575d9f072f74fc1c5e7716d7534ff2fc99b225b4853a1b7a7a6fd67075",
+    "src/market_rules/rapidx.rs": "1ba302a2cdb9c95299ac97ddcb50f489a9fe51fb98e257dda8f974e501335781",
+    "src/market_rules/unified.rs": "330a1e1fc9bd39ed061f8441041143823cbc0ed3841d18200b3768094907fbf3",
+    "src/market_rules.rs": "f5c39ee93819fd2cf550c73da58e3efbe20a5a2935e6db7601f46688e75ac736",
+    "src/model.rs": "17a74b21e67f64f3007262ab2d3a26aad6ec18577cbb62fcfb4d2b33b911bcc3",
+    "src/monitor.rs": "9199eb48a739b7b6054893f851474b5e7ae77129bc9cfc09e691fd138ce5058e",
+    "src/nav/allocation.rs": "9bbe7aa99659971571071451e3331d14415366414c7a171d4ae35211d7737110",
+    "src/nav/daily.rs": "90d2af217ea7cb3241fd60276a572d1b0e13a1505f4c64b33919be33eb27eb5d",
+    "src/nav/fill_recovery.rs": "6c930ee34dacdce50930e6d24a3681cf8e20c4ac9c30cdbca8bdb8feb439e8d2",
+    "src/nav/funding_estimate.rs": "9a3b010689ec0d4ed6d76a9dc610e7fc05dae548940a2bf93740ae5f49fddb55",
+    "src/nav/minute_marks.rs": "da047df34d048a0436a800023ab9310d268ea5fe0a67821ce3c7d7cf09a6f465",
+    "src/nav/sampling.rs": "755b0313281136387585892c435280f98520974ae86a20cb3d31fce43f5924c9",
+    "src/nav.rs": "01769797763446a219aa6eea562273f103befe0a0529917f0af963733dc27f53",
+    "src/nav_portfolios.rs": "2cd70fe1a23f82c77687d573bff73253dac0aaa327434255f90ef43df02cff9d",
+    "src/order_config.rs": "96ad58d3c73d86111b922aff221f01453e7e8aafae58d862fe711261df67c18b",
+    "src/position_archive.rs": "72d47a081f4de46076b90d51a0dfa6719164984ebe43c4ee1153323910bf187c",
+    "src/postgres.rs": "e076e3a03c80d7bf29ad121ad3713054c82bef1e017bf69691a0ffb31d52208f",
+    "src/reconcile.rs": "1212eeb69c4b8a0319704aaca1ee4c08f0a87ba6514a2a2a010b2f6f256f8ce5",
+    "src/redis_runtime.rs": "0edf0eb8d6f4d32ff12ffb022770e521b55f57d0879e44d18b0978c043472d1f",
+    "src/reload_notify.rs": "47116aceda7515757fcc3d03d2fd443985fb31e278270918c735ded45333152f",
+    "src/rocks_source.rs": "66d37f2ec2cf01b6684a1fd8a92a5d58340f9824aa9a8a8d4bcfdfb6994a2552",
+    "src/snapshot.rs": "b30c8650ee926dc43e46ab412637aa84c0333524047cb1173635765fae569bdd",
+    "src/strategy_catalog.rs": "a2acf03ed4d2dd32936c67a19ce67d18d063f494ac60986cca84c0b2e49bd063",
+    "src/target_proxy.rs": "d6dda49d7a53f9accc8a4ad3c42a7b894fbf094dd992a666b6a0f0f22d4d631b",
+    "src/theoretical_execution.rs": "7bdd7d6d197a1d051260eb092623772350465967d6964a6d1233c7cefdb534fb",
+    "src/theoretical_nav.rs": "4b25e14d341ab6f22309cc0b0f83af51a63d989c426eed9e1740bc82f6ecd79e",
+    "src/treasury_rate_limit.rs": "7f237de5e42a024796c268281b9ef1677923689ec7f3cb896b562c65b8aea2db",
+    "src/virtual_accounts.rs": "22a2f7f02e1eacc70963a44daeb26e59dcf321c63ebee5aef0bc301d0f810de2",
+    "src/viz_snapshot.rs": "810b3ca9d60a10af3aba0ca717cf970de1a0a189e9f78f312ecde9a33171b98c",
+    "src/web/cta_config_access.rs": "64eb137049d763cd733c2f0c97aea1c9a7a9bf2c766cc5ec3e6a7316ebf7e22c",
+    "src/web/cumulative_funding.rs": "4eaf1f604d3df2338a6edafc4a38a8e5ef942d52d57a7ae43a8fcf822cd7102c",
+    "src/web/equity_history.rs": "e258f253afc6ab8a4ac55acf8f92f6eeceb577af7aacd6a8ef1dab469b0c631a",
+    "src/web/nav_monitor.rs": "e369306d56c8b1c34e87df5a99e8425c4185c459ff8d1a5245d1e7563ade3d93",
+    "src/web.rs": "98afe4924c1f31be69bd916f1a0c652dbfb241c9d58266206cb0c2ec8843d0e8"
+  },
+  "manager_build_features": []
+}

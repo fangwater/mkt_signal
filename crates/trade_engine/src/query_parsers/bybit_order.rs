@@ -134,6 +134,7 @@ pub fn parse_bybit_order_query_json(json: &str) -> BybitOrderQueryParseResult {
         update_time_ms: parse_i64_str(&first.updated_time),
         time_in_force_u8: tif_to_u8(&first.time_in_force),
         response_price: response_price(&first),
+        order_price: parse_f64_str(&first.price),
     })
 }
 

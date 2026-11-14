@@ -1,0 +1,22 @@
+{
+  "at": "2026-10-22T15:04:09.774279+00:00",
+  "follower_source_id": "binance_exec_trade08",
+  "processes": [
+    {
+      "pid": 160373,
+      "comm": "cta_perp_factor"
+    },
+    {
+      "pid": 168550,
+      "comm": "python3"
+    },
+    {
+      "pid": 168607,
+      "comm": "python3"
+    },
+    {
+      "pid": 351338,
+      "comm": "cta_perp_signal"
+    }
+  ]
+}

@@ -29,22 +29,28 @@ class ExecRiskKeyTests(unittest.TestCase):
             expected,
         )
 
-    def test_exec_side_pending_limits_are_synced_and_printed(self):
+    def test_sync_contains_only_active_batch_exec_limits(self):
         sync = load_script("sync_exec_risk_params.py")
         printer = load_script("print_exec_risk_params.py")
         expected = {
+            "max_pending_limit_orders": "10",
             "exec_max_pending_limit_buy_orders": "10",
             "exec_max_pending_limit_sell_orders": "10",
+            "exec_order_rate_limit_per_min": "400",
+            "exec_order_rate_limit_10s": "200",
         }
 
+        self.assertEqual(sync.RISK_PARAMS, expected)
+        self.assertEqual(sync.PARAM_ORDER, list(expected))
         for key, value in expected.items():
             self.assertEqual(sync.RISK_PARAMS[key], value)
             self.assertIn(key, sync.PARAM_ORDER)
             self.assertIn(key, printer.PARAM_ORDER)
 
-    def test_exec_position_imbalance_fallback_is_enabled(self):
+    def test_sync_omits_non_batch_exec_risk_fields(self):
         sync = load_script("sync_exec_risk_params.py")
-        self.assertEqual(sync.RISK_PARAMS["exec_max_position_imbalance_ratio"], "0.8")
+        for key in ("max_pos_u", "max_leverage", "exec_max_position_imbalance_ratio"):
+            self.assertNotIn(key, sync.RISK_PARAMS)
 
 
 if __name__ == "__main__":

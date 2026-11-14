@@ -1,0 +1,7 @@
+{
+  "checked_process_count": 46,
+  "rx01_configuration_unchanged": true,
+  "rx01_and_exec_process_identities_unchanged": true,
+  "manager_restart_authorized": true,
+  "evidence": "before_execution.json -> during_recovery.json"
+}

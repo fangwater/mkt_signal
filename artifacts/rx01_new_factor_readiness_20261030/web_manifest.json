@@ -1,0 +1,13 @@
+{
+  "frontend_commit": "695b25ee56732b6b9a53572b4b9f68be826eacbc",
+  "frontend_files": {
+    "manager/favicon.svg": "20c8ea0da10b575dd201ceb76e79f167333751be323e711cd162e56735427157",
+    "manager/index.html": "e3db3f4925e1cb2c2d6a40327b8aa4edb6251e366f7e499cd8859a0662a86cc9",
+    "manager/assets/index-CilY-KiP.js": "d4c3d9390bcbd0e63b1173b1987b66505459f8190536afee9a219703a9f36b35",
+    "manager/assets/index-BEhBhLIh.css": "9d2e4485b59ca6907961180980c8215375394d67a4161d34805d4736a4751a46"
+  },
+  "files": {
+    "frontend.tar": "27f86953cea72339f2ebc87544d8c99146f38ff20f289f2c83bb0f40bec9808d",
+    "cta_perp_rx01.conf": "60fbcac652d26b2bd1f4a77dfb8b307624c2b519d252c70b32a397555dfc8314"
+  }
+}

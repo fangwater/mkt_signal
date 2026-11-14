@@ -1,0 +1,128 @@
+{
+  "new": {
+    "symbols": 48,
+    "factors": 17,
+    "pairs": 195
+  },
+  "old": {
+    "symbols": 9,
+    "factors": 5,
+    "pairs": 24
+  },
+  "added_symbols": [
+    "1INCHUSDT",
+    "ADAUSDT",
+    "ALGOUSDT",
+    "ATOMUSDT",
+    "AVAXUSDT",
+    "AXSUSDT",
+    "BANDUSDT",
+    "BELUSDT",
+    "BTCUSDT",
+    "COMPUSDT",
+    "CRVUSDT",
+    "DOTUSDT",
+    "EGLDUSDT",
+    "ENJUSDT",
+    "ETCUSDT",
+    "GRTUSDT",
+    "ICXUSDT",
+    "IOSTUSDT",
+    "IOTAUSDT",
+    "KAVAUSDT",
+    "KNCUSDT",
+    "KSMUSDT",
+    "LTCUSDT",
+    "NEOUSDT",
+    "ONTUSDT",
+    "QTUMUSDT",
+    "RLCUSDT",
+    "RSRUSDT",
+    "SKLUSDT",
+    "SNXUSDT",
+    "SUSHIUSDT",
+    "THETAUSDT",
+    "TRBUSDT",
+    "UNIUSDT",
+    "VETUSDT",
+    "XTZUSDT",
+    "YFIUSDT",
+    "ZENUSDT",
+    "ZILUSDT",
+    "ZRXUSDT"
+  ],
+  "removed_symbols": [
+    "XRPUSDT"
+  ],
+  "added_factors": [
+    "TD_MT_019",
+    "TD_MT_029",
+    "TD_TI_017",
+    "baseline_005",
+    "baseline_028",
+    "baseline_036",
+    "baseline_116",
+    "baseline_117",
+    "baseline_146",
+    "baseline_185",
+    "factor_051",
+    "factor_113",
+    "factor_170"
+  ],
+  "removed_factors": [
+    "TD_TI_024"
+  ],
+  "retained_pairs": 12,
+  "added_pairs": 183,
+  "removed_pairs": [
+    [
+      "AAVEUSDT",
+      "TD_TI_024"
+    ],
+    [
+      "AAVEUSDT",
+      "baseline_141"
+    ],
+    [
+      "DASHUSDT",
+      "TD_TI_024"
+    ],
+    [
+      "DOGEUSDT",
+      "TD_TI_024"
+    ],
+    [
+      "ETHUSDT",
+      "baseline_141"
+    ],
+    [
+      "NEARUSDT",
+      "TD_TI_024"
+    ],
+    [
+      "SOLUSDT",
+      "baseline_200"
+    ],
+    [
+      "XLMUSDT",
+      "TD_TI_024"
+    ],
+    [
+      "XLMUSDT",
+      "baseline_141"
+    ],
+    [
+      "XRPUSDT",
+      "baseline_141"
+    ],
+    [
+      "ZECUSDT",
+      "TD_TI_024"
+    ],
+    [
+      "ZECUSDT",
+      "baseline_141"
+    ]
+  ],
+  "max_pairs_per_symbol": 14
+}

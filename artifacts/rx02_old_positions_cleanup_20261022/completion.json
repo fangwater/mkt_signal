@@ -1,0 +1,13 @@
+{
+  "verified_at_ms": 1792677457976,
+  "env": "binance_exec_trade05",
+  "nonzero_positions": {},
+  "open_orders": 0,
+  "algo_orders": 0,
+  "closed_orders": 24,
+  "pending_order": null,
+  "cash": {
+    "USDT": "9061.78944533156796146"
+  },
+  "trading_processes_stopped": true
+}

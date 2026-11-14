@@ -1,3 +1,5 @@
+#[path = "binance_account_monitor/coin_snapshot.rs"]
+mod coin_snapshot;
 use account_common::{init_binance_account_mode, BinanceAccountMode};
 use account_monitor_common::binance_spot_ws_api_user_stream::BinanceSpotWsApiUserDataConnection;
 use account_monitor_common::binance_user_stream::{
@@ -30,7 +32,7 @@ use runtime_common::mkt_cfg::{
     load_trade_engine_local_ip_config_preferring_trade_engine,
     validate_binance_um_whitelist_ip_config,
 };
-use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
+use runtime_common::ws_connection::{MktConnection, MktConnectionHandler, WsConnector};
 use serde::Deserialize;
 use sha2::Sha256;
 use std::cell::RefCell;
@@ -38,23 +40,28 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::net::IpAddr;
+use std::net::{IpAddr, UdpSocket};
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use trade_engine::binance_fix::{spawn_binance_spot_fix_er_listener, BinanceSpotFixConfig};
 use trade_engine::query_parsers::binance_pm_account_risk::parse_binance_pm_account_risk;
 use trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
 use trade_engine::query_parsers::binance_spot_account_snapshot_std::parse_binance_spot_account_snapshot_std;
-use trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
+use trade_engine::query_parsers::binance_um_account_snapshot::{
+    parse_binance_um_account_risk_std, parse_binance_um_account_snapshot,
+    parse_binance_um_account_snapshot_std,
+};
 use trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
 use url::form_urlencoded;
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
+
+const DEFAULT_BINANCE_PM_SNAPSHOT_POLL_INTERVAL_SECS: u64 = 30;
 
 #[derive(Parser, Debug)]
 #[command(name = "binance_account_monitor")]
@@ -68,6 +75,7 @@ struct Args {
 struct DirectAccountForwarder {
     forwarder: PmForwarder,
     deduper: AccountEventDeduper,
+    exec_venue: Option<order_common::TradingVenue>,
 }
 
 thread_local! {
@@ -93,6 +101,12 @@ fn emit_direct_account_event(msg: Bytes, dedup_key: Option<u64>) -> bool {
         let Some(state) = state.as_mut() else {
             return false;
         };
+        if state
+            .exec_venue
+            .is_some_and(|venue| !exec_account_event_allowed(venue, &msg))
+        {
+            return true;
+        }
         let should_forward = match dedup_key {
             Some(key) => state.deduper.should_forward_key(key),
             None => state.deduper.should_forward(&msg),
@@ -111,6 +125,7 @@ fn init_direct_forwarder(exchange: &str) -> Result<()> {
     let state = DirectAccountForwarder {
         forwarder: PmForwarder::new(exchange)?,
         deduper: AccountEventDeduper::new(8192),
+        exec_venue: runtime_common::exec_market::configured_venue()?,
     };
     DIRECT_FORWARDER.with(|cell| {
         *cell.borrow_mut() = Some(state);
@@ -155,12 +170,71 @@ fn configured_venue_values() -> Vec<String> {
 }
 
 fn coin_futures_enabled(configured_venues: &[String]) -> bool {
+    if let Ok(Some(venue)) = runtime_common::exec_market::configured_venue() {
+        return venue == order_common::TradingVenue::BinanceCoinFutures;
+    }
     if env_flag_enabled("BINANCE_ENABLE_COIN_FUTURES") {
         return true;
     }
     configured_venues
         .iter()
         .any(|value| value.contains("binance-coin-futures"))
+}
+
+fn exec_account_event_allowed(venue: order_common::TradingVenue, msg: &[u8]) -> bool {
+    let Some((kind, scope, payload)) = split_basic_account_event(msg) else {
+        return false;
+    };
+    let coin = venue == order_common::TradingVenue::BinanceCoinFutures;
+    match kind {
+        BasicAccountEventType::OrderUpdate => {
+            BinanceBasicOrderMsg::from_bytes(&payload).is_ok_and(|order| {
+                order.venue
+                    == if coin {
+                        BinanceBasicOrderMsg::VENUE_CM
+                    } else {
+                        BinanceBasicOrderMsg::VENUE_UM
+                    }
+            })
+        }
+        BasicAccountEventType::TradeUpdateLite => {
+            !coin
+                && matches!(
+                    scope,
+                    BasicAccountScope::BinanceUnified | BasicAccountScope::BinanceStdUm
+                )
+        }
+        BasicAccountEventType::PositionUpdate
+        | BasicAccountEventType::UnrealizedPnlUpdate
+        | BasicAccountEventType::BinanceStdUmWalletSnapshot => {
+            if coin {
+                matches!(
+                    scope,
+                    BasicAccountScope::BinanceStdCm | BasicAccountScope::BinanceUnifiedCm
+                )
+            } else {
+                matches!(
+                    scope,
+                    BasicAccountScope::BinanceStdUm | BasicAccountScope::BinanceUnified
+                )
+            }
+        }
+        // Unified collateral/debt/risk must remain available to both isolated markets.
+        BasicAccountEventType::BalanceUpdate
+        | BasicAccountEventType::BorrowInterest
+        | BasicAccountEventType::AccountRisk => {
+            scope == BasicAccountScope::BinanceUnified
+                || if coin {
+                    matches!(
+                        scope,
+                        BasicAccountScope::BinanceStdCm | BasicAccountScope::BinanceUnifiedCm
+                    )
+                } else {
+                    scope == BasicAccountScope::BinanceStdUm
+                }
+        }
+        _ => false,
+    }
 }
 
 /// 构造最终的用户数据 WS URL。
@@ -259,18 +333,42 @@ async fn signed_get_binance(
     Ok(body)
 }
 
+fn account_query_local_ip(configured: &str) -> Result<IpAddr> {
+    let configured: IpAddr = configured
+        .trim()
+        .parse()
+        .context("invalid account local IP")?;
+    if !configured.is_unspecified() {
+        return Ok(configured);
+    }
+    // UDP connect selects a route without sending packets. Resolve once at
+    // startup so later account requests retain the configured trading route.
+    let destination: IpAddr = if configured.is_ipv4() {
+        "192.0.2.1"
+    } else {
+        "2001:db8::1"
+    }
+    .parse()?;
+    let socket = UdpSocket::bind((configured, 0)).context("bind account route probe")?;
+    socket
+        .connect((destination, 443))
+        .context("resolve account route")?;
+    let local = socket.local_addr()?.ip();
+    anyhow::ensure!(
+        !local.is_unspecified(),
+        "account route has no concrete local IP"
+    );
+    Ok(local)
+}
+
 fn build_binance_rest_client(local_ip: Option<&str>, timeout: Duration) -> Result<Client> {
-    let builder = Client::builder().timeout(timeout);
-    let builder = match local_ip.map(str::trim).filter(|ip| !ip.is_empty()) {
-        Some(ip) if ip != "0.0.0.0" => {
-            let parsed: IpAddr = ip
-                .parse()
-                .with_context(|| format!("invalid Binance REST local_ip: {}", ip))?;
-            builder.local_address(parsed)
-        }
-        _ => builder,
-    };
-    builder.build().context("build Binance REST client failed")
+    let local = account_query_local_ip(local_ip.context("account query requires a local IP")?)?;
+    Client::builder()
+        .timeout(timeout)
+        .local_address(local)
+        .no_proxy()
+        .build()
+        .context("build Binance REST client failed")
 }
 
 fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Option<Bytes> {
@@ -279,6 +377,53 @@ fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Optio
         return None;
     }
     Some(BasicAccountEventMsg::create(event_type, account_scope, payload).to_bytes())
+}
+
+fn forward_unified_snapshot_payloads(payloads: Vec<Bytes>) -> usize {
+    let mut emitted = 0usize;
+    for payload in payloads {
+        if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceUnified, payload) {
+            let _ = forward_account_event(wrapped);
+            emitted += 1;
+        }
+    }
+    emitted
+}
+
+async fn refresh_unified_balance_snapshot(
+    client: &Client,
+    api_key: &str,
+    api_secret: &str,
+) -> Result<usize> {
+    let body = signed_get_binance(
+        client,
+        "https://papi.binance.com",
+        "/papi/v1/balance",
+        api_key,
+        api_secret,
+    )
+    .await?;
+    let payloads = parse_binance_pm_balance_snapshot(&body)
+        .ok_or_else(|| anyhow::anyhow!("parse /papi/v1/balance response failed"))?;
+    Ok(forward_unified_snapshot_payloads(payloads))
+}
+
+async fn refresh_unified_um_snapshot(
+    client: &Client,
+    api_key: &str,
+    api_secret: &str,
+) -> Result<usize> {
+    let body = signed_get_binance(
+        client,
+        "https://papi.binance.com",
+        "/papi/v1/um/account",
+        api_key,
+        api_secret,
+    )
+    .await?;
+    let payloads = parse_binance_um_account_snapshot(&body)
+        .ok_or_else(|| anyhow::anyhow!("parse /papi/v1/um/account response failed"))?;
+    Ok(forward_unified_snapshot_payloads(payloads))
 }
 
 async fn bootstrap_standard_snapshots(
@@ -327,7 +472,7 @@ async fn bootstrap_standard_snapshots(
             api_secret,
         )
         .await?;
-        if let Some(msgs) = parse_binance_um_account_snapshot(&um_account_body) {
+        if let Some(msgs) = parse_binance_um_account_snapshot_std(&um_account_body) {
             for payload in msgs {
                 if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdUm, payload)
                 {
@@ -423,42 +568,10 @@ async fn bootstrap_unified_snapshots(
         local_ip.unwrap_or("system-default")
     );
 
-    let pm_balance_body = signed_get_binance(
-        &client,
-        "https://papi.binance.com",
-        "/papi/v1/balance",
-        api_key,
-        api_secret,
-    )
-    .await?;
-    if let Some(msgs) = parse_binance_pm_balance_snapshot(&pm_balance_body) {
-        for payload in msgs {
-            if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceUnified, payload) {
-                let _ = forward_account_event(wrapped);
-                emitted += 1;
-            }
-        }
-    }
+    emitted += refresh_unified_balance_snapshot(&client, api_key, api_secret).await?;
 
     if include_um {
-        let um_account_body = signed_get_binance(
-            &client,
-            "https://papi.binance.com",
-            "/papi/v1/um/account",
-            api_key,
-            api_secret,
-        )
-        .await?;
-        if let Some(msgs) = parse_binance_um_account_snapshot(&um_account_body) {
-            for payload in msgs {
-                if let Some(wrapped) =
-                    wrap_basic_payload(BasicAccountScope::BinanceUnified, payload)
-                {
-                    let _ = forward_account_event(wrapped);
-                    emitted += 1;
-                }
-            }
-        }
+        emitted += refresh_unified_um_snapshot(&client, api_key, api_secret).await?;
     }
 
     info!(
@@ -466,6 +579,67 @@ async fn bootstrap_unified_snapshots(
         emitted
     );
     Ok(())
+}
+
+fn spawn_pm_snapshot_poller(
+    api_key: String,
+    api_secret: String,
+    local_ip: Option<String>,
+    include_um: bool,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    tokio::spawn(async move {
+        let client = match build_binance_rest_client(local_ip.as_deref(), Duration::from_secs(10)) {
+            Ok(client) => client,
+            Err(err) => {
+                error!("Binance PM snapshot poller: build client failed: {err:#}");
+                return;
+            }
+        };
+        let interval_secs = std::env::var("BINANCE_PM_SNAPSHOT_POLL_INTERVAL_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_BINANCE_PM_SNAPSHOT_POLL_INTERVAL_SECS);
+        let interval = Duration::from_secs(interval_secs);
+        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+        tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        info!(
+            "Binance PM snapshot poller started: interval={}s include_um={} local_ip={}",
+            interval_secs,
+            include_um,
+            local_ip.as_deref().unwrap_or("system-default")
+        );
+
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                }
+                _ = tick.tick() => {
+                    match refresh_unified_balance_snapshot(&client, &api_key, &api_secret).await {
+                        Ok(emitted) => debug!(
+                            "Binance PM balance snapshot refreshed: emitted={} interval={}s",
+                            emitted, interval_secs
+                        ),
+                        Err(err) => warn!("Binance PM balance snapshot refresh failed: {err:#}"),
+                    }
+                    if include_um {
+                        match refresh_unified_um_snapshot(&client, &api_key, &api_secret).await {
+                            Ok(emitted) => debug!(
+                                "Binance PM UM snapshot refreshed: emitted={} interval={}s",
+                                emitted, interval_secs
+                            ),
+                            Err(err) => warn!("Binance PM UM snapshot refresh failed: {err:#}"),
+                        }
+                    }
+                }
+            }
+        }
+        info!("Binance PM snapshot poller stopped");
+    });
 }
 
 async fn bootstrap_unified_cm_snapshot(
@@ -583,7 +757,7 @@ struct BinanceWsApiRateLimit {
 struct BinanceStdUmBalanceRow {
     #[serde(default)]
     asset: String,
-    #[serde(default)]
+    #[serde(default, alias = "walletBalance")]
     balance: String,
     #[serde(default, rename = "crossWalletBalance")]
     cross_wallet_balance: String,
@@ -600,17 +774,55 @@ struct BinanceStdUmBalanceRow {
 }
 
 #[derive(Debug, Deserialize)]
-struct BinanceWsApiBalanceResponse {
+struct BinanceWsApiAccountResponse {
     #[serde(default)]
     id: String,
     #[serde(default)]
     status: u16,
     #[serde(default)]
-    result: Vec<BinanceStdUmBalanceRow>,
+    result: serde_json::Value,
     #[serde(default, rename = "rateLimits")]
     rate_limits: Vec<BinanceWsApiRateLimit>,
     #[serde(default)]
     error: Option<serde_json::Value>,
+}
+
+fn binance_std_um_account_status_from_result(
+    result: &serde_json::Value,
+    poll_ts_ms: i64,
+) -> Result<(BasicAccountRiskMsg, Vec<BinanceStdUmWalletSnapshotMsg>)> {
+    let account_json =
+        serde_json::to_string(result).context("serialize Binance WS API account.status result")?;
+    let risk_payload = parse_binance_um_account_risk_std(&account_json)
+        .ok_or_else(|| anyhow::anyhow!("missing or invalid Binance account-level risk totals"))?;
+    let risk = BasicAccountRiskMsg::from_bytes(&risk_payload)
+        .context("decode Binance account-level risk totals")?;
+    let rows = serde_json::from_value::<Vec<BinanceStdUmBalanceRow>>(
+        result
+            .get("assets")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    )
+    .context("parse Binance WS API account.status assets")?;
+    let wallets = rows
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.asset.trim().to_ascii_uppercase().as_str(),
+                "USDT" | "BFUSD"
+            )
+        })
+        .map(|row| binance_std_um_wallet_msg_from_row(row, poll_ts_ms))
+        .collect::<Result<Vec<_>>>()?;
+    if wallets.is_empty() {
+        anyhow::bail!(
+            "Binance WS API account.status contains neither USDT nor BFUSD; assets={:?}",
+            rows.iter()
+                .map(|row| row.asset.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+    Ok((risk, wallets))
 }
 
 fn parse_f64_field(value: &str, field: &str) -> Result<f64> {
@@ -698,6 +910,34 @@ fn binance_std_cm_wallet_msg_from_row(
     ))
 }
 
+// This publisher only emits complete account observations. It has no order IPC.
+thread_local! {
+    static COIN_ACCOUNT_PUBLISHER: RefCell<Option<ipc_common::iceoryx_publisher::ResamplePublisher>> = const { RefCell::new(None) };
+}
+
+fn publish_coin_account_snapshot(body: &str) -> Result<()> {
+    use ipc_common::iceoryx_publisher::ResamplePublisher;
+    use viz_common::coin_account::COIN_ACCOUNT_CHANNEL;
+    let snapshot = coin_snapshot::parse(body, chrono::Utc::now().timestamp_millis())?;
+    let encoded = bincode::serialize(&snapshot)?;
+    let mut payload = Vec::with_capacity(encoded.len() + 4);
+    payload.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&encoded);
+    COIN_ACCOUNT_PUBLISHER.with(|cell| {
+        let mut publisher = cell.borrow_mut();
+        if publisher.is_none() {
+            *publisher = Some(ResamplePublisher::new_with_prefix(
+                "viz_pubs",
+                COIN_ACCOUNT_CHANNEL,
+            )?);
+        }
+        publisher
+            .as_ref()
+            .context("account snapshot publisher missing")?
+            .publish(&payload)
+    })
+}
+
 fn spawn_binance_std_cm_wallet_poller(
     api_key: String,
     api_secret: String,
@@ -766,6 +1006,14 @@ fn spawn_binance_std_cm_wallet_poller(
                         },
                         Err(err) => warn!("binance std CM wallet poll failed: {err:#}"),
                     }
+                    match signed_get_binance(&client, &dapi_rest_base, "/dapi/v1/account", &api_key, &api_secret).await {
+                        Ok(body) => {
+                            if let Err(err) = publish_coin_account_snapshot(&body) {
+                                warn!("binance std CM account observation failed: {err:#}");
+                            }
+                        }
+                        Err(err) => warn!("binance std CM account observation request failed: {err:#}"),
+                    }
                 }
             }
         }
@@ -790,7 +1038,6 @@ async fn query_binance_std_um_wallet_once<S>(
     ws: &mut S,
     api_key: &str,
     api_secret: &str,
-    asset: &str,
     recv_window_ms: u64,
 ) -> Result<()>
 where
@@ -801,78 +1048,86 @@ where
 {
     let poll_ts_ms = chrono::Utc::now().timestamp_millis();
     let (request_id, payload) = build_binance_ws_api_signed_request(
-        "v2/account.balance",
+        "v2/account.status",
         api_key,
         api_secret,
         recv_window_ms,
     )?;
     ws.send(Message::Text(payload))
         .await
-        .context("send Binance WS API account.balance request")?;
+        .context("send Binance WS API account.status request")?;
 
-    let wanted_asset = asset.trim().to_ascii_uppercase();
     let deadline = tokio::time::sleep(Duration::from_secs(10));
     tokio::pin!(deadline);
     loop {
         tokio::select! {
             _ = &mut deadline => {
-                anyhow::bail!("Binance WS API account.balance timeout request_id={request_id}");
+                anyhow::bail!("Binance WS API account.status timeout request_id={request_id}");
             }
             msg = ws.next() => {
                 let Some(msg) = msg else {
-                    anyhow::bail!("Binance WS API account.balance stream closed");
+                    anyhow::bail!("Binance WS API account.status stream closed");
                 };
-                match msg.context("receive Binance WS API account.balance response")? {
+                match msg.context("receive Binance WS API account.status response")? {
                     Message::Text(text) => {
-                        let response: BinanceWsApiBalanceResponse = serde_json::from_str(&text)
-                            .with_context(|| format!("parse Binance WS API account.balance response: {text}"))?;
+                        let response: BinanceWsApiAccountResponse = serde_json::from_str(&text)
+                            .with_context(|| format!("parse Binance WS API account.status response: {text}"))?;
                         if !response.id.is_empty() && response.id != request_id {
                             debug!(
-                                "binance std UM wallet poller skipped response for request_id={} wanted={}",
+                                "binance std UM account poller skipped response for request_id={} wanted={}",
                                 response.id, request_id
                             );
                             continue;
                         }
                         if response.status != 200 {
                             anyhow::bail!(
-                                "Binance WS API account.balance status={} error={:?}",
+                                "Binance WS API account.status status={} error={:?}",
                                 response.status,
                                 response.error
                             );
                         }
-                        let row = response
-                            .result
-                            .iter()
-                            .find(|row| row.asset.trim().eq_ignore_ascii_case(&wanted_asset))
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "Binance WS API account.balance asset {} not found; assets={:?}",
-                                    wanted_asset,
-                                    response.result.iter().map(|row| row.asset.as_str()).collect::<Vec<_>>()
-                                )
-                            })?;
-                        let snapshot = binance_std_um_wallet_msg_from_row(row, poll_ts_ms)?;
-                        let event = BasicAccountEventMsg::create(
-                            BasicAccountEventType::BinanceStdUmWalletSnapshot,
+                        let (risk, snapshots) = binance_std_um_account_status_from_result(
+                            &response.result,
+                            poll_ts_ms,
+                        )?;
+                        let risk_event = BasicAccountEventMsg::create(
+                            BasicAccountEventType::AccountRisk,
                             BasicAccountScope::BinanceStdUm,
-                            snapshot.to_bytes(),
+                            risk.to_bytes(),
                         );
-                        if !forward_account_event(event.to_bytes()) {
-                            warn!("binance std UM wallet poller: failed to forward account event");
+                        if !forward_account_event(risk_event.to_bytes()) {
+                            warn!("binance std UM account poller: failed to forward risk event");
                         }
-                        info!(
-                            "Binance StdUmWalletSnapshot: asset={} balance={:.8} cross_wallet={:.8} cross_un_pnl={:.8} cross_equity={:.8} available={:.8} max_withdraw={:.8} margin_available={} update_time={} weight={}",
-                            snapshot.asset,
-                            snapshot.balance,
-                            snapshot.cross_wallet_balance,
-                            snapshot.cross_un_pnl,
-                            snapshot.cross_equity(),
-                            snapshot.available_balance,
-                            snapshot.max_withdraw_amount,
-                            snapshot.margin_available != 0,
-                            snapshot.update_time,
+                        debug!(
+                            "Binance StdUmAccountSnapshot: equity_usd={:.8} initial_margin_usd={:.8} maintenance_margin_usd={:.8} margin_ratio={:.8} stable_asset_rows={} weight={}",
+                            risk.actual_equity_usd,
+                            risk.initial_margin_usd,
+                            risk.maintenance_margin_usd,
+                            risk.margin_ratio,
+                            snapshots.len(),
                             request_weight_summary(&response.rate_limits)
                         );
+                        for snapshot in snapshots {
+                            let event = BasicAccountEventMsg::create(
+                                BasicAccountEventType::BinanceStdUmWalletSnapshot,
+                                BasicAccountScope::BinanceStdUm,
+                                snapshot.to_bytes(),
+                            );
+                            if !forward_account_event(event.to_bytes()) {
+                                warn!("binance std UM account poller: failed to forward wallet event");
+                            }
+                            debug!(
+                                "Binance StdUmWalletSnapshot: asset={} balance={:.8} cross_wallet={:.8} cross_un_pnl={:.8} available={:.8} max_withdraw={:.8} margin_available={} update_time={}",
+                                snapshot.asset,
+                                snapshot.balance,
+                                snapshot.cross_wallet_balance,
+                                snapshot.cross_un_pnl,
+                                snapshot.available_balance,
+                                snapshot.max_withdraw_amount,
+                                snapshot.margin_available != 0,
+                                snapshot.update_time,
+                            );
+                        }
                         return Ok(());
                     }
                     Message::Ping(payload) => {
@@ -882,7 +1137,7 @@ where
                     }
                     Message::Pong(_) => {}
                     Message::Close(frame) => {
-                        anyhow::bail!("Binance WS API account.balance close frame: {:?}", frame);
+                        anyhow::bail!("Binance WS API account.status close frame: {:?}", frame);
                     }
                     Message::Binary(_) | Message::Frame(_) => {}
                 }
@@ -893,19 +1148,20 @@ where
 
 async fn run_binance_std_um_wallet_poller_session(
     url: &str,
+    local_ip: &str,
     api_key: &str,
     api_secret: &str,
-    asset: &str,
     interval_secs: u64,
     recv_window_ms: u64,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> Result<()> {
-    let (mut ws, _) = connect_async(url)
+    let connection = WsConnector::connect_with_local_ip_raw(url, local_ip)
         .await
-        .with_context(|| format!("connect Binance WS API account.balance url={url}"))?;
+        .with_context(|| format!("connect Binance WS API account.status url={url}"))?;
+    let mut ws = connection.ws_stream.lock().await;
     info!(
-        "binance std UM wallet poller connected: url={} asset={} interval={}s",
-        url, asset, interval_secs
+        "binance std UM account poller connected: url={} local_ip={} wallet_assets=USDT,BFUSD interval={}s",
+        url, local_ip, interval_secs
     );
 
     let mut tick = tokio::time::interval(Duration::from_secs(interval_secs));
@@ -920,7 +1176,7 @@ async fn run_binance_std_um_wallet_poller_session(
                 }
             }
             _ = tick.tick() => {
-                query_binance_std_um_wallet_once(&mut ws, api_key, api_secret, asset, recv_window_ms).await?;
+                query_binance_std_um_wallet_once(&mut *ws, api_key, api_secret, recv_window_ms).await?;
             }
         }
     }
@@ -929,6 +1185,7 @@ async fn run_binance_std_um_wallet_poller_session(
 fn spawn_binance_std_um_wallet_poller(
     api_key: String,
     api_secret: String,
+    local_ip: String,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let url = std::env::var("BINANCE_STD_UM_BALANCE_WS_API_URL")
@@ -944,15 +1201,10 @@ fn spawn_binance_std_um_wallet_poller(
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(5000);
-    let asset = std::env::var("BINANCE_STD_UM_BALANCE_ASSET")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "USDT".to_string());
-
     tokio::spawn(async move {
         info!(
-            "binance std UM wallet poller enabled: url={} asset={} interval={}s recv_window_ms={}",
-            url, asset, interval_secs, recv_window_ms
+            "binance std UM account poller enabled: url={} wallet_assets=USDT,BFUSD interval={}s recv_window_ms={}",
+            url, interval_secs, recv_window_ms
         );
         loop {
             if *shutdown_rx.borrow() {
@@ -960,9 +1212,9 @@ fn spawn_binance_std_um_wallet_poller(
             }
             match run_binance_std_um_wallet_poller_session(
                 &url,
+                &local_ip,
                 &api_key,
                 &api_secret,
-                &asset,
                 interval_secs,
                 recv_window_ms,
                 &mut shutdown_rx,
@@ -971,7 +1223,7 @@ fn spawn_binance_std_um_wallet_poller(
             {
                 Ok(()) => break,
                 Err(err) => warn!(
-                    "binance std UM wallet poller session failed; reconnecting in 5s: {err:#}"
+                    "binance std UM account poller session failed; reconnecting in 5s: {err:#}"
                 ),
             }
             tokio::select! {
@@ -983,7 +1235,7 @@ fn spawn_binance_std_um_wallet_poller(
                 _ = tokio::time::sleep(Duration::from_secs(5)) => {}
             }
         }
-        info!("binance std UM wallet poller stopped");
+        info!("binance std UM account poller stopped");
     });
 }
 
@@ -1030,7 +1282,10 @@ async fn main() -> Result<()> {
     const BINANCE_STD_SPOT_WS_API: &str = "wss://ws-api.binance.com:443/ws-api/v3";
     const BINANCE_STD_SPOT_REST: &str = "https://api.binance.com";
     let binance_is_standard = binance_account_mode == BinanceAccountMode::Standard;
-    let configured_venues = configured_venue_values();
+    let exec_venue = runtime_common::exec_market::configured_venue()?;
+    let configured_venues = exec_venue
+        .map(|venue| vec![venue.data_pub_slug().to_string()])
+        .unwrap_or_else(configured_venue_values);
     let binance_coin_futures_enabled = coin_futures_enabled(&configured_venues);
     let binance_um_enabled = configured_venues.is_empty()
         || configured_venues
@@ -1168,8 +1423,8 @@ async fn main() -> Result<()> {
         &ip_source,
         "binance_account_monitor",
     );
-    let primary_ip = local_ip_cfg.local_ips[0].clone();
-    let secondary_ip = local_ip_cfg.local_ips[1].clone();
+    let primary_ip = account_query_local_ip(&local_ip_cfg.local_ips[0])?.to_string();
+    let secondary_ip = account_query_local_ip(&local_ip_cfg.local_ips[1])?.to_string();
     let binance_um_whitelist_ip = if binance_is_standard && binance_um_ip_whitelist_mode {
         Some(
             local_ip_cfg
@@ -1280,6 +1535,7 @@ async fn main() -> Result<()> {
             spawn_binance_std_um_wallet_poller(
                 api_key.clone(),
                 api_secret.clone(),
+                primary_ip.clone(),
                 shutdown_rx.clone(),
             );
         }
@@ -1301,6 +1557,13 @@ async fn main() -> Result<()> {
             Ok(()) => info!("bootstrap unified snapshots completed"),
             Err(err) => warn!("bootstrap unified snapshots failed: {err:#}"),
         }
+        spawn_pm_snapshot_poller(
+            api_key.clone(),
+            api_secret.clone(),
+            Some(primary_ip.clone()),
+            binance_um_enabled,
+            shutdown_rx.clone(),
+        );
         let interval_secs = std::env::var("BINANCE_PM_RISK_POLL_INTERVAL_SECS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
@@ -1432,9 +1695,129 @@ fn spawn_std_spot_fix_er_path(source_ip: Option<IpAddr>, mut shutdown_rx: watch:
 #[cfg(test)]
 mod tests {
     use super::{
-        account_monitor_fix_er_enabled, binance_std_cm_wallet_msg_from_row, build_ws_url,
+        account_monitor_fix_er_enabled, binance_std_cm_wallet_msg_from_row,
+        binance_std_um_account_status_from_result, build_ws_url, exec_account_event_allowed,
         BinanceStdUmBalanceRow,
     };
+    use bytes::Bytes;
+    use mkt_parsers::msg::basic_account_msg::{
+        BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope,
+    };
+    use order_common::TradingVenue;
+
+    #[tokio::test]
+    async fn account_rest_uses_required_source_address() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = server.local_addr().unwrap();
+        let accepted = tokio::spawn(async move {
+            let (mut socket, peer) = server.accept().await.unwrap();
+            let mut request = [0; 4096];
+            socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .await
+                .unwrap();
+            peer.ip()
+        });
+        let timeout = std::time::Duration::from_secs(3);
+        assert!(super::build_binance_rest_client(None, timeout).is_err());
+        assert!(super::build_binance_rest_client(Some("invalid"), timeout).is_err());
+        let client = super::build_binance_rest_client(Some("127.0.0.2"), timeout).unwrap();
+        let response = client
+            .get(format!("http://{address}/account"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(accepted.await.unwrap().to_string(), "127.0.0.2");
+    }
+
+    #[tokio::test]
+    async fn account_wallet_websocket_keeps_source_address() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = server.local_addr().unwrap();
+        let accepted = tokio::spawn(async move {
+            let (socket, peer) = server.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let request = ws.next().await.unwrap().unwrap();
+            let value: serde_json::Value =
+                serde_json::from_str(request.to_text().unwrap()).unwrap();
+            assert_eq!(value["method"], "v2/account.status");
+            ws.send(Message::Close(None)).await.unwrap();
+            peer.ip()
+        });
+        let (_shutdown, mut receiver) = tokio::sync::watch::channel(false);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            super::run_binance_std_um_wallet_poller_session(
+                &format!("ws://{address}/account"),
+                "127.0.0.2",
+                "test-key",
+                "test-secret",
+                20,
+                5000,
+                &mut receiver,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(result.is_err()); // The mock server closes after the first query.
+        assert_eq!(accepted.await.unwrap().to_string(), "127.0.0.2");
+    }
+
+    #[test]
+    fn exec_forwarding_isolates_positions_but_retains_shared_collateral_risk() {
+        for kind in [
+            BasicAccountEventType::PositionUpdate,
+            BasicAccountEventType::UnrealizedPnlUpdate,
+        ] {
+            let cm = BasicAccountEventMsg::create(
+                kind,
+                BasicAccountScope::BinanceUnifiedCm,
+                Bytes::new(),
+            )
+            .to_bytes();
+            let um =
+                BasicAccountEventMsg::create(kind, BasicAccountScope::BinanceUnified, Bytes::new())
+                    .to_bytes();
+            assert!(exec_account_event_allowed(
+                TradingVenue::BinanceCoinFutures,
+                &cm
+            ));
+            assert!(!exec_account_event_allowed(
+                TradingVenue::BinanceFutures,
+                &cm
+            ));
+            assert!(exec_account_event_allowed(
+                TradingVenue::BinanceFutures,
+                &um
+            ));
+            assert!(!exec_account_event_allowed(
+                TradingVenue::BinanceCoinFutures,
+                &um
+            ));
+        }
+        for kind in [
+            BasicAccountEventType::BalanceUpdate,
+            BasicAccountEventType::AccountRisk,
+            BasicAccountEventType::BorrowInterest,
+        ] {
+            let shared =
+                BasicAccountEventMsg::create(kind, BasicAccountScope::BinanceUnified, Bytes::new())
+                    .to_bytes();
+            assert!(exec_account_event_allowed(
+                TradingVenue::BinanceCoinFutures,
+                &shared
+            ));
+            assert!(exec_account_event_allowed(
+                TradingVenue::BinanceFutures,
+                &shared
+            ));
+        }
+    }
 
     #[test]
     fn build_ws_url_uses_private_query_format_for_new_private_base() {
@@ -1481,6 +1864,52 @@ mod tests {
         assert!((msg.cross_equity() - 1.1).abs() < 1e-12);
         assert!((msg.available_balance - 0.3).abs() < 1e-12);
         assert!(msg.margin_available != 0);
+    }
+
+    #[test]
+    fn std_um_account_status_uses_account_totals_with_mixed_collateral() {
+        let result = serde_json::json!({
+            "multiAssetsMargin": true,
+            "totalMarginBalance": "14750.5",
+            "totalMaintMargin": "500",
+            "totalInitialMargin": "2500",
+            "updateTime": 1700000000007_i64,
+            "assets": [
+                {
+                    "asset": "USDT",
+                    "walletBalance": "5000",
+                    "crossWalletBalance": "4900",
+                    "crossUnPnl": "100",
+                    "availableBalance": "2500",
+                    "maxWithdrawAmount": "2000",
+                    "marginAvailable": true,
+                    "updateTime": 1700000000008_i64
+                },
+                {
+                    "asset": "BFUSD",
+                    "walletBalance": "10000",
+                    "crossWalletBalance": "10000",
+                    "crossUnPnl": "0",
+                    "availableBalance": "9750.5",
+                    "maxWithdrawAmount": "10000",
+                    "marginAvailable": true,
+                    "updateTime": 1700000000009_i64
+                }
+            ],
+            "positions": []
+        });
+
+        let (risk, wallets) = binance_std_um_account_status_from_result(&result, 1_700_000_000_010)
+            .expect("mixed collateral account status");
+        assert!((risk.actual_equity_usd - 14_750.5).abs() < 1e-9);
+        assert!((risk.margin_ratio - 29.501).abs() < 1e-9);
+        assert_eq!(wallets.len(), 2);
+        assert_eq!(wallets[0].asset, "USDT");
+        assert!((wallets[0].balance - 5_000.0).abs() < 1e-9);
+        assert!((wallets[0].cross_equity() - 5_000.0).abs() < 1e-9);
+        assert_eq!(wallets[1].asset, "BFUSD");
+        assert!((wallets[1].balance - 10_000.0).abs() < 1e-9);
+        assert!((wallets[1].cross_equity() - 10_000.0).abs() < 1e-9);
     }
 
     #[test]
@@ -1687,7 +2116,7 @@ fn log_parsed_event(msg: &Bytes) {
                     BinanceBasicOrderMsg::VENUE_CM => "cm",
                     _ => "unknown",
                 };
-                info!(
+                debug!(
                     "Binance OrderUpdate: scope={} venue={} sym={} side={:?} x={} X={} cli_id={} ord_id={} price={} qty={} last_qty={} filled={}",
                     account_scope.as_str(),
                     venue,
@@ -1710,7 +2139,7 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::TradeUpdateLite => {
             if let Ok(m) = BasicTradeLiteMsg::from_bytes(&payload) {
-                info!(
+                debug!(
                     "Binance TradeUpdateLite: scope={} venue=um sym={} side={:?} cli_id={} trade_id={} last_px={} last_qty={} maker={}",
                     account_scope.as_str(),
                     m.symbol,
@@ -1725,7 +2154,7 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::BalanceUpdate => {
             if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
-                info!(
+                debug!(
                     "Binance BalanceUpdate: scope={} ts={} symbol={} wallet={}",
                     account_scope.as_str(),
                     m.timestamp,
@@ -1736,7 +2165,7 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::PositionUpdate => {
             if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
-                info!(
+                debug!(
                     "Binance PositionUpdate: scope={} ts={} inst={} side={} amt={}",
                     account_scope.as_str(),
                     m.timestamp,
@@ -1760,7 +2189,7 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::UnrealizedPnlUpdate => {
             if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
-                info!(
+                debug!(
                     "Binance UnrealizedPnl: scope={} ts={} inst={} side={} pnl={}",
                     account_scope.as_str(),
                     m.timestamp,
@@ -1778,7 +2207,7 @@ fn log_parsed_event(msg: &Bytes) {
                     0.0
                 };
                 let diff = m.margin_ratio - calc_margin_ratio;
-                info!(
+                debug!(
                     "Binance AccountRisk: scope={} ts={} adj_eq_usd={:.2} actual_eq_usd={:.2} maint_margin_usd={:.2} initial_margin_usd={:.2} margin_ratio={:.6} calc_margin_ratio={:.6} diff={:.6}",
                     account_scope.as_str(),
                     m.timestamp,
@@ -1794,7 +2223,7 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::BinanceStdUmWalletSnapshot => {
             if let Ok(m) = BinanceStdUmWalletSnapshotMsg::from_bytes(&payload) {
-                info!(
+                debug!(
                     "Binance StdUmWalletSnapshot event: scope={} ts={} asset={} balance={:.8} cross_wallet={:.8} cross_un_pnl={:.8} cross_equity={:.8} available={:.8} max_withdraw={:.8} margin_available={} update_time={}",
                     account_scope.as_str(),
                     m.timestamp,
@@ -1810,6 +2239,17 @@ fn log_parsed_event(msg: &Bytes) {
                 );
             }
         }
+        BasicAccountEventType::HyperliquidFill
+        | BasicAccountEventType::HyperliquidSnapshotComplete
+        | BasicAccountEventType::HyperliquidFactReplayControl
+        | BasicAccountEventType::HyperliquidFunding
+        | BasicAccountEventType::HyperliquidLedger
+        | BasicAccountEventType::HyperliquidSpotBalance
+        | BasicAccountEventType::HyperliquidPerpDexState
+        | BasicAccountEventType::HyperliquidTwapSliceFill
+        | BasicAccountEventType::HyperliquidTwapHistory
+        | BasicAccountEventType::HyperliquidNativeEvent
+        | BasicAccountEventType::ExternalFuturesFill => {}
         BasicAccountEventType::Error => {}
     }
 }
@@ -1870,6 +2310,17 @@ impl AccountEventDeduper {
             BasicAccountEventType::OrderUpdate => BinanceBasicOrderMsg::from_bytes(&payload)
                 .ok()
                 .map(|m| self.key_binance_basic_order(&m)),
+            BasicAccountEventType::HyperliquidFill
+            | BasicAccountEventType::HyperliquidSnapshotComplete
+            | BasicAccountEventType::HyperliquidFactReplayControl
+            | BasicAccountEventType::HyperliquidFunding
+            | BasicAccountEventType::HyperliquidLedger
+            | BasicAccountEventType::HyperliquidSpotBalance
+            | BasicAccountEventType::HyperliquidPerpDexState
+            | BasicAccountEventType::HyperliquidTwapSliceFill
+            | BasicAccountEventType::HyperliquidTwapHistory
+            | BasicAccountEventType::HyperliquidNativeEvent
+            | BasicAccountEventType::ExternalFuturesFill => return true,
             BasicAccountEventType::Error => return true,
         };
 

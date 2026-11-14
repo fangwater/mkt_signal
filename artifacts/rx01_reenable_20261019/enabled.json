@@ -1,0 +1,22 @@
+{
+  "enabled_at_us": 1792405025124339,
+  "config": {
+    "config": {
+      "enabled": true,
+      "max_pos_u": 10.0,
+      "entry": {
+        "factor_long_quantile": 0.9,
+        "factor_short_quantile": 0.1,
+        "spread_long_quantile": 0.3,
+        "spread_short_quantile": 0.7,
+        "nq_long_quantile": 0.5,
+        "nq_short_quantile": 0.5
+      },
+      "execution": {
+        "factor_exit_quantile_long": 0.3,
+        "factor_exit_quantile_short": 0.7
+      }
+    },
+    "revision": "aa6d7d60b4f4066f97391028c48fb6662478be5afaa355c20c7d5b30bd5a2d56"
+  }
+}

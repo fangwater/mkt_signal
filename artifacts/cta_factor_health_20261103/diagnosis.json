@@ -1,0 +1,67 @@
+{
+  "kafka": {
+    "error_code": -191,
+    "name": "PARTITION_EOF",
+    "message": "Broker: No more messages",
+    "cause": "normal end-of-partition notification was treated as an error; the active error was not cleared after later successful consumption",
+    "fix": "ignore EOF records and clear only the Kafka error after a decoded input record advances"
+  },
+  "nq": {
+    "cause": "retained deltas provided a valid two-sided BBO, but Series required a snapshot flag before using it",
+    "first_sample": {
+      "topic": "binance-futures",
+      "partition": 0,
+      "offset": 11698271,
+      "timestamp_ms": 1793512797000,
+      "BTCUSDT": {
+        "updates": 113,
+        "snapshots": 0,
+        "two_sided_updates": 110
+      },
+      "ETHUSDT": {
+        "updates": 113,
+        "snapshots": 0,
+        "two_sided_updates": 111
+      }
+    },
+    "fix": "accept reconstructed finite two-sided quotes; explicit incomplete snapshots still invalidate the missing side"
+  },
+  "before_fix": {
+    "outputs": 404,
+    "configured_before_icx_removal": 408,
+    "ready": 195,
+    "nq_missing_quote": 94,
+    "missing_amount_thresholds": 60,
+    "minimum_samples": 34,
+    "formula_raw_missing": 21,
+    "icx_missing_outputs": 4
+  },
+  "history": {
+    "example": "baseline_040 at 15min requires at least 360 input bars; 202 bars were retained in the inspected generation",
+    "example_baseline_104": {
+      "bars_seen": 202,
+      "raw_valid": 143,
+      "ready": false,
+      "reason": "raw formula needs 60 bars, followed by normalization and ranking warmup"
+    }
+  },
+  "amount_thresholds": {
+    "binance_futures_redis_entries": 0,
+    "worker_config_entries": 0,
+    "legacy_csv_application_month": "2026-10",
+    "current_application_month": "2026-11",
+    "legacy_values_not_reused": true
+  },
+  "tests": {
+    "period_pbs_passed": 19,
+    "root_lib_passed": 1448,
+    "root_lib_ignored": 3,
+    "cargo_fmt_check": true
+  },
+  "source_commit": "44fe891c9eb0131ee82a127393a4a80dea245db0",
+  "policy": {
+    "all_publishing_disabled": true,
+    "no_trading_started": true,
+    "readiness_thresholds_unchanged": true
+  }
+}

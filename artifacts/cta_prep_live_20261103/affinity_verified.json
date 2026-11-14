@@ -1,0 +1,88 @@
+{
+  "checked_at_ms": 1793698741809,
+  "isolated_cpus": "6-47",
+  "workers": [
+    {
+      "worker": "cta-prep-binance-futures",
+      "configured_core": 17,
+      "pids": [
+        {
+          "pid": 3956979,
+          "threads": [
+            {
+              "tid": 3956979,
+              "cpus": [
+                17
+              ]
+            },
+            {
+              "tid": 3956980,
+              "cpus": [
+                17
+              ]
+            },
+            {
+              "tid": 3956981,
+              "cpus": [
+                17
+              ]
+            },
+            {
+              "tid": 3956982,
+              "cpus": [
+                17
+              ]
+            },
+            {
+              "tid": 3956984,
+              "cpus": [
+                17
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "worker": "cta-factor-spread",
+      "configured_core": 18,
+      "pids": [
+        {
+          "pid": 3960454,
+          "threads": [
+            {
+              "tid": 3960454,
+              "cpus": [
+                18
+              ]
+            },
+            {
+              "tid": 3960455,
+              "cpus": [
+                18
+              ]
+            },
+            {
+              "tid": 3960456,
+              "cpus": [
+                18
+              ]
+            },
+            {
+              "tid": 3960457,
+              "cpus": [
+                18
+              ]
+            },
+            {
+              "tid": 3960460,
+              "cpus": [
+                18
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

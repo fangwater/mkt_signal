@@ -34,6 +34,9 @@ struct Args {
     /// Stop after this many seconds even if not enough rows have matched.
     #[arg(long)]
     max_wait_secs: Option<u64>,
+    /// Read and print raw local IPC trades only; no Kafka consumer is created.
+    #[arg(long)]
+    raw_trade_samples: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -165,6 +168,43 @@ fn main() -> Result<()> {
     }
     subscriber.subscribe_channels(params)?;
 
+    if let Some(limit) = args.raw_trade_samples {
+        let deadline = Instant::now() + Duration::from_secs(config.max_wait_secs);
+        let mut count = 0;
+        while count < limit && Instant::now() < deadline {
+            for stream in &config.streams {
+                subscriber.poll_channel_from_with(
+                    &config.service_root,
+                    &stream.venue,
+                    &ChannelType::Trade,
+                    Some(config.poll_batch),
+                    |payload| {
+                        if count >= limit {
+                            return Ok(());
+                        }
+                        if let Ok(DecodedMarketMsg::Trade(trade)) = decode_market_msg(payload) {
+                            if config.compare_symbols.contains(&trade.symbol) {
+                                println!(
+                                    "trade symbol={} ts_ms={} side={} price={} amount={}",
+                                    trade.symbol,
+                                    trade.timestamp_ms,
+                                    trade.side,
+                                    trade.price,
+                                    trade.amount
+                                );
+                                count += 1;
+                            }
+                        }
+                        Ok(())
+                    },
+                )?;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        println!("raw_trade_samples={count}");
+        return Ok(());
+    }
+
     let mut collectors: HashMap<String, PeriodCollector> = config
         .streams
         .iter()
@@ -177,6 +217,7 @@ fn main() -> Result<()> {
                     sanitize_node_component(&stream.venue)
                 ),
                 slot_symbols: Vec::new(),
+                depth_snapshot_symbols: Vec::new(),
             };
             (stream.venue.clone(), PeriodCollector::new(collector_config))
         })

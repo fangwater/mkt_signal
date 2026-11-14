@@ -1,0 +1,531 @@
+{
+  "observed_utc": "2026-10-19T07:10:23.159256+00:00",
+  "caught_up": true,
+  "generation": "9389c457-cff7-4fce-a392-90f8f9ea438d",
+  "records": 119006,
+  "heartbeat_age_ms": 1627,
+  "decode_errors": 0,
+  "evaluation_errors": 0,
+  "publish_failed": 0,
+  "first_minute": 1792215480000,
+  "latest_minute": 1792393800000,
+  "symbols_with_history": 48,
+  "missing_history": [],
+  "enabled": false,
+  "journal_healthy": true,
+  "publication_error": null,
+  "combinations": 794,
+  "missing_threshold_symbols": [
+    "1INCHUSDT",
+    "ALGOUSDT",
+    "BANDUSDT",
+    "BATUSDT",
+    "BELUSDT",
+    "COMPUSDT",
+    "EGLDUSDT",
+    "ENJUSDT",
+    "GRTUSDT",
+    "IOSTUSDT",
+    "IOTAUSDT",
+    "KAVAUSDT",
+    "KNCUSDT",
+    "KSMUSDT",
+    "NEOUSDT",
+    "QTUMUSDT",
+    "RLCUSDT",
+    "RUNEUSDT",
+    "SKLUSDT",
+    "SNXUSDT",
+    "SUSHIUSDT",
+    "THETAUSDT",
+    "TRBUSDT",
+    "VETUSDT",
+    "XTZUSDT",
+    "YFIUSDT",
+    "ZRXUSDT"
+  ],
+  "expected_blank_combinations": [
+    [
+      "1INCHUSDT",
+      "baseline_046"
+    ],
+    [
+      "1INCHUSDT",
+      "net_buy_small"
+    ],
+    [
+      "ALGOUSDT",
+      "baseline_046"
+    ],
+    [
+      "BATUSDT",
+      "net_buy_small"
+    ],
+    [
+      "BELUSDT",
+      "baseline_046"
+    ],
+    [
+      "BELUSDT",
+      "net_buy_small"
+    ],
+    [
+      "COMPUSDT",
+      "baseline_046"
+    ],
+    [
+      "COMPUSDT",
+      "net_buy_small"
+    ],
+    [
+      "ENJUSDT",
+      "net_buy_small"
+    ],
+    [
+      "IOSTUSDT",
+      "baseline_046"
+    ],
+    [
+      "IOSTUSDT",
+      "net_buy_small"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_046"
+    ],
+    [
+      "IOTAUSDT",
+      "net_buy_small"
+    ],
+    [
+      "KAVAUSDT",
+      "baseline_046"
+    ],
+    [
+      "KNCUSDT",
+      "net_buy_small"
+    ],
+    [
+      "KSMUSDT",
+      "net_buy_small"
+    ],
+    [
+      "QTUMUSDT",
+      "net_buy_small"
+    ],
+    [
+      "SKLUSDT",
+      "baseline_046"
+    ],
+    [
+      "SKLUSDT",
+      "net_buy_small"
+    ],
+    [
+      "SNXUSDT",
+      "net_buy_small"
+    ],
+    [
+      "ZRXUSDT",
+      "baseline_046"
+    ]
+  ],
+  "ready_combinations": 762,
+  "ready_with_both_filters": 693,
+  "ready_without_both_filters": [
+    [
+      "BANDUSDT",
+      "TD_MT_016"
+    ],
+    [
+      "BANDUSDT",
+      "TD_MT_022"
+    ],
+    [
+      "BANDUSDT",
+      "TD_PT_025"
+    ],
+    [
+      "BANDUSDT",
+      "TD_TI_026"
+    ],
+    [
+      "BANDUSDT",
+      "TD_TI_027"
+    ],
+    [
+      "BANDUSDT",
+      "TD_VI_010"
+    ],
+    [
+      "BANDUSDT",
+      "TD_VI_020"
+    ],
+    [
+      "BANDUSDT",
+      "TP_VPI_003"
+    ],
+    [
+      "BANDUSDT",
+      "TP_VPI_017"
+    ],
+    [
+      "BANDUSDT",
+      "baseline_022"
+    ],
+    [
+      "BANDUSDT",
+      "baseline_065"
+    ],
+    [
+      "BANDUSDT",
+      "baseline_077"
+    ],
+    [
+      "BANDUSDT",
+      "baseline_105"
+    ],
+    [
+      "BANDUSDT",
+      "baseline_164"
+    ],
+    [
+      "BANDUSDT",
+      "factor_023"
+    ],
+    [
+      "BANDUSDT",
+      "factor_152"
+    ],
+    [
+      "BANDUSDT",
+      "factor_164"
+    ],
+    [
+      "BANDUSDT",
+      "factor_169_negative"
+    ],
+    [
+      "BANDUSDT",
+      "factor_169_positive"
+    ],
+    [
+      "BANDUSDT",
+      "factor_trades_008"
+    ],
+    [
+      "BANDUSDT",
+      "factor_trades_025"
+    ],
+    [
+      "BANDUSDT",
+      "factor_trades_034"
+    ],
+    [
+      "BANDUSDT",
+      "factor_trades_050"
+    ],
+    [
+      "IOSTUSDT",
+      "TD_MT_016"
+    ],
+    [
+      "IOSTUSDT",
+      "TD_MT_022"
+    ],
+    [
+      "IOSTUSDT",
+      "TD_PR_008"
+    ],
+    [
+      "IOSTUSDT",
+      "TD_TI_024"
+    ],
+    [
+      "IOSTUSDT",
+      "TD_TI_026"
+    ],
+    [
+      "IOSTUSDT",
+      "TP_VPI_003"
+    ],
+    [
+      "IOSTUSDT",
+      "TP_VPI_017"
+    ],
+    [
+      "IOSTUSDT",
+      "baseline_005"
+    ],
+    [
+      "IOSTUSDT",
+      "baseline_019"
+    ],
+    [
+      "IOSTUSDT",
+      "baseline_105"
+    ],
+    [
+      "IOSTUSDT",
+      "baseline_140"
+    ],
+    [
+      "IOSTUSDT",
+      "baseline_164"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_022"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_023"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_164"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_165"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_169_negative"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_169_positive"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_171"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_trades_008"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_trades_025"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_trades_050"
+    ],
+    [
+      "KNCUSDT",
+      "TD_MT_022"
+    ],
+    [
+      "KNCUSDT",
+      "TD_PT_003"
+    ],
+    [
+      "KNCUSDT",
+      "TD_TI_024"
+    ],
+    [
+      "KNCUSDT",
+      "TD_TI_026"
+    ],
+    [
+      "KNCUSDT",
+      "TD_VI_010"
+    ],
+    [
+      "KNCUSDT",
+      "TP_VPI_017"
+    ],
+    [
+      "KNCUSDT",
+      "baseline_019"
+    ],
+    [
+      "KNCUSDT",
+      "baseline_077"
+    ],
+    [
+      "KNCUSDT",
+      "baseline_105"
+    ],
+    [
+      "KNCUSDT",
+      "baseline_140"
+    ],
+    [
+      "KNCUSDT",
+      "baseline_164"
+    ],
+    [
+      "KNCUSDT",
+      "factor_022"
+    ],
+    [
+      "KNCUSDT",
+      "factor_023"
+    ],
+    [
+      "KNCUSDT",
+      "factor_125"
+    ],
+    [
+      "KNCUSDT",
+      "factor_152"
+    ],
+    [
+      "KNCUSDT",
+      "factor_164"
+    ],
+    [
+      "KNCUSDT",
+      "factor_169_negative"
+    ],
+    [
+      "KNCUSDT",
+      "factor_169_positive"
+    ],
+    [
+      "KNCUSDT",
+      "factor_171"
+    ],
+    [
+      "KNCUSDT",
+      "factor_trades_008"
+    ],
+    [
+      "KNCUSDT",
+      "factor_trades_025"
+    ],
+    [
+      "KNCUSDT",
+      "factor_trades_034"
+    ],
+    [
+      "KNCUSDT",
+      "factor_trades_035"
+    ],
+    [
+      "KNCUSDT",
+      "factor_trades_050"
+    ]
+  ],
+  "latest_by_symbol": {
+    "1INCHUSDT": 1792393740000,
+    "AAVEUSDT": 1792393800000,
+    "ADAUSDT": 1792393800000,
+    "ALGOUSDT": 1792393800000,
+    "ATOMUSDT": 1792393800000,
+    "AXSUSDT": 1792393800000,
+    "BANDUSDT": 1792393740000,
+    "BATUSDT": 1792393740000,
+    "BELUSDT": 1792393800000,
+    "BNBUSDT": 1792393740000,
+    "COMPUSDT": 1792393740000,
+    "CRVUSDT": 1792393800000,
+    "DASHUSDT": 1792393800000,
+    "DOTUSDT": 1792393800000,
+    "EGLDUSDT": 1792393800000,
+    "ENJUSDT": 1792393800000,
+    "ETCUSDT": 1792393800000,
+    "FILUSDT": 1792393800000,
+    "GRTUSDT": 1792393800000,
+    "IOSTUSDT": 1792393800000,
+    "IOTAUSDT": 1792393800000,
+    "KAVAUSDT": 1792393800000,
+    "KNCUSDT": 1792393740000,
+    "KSMUSDT": 1792393800000,
+    "NEARUSDT": 1792393800000,
+    "NEOUSDT": 1792393800000,
+    "ONTUSDT": 1792393800000,
+    "QTUMUSDT": 1792393740000,
+    "RLCUSDT": 1792393800000,
+    "RSRUSDT": 1792393800000,
+    "RUNEUSDT": 1792393800000,
+    "SKLUSDT": 1792393800000,
+    "SNXUSDT": 1792393800000,
+    "SOLUSDT": 1792393800000,
+    "SUSHIUSDT": 1792393800000,
+    "THETAUSDT": 1792393800000,
+    "TRBUSDT": 1792393800000,
+    "TRXUSDT": 1792393800000,
+    "UNIUSDT": 1792393800000,
+    "VETUSDT": 1792393740000,
+    "XLMUSDT": 1792393800000,
+    "XRPUSDT": 1792393800000,
+    "XTZUSDT": 1792393800000,
+    "YFIUSDT": 1792393800000,
+    "ZECUSDT": 1792393800000,
+    "ZENUSDT": 1792393800000,
+    "ZILUSDT": 1792393800000,
+    "ZRXUSDT": 1792393740000
+  },
+  "other_unready": [
+    [
+      "AXSUSDT",
+      "factor_114"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_114"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_114"
+    ],
+    [
+      "KAVAUSDT",
+      "factor_114"
+    ],
+    [
+      "KNCUSDT",
+      "factor_114"
+    ],
+    [
+      "KSMUSDT",
+      "factor_114"
+    ],
+    [
+      "NEARUSDT",
+      "factor_114"
+    ],
+    [
+      "ONTUSDT",
+      "factor_114"
+    ],
+    [
+      "RLCUSDT",
+      "factor_114"
+    ],
+    [
+      "SKLUSDT",
+      "factor_114"
+    ],
+    [
+      "ZENUSDT",
+      "factor_114"
+    ]
+  ],
+  "processes": [
+    {
+      "pid": 2708645,
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 2798755,
+      "comm": "cta_spread_fact",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "cpus": "17"
+    },
+    {
+      "pid": 2830224,
+      "comm": "cta_spread_sign",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "cpus": "0-5,48-95"
+    }
+  ],
+  "positions_zero": true,
+  "state_combinations": 794
+}

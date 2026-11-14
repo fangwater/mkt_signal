@@ -1,0 +1,2272 @@
+{
+  "observed_at_utc": "2026-11-03T03:32:57.100176+00:00",
+  "library": "kafka-python 3.0.12",
+  "requested_api_version": "auto",
+  "read_only": true,
+  "group_id": null,
+  "enable_auto_commit": false,
+  "rewrites": [
+    {
+      "host": "10.140.140.55",
+      "to_host": "156.231.137.189",
+      "port": 1501
+    }
+  ],
+  "messages": [
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945086,
+      "timestamp": 1793676772001,
+      "bytes": 121698,
+      "sha256": "6c50a3ab49e13613898f7c6aa327021b2df4556262cea0fa5321dde5f7791cb3",
+      "file": "okex-swap_0_6945086.value",
+      "zlib_decoded_bytes": 358469,
+      "period": 29869856,
+      "ts": 1793676771000,
+      "post_ts": 1793676771816,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 245,
+      "incs": 2476,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 1,
+          "inc_count": 29,
+          "trades": [
+            {
+              "timestamp": 1793676768374000,
+              "side": "B",
+              "price": 3.806,
+              "amount": 0.4
+            }
+          ]
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 8,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 10,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 0,
+          "inc_count": 24,
+          "trades": []
+        },
+        "DOTUSDT": {
+          "trade_count": 8,
+          "inc_count": 21,
+          "trades": [
+            {
+              "timestamp": 1793676769427000,
+              "side": "B",
+              "price": 0.9331,
+              "amount": 2.0
+            },
+            {
+              "timestamp": 1793676769427000,
+              "side": "B",
+              "price": 0.9332,
+              "amount": 9.0
+            },
+            {
+              "timestamp": 1793676770544000,
+              "side": "S",
+              "price": 0.9331,
+              "amount": 118.0
+            },
+            {
+              "timestamp": 1793676770581000,
+              "side": "B",
+              "price": 0.9331,
+              "amount": 141.0
+            },
+            {
+              "timestamp": 1793676770581000,
+              "side": "B",
+              "price": 0.9332,
+              "amount": 518.0
+            },
+            {
+              "timestamp": 1793676770581000,
+              "side": "B",
+              "price": 0.9333,
+              "amount": 427.0
+            },
+            {
+              "timestamp": 1793676770581000,
+              "side": "B",
+              "price": 0.9333,
+              "amount": 401.0
+            },
+            {
+              "timestamp": 1793676770593000,
+              "side": "B",
+              "price": 0.9334,
+              "amount": 161.0
+            }
+          ]
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 10,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 2,
+          "inc_count": 11,
+          "trades": [
+            {
+              "timestamp": 1793676770541000,
+              "side": "S",
+              "price": 0.2621,
+              "amount": 3.0
+            },
+            {
+              "timestamp": 1793676770615000,
+              "side": "S",
+              "price": 0.2621,
+              "amount": 644.0
+            }
+          ]
+        },
+        "DOGEUSDT": {
+          "trade_count": 1,
+          "inc_count": 29,
+          "trades": [
+            {
+              "timestamp": 1793676769400000,
+              "side": "B",
+              "price": 0.07394,
+              "amount": 4.93
+            }
+          ]
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945087,
+      "timestamp": 1793676775084,
+      "bytes": 106880,
+      "sha256": "2e42c23c2f07dc58443f1b1500b954566f7856f9b989456c06a93588b309ec9b",
+      "file": "okex-swap_0_6945087.value",
+      "zlib_decoded_bytes": 308623,
+      "period": 29869857,
+      "ts": 1793676774000,
+      "post_ts": 1793676774909,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 179,
+      "incs": 2420,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 4,
+          "inc_count": 26,
+          "trades": [
+            {
+              "timestamp": 1793676771971000,
+              "side": "B",
+              "price": 3.807,
+              "amount": 0.3
+            },
+            {
+              "timestamp": 1793676773330000,
+              "side": "S",
+              "price": 3.806,
+              "amount": 0.6
+            },
+            {
+              "timestamp": 1793676773331000,
+              "side": "S",
+              "price": 3.806,
+              "amount": 0.3
+            },
+            {
+              "timestamp": 1793676773660000,
+              "side": "B",
+              "price": 3.807,
+              "amount": 0.1
+            }
+          ]
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 5,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 8,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 1,
+          "inc_count": 18,
+          "trades": [
+            {
+              "timestamp": 1793676771503000,
+              "side": "S",
+              "price": 0.1877,
+              "amount": 0.1
+            }
+          ]
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 23,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 10,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 0,
+          "inc_count": 18,
+          "trades": []
+        },
+        "DOGEUSDT": {
+          "trade_count": 1,
+          "inc_count": 30,
+          "trades": [
+            {
+              "timestamp": 1793676772533000,
+              "side": "B",
+              "price": 0.07394,
+              "amount": 180.0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945088,
+      "timestamp": 1793676775083,
+      "bytes": 106880,
+      "sha256": "2e42c23c2f07dc58443f1b1500b954566f7856f9b989456c06a93588b309ec9b",
+      "file": "okex-swap_0_6945088.value",
+      "zlib_decoded_bytes": 308623,
+      "period": 29869857,
+      "ts": 1793676774000,
+      "post_ts": 1793676774909,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 179,
+      "incs": 2420,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 4,
+          "inc_count": 26,
+          "trades": [
+            {
+              "timestamp": 1793676771971000,
+              "side": "B",
+              "price": 3.807,
+              "amount": 0.3
+            },
+            {
+              "timestamp": 1793676773330000,
+              "side": "S",
+              "price": 3.806,
+              "amount": 0.6
+            },
+            {
+              "timestamp": 1793676773331000,
+              "side": "S",
+              "price": 3.806,
+              "amount": 0.3
+            },
+            {
+              "timestamp": 1793676773660000,
+              "side": "B",
+              "price": 3.807,
+              "amount": 0.1
+            }
+          ]
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 5,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 8,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 1,
+          "inc_count": 18,
+          "trades": [
+            {
+              "timestamp": 1793676771503000,
+              "side": "S",
+              "price": 0.1877,
+              "amount": 0.1
+            }
+          ]
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 23,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 10,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 0,
+          "inc_count": 18,
+          "trades": []
+        },
+        "DOGEUSDT": {
+          "trade_count": 1,
+          "inc_count": 30,
+          "trades": [
+            {
+              "timestamp": 1793676772533000,
+              "side": "B",
+              "price": 0.07394,
+              "amount": 180.0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945089,
+      "timestamp": 1793676778136,
+      "bytes": 167270,
+      "sha256": "f963ea96f5bdd46c0a2748d67a5810a56865ce66e0911500ad9db8ec26807598",
+      "file": "okex-swap_0_6945089.value",
+      "zlib_decoded_bytes": 498185,
+      "period": 29869858,
+      "ts": 1793676777000,
+      "post_ts": 1793676777908,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 485,
+      "incs": 2569,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 0,
+          "inc_count": 28,
+          "trades": []
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 6,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 1,
+          "inc_count": 18,
+          "trades": [
+            {
+              "timestamp": 1793676776041000,
+              "side": "S",
+              "price": 6.906,
+              "amount": 0.2
+            }
+          ]
+        },
+        "ADAUSDT": {
+          "trade_count": 0,
+          "inc_count": 23,
+          "trades": []
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 19,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 9,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 1,
+          "inc_count": 17,
+          "trades": [
+            {
+              "timestamp": 1793676776502000,
+              "side": "S",
+              "price": 0.262,
+              "amount": 1.0
+            }
+          ]
+        },
+        "DOGEUSDT": {
+          "trade_count": 3,
+          "inc_count": 29,
+          "trades": [
+            {
+              "timestamp": 1793676776061000,
+              "side": "S",
+              "price": 0.07393,
+              "amount": 28.81
+            },
+            {
+              "timestamp": 1793676776061000,
+              "side": "S",
+              "price": 0.07393,
+              "amount": 7.43
+            },
+            {
+              "timestamp": 1793676776690000,
+              "side": "B",
+              "price": 0.07393,
+              "amount": 0.13
+            }
+          ]
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945090,
+      "timestamp": 1793676778136,
+      "bytes": 167270,
+      "sha256": "f963ea96f5bdd46c0a2748d67a5810a56865ce66e0911500ad9db8ec26807598",
+      "file": "okex-swap_0_6945090.value",
+      "zlib_decoded_bytes": 498185,
+      "period": 29869858,
+      "ts": 1793676777000,
+      "post_ts": 1793676777908,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 485,
+      "incs": 2569,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 0,
+          "inc_count": 28,
+          "trades": []
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 6,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 1,
+          "inc_count": 18,
+          "trades": [
+            {
+              "timestamp": 1793676776041000,
+              "side": "S",
+              "price": 6.906,
+              "amount": 0.2
+            }
+          ]
+        },
+        "ADAUSDT": {
+          "trade_count": 0,
+          "inc_count": 23,
+          "trades": []
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 19,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 9,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 1,
+          "inc_count": 17,
+          "trades": [
+            {
+              "timestamp": 1793676776502000,
+              "side": "S",
+              "price": 0.262,
+              "amount": 1.0
+            }
+          ]
+        },
+        "DOGEUSDT": {
+          "trade_count": 3,
+          "inc_count": 29,
+          "trades": [
+            {
+              "timestamp": 1793676776061000,
+              "side": "S",
+              "price": 0.07393,
+              "amount": 28.81
+            },
+            {
+              "timestamp": 1793676776061000,
+              "side": "S",
+              "price": 0.07393,
+              "amount": 7.43
+            },
+            {
+              "timestamp": 1793676776690000,
+              "side": "B",
+              "price": 0.07393,
+              "amount": 0.13
+            }
+          ]
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945091,
+      "timestamp": 1793676780995,
+      "bytes": 119126,
+      "sha256": "3725a424c3284c6d3d234c6e7b730c8ee3551fb756a79f80754a0f40fb2a6135",
+      "file": "okex-swap_0_6945091.value",
+      "zlib_decoded_bytes": 344274,
+      "period": 29869859,
+      "ts": 1793676780000,
+      "post_ts": 1793676780819,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 170,
+      "incs": 2380,
+      "selected_symbols": {
+        "DOGEUSDT": {
+          "trade_count": 0,
+          "inc_count": 26,
+          "trades": []
+        },
+        "NEARUSDT": {
+          "trade_count": 1,
+          "inc_count": 28,
+          "trades": [
+            {
+              "timestamp": 1793676779009000,
+              "side": "B",
+              "price": 3.807,
+              "amount": 56.4
+            }
+          ]
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 6,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 9,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 0,
+          "inc_count": 16,
+          "trades": []
+        },
+        "DOTUSDT": {
+          "trade_count": 2,
+          "inc_count": 26,
+          "trades": [
+            {
+              "timestamp": 1793676779052000,
+              "side": "B",
+              "price": 0.9334,
+              "amount": 2.0
+            },
+            {
+              "timestamp": 1793676779089000,
+              "side": "B",
+              "price": 0.9335,
+              "amount": 3.0
+            }
+          ]
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 3,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 1,
+          "inc_count": 9,
+          "trades": [
+            {
+              "timestamp": 1793676777480000,
+              "side": "S",
+              "price": 0.262,
+              "amount": 5.0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945092,
+      "timestamp": 1793676780994,
+      "bytes": 119126,
+      "sha256": "3725a424c3284c6d3d234c6e7b730c8ee3551fb756a79f80754a0f40fb2a6135",
+      "file": "okex-swap_0_6945092.value",
+      "zlib_decoded_bytes": 344274,
+      "period": 29869859,
+      "ts": 1793676780000,
+      "post_ts": 1793676780819,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 170,
+      "incs": 2380,
+      "selected_symbols": {
+        "DOGEUSDT": {
+          "trade_count": 0,
+          "inc_count": 26,
+          "trades": []
+        },
+        "NEARUSDT": {
+          "trade_count": 1,
+          "inc_count": 28,
+          "trades": [
+            {
+              "timestamp": 1793676779009000,
+              "side": "B",
+              "price": 3.807,
+              "amount": 56.4
+            }
+          ]
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 6,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 9,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 0,
+          "inc_count": 16,
+          "trades": []
+        },
+        "DOTUSDT": {
+          "trade_count": 2,
+          "inc_count": 26,
+          "trades": [
+            {
+              "timestamp": 1793676779052000,
+              "side": "B",
+              "price": 0.9334,
+              "amount": 2.0
+            },
+            {
+              "timestamp": 1793676779089000,
+              "side": "B",
+              "price": 0.9335,
+              "amount": 3.0
+            }
+          ]
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 3,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 1,
+          "inc_count": 9,
+          "trades": [
+            {
+              "timestamp": 1793676777480000,
+              "side": "S",
+              "price": 0.262,
+              "amount": 5.0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945093,
+      "timestamp": 1793676784100,
+      "bytes": 243065,
+      "sha256": "c498b8e445cfc661dbe9ffabc9ef2bc03eb83c16485ab3fe5bdfc793be775a44",
+      "file": "okex-swap_0_6945093.value",
+      "zlib_decoded_bytes": 712031,
+      "period": 29869860,
+      "ts": 1793676783000,
+      "post_ts": 1793676783821,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 640,
+      "incs": 3577,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 1,
+          "inc_count": 28,
+          "trades": [
+            {
+              "timestamp": 1793676781272000,
+              "side": "S",
+              "price": 3.807,
+              "amount": 12.8
+            }
+          ]
+        },
+        "ATOMUSDT": {
+          "trade_count": 4,
+          "inc_count": 17,
+          "trades": [
+            {
+              "timestamp": 1793676781275000,
+              "side": "S",
+              "price": 1.42,
+              "amount": 588.0
+            },
+            {
+              "timestamp": 1793676781276000,
+              "side": "S",
+              "price": 1.42,
+              "amount": 306.0
+            },
+            {
+              "timestamp": 1793676781277000,
+              "side": "S",
+              "price": 1.42,
+              "amount": 323.0
+            },
+            {
+              "timestamp": 1793676781278000,
+              "side": "S",
+              "price": 1.42,
+              "amount": 171.0
+            }
+          ]
+        },
+        "ETCUSDT": {
+          "trade_count": 1,
+          "inc_count": 18,
+          "trades": [
+            {
+              "timestamp": 1793676782160000,
+              "side": "S",
+              "price": 6.904,
+              "amount": 0.08
+            }
+          ]
+        },
+        "ADAUSDT": {
+          "trade_count": 2,
+          "inc_count": 23,
+          "trades": [
+            {
+              "timestamp": 1793676781290000,
+              "side": "S",
+              "price": 0.1877,
+              "amount": 0.1
+            },
+            {
+              "timestamp": 1793676782197000,
+              "side": "S",
+              "price": 0.1877,
+              "amount": 535.2
+            }
+          ]
+        },
+        "DOTUSDT": {
+          "trade_count": 4,
+          "inc_count": 24,
+          "trades": [
+            {
+              "timestamp": 1793676780776000,
+              "side": "S",
+              "price": 0.9335,
+              "amount": 7.0
+            },
+            {
+              "timestamp": 1793676781212000,
+              "side": "S",
+              "price": 0.9334,
+              "amount": 268.0
+            },
+            {
+              "timestamp": 1793676781212000,
+              "side": "S",
+              "price": 0.9333,
+              "amount": 647.0
+            },
+            {
+              "timestamp": 1793676781214000,
+              "side": "S",
+              "price": 0.9332,
+              "amount": 433.0
+            }
+          ]
+        },
+        "TRBUSDT": {
+          "trade_count": 1,
+          "inc_count": 17,
+          "trades": [
+            {
+              "timestamp": 1793676781352000,
+              "side": "S",
+              "price": 16.08,
+              "amount": 12.0
+            }
+          ]
+        },
+        "CRVUSDT": {
+          "trade_count": 0,
+          "inc_count": 9,
+          "trades": []
+        },
+        "DOGEUSDT": {
+          "trade_count": 5,
+          "inc_count": 27,
+          "trades": [
+            {
+              "timestamp": 1793676782210000,
+              "side": "S",
+              "price": 0.07392,
+              "amount": 28.99
+            },
+            {
+              "timestamp": 1793676782213000,
+              "side": "S",
+              "price": 0.07391,
+              "amount": 0.56
+            },
+            {
+              "timestamp": 1793676782317000,
+              "side": "B",
+              "price": 0.07391,
+              "amount": 0.02
+            },
+            {
+              "timestamp": 1793676782321000,
+              "side": "B",
+              "price": 0.07391,
+              "amount": 0.16
+            },
+            {
+              "timestamp": 1793676782322000,
+              "side": "B",
+              "price": 0.07391,
+              "amount": 0.04
+            }
+          ]
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945094,
+      "timestamp": 1793676784099,
+      "bytes": 243065,
+      "sha256": "c498b8e445cfc661dbe9ffabc9ef2bc03eb83c16485ab3fe5bdfc793be775a44",
+      "file": "okex-swap_0_6945094.value",
+      "zlib_decoded_bytes": 712031,
+      "period": 29869860,
+      "ts": 1793676783000,
+      "post_ts": 1793676783821,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 640,
+      "incs": 3577,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 1,
+          "inc_count": 28,
+          "trades": [
+            {
+              "timestamp": 1793676781272000,
+              "side": "S",
+              "price": 3.807,
+              "amount": 12.8
+            }
+          ]
+        },
+        "ATOMUSDT": {
+          "trade_count": 4,
+          "inc_count": 17,
+          "trades": [
+            {
+              "timestamp": 1793676781275000,
+              "side": "S",
+              "price": 1.42,
+              "amount": 588.0
+            },
+            {
+              "timestamp": 1793676781276000,
+              "side": "S",
+              "price": 1.42,
+              "amount": 306.0
+            },
+            {
+              "timestamp": 1793676781277000,
+              "side": "S",
+              "price": 1.42,
+              "amount": 323.0
+            },
+            {
+              "timestamp": 1793676781278000,
+              "side": "S",
+              "price": 1.42,
+              "amount": 171.0
+            }
+          ]
+        },
+        "ETCUSDT": {
+          "trade_count": 1,
+          "inc_count": 18,
+          "trades": [
+            {
+              "timestamp": 1793676782160000,
+              "side": "S",
+              "price": 6.904,
+              "amount": 0.08
+            }
+          ]
+        },
+        "ADAUSDT": {
+          "trade_count": 2,
+          "inc_count": 23,
+          "trades": [
+            {
+              "timestamp": 1793676781290000,
+              "side": "S",
+              "price": 0.1877,
+              "amount": 0.1
+            },
+            {
+              "timestamp": 1793676782197000,
+              "side": "S",
+              "price": 0.1877,
+              "amount": 535.2
+            }
+          ]
+        },
+        "DOTUSDT": {
+          "trade_count": 4,
+          "inc_count": 24,
+          "trades": [
+            {
+              "timestamp": 1793676780776000,
+              "side": "S",
+              "price": 0.9335,
+              "amount": 7.0
+            },
+            {
+              "timestamp": 1793676781212000,
+              "side": "S",
+              "price": 0.9334,
+              "amount": 268.0
+            },
+            {
+              "timestamp": 1793676781212000,
+              "side": "S",
+              "price": 0.9333,
+              "amount": 647.0
+            },
+            {
+              "timestamp": 1793676781214000,
+              "side": "S",
+              "price": 0.9332,
+              "amount": 433.0
+            }
+          ]
+        },
+        "TRBUSDT": {
+          "trade_count": 1,
+          "inc_count": 17,
+          "trades": [
+            {
+              "timestamp": 1793676781352000,
+              "side": "S",
+              "price": 16.08,
+              "amount": 12.0
+            }
+          ]
+        },
+        "CRVUSDT": {
+          "trade_count": 0,
+          "inc_count": 9,
+          "trades": []
+        },
+        "DOGEUSDT": {
+          "trade_count": 5,
+          "inc_count": 27,
+          "trades": [
+            {
+              "timestamp": 1793676782210000,
+              "side": "S",
+              "price": 0.07392,
+              "amount": 28.99
+            },
+            {
+              "timestamp": 1793676782213000,
+              "side": "S",
+              "price": 0.07391,
+              "amount": 0.56
+            },
+            {
+              "timestamp": 1793676782317000,
+              "side": "B",
+              "price": 0.07391,
+              "amount": 0.02
+            },
+            {
+              "timestamp": 1793676782321000,
+              "side": "B",
+              "price": 0.07391,
+              "amount": 0.16
+            },
+            {
+              "timestamp": 1793676782322000,
+              "side": "B",
+              "price": 0.07391,
+              "amount": 0.04
+            }
+          ]
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945095,
+      "timestamp": 1793676787030,
+      "bytes": 162525,
+      "sha256": "6e2d468d35f1ff3bc4bec8a8dfbb32ada3240a4cdbdfe692674e6110a1b8b4c9",
+      "file": "okex-swap_0_6945095.value",
+      "zlib_decoded_bytes": 479139,
+      "period": 29869861,
+      "ts": 1793676786000,
+      "post_ts": 1793676786818,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 332,
+      "incs": 3023,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 3,
+          "inc_count": 26,
+          "trades": [
+            {
+              "timestamp": 1793676783300000,
+              "side": "B",
+              "price": 3.807,
+              "amount": 0.4
+            },
+            {
+              "timestamp": 1793676783778000,
+              "side": "S",
+              "price": 3.807,
+              "amount": 21.1
+            },
+            {
+              "timestamp": 1793676785717000,
+              "side": "S",
+              "price": 3.807,
+              "amount": 11.7
+            }
+          ]
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 7,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 1,
+          "inc_count": 16,
+          "trades": [
+            {
+              "timestamp": 1793676784788000,
+              "side": "S",
+              "price": 6.903,
+              "amount": 0.91
+            }
+          ]
+        },
+        "ADAUSDT": {
+          "trade_count": 1,
+          "inc_count": 28,
+          "trades": [
+            {
+              "timestamp": 1793676784146000,
+              "side": "B",
+              "price": 0.1877,
+              "amount": 13.3
+            }
+          ]
+        },
+        "DOTUSDT": {
+          "trade_count": 2,
+          "inc_count": 23,
+          "trades": [
+            {
+              "timestamp": 1793676785109000,
+              "side": "S",
+              "price": 0.9333,
+              "amount": 252.0
+            },
+            {
+              "timestamp": 1793676785109000,
+              "side": "S",
+              "price": 0.9332,
+              "amount": 298.0
+            }
+          ]
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 16,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 1,
+          "inc_count": 16,
+          "trades": [
+            {
+              "timestamp": 1793676783219000,
+              "side": "B",
+              "price": 0.2621,
+              "amount": 1731.0
+            }
+          ]
+        },
+        "DOGEUSDT": {
+          "trade_count": 0,
+          "inc_count": 28,
+          "trades": []
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945096,
+      "timestamp": 1793676787056,
+      "bytes": 162525,
+      "sha256": "6e2d468d35f1ff3bc4bec8a8dfbb32ada3240a4cdbdfe692674e6110a1b8b4c9",
+      "file": "okex-swap_0_6945096.value",
+      "zlib_decoded_bytes": 479139,
+      "period": 29869861,
+      "ts": 1793676786000,
+      "post_ts": 1793676786818,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 332,
+      "incs": 3023,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 3,
+          "inc_count": 26,
+          "trades": [
+            {
+              "timestamp": 1793676783300000,
+              "side": "B",
+              "price": 3.807,
+              "amount": 0.4
+            },
+            {
+              "timestamp": 1793676783778000,
+              "side": "S",
+              "price": 3.807,
+              "amount": 21.1
+            },
+            {
+              "timestamp": 1793676785717000,
+              "side": "S",
+              "price": 3.807,
+              "amount": 11.7
+            }
+          ]
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 7,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 1,
+          "inc_count": 16,
+          "trades": [
+            {
+              "timestamp": 1793676784788000,
+              "side": "S",
+              "price": 6.903,
+              "amount": 0.91
+            }
+          ]
+        },
+        "ADAUSDT": {
+          "trade_count": 1,
+          "inc_count": 28,
+          "trades": [
+            {
+              "timestamp": 1793676784146000,
+              "side": "B",
+              "price": 0.1877,
+              "amount": 13.3
+            }
+          ]
+        },
+        "DOTUSDT": {
+          "trade_count": 2,
+          "inc_count": 23,
+          "trades": [
+            {
+              "timestamp": 1793676785109000,
+              "side": "S",
+              "price": 0.9333,
+              "amount": 252.0
+            },
+            {
+              "timestamp": 1793676785109000,
+              "side": "S",
+              "price": 0.9332,
+              "amount": 298.0
+            }
+          ]
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 16,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 1,
+          "inc_count": 16,
+          "trades": [
+            {
+              "timestamp": 1793676783219000,
+              "side": "B",
+              "price": 0.2621,
+              "amount": 1731.0
+            }
+          ]
+        },
+        "DOGEUSDT": {
+          "trade_count": 0,
+          "inc_count": 28,
+          "trades": []
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945097,
+      "timestamp": 1793676789990,
+      "bytes": 115699,
+      "sha256": "ae27b29da68d7601905ff42373220255a3faac4160465d69c87c761d3874e38b",
+      "file": "okex-swap_0_6945097.value",
+      "zlib_decoded_bytes": 338451,
+      "period": 29869862,
+      "ts": 1793676789000,
+      "post_ts": 1793676789820,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 173,
+      "incs": 2460,
+      "selected_symbols": {
+        "DOGEUSDT": {
+          "trade_count": 1,
+          "inc_count": 27,
+          "trades": [
+            {
+              "timestamp": 1793676788349000,
+              "side": "S",
+              "price": 0.0739,
+              "amount": 0.02
+            }
+          ]
+        },
+        "NEARUSDT": {
+          "trade_count": 0,
+          "inc_count": 27,
+          "trades": []
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 17,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 14,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 1,
+          "inc_count": 19,
+          "trades": [
+            {
+              "timestamp": 1793676787767000,
+              "side": "S",
+              "price": 0.1877,
+              "amount": 4.6
+            }
+          ]
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 19,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 1,
+          "inc_count": 10,
+          "trades": [
+            {
+              "timestamp": 1793676787298000,
+              "side": "B",
+              "price": 16.08,
+              "amount": 7.0
+            }
+          ]
+        },
+        "CRVUSDT": {
+          "trade_count": 0,
+          "inc_count": 11,
+          "trades": []
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945098,
+      "timestamp": 1793676790012,
+      "bytes": 115699,
+      "sha256": "ae27b29da68d7601905ff42373220255a3faac4160465d69c87c761d3874e38b",
+      "file": "okex-swap_0_6945098.value",
+      "zlib_decoded_bytes": 338451,
+      "period": 29869862,
+      "ts": 1793676789000,
+      "post_ts": 1793676789820,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 173,
+      "incs": 2460,
+      "selected_symbols": {
+        "DOGEUSDT": {
+          "trade_count": 1,
+          "inc_count": 27,
+          "trades": [
+            {
+              "timestamp": 1793676788349000,
+              "side": "S",
+              "price": 0.0739,
+              "amount": 0.02
+            }
+          ]
+        },
+        "NEARUSDT": {
+          "trade_count": 0,
+          "inc_count": 27,
+          "trades": []
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 17,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 14,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 1,
+          "inc_count": 19,
+          "trades": [
+            {
+              "timestamp": 1793676787767000,
+              "side": "S",
+              "price": 0.1877,
+              "amount": 4.6
+            }
+          ]
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 19,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 1,
+          "inc_count": 10,
+          "trades": [
+            {
+              "timestamp": 1793676787298000,
+              "side": "B",
+              "price": 16.08,
+              "amount": 7.0
+            }
+          ]
+        },
+        "CRVUSDT": {
+          "trade_count": 0,
+          "inc_count": 11,
+          "trades": []
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945099,
+      "timestamp": 1793676793099,
+      "bytes": 111781,
+      "sha256": "580fdefedf8f3050bf71ce1178a285b0ea0b4b00963407e33c8f70fcbac065a0",
+      "file": "okex-swap_0_6945099.value",
+      "zlib_decoded_bytes": 314618,
+      "period": 29869863,
+      "ts": 1793676792000,
+      "post_ts": 1793676792910,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 234,
+      "incs": 2353,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 0,
+          "inc_count": 27,
+          "trades": []
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 7,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 15,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 0,
+          "inc_count": 15,
+          "trades": []
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 17,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 9,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 3,
+          "inc_count": 16,
+          "trades": [
+            {
+              "timestamp": 1793676789998000,
+              "side": "S",
+              "price": 0.2621,
+              "amount": 3.0
+            },
+            {
+              "timestamp": 1793676791583000,
+              "side": "B",
+              "price": 0.2622,
+              "amount": 475.0
+            },
+            {
+              "timestamp": 1793676791721000,
+              "side": "B",
+              "price": 0.2622,
+              "amount": 44.0
+            }
+          ]
+        },
+        "DOGEUSDT": {
+          "trade_count": 0,
+          "inc_count": 27,
+          "trades": []
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945100,
+      "timestamp": 1793676793098,
+      "bytes": 111781,
+      "sha256": "580fdefedf8f3050bf71ce1178a285b0ea0b4b00963407e33c8f70fcbac065a0",
+      "file": "okex-swap_0_6945100.value",
+      "zlib_decoded_bytes": 314618,
+      "period": 29869863,
+      "ts": 1793676792000,
+      "post_ts": 1793676792910,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 234,
+      "incs": 2353,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 0,
+          "inc_count": 27,
+          "trades": []
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 7,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 15,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 0,
+          "inc_count": 15,
+          "trades": []
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 17,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 9,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 3,
+          "inc_count": 16,
+          "trades": [
+            {
+              "timestamp": 1793676789998000,
+              "side": "S",
+              "price": 0.2621,
+              "amount": 3.0
+            },
+            {
+              "timestamp": 1793676791583000,
+              "side": "B",
+              "price": 0.2622,
+              "amount": 475.0
+            },
+            {
+              "timestamp": 1793676791721000,
+              "side": "B",
+              "price": 0.2622,
+              "amount": 44.0
+            }
+          ]
+        },
+        "DOGEUSDT": {
+          "trade_count": 0,
+          "inc_count": 27,
+          "trades": []
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945101,
+      "timestamp": 1793676795995,
+      "bytes": 124580,
+      "sha256": "4a589a4eaec4251d25147c65d50e1c993eb2dd8cc5de6348945138dccf6a02d3",
+      "file": "okex-swap_0_6945101.value",
+      "zlib_decoded_bytes": 354801,
+      "period": 29869864,
+      "ts": 1793676795000,
+      "post_ts": 1793676795818,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 181,
+      "incs": 2570,
+      "selected_symbols": {
+        "DOGEUSDT": {
+          "trade_count": 3,
+          "inc_count": 26,
+          "trades": [
+            {
+              "timestamp": 1793676793324000,
+              "side": "B",
+              "price": 0.07391,
+              "amount": 56.51
+            },
+            {
+              "timestamp": 1793676794056000,
+              "side": "B",
+              "price": 0.07392,
+              "amount": 21.37
+            },
+            {
+              "timestamp": 1793676794070000,
+              "side": "B",
+              "price": 0.07392,
+              "amount": 0.14
+            }
+          ]
+        },
+        "NEARUSDT": {
+          "trade_count": 0,
+          "inc_count": 27,
+          "trades": []
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 9,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 13,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 0,
+          "inc_count": 21,
+          "trades": []
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 16,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 10,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 0,
+          "inc_count": 15,
+          "trades": []
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945102,
+      "timestamp": 1793676796013,
+      "bytes": 124580,
+      "sha256": "4a589a4eaec4251d25147c65d50e1c993eb2dd8cc5de6348945138dccf6a02d3",
+      "file": "okex-swap_0_6945102.value",
+      "zlib_decoded_bytes": 354801,
+      "period": 29869864,
+      "ts": 1793676795000,
+      "post_ts": 1793676795818,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 181,
+      "incs": 2570,
+      "selected_symbols": {
+        "DOGEUSDT": {
+          "trade_count": 3,
+          "inc_count": 26,
+          "trades": [
+            {
+              "timestamp": 1793676793324000,
+              "side": "B",
+              "price": 0.07391,
+              "amount": 56.51
+            },
+            {
+              "timestamp": 1793676794056000,
+              "side": "B",
+              "price": 0.07392,
+              "amount": 21.37
+            },
+            {
+              "timestamp": 1793676794070000,
+              "side": "B",
+              "price": 0.07392,
+              "amount": 0.14
+            }
+          ]
+        },
+        "NEARUSDT": {
+          "trade_count": 0,
+          "inc_count": 27,
+          "trades": []
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 9,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 13,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 0,
+          "inc_count": 21,
+          "trades": []
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 16,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 10,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 0,
+          "inc_count": 15,
+          "trades": []
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945103,
+      "timestamp": 1793676798994,
+      "bytes": 120167,
+      "sha256": "5e0f5bdfb8f692c75ba6da217be265d82e2548d04d959460c136da9bc17b5594",
+      "file": "okex-swap_0_6945103.value",
+      "zlib_decoded_bytes": 345122,
+      "period": 29869865,
+      "ts": 1793676798000,
+      "post_ts": 1793676798816,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 210,
+      "incs": 2359,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 10,
+          "inc_count": 26,
+          "trades": [
+            {
+              "timestamp": 1793676796938000,
+              "side": "S",
+              "price": 3.807,
+              "amount": 70.5
+            },
+            {
+              "timestamp": 1793676796938000,
+              "side": "S",
+              "price": 3.807,
+              "amount": 142.2
+            },
+            {
+              "timestamp": 1793676796939000,
+              "side": "S",
+              "price": 3.807,
+              "amount": 79.7
+            },
+            {
+              "timestamp": 1793676796939000,
+              "side": "S",
+              "price": 3.807,
+              "amount": 59.8
+            },
+            {
+              "timestamp": 1793676796946000,
+              "side": "B",
+              "price": 3.807,
+              "amount": 739.9
+            },
+            {
+              "timestamp": 1793676796946000,
+              "side": "B",
+              "price": 3.808,
+              "amount": 162.4
+            },
+            {
+              "timestamp": 1793676796951000,
+              "side": "B",
+              "price": 3.808,
+              "amount": 49.7
+            },
+            {
+              "timestamp": 1793676796951000,
+              "side": "B",
+              "price": 3.808,
+              "amount": 185.9
+            },
+            {
+              "timestamp": 1793676797018000,
+              "side": "B",
+              "price": 3.809,
+              "amount": 32.7
+            },
+            {
+              "timestamp": 1793676797039000,
+              "side": "B",
+              "price": 3.81,
+              "amount": 22.8
+            }
+          ]
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 7,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 17,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 1,
+          "inc_count": 22,
+          "trades": [
+            {
+              "timestamp": 1793676796439000,
+              "side": "S",
+              "price": 0.1877,
+              "amount": 0.9
+            }
+          ]
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 15,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 1,
+          "inc_count": 5,
+          "trades": [
+            {
+              "timestamp": 1793676797339000,
+              "side": "S",
+              "price": 16.08,
+              "amount": 2.0
+            }
+          ]
+        },
+        "CRVUSDT": {
+          "trade_count": 0,
+          "inc_count": 15,
+          "trades": []
+        },
+        "DOGEUSDT": {
+          "trade_count": 0,
+          "inc_count": 27,
+          "trades": []
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945104,
+      "timestamp": 1793676799022,
+      "bytes": 120167,
+      "sha256": "5e0f5bdfb8f692c75ba6da217be265d82e2548d04d959460c136da9bc17b5594",
+      "file": "okex-swap_0_6945104.value",
+      "zlib_decoded_bytes": 345122,
+      "period": 29869865,
+      "ts": 1793676798000,
+      "post_ts": 1793676798816,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 210,
+      "incs": 2359,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 10,
+          "inc_count": 26,
+          "trades": [
+            {
+              "timestamp": 1793676796938000,
+              "side": "S",
+              "price": 3.807,
+              "amount": 70.5
+            },
+            {
+              "timestamp": 1793676796938000,
+              "side": "S",
+              "price": 3.807,
+              "amount": 142.2
+            },
+            {
+              "timestamp": 1793676796939000,
+              "side": "S",
+              "price": 3.807,
+              "amount": 79.7
+            },
+            {
+              "timestamp": 1793676796939000,
+              "side": "S",
+              "price": 3.807,
+              "amount": 59.8
+            },
+            {
+              "timestamp": 1793676796946000,
+              "side": "B",
+              "price": 3.807,
+              "amount": 739.9
+            },
+            {
+              "timestamp": 1793676796946000,
+              "side": "B",
+              "price": 3.808,
+              "amount": 162.4
+            },
+            {
+              "timestamp": 1793676796951000,
+              "side": "B",
+              "price": 3.808,
+              "amount": 49.7
+            },
+            {
+              "timestamp": 1793676796951000,
+              "side": "B",
+              "price": 3.808,
+              "amount": 185.9
+            },
+            {
+              "timestamp": 1793676797018000,
+              "side": "B",
+              "price": 3.809,
+              "amount": 32.7
+            },
+            {
+              "timestamp": 1793676797039000,
+              "side": "B",
+              "price": 3.81,
+              "amount": 22.8
+            }
+          ]
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 7,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 17,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 1,
+          "inc_count": 22,
+          "trades": [
+            {
+              "timestamp": 1793676796439000,
+              "side": "S",
+              "price": 0.1877,
+              "amount": 0.9
+            }
+          ]
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 15,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 1,
+          "inc_count": 5,
+          "trades": [
+            {
+              "timestamp": 1793676797339000,
+              "side": "S",
+              "price": 16.08,
+              "amount": 2.0
+            }
+          ]
+        },
+        "CRVUSDT": {
+          "trade_count": 0,
+          "inc_count": 15,
+          "trades": []
+        },
+        "DOGEUSDT": {
+          "trade_count": 0,
+          "inc_count": 27,
+          "trades": []
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945105,
+      "timestamp": 1793676801991,
+      "bytes": 103972,
+      "sha256": "9c7dc88b59a5007fed2bb241f690ca8a71e1ea27e438191d860f98054d5e1b4b",
+      "file": "okex-swap_0_6945105.value",
+      "zlib_decoded_bytes": 299779,
+      "period": 29869866,
+      "ts": 1793676801000,
+      "post_ts": 1793676801820,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 175,
+      "incs": 2168,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 1,
+          "inc_count": 21,
+          "trades": [
+            {
+              "timestamp": 1793676798240000,
+              "side": "B",
+              "price": 3.81,
+              "amount": 0.3
+            }
+          ]
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 8,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 11,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 0,
+          "inc_count": 17,
+          "trades": []
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 11,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 13,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 1,
+          "inc_count": 13,
+          "trades": [
+            {
+              "timestamp": 1793676799324000,
+              "side": "S",
+              "price": 0.2622,
+              "amount": 1.0
+            }
+          ]
+        },
+        "DOGEUSDT": {
+          "trade_count": 1,
+          "inc_count": 28,
+          "trades": [
+            {
+              "timestamp": 1793676800901000,
+              "side": "B",
+              "price": 0.07393,
+              "amount": 3.97
+            }
+          ]
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945106,
+      "timestamp": 1793676802016,
+      "bytes": 103972,
+      "sha256": "9c7dc88b59a5007fed2bb241f690ca8a71e1ea27e438191d860f98054d5e1b4b",
+      "file": "okex-swap_0_6945106.value",
+      "zlib_decoded_bytes": 299779,
+      "period": 29869866,
+      "ts": 1793676801000,
+      "post_ts": 1793676801820,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 175,
+      "incs": 2168,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 1,
+          "inc_count": 21,
+          "trades": [
+            {
+              "timestamp": 1793676798240000,
+              "side": "B",
+              "price": 3.81,
+              "amount": 0.3
+            }
+          ]
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 8,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 0,
+          "inc_count": 11,
+          "trades": []
+        },
+        "ADAUSDT": {
+          "trade_count": 0,
+          "inc_count": 17,
+          "trades": []
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 11,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 13,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 1,
+          "inc_count": 13,
+          "trades": [
+            {
+              "timestamp": 1793676799324000,
+              "side": "S",
+              "price": 0.2622,
+              "amount": 1.0
+            }
+          ]
+        },
+        "DOGEUSDT": {
+          "trade_count": 1,
+          "inc_count": 28,
+          "trades": [
+            {
+              "timestamp": 1793676800901000,
+              "side": "B",
+              "price": 0.07393,
+              "amount": 3.97
+            }
+          ]
+        }
+      }
+    },
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "offset": 6945107,
+      "timestamp": 1793676804982,
+      "bytes": 103901,
+      "sha256": "43e694d512b688067c082427ece2ec9e726f9450d23745c9f63a0683297edf3c",
+      "file": "okex-swap_0_6945107.value",
+      "zlib_decoded_bytes": 299762,
+      "period": 29869867,
+      "ts": 1793676804000,
+      "post_ts": 1793676804816,
+      "poster_id": "msg_processor",
+      "symbols": 220,
+      "trades": 155,
+      "incs": 2670,
+      "selected_symbols": {
+        "NEARUSDT": {
+          "trade_count": 2,
+          "inc_count": 26,
+          "trades": [
+            {
+              "timestamp": 1793676802511000,
+              "side": "S",
+              "price": 3.809,
+              "amount": 2.7
+            },
+            {
+              "timestamp": 1793676803056000,
+              "side": "S",
+              "price": 3.809,
+              "amount": 12.3
+            }
+          ]
+        },
+        "ATOMUSDT": {
+          "trade_count": 0,
+          "inc_count": 9,
+          "trades": []
+        },
+        "ETCUSDT": {
+          "trade_count": 1,
+          "inc_count": 15,
+          "trades": [
+            {
+              "timestamp": 1793676801075000,
+              "side": "B",
+              "price": 6.904,
+              "amount": 2.7
+            }
+          ]
+        },
+        "ADAUSDT": {
+          "trade_count": 0,
+          "inc_count": 17,
+          "trades": []
+        },
+        "DOTUSDT": {
+          "trade_count": 0,
+          "inc_count": 15,
+          "trades": []
+        },
+        "TRBUSDT": {
+          "trade_count": 0,
+          "inc_count": 7,
+          "trades": []
+        },
+        "CRVUSDT": {
+          "trade_count": 0,
+          "inc_count": 12,
+          "trades": []
+        },
+        "DOGEUSDT": {
+          "trade_count": 0,
+          "inc_count": 27,
+          "trades": []
+        }
+      }
+    }
+  ],
+  "negotiated_api_version": [
+    3,
+    8
+  ],
+  "partitions": [
+    0
+  ],
+  "watermarks": [
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "low": 6896321,
+      "high": 6945089
+    }
+  ],
+  "success": true,
+  "elapsed_seconds": 27.941480019129813
+}

@@ -1,0 +1,45 @@
+[package]
+name = "hyperliquid_l4"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+
+[features]
+default = []
+runtime = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:clap", "dep:log", "dep:env_logger", "dep:getrandom"]
+ipc = ["runtime", "dep:iceoryx2"]
+
+[dependencies]
+anyhow = "1.0"
+ahash = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+sonic-rs = "0.5.1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+tokio = { version = "1.0", features = ["rt", "net", "time", "signal", "macros", "sync"], optional = true }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"], optional = true }
+futures-util = { version = "0.3", optional = true }
+clap = { version = "4", features = ["derive", "env"], optional = true }
+log = { version = "0.4", optional = true }
+env_logger = { version = "0.10", optional = true }
+getrandom = { version = "0.3", optional = true }
+iceoryx2 = { version = "0.8.1", optional = true }
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[[bin]]
+name = "hyperliquid_l4_pbs"
+path = "src/bin/hyperliquid_l4_pbs.rs"
+required-features = ["ipc"]
+
+[[bench]]
+name = "decode"
+harness = false
+
+[[test]]
+name = "runtime"
+required-features = ["runtime"]
+
+[[test]]
+name = "ipc"
+required-features = ["ipc"]

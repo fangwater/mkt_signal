@@ -1,3 +1,30 @@
+/// Assets treated as non-directional cash/collateral by strategy exposure risk.
+///
+/// Their balances and liabilities remain in account/equity accounting; this helper only
+/// controls position exposure, concentration, and automatic close-symbol selection.
+pub fn is_exposure_exempt_asset(asset: &str) -> bool {
+    let asset = asset.trim();
+    asset.eq_ignore_ascii_case("USDT")
+        || asset.eq_ignore_ascii_case("USDC")
+        || asset.eq_ignore_ascii_case("BFUSD")
+}
+
+/// Exec accepts perpetual targets; delivery contracts must not enter its ledger.
+pub fn validate_exec_perpetual_symbol(symbol: &str) -> Result<(), String> {
+    let normalized = runtime_common::symbol_util::normalize_symbol_for_internal(symbol);
+    if normalized.len() > 9
+        && normalized
+            .get(normalized.len() - 6..)
+            .is_some_and(|suffix| suffix.bytes().all(|byte| byte.is_ascii_digit()))
+        && normalized
+            .get(..normalized.len() - 6)
+            .is_some_and(|root| root.ends_with("USD"))
+    {
+        return Err(format!("only perpetual contracts are supported: {symbol}"));
+    }
+    Ok(())
+}
+
 /// 从 symbol / inst_id 中提取基础资产（如 BTCUSDT -> BTC，BTC-USDT-SWAP -> BTC）
 pub fn extract_base_asset(symbol_like: &str) -> Option<String> {
     let upper = symbol_like.to_uppercase();
@@ -44,7 +71,17 @@ pub fn extract_base_asset(symbol_like: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_base_asset;
+    use super::{extract_base_asset, is_exposure_exempt_asset};
+
+    #[test]
+    fn exposure_exempt_assets_are_stable_collateral_assets() {
+        for asset in ["USDT", "usdc", " BFUSD "] {
+            assert!(is_exposure_exempt_asset(asset), "asset={asset}");
+        }
+        for asset in ["BUSD", "FDUSD", "BTC", "FUSD"] {
+            assert!(!is_exposure_exempt_asset(asset), "asset={asset}");
+        }
+    }
 
     #[test]
     fn extract_base_asset_handles_okx_symbols() {

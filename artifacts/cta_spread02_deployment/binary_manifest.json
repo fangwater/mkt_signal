@@ -1,0 +1,16 @@
+{
+  "branch": "arbmm",
+  "base_commit": "5ef1bf14365f8d03a0e4dad7fe78bd1eddc1f4be",
+  "files": {
+    "cta-factor-spread": "962bd27894f72c98fddff673debf3d838d7552ddb68bd464b939f59a3bb57523",
+    "cta-factor-config": "1a8445e9a09fcb06623e421eae1055cf8ef57620be00de8f37a86567a07cb368",
+    "deploy.py": "9efff12a4c11b0fd1dff6a4404d6d8e20ea6441f6fcc839703dd4c5e853f05c3",
+    "thresholds.csv": "0bf7e53c93f8e9918ce8767ab70e80959d842bac1462052bb88486c25fcf10ef",
+    "combinations/spread02_okex-futures_binance-futures_1min.json": "2088cbb089ca53c1f60bbd011b2b30aac803f65b503824767bc6e389e6bd4b3d",
+    "combinations/spread02_okex-futures_binance-futures_5min.json": "e309a7b3a8027c81660f94ffccdbf12bcf38819199aa8f1202c2dc66cb037643",
+    "combinations/spread02_okex-futures_binance-futures_15min.json": "3cd0dbf521276cddbe873c2fc3eaa293bb64f0b2c5869a3fda1aec1dfca1ede1",
+    "combinations/spread02_okex-futures_binance-futures_1h.json": "f08a6bed44a8e5e3b70fb9d5dc85bd00f35e24058770a481d65d49bf877e40b2",
+    "delist_risk_server": "f87d696588cb0a8447450ca885ecbc70722c454b7701ebd3d7842f0f5e33322e",
+    "cta-hourly-history": "a4a6b78d2ef5c410b1dbd75e6bb013ba6dc3ab3714a768e2ac8168254f9e23ae"
+  }
+}

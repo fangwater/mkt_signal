@@ -2,6 +2,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [[ -f "${BASE_DIR}/env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${BASE_DIR}/env.sh"
+fi
 APP="${SCRIPT_DIR}/bitget_position_tier_sidecar.py"
 
 PRODUCT_TYPE="${PRODUCT_TYPE:-USDT-FUTURES}"
@@ -23,11 +28,13 @@ REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
 REDIS_PORT="${REDIS_PORT:-6379}"
 REDIS_DB="${REDIS_DB:-0}"
 REDIS_PASSWORD="${REDIS_PASSWORD:-}"
+BITGET_PUBLIC_API_BASE="${BITGET_PUBLIC_API_BASE:-https://api.bitget.com}"
 
 pm2_args=(
   start "$APP"
   --name "$PM2_NAME"
   --namespace "$PM2_NAMESPACE"
+  --cwd "$BASE_DIR"
   --interpreter python3
   --
   --pool-key "$POOL_KEY"
@@ -38,6 +45,7 @@ pm2_args=(
   --symbol-cooldown-sec "$SYMBOL_COOLDOWN_SEC"
   --symbol-sleep-ms "$SYMBOL_SLEEP_MS"
   --timeout "$TIMEOUT"
+  --base-url "$BITGET_PUBLIC_API_BASE"
   --redis-host "$REDIS_HOST"
   --redis-port "$REDIS_PORT"
   --redis-db "$REDIS_DB"
@@ -49,5 +57,7 @@ fi
 
 echo "[INFO] starting ${PM2_NAMESPACE}:${PM2_NAME}"
 echo "[INFO] pool_key=${POOL_KEY} cache_key=${CACHE_KEY} redis=${REDIS_HOST}:${REDIS_PORT}/${REDIS_DB}"
+echo "[INFO] bitget_public_api_base=${BITGET_PUBLIC_API_BASE}"
+bash "${SCRIPT_DIR}/stop_bitget_position_tier_sidecar.sh"
 REDIS_HOST="$REDIS_HOST" REDIS_PORT="$REDIS_PORT" REDIS_DB="$REDIS_DB" REDIS_PASSWORD="$REDIS_PASSWORD" \
   npx pm2 "${pm2_args[@]}"

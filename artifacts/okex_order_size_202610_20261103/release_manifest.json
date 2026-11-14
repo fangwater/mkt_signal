@@ -1,0 +1,18 @@
+{
+  "created_at_utc": "2026-11-03T02:31:42.055076+00:00",
+  "branch": "arbmm",
+  "commit": "bae7d44772496ac3c143caafa9417ac81abf44f6",
+  "sha256": {
+    "crates/tardis_order_size/src/main.rs": "b5d76192cee2184786d26f4cb73a812fc31d4acb0c4f848087da6a691f719304",
+    "scripts/publish_binance_order_size_thresholds.py": "4448e28aeba506f4add3f7b4b94fcb60fbb0b64a380b9972943569eec3b09011",
+    "scripts/tardis_order_size_reference.py": "7dbb7deac89e7dfd521e8af1aea519b2696e684ffaaf6879a4573b29c47510c0",
+    "tests/scripts/test_tardis_order_size.py": "5fb7fe5d46920a3284a62c7a9a8261ff1a53c6792786ae6a27e1b9d09c94ac4b",
+    "tests/scripts/test_publish_binance_order_size_thresholds.py": "89fe4de9f5419e9f3afc6ede3ed3f460a00e9fc1e9210dd0dcd8e49b07e6bcd0",
+    "target/release/tardis_order_size": "42dbbb9aaf03e4a6c1a06065e2d8f8518ba886abab9b300d5a4353aeadbaa3fc",
+    "artifacts/okex_order_size_202610_20261103/calculation/thresholds.csv": "75368ac8ff7a8944aa7bd6d96c957f4e6dabb693accb57be87d0321490064841"
+  },
+  "samples": 65332809,
+  "hours_per_symbol": 744,
+  "source_month": "2026-10",
+  "apply_month": "2026-11"
+}

@@ -70,6 +70,7 @@ else
       bybit) echo "bb" ;;
       bitget) echo "bg" ;;
       gate) echo "gt" ;;
+      hyperliquid) echo "hl" ;;
       *)
         echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
         ;;
@@ -103,7 +104,7 @@ find_running_pids() {
   local -a matched=()
   local -a all_pids=()
 
-  for comm in "account_monitor" "${EXCHANGE}_account_monitor"; do
+  for comm in "account_monitor" "${EXCHANGE}_account_monitor" "rapidx_account_monitor"; do
     mapfile -t matched < <(safe_find_running_pids "$comm" "$BASE_DIR" || true)
     if [[ ${#matched[@]} -gt 0 ]]; then
       all_pids+=("${matched[@]}")

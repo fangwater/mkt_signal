@@ -30,7 +30,7 @@ pub fn parse_trade(data: &[u8], venue: TradingVenue) -> Option<TradeTick> {
     }
 
     let symbol_len = u32::from_le_bytes(data[4..8].try_into().ok()?) as usize;
-    let min_len = 8 + symbol_len + 8 + 8 + 8 + 8;
+    let min_len = 8 + symbol_len + 8 + 8 + 8 + 8 + 8;
     if data.len() < min_len {
         return None;
     }
@@ -87,5 +87,32 @@ fn normalize_trade_timestamp_to_us(timestamp: i64) -> i64 {
         timestamp.saturating_mul(1_000)
     } else {
         timestamp
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncated_trade_payload_is_rejected_without_panicking() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&(MktMsgType::TradeInfo as u32).to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.push(b'X');
+        data.extend_from_slice(&1i64.to_le_bytes());
+        data.extend_from_slice(&1_800_000_000_000_000i64.to_le_bytes());
+        data.extend_from_slice(b"B\0\0\0\0\0\0\0");
+        data.extend_from_slice(&100.0f64.to_le_bytes());
+        data.extend_from_slice(&2.0f64.to_le_bytes());
+        for len in 0..data.len() {
+            assert!(parse_trade(&data[..len], TradingVenue::BinanceFutures).is_none());
+        }
+        assert_eq!(
+            parse_trade(&data, TradingVenue::BinanceFutures)
+                .unwrap()
+                .amount,
+            2.0
+        );
     }
 }

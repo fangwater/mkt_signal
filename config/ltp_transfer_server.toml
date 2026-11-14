@@ -1,0 +1,7 @@
+bind = "127.0.0.1:8788"
+public_origin = "http://13.115.227.29:4191"
+delist_auth_url = "http://127.0.0.1:8787/auth/verify-login"
+ltp_rest_url = "https://api.liquiditytech.com"
+source_ip = "172.31.35.228"
+web_dir = "web"
+audit_dir = "data/transfers"

@@ -1,6 +1,6 @@
 //! OKex spread 适配器（SBE）。
 //!
-//! - URL:     `wss://ws.okx.com:8443/ws/v5/public-sbe`
+//! - URL:     `wss://ws.okx.com/ws/v5/public-sbe`
 //! - 鉴权:    handshake 时带 REST 风格 `OK-ACCESS-*` 头（不是连上后发 login）
 //!            prehash = `<unix_seconds>GET/users/self/verify`
 //! - 订阅:    JSON 文本，args 用 `instIdCode` (int) **而不是** `instId` (string)
@@ -30,7 +30,7 @@ use crate::spread_pbs::adapter::{
 use mkt_parsers::msg::mkt_msg::Level;
 use order_common::TradingVenue;
 
-const OKEX_PUBLIC_SBE_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/public-sbe";
+const OKEX_PUBLIC_SBE_WS_URL: &str = "wss://ws.okx.com/ws/v5/public-sbe";
 const OKEX_INSTRUMENTS_URL: &str = "https://www.okx.com/api/v5/public/instruments";
 const OKEX_SUBSCRIBE_CHUNK: usize = 240;
 

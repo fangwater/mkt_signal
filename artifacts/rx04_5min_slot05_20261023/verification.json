@@ -1,0 +1,36 @@
+{
+  "verified_at_us": 1792731870323224,
+  "source_id": "binance_exec_rx04_5m05",
+  "alias": "RX04 5min",
+  "gateway": "/exec_trade05",
+  "virtual_id": "virtual05",
+  "virtual_bindings": 35,
+  "symbols": 15,
+  "effective_shares": 0,
+  "signal_enabled": false,
+  "bar_interval": "5m",
+  "pending_publishes": [],
+  "runtime_targets_all_zero": true,
+  "exec_processes": [],
+  "old_exec_processes": [],
+  "protected_processes_unchanged": 89,
+  "protected_config_files_unchanged": 56,
+  "old_history_preserved": true,
+  "rx02_trade08_configuration_unchanged": true,
+  "signal_status": {
+    "enabled": false,
+    "bar_interval": "5m",
+    "virtual_account_name": "RX04 5min",
+    "follower_source_id": "binance_exec_rx04_5m05",
+    "manager_publications": [
+      {
+        "error": null,
+        "last_success_ts_us": null,
+        "manager_url": "http://127.0.0.1:4191/manager/api",
+        "pending_strategies": []
+      }
+    ],
+    "publication_error": null,
+    "updated_ts_us": 1792731869325363
+  }
+}

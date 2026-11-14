@@ -18,7 +18,8 @@ fail_closed = true
 notes = [
   "Bybit intra arb01 is fixed on SG 6351 and should not be moved.",
   "Bybit intra arb02 is fixed on SG 6353 and should not be moved.",
-  "Local arb01 sources on this machine use 127.0.0.1 with fixed ports 6342-6345.",
+  "Binance intra arb02 is fixed on JP 6358 and should not be moved.",
+  "Local cross arb01 source uses 127.0.0.1:6345; retired intra sources freed 6342-6344.",
   "Unmentioned strategies/envs must not receive concrete allocations.",
 ]
 
@@ -35,37 +36,10 @@ base_url = "http://47.238.128.48"
 host = "47.128.92.224"
 base_url = "http://47.128.92.224"
 
-# Local intra/cross arb01 sources on this machine.
-[[allocations]]
-port = 6342
-region = "local"
-strategy = "intra"
-env = "binance-intra-arb01"
-source_id = "binance-intra-arb01"
-public_url = "http://127.0.0.1:6342"
-bind = "127.0.0.1:50042"
-status = "fixed"
-
-[[allocations]]
-port = 6343
-region = "local"
-strategy = "intra"
-env = "gate-intra-arb01"
-source_id = "gate-intra-arb01"
-public_url = "http://127.0.0.1:6343"
-bind = "127.0.0.1:50043"
-status = "fixed"
-
-[[allocations]]
-port = 6344
-region = "local"
-strategy = "intra"
-env = "bitget-intra-arb01"
-source_id = "bitget-intra-arb01"
-public_url = "http://127.0.0.1:6344"
-bind = "127.0.0.1:50044"
-status = "fixed"
-
+# Local cross arb01 source on this machine.
+# binance-intra-arb01 retired 2026-09-22; port 6342 freed.
+# gate-intra-arb01 and bitget-intra-arb01 retired 2026-10-08;
+# ports 6343/6344 and binds 50043/50044 freed.
 [[allocations]]
 port = 6345
 region = "local"
@@ -113,23 +87,15 @@ status = "fixed"
 port = 6355
 region = "local"
 strategy = "mm"
-env = "okex_mm_alpha"
-source_id = "okex_mm_alpha"
+env = "okex_mm_83777"
+source_id = "okex_mm_83777"
 public_url = "http://127.0.0.1:6355"
 bind = "127.0.0.1:50055"
 status = "fixed"
 
-# JP Binance MM persist sync source.
-# 50049 collided with okex_fr_arb01 on jp-meta-elvpn; moved to 6356/50056.
-[[allocations]]
-port = 6356
-region = "local"
-strategy = "mm"
-env = "binance_mm_alpha"
-source_id = "binance_mm_alpha"
-public_url = "http://127.0.0.1:6356"
-bind = "127.0.0.1:50056"
-status = "fixed"
+# JP Binance MM persist sync source retired 2026-09-22 (binance_mm_alpha
+# decommissioned); port 6356 freed. Historical note: 50049 collided with
+# okex_fr_arb01 on jp-meta-elvpn; the source had been moved to 6356/50056.
 
 # Requested OKEX intra source on HK.
 [[allocations]]
@@ -140,4 +106,51 @@ env = "okex-intra-arb01"
 source_id = "okex-intra-arb01"
 public_url = "http://47.238.128.48:6354"
 bind = "127.0.0.1:50054"
+status = "planned"
+
+# JP Binance cta source (RapidX/LTP rule-driven env).
+[[allocations]]
+port = 6359
+region = "local"
+strategy = "cta"
+env = "binance-cta-rx01"
+source_id = "binance-cta-rx01"
+public_url = "http://127.0.0.1:6359"
+bind = "127.0.0.1:50059"
+status = "fixed"
+
+# JP Gate FR arb03 source. The manager stays stopped until the operator starts
+# the new environment; this allocation reserves its local gRPC bind now.
+[[allocations]]
+port = 6380
+region = "local"
+strategy = "fr"
+env = "gate_fr_arb03"
+source_id = "gate_fr_arb03"
+public_url = "http://127.0.0.1:6380"
+bind = "127.0.0.1:50080"
+status = "planned"
+
+# JP Bitget FR arb03 source. The manager stays stopped until the operator starts
+# the new environment; this allocation reserves its local gRPC bind now.
+[[allocations]]
+port = 6381
+region = "local"
+strategy = "fr"
+env = "bitget_fr_arb03"
+source_id = "bitget_fr_arb03"
+public_url = "http://127.0.0.1:6381"
+bind = "127.0.0.1:50081"
+status = "planned"
+
+# Fresh Bitget FR arb01 book. Keep the retired source and its 50057 endpoint
+# separate; only the new loopback bind is active, without a collector cutover.
+[[allocations]]
+port = 6382
+region = "local"
+strategy = "fr"
+env = "bitget_fr_arb01"
+source_id = "bitget_fr_arb01_20261110"
+public_url = "http://127.0.0.1:6382"
+bind = "127.0.0.1:50082"
 status = "planned"

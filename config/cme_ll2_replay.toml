@@ -1,0 +1,31 @@
+# Full-universe Normalized LL2 -> final fixed Depth10 snapshot per UTC minute.
+# No research-root, RIC, exchange-session, or entitlement-presence filter.
+# No raw-update or staging column family is written.
+data_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/future/normalisedLL2"
+shard_root = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_ll2_zstd_shards"
+period = "2010-01-01_2011-01-01"
+periods = [
+    "2010-01-01_2011-01-01",
+    "2011-01-01_2012-01-01",
+    "2012-01-01_2013-01-01",
+    "2013-01-01_2014-01-01",
+    "2014-01-01_2015-01-01",
+    "2015-01-01_2016-01-01",
+    "2016-01-01_2017-01-01",
+    "2017-01-01_2018-01-01",
+    "2018-01-01_2019-01-01",
+    "2019-01-01_2020-01-01",
+    "2020-01-01_2021-01-01",
+    "2021-01-01_2022-01-01",
+    "2022-01-01_2023-01-01",
+    "2023-01-01_2024-01-01",
+    "2024-01-01_2025-01-01",
+    "2025-01-01_2026-01-01",
+    "2026-01-01_2026-06-01",
+]
+rocksdb_dir = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_ll2_1min_rocksdb_all_products"
+
+# Shards are independently decompressible and never split one RIC/UTC-second
+# group. Workers consume zstd shards, not the large sequential source gzip.
+workers = 96
+progress_every = 10000000

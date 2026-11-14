@@ -1,0 +1,43 @@
+{
+  "old_signal": {
+    "pid": 3132535,
+    "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+    "exe": "/home/ubuntu/binance-cta-spread-rx01/cta_spread_signal",
+    "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "new_signal": {
+    "pid": 46021,
+    "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+    "exe": "/home/ubuntu/binance-cta-spread-rx01/cta_spread_signal",
+    "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "protected_processes_unchanged": 44,
+  "protected_config_hashes_unchanged": 15,
+  "exec_catalog_unchanged": true,
+  "status": {
+    "enabled": false,
+    "journal_healthy": true,
+    "publication_error": null,
+    "max_pos_u": 100.0,
+    "updated_ts_us": 1791950435420954,
+    "scheduled_entries": 0
+  },
+  "ready_observations": 46,
+  "observation_count": 46,
+  "latest_model_ts_ms": 1791950400000,
+  "captured_at_us": 1791950436134926
+}

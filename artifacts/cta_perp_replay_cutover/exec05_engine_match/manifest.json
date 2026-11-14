@@ -1,0 +1,27 @@
+{
+  "release_id": "20261015T134900Z",
+  "base_commit": "133bf23fcdc53001eb2dbac72cd0b1d64ac285ca",
+  "branch": "arbmm",
+  "binary_sha256": "66398fd544839af21b4d60f17add3cebad174047c237f016beb7e7130efd77e8",
+  "source_patch_sha256": "6e44c07d125e3ca036531a1685221a56d3810d4c300476c8a9e199fafa49673e",
+  "leverage_fix_patch_sha256": "a5a05cc99dad6be3f00e57e5999f36e4ac103734ae2a454fb784c72b6f3e6b98",
+  "installer_sha256": "275aa9bd61cd2cc2324b8961a0386ae745b2262ba6b6730008600ba3c71479b8",
+  "previous_binary_sha256": "b26a9487073d37164a2193997165bc170b02b5e49cebba47cbd418c0216e1045",
+  "old_pid": 3175453,
+  "tests": {
+    "leverage": 8,
+    "trade_engine": 366,
+    "exec_binary": 8,
+    "root_lib": {
+      "passed": 1288,
+      "ignored": 3,
+      "preexisting_failures": [
+        "cta_factor_universe::configured_factors_match_raw_formulas_after_warmup",
+        "cta_spread_factor_model_1m_pub::publisher_exposes_configured_factor_services"
+      ]
+    },
+    "fmt": "passed"
+  },
+  "scope": "Exec05 trade_engine matched to current pre-trade; permit required RapidX cash account snapshot query, preserve existing configuration and namespaces",
+  "prior_changes_reviewed": "Existing native startup IP path is inactive for RapidX; existing cash request correction retains perpetual behavior and was previously tested/deployed on Exec06; account-journal changes are outside this binary execution path. Existing CTA strategy changes do not run inside Exec."
+}

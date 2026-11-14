@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>国内期货 Exec 执行监控</title>
+<style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", "PingFang SC", sans-serif;
+        --bg: #0b0f14;
+        --surface: #121820;
+        --surface-2: #171f29;
+        --line: #2a3441;
+        --text: #edf2f7;
+        --muted: #91a0b2;
+        --green: #4ade80;
+        --red: #fb7185;
+        --amber: #fbbf24;
+        --cyan: #38bdf8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        letter-spacing: 0;
+      }
+      header {
+        min-height: 62px;
+        padding: 12px 18px;
+        border-bottom: 1px solid var(--line);
+        background: #0e141b;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        flex-wrap: wrap;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+      h1 { margin: 0; font-size: 18px; font-weight: 650; }
+      .connection {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
+      .dot.ok { background: var(--green); }
+      .dot.err { background: var(--red); }
+      .toolbar { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .strategy-updates {
+        order: 3;
+        flex: 1 0 100%;
+        min-width: 0;
+        display: flex;
+        gap: 18px;
+        padding-top: 9px;
+        border-top: 1px solid var(--line);
+        overflow-x: auto;
+        color: var(--muted);
+        font-size: 12px;
+        scrollbar-width: thin;
+      }
+      .strategy-update { display: inline-flex; align-items: baseline; gap: 7px; flex: 0 0 auto; }
+      .strategy-update-name { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .strategy-update time { color: var(--text); font-variant-numeric: tabular-nums; }
+      .strategy-update.unknown time { color: var(--amber); }
+      select, input, button {
+        height: 34px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--text);
+        padding: 0 10px;
+        font: inherit;
+        font-size: 13px;
+      }
+      select { min-width: 190px; }
+      input { width: 180px; }
+      button { cursor: pointer; }
+      button:hover { border-color: var(--cyan); }
+      main { padding: 16px 18px 28px; display: grid; gap: 16px; }
+      .risk-band {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(130px, 1fr));
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--surface);
+      }
+      .metric { padding: 14px; border-right: 1px solid var(--line); min-width: 0; }
+      .metric:last-child { border-right: 0; }
+      .metric label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+      .metric strong { display: block; font-size: 20px; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+      .section { border-top: 1px solid var(--line); padding-top: 14px; min-width: 0; }
+      .section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+      .section-head h2 { margin: 0; font-size: 14px; }
+      .meta { color: var(--muted); font-size: 12px; }
+      .meta.stale { color: var(--red); }
+      .summary { margin-left: auto; display: flex; gap: 18px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+      .summary strong { color: var(--text); font-variant-numeric: tabular-nums; }
+      .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+      table { width: 100%; min-width: 720px; border-collapse: collapse; }
+      thead { position: sticky; top: 0; background: var(--surface-2); z-index: 1; }
+      th, td {
+        height: 40px;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--line);
+        text-align: right;
+        white-space: nowrap;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+      }
+      th { color: var(--muted); font-weight: 550; }
+      th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+      tbody tr:last-child td { border-bottom: 0; }
+      tbody tr:hover { background: #18212b; }
+      .aggregate-row { background: #151e27; font-weight: 600; }
+      .aggregate-row td { border-top: 1px solid #3b4857; }
+      .detail-row > td { padding:12px 18px 14px 36px; background:var(--bg); }
+      .position-detail { border:1px solid var(--line); border-radius:6px; overflow:auto; }
+      .position-detail table { min-width:580px; }
+      .position-detail thead { position:static; }
+      .position-detail th, .position-detail td { text-align:right; }
+      .position-detail th:first-child, .position-detail td:first-child { text-align:left; }
+      .group-label { display: inline-flex; align-items: center; gap: 7px; }
+      button.group-toggle {
+        width: 24px;
+        min-width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        display: inline-grid;
+        place-items: center;
+      }
+      button.group-toggle::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-right: 2px solid var(--muted);
+        border-bottom: 2px solid var(--muted);
+        transform: rotate(-45deg);
+        transition: transform 120ms ease;
+      }
+      button.group-toggle[aria-expanded="true"]::before { transform: rotate(45deg); }
+      button.group-toggle:hover::before { border-color: var(--cyan); }
+      .scope-label { color: var(--cyan); }
+      .positive { color: var(--green); }
+      .negative { color: var(--red); }
+      .muted { color: var(--muted); }
+      .status {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 74px;
+        height: 23px;
+        padding: 0 7px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .status.done { color: var(--green); border-color: #287a45; }
+      .status.wait { color: var(--amber); border-color: #82661d; }
+      .empty { padding: 42px; text-align: center; color: var(--muted); }
+      @media (max-width: 980px) {
+        .risk-band { grid-template-columns: repeat(2, 1fr); }
+        .metric:nth-child(2n) { border-right: 0; }
+        .metric:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+        .toolbar { margin-left: 0; width: 100%; }
+        select, input { flex: 1; min-width: 130px; }
+      }
+      @media (max-width: 560px) {
+        header, main { padding-left: 10px; padding-right: 10px; }
+        .strategy-update-name { max-width: 210px; }
+        #futures-amount, #options-amount { font-size:14px; }
+        .risk-band { grid-template-columns: repeat(2, 1fr); }
+        .metric { border-bottom: 1px solid var(--line); }
+        .metric:nth-child(2n) { border-right: 0; }
+        .metric:nth-last-child(-n+2) { border-bottom: 0; }
+      }
+
+      /* Same shell and table styling as the USD-M Exec dashboard. */
+      [hidden] { display:none !important; }
+      .toolbar select { min-width:140px; max-width:250px; }
+      .check { display:inline-flex; align-items:center; gap:5px; }
+      .check input { width:auto; min-width:0; flex:0 0 auto; height:auto; margin:0; }
+      .status.error { color:var(--red); border-color:#8c3e50; }
+      .positions-wrap { max-height:62vh; }
+      .table-note { margin-top:8px; font-size:11px; }
+      .quote-status { color:var(--muted); font-size:12px; }
+      .quote-status.stale { color:var(--amber); }
+      .valuation-basis { padding:10px; border-bottom:1px solid var(--line); color:var(--muted); font-size:12px; white-space:normal; }
+      .net-amount { min-width:140px; }
+      .retained td { color:var(--muted); }
+      .group-label { max-width:520px; }
+      .contract-code { color:var(--muted); margin-left:6px; font-weight:400; }
+      @media(max-width:560px) { .toolbar select,.toolbar input { max-width:none; flex:1 1 130px; } }
+</style></head>
+<body>
+  <header>
+    <h1>国内期货 Exec 执行监控</h1>
+    <div class="connection"><span id="conn-dot" class="dot"></span><span id="connection">连接中</span><span id="mode" class="status wait">持仓观察</span><span id="updated">--</span></div>
+    <div class="toolbar">
+      <select id="venue" aria-label="交易所筛选"><option value="">全部交易所</option><option value="CFFEX">中金所</option><option value="SHFE">上期所</option><option value="INE">上期能源</option><option value="CZCE">郑商所</option><option value="DCE">大商所</option><option value="GFEX">广期所</option></select>
+      <input id="symbol" placeholder="中文名称 / 合约代码" aria-label="合约筛选">
+      <button id="refresh" type="button">重新连接</button>
+    </div>
+    <div id="source-updates" class="strategy-updates" aria-label="运行状态和更新时间"></div>
+  </header>
+  <main>
+    <section class="risk-band" aria-label="持仓概览">
+      <div class="metric"><label>持仓合约数</label><strong id="contract-count">--</strong></div>
+      <div class="metric"><label title="净名义金额＝净手数 × 合约乘数 × L1 最新价，不是保证金或盈亏">期货持仓金额 · 元</label><strong id="futures-amount">--</strong></div>
+      <div class="metric"><label title="净权利金市值＝净手数 × 合约乘数 × L1 最新价，不是标的敞口、保证金或盈亏">期权持仓金额 · 元</label><strong id="options-amount">--</strong></div>
+      <div class="metric"><label>行情覆盖 · 合约</label><strong id="valuation-coverage">--</strong></div>
+    </section>
+    <div id="notice" class="meta" role="status" hidden></div>
+    <section class="section">
+      <div class="section-head">
+        <h2>合约净持仓</h2>
+        <label class="meta check"><input id="show-zero" type="checkbox">显示零仓位</label>
+        <span id="position-note" class="meta">等待持仓数据</span>
+        <span id="quote-status" class="quote-status"></span>
+        <div class="summary"><span>合约 <strong id="filtered-contracts">--</strong></span><span>净多合约 <strong id="filtered-net-long">--</strong></span><span>净空合约 <strong id="filtered-net-short">--</strong></span></div>
+      </div>
+      <div class="table-wrap positions-wrap"><table><thead id="position-head"></thead><tbody id="positions"></tbody></table></div>
+      <div class="meta table-note">正数净多，负数净空；数量为手，金额为人民币元。展开查看今昨仓、行情时间和金额口径。</div>
+    </section>
+  </main>
+  <script>
+  (() => {
+    "use strict";
+    const WS_PATH = __CN_FUTURES_WS_PATH__;
+    const $ = id => document.getElementById(id);
+    const escape = value => String(value ?? "--").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    const qty = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
+    const cash = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmt = value => value == null ? "--" : qty.format(value);
+    const yuan = value => Number.isFinite(value) ? '¥ ' + cash.format(value) : '--';
+    const time = (us, date = false) => us ? new Date(Number(us) / 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false, ...(date ? {} : { hour: "2-digit", minute: "2-digit", second: "2-digit" }) }) : "--";
+    // Display names only. Contract quantities and money are never derived from this catalog.
+    const products = {
+      CFFEX: {IF:'沪深300股指',IH:'上证50股指',IC:'中证500股指',IM:'中证1000股指',IO:'沪深300股指',HO:'上证50股指',MO:'中证1000股指',T:'10年期国债',TF:'5年期国债',TS:'2年期国债',TL:'30年期国债'},
+      SHFE: {CU:'沪铜',AL:'沪铝',ZN:'沪锌',PB:'沪铅',NI:'沪镍',SN:'沪锡',AO:'氧化铝',AD:'铸造铝合金',AU:'沪金',AG:'沪银',RB:'螺纹钢',HC:'热轧卷板',SS:'不锈钢',WR:'线材',FU:'燃料油',BU:'石油沥青',RU:'天然橡胶',SP:'纸浆',BR:'丁二烯橡胶',OP:'胶版印刷纸'},
+      INE: {SC:'原油',NR:'20号胶',LU:'低硫燃料油',BC:'国际铜',EC:'集运指数（欧线）'},
+      DCE: {A:'豆一',B:'豆二',M:'豆粕',Y:'豆油',P:'棕榈油',C:'玉米',CS:'玉米淀粉',RR:'粳米',JD:'鸡蛋',LH:'生猪',I:'铁矿石',J:'焦炭',JM:'焦煤',L:'聚乙烯',V:'聚氯乙烯',PP:'聚丙烯',EG:'乙二醇',EB:'苯乙烯',PG:'液化石油气',FB:'纤维板',BB:'胶合板',LG:'原木',BZ:'纯苯'},
+      CZCE: {WH:'强麦',PM:'普麦',RI:'早籼稻',LR:'晚籼稻',JR:'粳稻',CF:'棉花',CY:'棉纱',SR:'白糖',OI:'菜籽油',RO:'菜籽油',RM:'菜籽粕',RS:'油菜籽',TA:'PTA',MA:'甲醇',ME:'甲醇',FG:'玻璃',SA:'纯碱',PF:'短纤',PX:'对二甲苯',SH:'烧碱',PR:'瓶片',ZC:'动力煤',TC:'动力煤',SF:'硅铁',SM:'锰硅',AP:'苹果',CJ:'红枣',PK:'花生'},
+      GFEX: {SI:'工业硅',LC:'碳酸锂',PS:'多晶硅',PT:'铂',PD:'钯'}
+    };
+    function contractName(venue, symbol, tradingDay) {
+      const match = /^([a-z]+)([0-9]{3,4})(?:-?([cp])-?([0-9]+(?:\.[0-9]+)?))?$/i.exec(symbol);
+      if (!match) return symbol;
+      const [, product, code, option, strike] = match, name = products[venue]?.[product.toUpperCase()];
+      const month = Number(code.slice(-2));
+      if (!name || month < 1 || month > 12) return symbol;
+      const yearCode = Number(code.slice(0,-2));
+      let year;
+      if (code.length === 4) year = 2000 + yearCode;
+      else {
+        // CZCE's YMM uses the producer's trading year, including decade rollover.
+        if (!/^[0-9]{8}$/.test(tradingDay || '')) return name + ' · ' + code + '（合约年月码）';
+        const reference = Number(tradingDay.slice(0,4)), decade = Math.floor(reference / 10) * 10;
+        year = [decade-10+yearCode,decade+yearCode,decade+10+yearCode].sort((a,b)=>Math.abs(a-reference)-Math.abs(b-reference))[0];
+      }
+      return name + ' · ' + year + '年' + String(month).padStart(2,'0') + '月' + (option ? ' · ' + (option.toUpperCase()==='C'?'看涨':'看跌') + ' · 行权价 ' + strike : '');
+    }
+    const contractLabel = g => {
+      const name=contractName(g.venue,g.symbol,g.source.entry?.trading_day);
+      return `<span class="scope-label">${escape(name)}</span>${name===g.symbol?'':`<span class="contract-code">${escape(g.symbol)}</span>`}`;
+    };
+    const state = { sources:new Map(), ws:null, timer:null, expanded:new Set(), groups:[] };
+    const status = source => {
+      const s = source.entry;
+      if (source.error) return s ? 'unavailable' : 'waiting';
+      if (!s) return 'waiting';
+      if (s.runtime_status !== 'running') return s.runtime_status;
+      const age = Date.now() - Number(s.observed_us) / 1000;
+      if (age < 0 || age > source.stale_after_ms) return 'stale';
+      if (!s.position_ready) return 'recovering';
+      if (!s.connected) return 'disconnected';
+      if (!s.ready || !s.transport_ready) return 'unavailable';
+      return 'observing';
+    };
+    const names = {waiting:'等待数据',unavailable:'来源不可用',stopped:'已停止',failed:'执行失败',recovering:'恢复中',disconnected:'已断线',stale:'数据延迟',observing:'已同步'};
+    const badge = phase => `<span class="status ${phase==='observing'?'done':['failed','disconnected','unavailable'].includes(phase)?'error':'wait'}">${escape(names[phase] || phase)}</span>`;
+    const venueName = value => ({CFFEX:'中金所',SHFE:'上期所',INE:'上期能源',CZCE:'郑商所',DCE:'大商所',GFEX:'广期所'}[value] || value);
+    const adapterName = source => source.adapter==='yida'?'易达':'CTP';
+    const side = value => `<span class="${value==='buy'?'positive':'negative'}">${value==='buy'?'多头':'空头'}</span>`;
+    const match = (venue,symbol,day) => (!$('venue').value || venue===$('venue').value) && (symbol+' '+contractName(venue,symbol,day)).toLowerCase().includes($('symbol').value.trim().toLowerCase());
+    function rows(id, content, columns, empty) { $(id).innerHTML=content || `<tr><td class="empty" colspan="${columns}">${escape(empty)}</td></tr>`; }
+    function connection(text,kind) { $('connection').textContent=text; $('conn-dot').className='dot '+(kind||''); }
+    // A fresh network callback can carry a replayed exchange quote. Compare the
+    // SDK-formatted exchange clock and native day; never treat TimeStamp as Unix.
+    function oldExchangeQuote(mark,limit) {
+      const received=new Date(Number(mark.received_us)/1000+8*3600000);
+      if(!Number.isFinite(received.getTime())) return true;
+      const calendar=received.toISOString().slice(0,10).replaceAll('-','');
+      if(!/^[0-9]{8}$/.test(String(mark.trading_day)) || String(mark.trading_day)<calendar) return true;
+      const clock=/^([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,3}))?$/.exec(mark.last_trade_time||mark.native_time||'');
+      if(!clock || Number(clock[1])>23 || Number(clock[2])>59 || Number(clock[3])>59) return true;
+      const native=((Number(clock[1])*60+Number(clock[2]))*60+Number(clock[3]))*1000+Number((clock[4]||'').padEnd(3,'0'));
+      const local=((received.getUTCHours()*60+received.getUTCMinutes())*60+received.getUTCSeconds())*1000+received.getUTCMilliseconds();
+      const gap=Math.abs(native-local);
+      return Math.min(gap,86400000-gap)>limit;
+    }
+    function valuation(g) {
+      const mark=g.mark;
+      if(!mark || !Number.isInteger(mark.contract_multiple) || mark.contract_multiple<=0) return {amount:null,reason:'缺合约乘数'};
+      if(!['future','option'].includes(mark.kind)) return {amount:null,reason:'缺合约类别'};
+      if(!Number.isFinite(mark.last_price) || mark.last_price<=0 || mark.last_price===Number.MAX_VALUE) return {amount:null,reason:'缺 L1 最新价'};
+      const amount=(g.long-g.short)*mark.contract_multiple*mark.last_price;
+      if(!Number.isFinite(amount)) return {amount:null,reason:'估值超出数值范围'};
+      const age=Date.now()-Number(mark.received_us)/1000;
+      const oldNative=oldExchangeQuote(mark,g.source.stale_after_ms);
+      const historical=oldNative || mark.initial || mark.paused || !g.source.entry?.l1_connected || age<0 || age>g.source.stale_after_ms || status(g.source)!=='observing' || !mark.trading_day || !mark.native_time;
+      const quoteTime=String(mark.trading_day||'未知交易日')+' '+(mark.last_trade_time||mark.native_time||'时刻未知');
+      return {amount,historical,reason:mark.initial?'初始快照'+(mark.paused?' · 暂停':''):mark.paused?'行情暂停':!g.source.entry?.l1_connected?'行情断开':age<0||age>g.source.stale_after_ms?'行情停更':oldNative?'原生行情时间较旧':historical?'来源未就绪':'易达 L1',quoteTime};
+    }
+    function amountCell(g) {
+      const v=valuation(g);
+      if(v.amount===null) return `<span title="${escape(v.reason)}">--</span>`;
+      const kind=g.mark.kind==='option'?'净权利金市值':'净名义金额';
+      return `<span title="${escape(kind+'＝净手数 × '+g.mark.contract_multiple+' × '+g.mark.last_price+'；'+(v.historical?'历史行情；':'')+v.quoteTime+'；'+v.reason)}">${escape(yuan(v.amount))}</span>`;
+    }
+    function totalAmount(groups,kind) {
+      if(groups.some(g=>!g.mark || !['future','option'].includes(g.mark.kind))) return null;
+      const values=groups.filter(g=>g.mark.kind===kind).map(valuation);
+      if(values.some(v=>v.amount===null)) return null;
+      const total=values.reduce((n,v)=>n+v.amount,0);
+      return Number.isFinite(total)?total:null;
+    }
+    function positionGroups(sources, filtered = true) {
+      const groups = new Map();
+      for (const source of sources) {
+        const snapshot = source.entry;
+        const marks=new Map((snapshot?.marks||[]).map(m=>[JSON.stringify([m.venue,m.symbol]),m]));
+        for (const p of snapshot?.positions || []) {
+          if (!snapshot.position_ready || (filtered && !match(p.venue, p.symbol, snapshot.trading_day))) continue;
+          const key = JSON.stringify([source.source_id, p.venue, p.symbol]);
+          if (!groups.has(key)) groups.set(key, {key,source,symbol:p.symbol,venue:p.venue,positions:[],mark:marks.get(JSON.stringify([p.venue,p.symbol])),long:0,short:0,frozenLong:0,frozenShort:0});
+          const g = groups.get(key), value = p.position, long = p.side === "buy";
+          g.positions.push(p);
+          g[long ? "long" : "short"] += value.today + value.yesterday;
+          g[long ? "frozenLong" : "frozenShort"] += value.frozen_today + value.frozen_yesterday;
+        }
+      }
+      for (const group of groups.values()) group.positions = group.positions.filter(p => $('show-zero').checked || p.position.today || p.position.yesterday || p.position.frozen_today || p.position.frozen_yesterday);
+      return [...groups.values()].filter(g => $('show-zero').checked || g.long || g.short || g.frozenLong || g.frozenShort).sort((a,b) => a.source.source_id.localeCompare(b.source.source_id) || a.venue.localeCompare(b.venue) || a.symbol.localeCompare(b.symbol));
+    }
+
+    function renderOverview(sources,groups) {
+      const known=sources.length && sources.every(s=>s.entry?.position_ready);
+      $('contract-count').textContent=known?fmt(groups.length):'--';
+      for(const [id,kind] of [['futures-amount','future'],['options-amount','option']]) {
+        const amount=known?totalAmount(groups,kind):null;
+        $(id).textContent=amount===null?'--':yuan(amount);
+        const historical=groups.filter(g=>g.mark?.kind===kind).some(g=>valuation(g).historical);
+        $(id).title=amount===null?'估值资料不完整；查看各合约缺失原因':historical?'含历史行情估值；展开合约查看行情交易日和时刻':'易达 L1 最新价估值';
+      }
+      $('valuation-coverage').textContent=known?groups.filter(g=>valuation(g).amount!==null).length+' / '+groups.length:'--';
+      const priced=groups.map(valuation).filter(v=>v.amount!==null), historical=priced.some(v=>v.historical);
+      const quoteDays=[...new Set(groups.filter(g=>g.mark?.trading_day).map(g=>String(g.mark.trading_day)))].sort();
+      $('quote-status').textContent=priced.length?(historical?'历史行情':'L1 行情')+(quoteDays.length?' · '+quoteDays.join(' / '):''):'';
+      $('quote-status').className='quote-status'+(historical?' stale':'');
+      $('quote-status').title=historical?'含快照、暂停、断线、停更或原生时间较旧的行情；展开合约查看具体时刻':'金额按易达 L1 最新价计算';
+      const captured=sources.map(s=>s.entry?.observed_us).filter(Boolean);
+      $('updated').textContent=captured.length?'更新于 '+time(Math.min(...captured),true):'--';
+      $('mode').textContent=sources.length && sources.every(s=>s.entry && !s.entry.can_trade)?'当前不可交易':'持仓观察';
+      $('source-updates').innerHTML=sources.map(s=>`<div class="strategy-update"><span class="strategy-update-name">${adapterName(s)}</span>${badge(status(s))}<span>交易日 ${escape(s.entry?.trading_day)}</span><time>${time(s.entry?.observed_us)}</time></div>`).join('');
+      const problems=sources.flatMap(s=>[s.error,status(s)==='observing'?null:s.entry?.reason,status(s)==='stale'?'持仓心跳过期，保留最后已知仓位':null].filter(Boolean).map(reason=>adapterName(s)+'：'+reason));
+      $('notice').hidden=!problems.length; $('notice').textContent=problems.join(' · '); $('notice').className='meta stale';
+    }
+    function renderPositions(sources, groups) {
+      state.groups = groups;
+      const ready = sources.length && sources.every(s => s.entry?.position_ready);
+      $('filtered-contracts').textContent = ready ? fmt(groups.length) : '--';
+      $('filtered-net-long').textContent = ready ? fmt(groups.filter(g=>g.long>g.short).length) : '--';
+      $('filtered-net-short').textContent = ready ? fmt(groups.filter(g=>g.short>g.long).length) : '--';
+      $('position-note').textContent = !ready ? "等待持仓恢复" : `${groups.length} 个合约 · 展开查看明细`;
+      $('position-head').innerHTML = '<tr><th>合约</th><th>交易所</th><th>净持仓 · 手</th><th>净金额 · 元</th><th>状态</th><th>更新时间</th></tr>';
+      const content = groups.map((g,index) => {
+        const open=state.expanded.has(g.key), net=g.long-g.short;
+        let html = `<tr class="aggregate-row ${status(g.source)!=='observing'?'retained':''}" data-symbol="${escape(g.symbol)}"><td><span class="group-label"><button class="group-toggle" data-group="${index}" aria-expanded="${open}" aria-label="${open?'收起':'展开'} ${escape(g.symbol)}"></button>${contractLabel(g)}</span></td><td>${escape(venueName(g.venue))}</td><td class="${net>0?'positive':net<0?'negative':''}">${net>0?'+':''}${fmt(net)}</td><td class="net-amount">${amountCell(g)}</td><td>${badge(status(g.source))}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;
+        if (open) {
+          const details = g.positions.map(p => {
+            const v=p.position;
+            return `<tr><td>${side(p.side)}</td><td>${fmt(v.today+v.yesterday)}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${fmt(v.frozen_today)}</td><td>${fmt(v.frozen_yesterday)}</td><td>${fmt(v.today+v.yesterday-v.frozen_today-v.frozen_yesterday)}</td></tr>`;
+          }).join('');
+          const v=valuation(g), mark=g.mark;
+          const basis=mark?`${mark.kind==='option'?'净权利金市值':'净名义金额'}＝净手数 × 合约乘数 ${fmt(mark.contract_multiple)} × L1 最新价 ${mark.last_price==null?'--':escape(String(mark.last_price))}；行情交易日／时刻 ${escape(v.quoteTime||String(mark.trading_day||'--')+' '+(mark.native_time||'--'))} · ${escape(v.reason)}${v.historical?' · 历史行情':''}。金额不代表保证金、盈亏或期权标的敞口。`:'等待合约元数据与 L1 行情';
+          html += `<tr class="detail-row"><td colspan="6"><div class="position-detail"><div class="valuation-basis">${basis}</div><table aria-label="${escape(g.symbol)} 多空与今昨明细"><thead><tr><th>方向</th><th>持仓 · 手</th><th>今仓 · 手</th><th>昨仓 · 手</th><th>冻结今仓 · 手</th><th>冻结昨仓 · 手</th><th>可平 · 手</th></tr></thead><tbody>${details}</tbody></table></div></td></tr>`;
+        }
+        return html;
+      }).join('');
+      const empty = !sources.length ? "等待持仓数据" : !ready ? "等待柜台完成持仓恢复" : sources.some(s=>status(s)!=='observing') ? "持仓数据未就绪，等待更新" : $('symbol').value || $('venue').value ? "当前筛选没有持仓" : "当前无持仓";
+      rows('positions',content,6,empty);
+    }
+
+    function render() {
+      const sources=[...state.sources.values()], allGroups=positionGroups(sources,false).filter(g=>g.long||g.short||g.frozenLong||g.frozenShort);
+      renderOverview(sources,allGroups); renderPositions(sources,positionGroups(sources));
+    }
+    function accept(frame) {
+      if (frame.type!=='cn_futures_state' || !frame.source_id) return;
+      state.sources.set(frame.source_id,frame); render();
+    }
+    function connect() {
+      clearTimeout(state.timer);
+      if(state.ws){state.ws.onclose=null;state.ws.close();}
+      connection('连接中','');
+      const ws=state.ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+WS_PATH);
+      ws.onopen=()=>connection('实时连接','ok');
+      ws.onmessage=event=>{try{accept(JSON.parse(event.data));}catch(error){console.error(error);}};
+      ws.onerror=()=>ws.close();
+      ws.onclose=()=>{connection('重连中','err');state.timer=setTimeout(connect,2000);};
+    }
+    document.addEventListener('click',event=>{
+      const button=event.target.closest('[data-group]'); if(!button)return;
+      const key=state.groups[Number(button.dataset.group)]?.key; if(!key)return;
+      state.expanded.has(key)?state.expanded.delete(key):state.expanded.add(key);render();
+    });
+
+    ['venue','show-zero'].forEach(id=>$(id).onchange=render);$('symbol').oninput=render;
+    $('refresh').onclick=connect;
+    render();setInterval(render,1000);connect();
+  })();
+  </script>
+</body></html>

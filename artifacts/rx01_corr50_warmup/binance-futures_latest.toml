@@ -1,0 +1,11 @@
+topics = ["binance-futures"]
+brokers = "156.231.137.189:1501"
+group_id = "rx01_corr50_readonly_1792392871146492173"
+client_id = "rx01_corr50_readonly_1792392871146492173"
+offset_reset = "latest"
+payload_compression = "zlib"
+enable_auto_commit = false
+security_protocol = "none"
+max_messages = 2
+print_symbols = true
+broker_addr_rewrites = [{ from_host = "10.140.140.55", to_host = "156.231.137.189" }]

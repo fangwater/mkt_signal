@@ -27,6 +27,24 @@ pub struct MmOpenQuotePlan {
     pub levels: Vec<MmOpenPlanLevel>,
 }
 
+/// Zero-based level offset shared by MM and Exec grid pricing. Callers validate
+/// the range and volatility; a lower bound cannot exceed the outer offset.
+pub fn volatility_grid_offset(
+    vol: f64,
+    levels: usize,
+    index: usize,
+    scale: [f64; 2],
+    lower: f64,
+) -> f64 {
+    let end = scale[1] * vol;
+    let start = (scale[0] * vol).max(lower).min(end);
+    if levels <= 1 {
+        start
+    } else {
+        start + (end - start) / (levels - 1) as f64 * index as f64
+    }
+}
+
 fn build_level_specs(
     bid: f64,
     ask: f64,
@@ -40,15 +58,9 @@ fn build_level_specs(
         if levels == 0 {
             return Vec::new();
         }
-        let raw_start = scale[0] * vol;
-        let end = scale[1] * vol;
-        // 内层 offset 至少为 lower，但不超过 end（避免 step<0 / 反向）。
-        let start = raw_start.max(lower).min(end);
-        if levels == 1 {
-            return vec![start];
-        }
-        let step = (end - start) / (levels - 1) as f64;
-        (0..levels).map(|idx| start + step * idx as f64).collect()
+        (0..levels)
+            .map(|idx| volatility_grid_offset(vol, levels, idx, scale, lower))
+            .collect()
     }
 
     if levels_per_side == 0 {

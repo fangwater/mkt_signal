@@ -21,7 +21,8 @@ Description:
   - Pair placement (--target auto, default) follows the spread_pbs market-data topology:
       local HK : okex/bybit pairs, plus pairs with binance-futures mirrored to HK
       remote JP: binance/bitget/gate pairs
-  - --target local: force local deploy to this host.
+  - --target local: force local deploy to this host. Hyperliquid is supported only
+                    through this explicit local target; auto does not assume a host.
   - --target sg: force remote SG deploy (ubuntu@47.131.162.78 + aws-sg.pem).
                  Use for pairs whose data is fanned out by the SG bridge
                  (bybit-margin/futures, binance-futures).
@@ -37,6 +38,7 @@ Examples:
   scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue okex-futures --hedge-venue binance-futures
   scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue bybit-futures --hedge-venue binance-futures --target sg
   scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue bitget-futures --hedge-venue gate-futures
+  scripts/rolling_metrics/deploy_rolling_metrics.sh --open-venue hyperliquid-margin --hedge-venue hyperliquid-futures --target local
 EOF
 }
 

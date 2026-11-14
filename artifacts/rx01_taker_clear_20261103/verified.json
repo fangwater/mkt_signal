@@ -1,0 +1,12 @@
+{
+  "source": "binance_exec_trade06",
+  "old_bindings_removed": 91,
+  "follows": 0,
+  "active_exec_strategies": 0,
+  "perpetual_positions": 0,
+  "open_orders": 0,
+  "algo_orders": 0,
+  "signal_disabled": true,
+  "submitters_stopped": true,
+  "checked_at_ms": 1793677722246
+}

@@ -1,0 +1,1674 @@
+[
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "TD_TI_008",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "TD_TI_013",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "baseline_020",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "baseline_034",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "baseline_196",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "factor_052",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "factor_trades_019",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_MT_011",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_MT_019",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_PR_008",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_PT_003",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_TI_008",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_TI_024",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "baseline_055",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "baseline_104",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "baseline_164",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "depth_log_ba_bps5",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "factor_trades_044",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_PR_015",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_PR_015",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_TI_016",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_TI_033",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "baseline_034",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "baseline_034",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "factor_052",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "factor_052",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "factor_114",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_MT_011",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_MT_011",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_MT_038",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_PT_024",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_TI_015",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_TI_031",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_TI_031",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_VI_026",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "depth_touch_add_imb",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "factor_021",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "factor_094",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "TP_VPI_006",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "baseline_104",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "factor_052",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_032",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_036",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_036",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_039",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_039",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PR_010",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PR_010",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PR_010",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PT_004",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PT_004",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PT_004",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PT_010",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_008",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_008",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_008",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_024",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_027",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_030",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_038",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_VI_025",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_VI_028",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TP_VPI_004",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TP_VPI_011",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TP_VPI_011",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TP_VPI_018",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TP_VPI_019",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_006",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_025",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_035",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_035",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_116",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_123",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_164",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_174",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "factor_046",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "factor_172",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "factor_trades_010",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "factor_trades_010",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "factor_trades_044",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_MT_019",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_MT_032",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_008",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_024",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_024",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_027",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_027",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_027",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_027",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_031",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_031",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TP_VPI_006",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TP_VPI_006",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_006",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_011",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_025",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_035",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_081",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_141",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_157",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_157",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_157",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_164",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "buy_volume",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_004",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_052",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_111",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_trades_033",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_trades_043",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_trades_044",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_MT_017",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_PT_003",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_PT_004",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_TI_008",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_TI_008",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_VI_028",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_VI_028",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_113",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_141",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "factor_052",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "factor_trades_025",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TD_TI_008",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TD_TI_027",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "factor_177",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "factor_trades_014",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_MT_022",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_PR_006",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_TI_024",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_TI_024",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_TI_036",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_TI_037",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_TI_038",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TP_VPI_004",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_005",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_005",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_028",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_126",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_141",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_164",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_164",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "depth_level_imb",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_036",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_051",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_052",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_102",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_102",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_125",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_trades_024",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_015",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_017",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_019",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_021",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_027",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_027",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_027",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_042",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_042",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_PR_005",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_PT_009",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_PT_009",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_002",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_024",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_027",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_038",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_038",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_VI_011",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_VI_025",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_VI_025",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TP_VPI_001",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TP_VPI_005",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_005",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_019",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_045",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_045",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_045",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_046",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_046",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_053",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_077",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_079",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_105",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_105",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_116",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_120",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_129",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_141",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_163",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_164",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_198",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "depth_touch_net",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_037",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_094",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_125",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_125",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_125",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_trades_045",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_trades_045",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_trades_045",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "baseline_025",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "baseline_040",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "baseline_091",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "baseline_113",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "factor_107",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "factor_trades_020",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "factor_trades_036",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "binanceswap"
+  }
+]

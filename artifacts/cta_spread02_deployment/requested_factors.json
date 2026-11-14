@@ -1,0 +1,2554 @@
+[
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "TD_CI_007",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "TD_CI_007",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "TD_TI_013",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "baseline_020",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "baseline_034",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_TI_018",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_TI_024",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_TI_027",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TP_VPI_001",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "baseline_098",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "baseline_110",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "baseline_127",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "baseline_141",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "baseline_164",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "baseline_200",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "factor_045",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "factor_116",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "sell_avg_price",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_PT_003",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_PT_003",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_PT_003",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_TI_015",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_TI_015",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_TI_015",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_TI_016",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_TI_033",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_VI_020",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TP_VPI_001",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "baseline_031",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "baseline_034",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "baseline_034",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "baseline_034",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "baseline_141",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "factor_004",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "factor_052",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "factor_052",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "factor_094",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "factor_114",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "AVAXUSDT",
+    "factor": "TD_TI_031",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "AVAXUSDT",
+    "factor": "avg_price",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "AVAXUSDT",
+    "factor": "factor_trades_016",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_MT_011",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_MT_011",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TP_VPI_003",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "baseline_025",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "baseline_025",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "baseline_025",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "baseline_113",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "factor_046",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "factor_047",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "factor_047",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "factor_065",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "factor_065",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "factor_094",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "factor_102",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "factor_trades_040",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "TD_TI_002",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "TD_TI_033",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "TD_TI_033",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "TD_VI_027",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "TP_VPI_005",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "TP_VPI_005",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "TP_VPI_005",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "baseline_004",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "baseline_004",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "baseline_004",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "baseline_100",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "baseline_104",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "baseline_104",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "baseline_138",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "baseline_138",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "factor_052",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_036",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_039",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PT_004",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PT_004",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_030",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_015",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_123",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "factor_046",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_MT_019",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_MT_019",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_024",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_027",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_027",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TP_VPI_017",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "avg_price",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_043",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_058",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_062",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_081",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_104",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_104",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_104",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_141",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_141",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_141",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_157",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_164",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_045",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_049",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_049",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_049",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_052",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_096",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_trades_025",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_trades_033",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_trades_033",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_PR_002",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_PT_024",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_TI_008",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_TI_008",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_TI_008",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_VI_028",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_007",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_007",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_016",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_040",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_079",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_081",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_104",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_104",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_113",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_141",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_164",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "factor_051",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "factor_052",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "factor_052",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "sell_avg_price",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETHUSDT",
+    "factor": "TD_MT_042",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETHUSDT",
+    "factor": "baseline_194",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "ETHUSDT",
+    "factor": "factor_trades_045",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TD_MT_015",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TD_PR_002",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TD_TI_008",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TD_TI_008",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TD_TI_027",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TD_TI_027",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TD_VI_009",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TD_VI_026",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TD_VI_028",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TP_VPI_014",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TP_VPI_014",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TP_VPI_014",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "baseline_104",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "baseline_120",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "baseline_141",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "baseline_141",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "baseline_198",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "depth_touch_add_imb",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "depth_touch_add_imb",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "depth_touch_add_imb",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "factor_052",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "factor_114",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "factor_trades_042",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "factor_trades_045",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "factor_trades_045",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "LINKUSDT",
+    "factor": "TD_TI_044",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "LINKUSDT",
+    "factor": "TP_VPI_014",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "LINKUSDT",
+    "factor": "baseline_200",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "LINKUSDT",
+    "factor": "factor_045",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "LINKUSDT",
+    "factor": "factor_049",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "LINKUSDT",
+    "factor": "factor_052",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "LTCUSDT",
+    "factor": "baseline_047",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "LTCUSDT",
+    "factor": "baseline_047",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "LTCUSDT",
+    "factor": "baseline_113",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "LTCUSDT",
+    "factor": "baseline_113",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "LTCUSDT",
+    "factor": "factor_094",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_MT_019",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_PT_004",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_TI_024",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_TI_027",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_TI_043",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_005",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_005",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_054",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_068",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_141",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_141",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_141",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_164",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "buy_avg_price",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "buy_avg_price",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "buy_avg_price",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_010",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_018",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_031",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_036",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_051",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_051",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_052",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_066",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_007",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_008",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_008",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_008",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_019",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_019",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_021",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_021",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_027",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_027",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_027",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_028",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_029",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_042",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_042",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_PR_005",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_PR_005",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_PR_006",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_PR_006",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_PT_003",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_PT_004",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_PT_009",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_002",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_024",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_025",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_027",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_033",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_038",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_VI_025",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_VI_025",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_VI_025",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TP_VPI_005",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TP_VPI_005",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_005",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_007",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_009",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_013",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_019",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_019",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_019",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_046",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_046",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_081",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_105",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_116",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_120",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_120",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_140",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_141",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_163",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_164",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_187",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_198",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "depth_far_share_ask",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "depth_imb_all",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "depth_imb_bps10",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_009",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_009",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_009",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_010",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_031",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_051",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_087",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_094",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_094",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_114",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_114",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_122",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_122",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_122",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_125",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_125",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_156",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_170",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_trades_045",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRXUSDT",
+    "factor": "TD_PR_010",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRXUSDT",
+    "factor": "TD_PR_010",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRXUSDT",
+    "factor": "TD_TI_031",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRXUSDT",
+    "factor": "buy_avg_price",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRXUSDT",
+    "factor": "buy_avg_price",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "TRXUSDT",
+    "factor": "buy_avg_price",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "TD_TI_045",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "baseline_173",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "buy_avg_price",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "buy_avg_price",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "factor_094",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TD_MT_027",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TD_MT_034",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TD_MT_040",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TD_PR_014",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TD_TI_002",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TD_TI_002",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TD_TI_019",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TD_TI_019",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TD_TI_019",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TD_TI_037",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TP_VPI_014",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TP_VPI_014",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "TP_VPI_014",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "baseline_035",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "baseline_035",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "baseline_058",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "baseline_058",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "baseline_058",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "baseline_062",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "baseline_104",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "baseline_112",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "baseline_141",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "baseline_157",
+    "threshold": "0.50/0.50",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "factor_032",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "15min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "factor_049",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "factor_052",
+    "threshold": "0.2/0.8",
+    "sign": 1,
+    "freq": "5min",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "factor_091",
+    "threshold": "0.50/0.50",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "factor_trades_020",
+    "threshold": "0.2/0.8",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "factor_trades_020",
+    "threshold": "NQ关",
+    "sign": -1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "factor": "factor_trades_043",
+    "threshold": "NQ关",
+    "sign": 1,
+    "freq": "1h",
+    "exchange": "okxswap"
+  }
+]

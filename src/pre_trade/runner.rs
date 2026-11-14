@@ -2,6 +2,7 @@ use crate::pre_trade::account_open_block::drive_account_open_block_capacity_poll
 use crate::pre_trade::auto_collection_service::AutoCollectionService;
 use crate::pre_trade::auto_repay_service::AutoRepayService;
 use crate::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
+use crate::pre_trade::hyperliquid_account_hash_from_env;
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateLimiter;
@@ -21,14 +22,14 @@ use crate::strategy::{OrphanStrategyManager, StrategyManager};
 use account_common::BinanceAccountMode;
 use anyhow::Result;
 use bytes::Bytes;
-use log::{info, warn};
+use log::{debug, info, warn};
 use order_common::TradingVenue;
 use runtime_common::redis_client::RedisSettings;
 use runtime_common::time_util::get_timestamp_us;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-use trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
+use trade_engine::query_request::{GenericQueryRequest, HyperliquidQueryParams, QueryRequestType};
 
 const PARAM_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const SNAPSHOT_QUERY_INTERVAL: Duration = Duration::from_secs(60);
@@ -36,6 +37,10 @@ const EXPOSURE_TABLE_PRINT_INTERVAL: Duration = Duration::from_secs(10);
 const NON_FAST_POLL_IDLE_SLEEP: Duration = Duration::from_millis(1);
 const ORDER_POSITION_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const ORDER_POSITION_DRAIN_LIMIT: usize = 64;
+const HYPERLIQUID_PERIODIC_QUERIES: [(QueryRequestType, &str); 1] = [(
+    QueryRequestType::HyperliquidUserAbstraction,
+    "hyperliquid account abstraction mode",
+)];
 
 #[derive(Clone, Copy, Debug)]
 struct FastPollDispatchBudgets {
@@ -149,12 +154,17 @@ impl SnapshotQueryConfig {
         }
     }
 
-    pub fn new_exec(venue: TradingVenue, binance_account_mode: Option<BinanceAccountMode>) -> Self {
+    pub fn new_exec(
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+        binance_account_mode: Option<BinanceAccountMode>,
+    ) -> Self {
         Self {
-            open_venue: venue,
-            hedge_venue: venue,
+            open_venue,
+            hedge_venue,
             binance_account_mode,
-            include_binance_spot_snapshot: false,
+            include_binance_spot_snapshot: matches!(open_venue, TradingVenue::BinanceMargin)
+                || matches!(hedge_venue, TradingVenue::BinanceMargin),
         }
     }
 }
@@ -269,8 +279,11 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
         || matches!(hedge_venue, TradingVenue::BitgetFutures);
     let need_bitget_coin = matches!(open_venue, TradingVenue::BitgetCoinFutures)
         || matches!(hedge_venue, TradingVenue::BitgetCoinFutures);
+    let need_hyperliquid = open_venue.trade_engine_exchange() == "hyperliquid"
+        || hedge_venue.trade_engine_exchange() == "hyperliquid";
 
-    if !need_binance && !need_okex && !need_gate && !need_bybit && !need_bitget {
+    if !need_binance && !need_okex && !need_gate && !need_bybit && !need_bitget && !need_hyperliquid
+    {
         return false;
     }
 
@@ -284,7 +297,7 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
             let now = get_timestamp_us();
             let req = GenericQueryRequest::create(request_type, now, now, context);
             let _ = QueryEngHub::publish_query_request(exchange, &req.to_bytes());
-            info!("snapshot query sent: {desc}");
+            debug!("snapshot query sent: {desc}");
             published = true;
         };
 
@@ -415,6 +428,21 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
                 Bytes::from_static(b"category=COIN-FUTURES"),
                 "bitget UTA COIN-FUTURES positions snapshot",
             );
+        }
+    }
+    if need_hyperliquid {
+        match hyperliquid_account_hash_from_env() {
+            Ok(account_hash) => {
+                let params =
+                    || HyperliquidQueryParams::create(account_hash, Bytes::new()).to_bytes();
+                // Account balances and positions have one writer: the authenticated private
+                // account stream. The periodic query only verifies that account abstraction
+                // mode has not drifted underneath the trading client.
+                for (request_type, description) in HYPERLIQUID_PERIODIC_QUERIES {
+                    publish("hyperliquid", request_type, params(), description);
+                }
+            }
+            Err(err) => warn!("skip Hyperliquid snapshot queries: {err}"),
         }
     }
     published
@@ -549,8 +577,13 @@ impl PreTrade {
         let arb_startup_net_log_interval = std::time::Duration::from_secs(30);
         let mut next_arb_startup_net_log = std::time::Instant::now() + arb_startup_net_log_interval;
         let account_open_block_poll_interval = std::time::Duration::from_secs(60);
-        let mut next_account_open_block_poll =
-            std::time::Instant::now() + account_open_block_poll_interval;
+        let gate_unified = MonitorChannel::instance().open_venue() == TradingVenue::GateMargin
+            && MonitorChannel::instance().hedge_venue() == TradingVenue::GateFutures;
+        let mut next_account_open_block_poll = if gate_unified {
+            std::time::Instant::now()
+        } else {
+            std::time::Instant::now() + account_open_block_poll_interval
+        };
         let mut next_param_refresh = Instant::now();
         let fast_poll = enable_ipc_fast_poll();
         let fast_poll_budgets = FastPollDispatchBudgets::from_env();
@@ -656,7 +689,7 @@ impl PreTrade {
                     refresh_cfg.open_venue,
                     refresh_cfg.hedge_venue,
                 ) {
-                    Ok(()) => info!("pre_trade risk parameters synchronous refresh succeeded"),
+                    Ok(()) => debug!("pre_trade risk parameters synchronous refresh succeeded"),
                     Err(err) => {
                         warn!("pre_trade risk parameters synchronous refresh failed: {err:#}")
                     }
@@ -689,7 +722,7 @@ impl PreTrade {
                         threshold_us: 0,
                     }),
                 );
-                info!(
+                debug!(
                     "pre_trade synchronous maintenance round finished: elapsed_us={} open_signals=drop close_signals=preserve",
                     maintenance_elapsed_us
                 );
@@ -1132,7 +1165,7 @@ impl PreTrade {
 mod tests {
     use super::{
         drive_orphan_manager_period_clock_rc, drive_strategy_manager_period_clock_rc,
-        reactor_idle_spin_iters, SnapshotQueryConfig,
+        reactor_idle_spin_iters, SnapshotQueryConfig, HYPERLIQUID_PERIODIC_QUERIES,
     };
     use crate::strategy::orphan_order_strategy::OrphanOrderStrategy;
     use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
@@ -1143,6 +1176,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::sync::{Mutex, OnceLock};
+    use trade_engine::query_request::QueryRequestType;
 
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1159,12 +1193,27 @@ mod tests {
     }
 
     #[test]
-    fn exec_snapshot_skips_binance_spot_but_intra_keeps_it() {
+    fn exec_snapshot_includes_binance_spot_only_when_it_owns_cash() {
         let exec = SnapshotQueryConfig::new_exec(
             TradingVenue::BinanceFutures,
+            TradingVenue::BinanceCoinFutures,
             Some(BinanceAccountMode::Standard),
         );
         assert!(!exec.include_binance_spot_snapshot);
+
+        let mixed_exec = SnapshotQueryConfig::new_exec(
+            TradingVenue::BinanceFutures,
+            TradingVenue::BinanceMargin,
+            Some(BinanceAccountMode::Standard),
+        );
+        assert!(mixed_exec.include_binance_spot_snapshot);
+
+        let cash_exec = SnapshotQueryConfig::new_exec(
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceMargin,
+            Some(BinanceAccountMode::Standard),
+        );
+        assert!(cash_exec.include_binance_spot_snapshot);
 
         let intra = SnapshotQueryConfig::new(
             TradingVenue::BinanceMargin,
@@ -1172,6 +1221,17 @@ mod tests {
             Some(BinanceAccountMode::Standard),
         );
         assert!(intra.include_binance_spot_snapshot);
+    }
+
+    #[test]
+    fn hyperliquid_periodic_query_only_validates_account_mode() {
+        assert_eq!(
+            HYPERLIQUID_PERIODIC_QUERIES
+                .iter()
+                .map(|(request_type, _)| *request_type)
+                .collect::<Vec<_>>(),
+            vec![QueryRequestType::HyperliquidUserAbstraction]
+        );
     }
 
     struct ReentrantTickStrategy {

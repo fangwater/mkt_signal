@@ -1,0 +1,29 @@
+{
+  "utc": "2026-10-29T07:25:13.632847+00:00",
+  "env": "okex_mm_alpha",
+  "nonzero_positions": 0,
+  "ordinary_open_orders": 0,
+  "algo_open_orders": {
+    "conditional": 0,
+    "oco": 0,
+    "trigger": 0,
+    "move_order_stop": 0
+  },
+  "non_usdt_balances": 0,
+  "liabilities": 0,
+  "trading_account_currencies": [
+    "USDT"
+  ],
+  "usdt_balance": "34871.42976384234",
+  "closed_swap_symbols": 14,
+  "closed_swap_orders": 14,
+  "closed_swap_fills": 18,
+  "all_swap_fill_quantities_matched": true,
+  "all_market_fills": 20,
+  "all_market_orders": 16,
+  "account_bills": 38,
+  "target_processes": 0,
+  "configuration_unchanged": true,
+  "original_order_archive_retained": true,
+  "closing_facts_supplement_original_archive": true
+}

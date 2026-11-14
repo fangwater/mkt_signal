@@ -2,6 +2,7 @@ use bytes::Bytes;
 use mkt_parsers::msg::basic_account_msg::{
     BasicAccountRiskMsg, BasicBalanceMsg, BasicBorrowInterestMsg,
 };
+use mkt_parsers::msg::bitget_account_msg::bitget_margin_ratio_from_mmr;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -107,11 +108,7 @@ pub fn parse_bitget_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
         let adj_equity_usd = parse_f64(&data.eff_equity).unwrap_or(actual_equity_usd);
         let maintenance_margin_usd = parse_f64(&data.mmr).unwrap_or(0.0);
         let initial_margin_usd = parse_f64(&data.imr).unwrap_or(0.0);
-        let margin_ratio = if maintenance_margin_usd.abs() > f64::EPSILON {
-            adj_equity_usd / maintenance_margin_usd
-        } else {
-            0.0
-        };
+        let margin_ratio = bitget_margin_ratio_from_mmr(adj_equity_usd, maintenance_margin_usd);
         out.push(
             BasicAccountRiskMsg::create(
                 ts,
@@ -220,6 +217,26 @@ mod tests {
         assert!((risk.maintenance_margin_usd - 186.3).abs() < 1e-12);
         assert!((risk.initial_margin_usd - 385.88).abs() < 1e-12);
         assert!(risk.margin_ratio > 500.0);
+    }
+
+    #[test]
+    fn treats_mmr_at_or_below_floor_as_safe() {
+        let json = r#"{
+            "code":"00000",
+            "data":{
+                "accountEquity":"100",
+                "effEquity":"99",
+                "mmr":"0.5",
+                "assets":[]
+            }
+        }"#;
+        let msgs = parse_bitget_account_balance_snapshot(json).expect("parse ok");
+        assert_eq!(msgs.len(), 1);
+        let risk = BasicAccountRiskMsg::from_bytes(&msgs[0]).expect("risk");
+        assert_eq!(
+            risk.margin_ratio,
+            mkt_parsers::msg::bitget_account_msg::BITGET_SAFE_MARGIN_RATIO
+        );
     }
 
     #[test]

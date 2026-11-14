@@ -597,7 +597,9 @@ HTTP 反代监听：
 /etc/nginx/sites-enabled/crypto_proxy_4191.conf
 ```
 
-TCP stream 转发监听：
+以下是当时的 TCP stream 转发记录。2026-11-02 已关闭 Redis 的公网
+`4190 -> 6379` 转发，并从主机映射文件移除；Redis 继续通过本机回环访问。
+其他 stream 转发保留。
 
 ```text
 0.0.0.0:4190      -> 127.0.0.1:6379

@@ -12,13 +12,16 @@ INTRA_ORCHESTRATION_ENVS=(
   binance-intra-arb01
 )
 
+
 intra_supported_envs_csv() {
   local IFS=","
   printf '%s\n' "${INTRA_ORCHESTRATION_ENVS[*]}"
 }
 
+
 intra_configure_env() {
   INTRA_ENV_NAME="${1:-}"
+  INTRA_EXEC_BACKEND="native"
   case "$INTRA_ENV_NAME" in
     bybit-intra-arb01)
       INTRA_EXCHANGE="bybit"
@@ -43,6 +46,7 @@ intra_configure_env() {
       INTRA_SSH_HOST="jp-meta-elvpn"
       INTRA_CONFIG_PORT="19171"
       INTRA_VIZ_PORT="10180"
+      INTRA_EXEC_BACKEND="native"
       ;;
     *)
       echo "[ERROR] unsupported Intra environment: ${INTRA_ENV_NAME:-<empty>}" >&2
@@ -51,9 +55,14 @@ intra_configure_env() {
       ;;
   esac
 
-  INTRA_ACCOUNT_MONITOR_BIN="${INTRA_EXCHANGE}_account_monitor"
+  if [[ "$INTRA_EXEC_BACKEND" == "ltp" ]]; then
+    INTRA_ACCOUNT_MONITOR_BIN="rapidx_account_monitor"
+  else
+    INTRA_ACCOUNT_MONITOR_BIN="${INTRA_EXCHANGE}_account_monitor"
+  fi
   INTRA_ACCOUNT_MONITOR_DEST="account_monitor_${INTRA_EXCHANGE}"
 }
+
 
 intra_configure_transport() {
   local root_dir="$1"

@@ -19,6 +19,8 @@ pub const DEFAULT_OUTPUT_HASH_KEY: &str = "rolling_metrics_thresholds";
 
 pub const FACTOR_BIDASK: &str = "bidask";
 pub const FACTOR_ASKBID: &str = "askbid";
+pub const FACTOR_BIDBID_HO: &str = "bidbid_ho";
+pub const FACTOR_ASKASK_OH: &str = "askask_oh";
 pub const FACTOR_SPREAD: &str = "spread";
 pub const FACTOR_OPEN_PREMIUM_RATE: &str = "open_premium_rate";
 pub const FACTOR_HEDGE_PREMIUM_RATE: &str = "hedge_premium_rate";
@@ -75,6 +77,17 @@ fn default_factors() -> BTreeMap<String, FactorConfig> {
             Vec::new(),
         ),
     );
+    for factor_name in [FACTOR_BIDBID_HO, FACTOR_ASKASK_OH] {
+        factors.insert(
+            factor_name.to_string(),
+            FactorConfig::new(
+                DEFAULT_RESAMPLE_INTERVAL_MS,
+                DEFAULT_ROLLING_WINDOW,
+                DEFAULT_MIN_PERIODS,
+                Vec::new(),
+            ),
+        );
+    }
     factors.insert(
         FACTOR_SPREAD.to_string(),
         FactorConfig::new(

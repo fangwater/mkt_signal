@@ -1,0 +1,17 @@
+{
+  "verified_at": "2026-10-30T09:41:05.461331+00:00",
+  "source_commit": "dc8d82f62785f85fa754028c8a5c20341e4b2ce1",
+  "environment": "binance-cta-perp-rx01",
+  "depth_net_denominator": "abs(bid_net) + abs(ask_net)",
+  "empty_universe_guard_passed": true,
+  "runtime_ports_closed": true,
+  "installed_sha256": {
+    "cta_perp_factor_model_15m_pub": "bc4442d34d83d88ed5ecec8c38ec591223a8be92b11c276549153ff3984c807d",
+    "config/README.md": "48f7e2586e56aec8b79a92fb2a0228e74dcf0792c4ffb398431920982534ca02"
+  },
+  "protected_config_unchanged": true,
+  "protected_processes_unchanged": 57,
+  "enabled": false,
+  "runtime_services_started": false,
+  "operator_list_empty": true
+}

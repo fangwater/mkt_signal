@@ -1,0 +1,42 @@
+{
+  "scope": "Extend Gate ADL spot repair to Bybit and Binance same-account USDT linear funding-rate environments",
+  "validation": {
+    "mkt_parsers_library": {
+      "passed": 183
+    },
+    "root_library": {
+      "passed": 1470,
+      "ignored": 3
+    },
+    "order_common_library": {
+      "passed": 49
+    },
+    "trade_engine_library": {
+      "passed": 382
+    },
+    "format_check": "passed",
+    "diff_whitespace_check": "passed",
+    "cargo_check_bins": {
+      "pre_trade": "passed",
+      "gate_account_monitor": "passed",
+      "bybit_account_monitor": "passed",
+      "binance_account_monitor": "passed",
+      "trade_engine": "passed"
+    }
+  },
+  "coverage": [
+    "Bybit AdlTrade retains native identity even with a numeric orderLinkId",
+    "Binance adl_autoclose preserves PM and standard USD-M account scope",
+    "Binance cumulative fill watermark rejects duplicate, older and invalid updates, including zero native trade IDs",
+    "Repair is limited to the three supported same-exchange FundingArb pairs and excluded from Exec, COIN-M and other modes",
+    "Shared partial-fill, inventory cap and unresolved-order reservation lifecycle",
+    "Bybit spot market repair uses base quantity without enabling new borrowing"
+  ],
+  "production_deployed": false,
+  "notes": [
+    "No live orders were submitted in verification; no live Bybit or Binance ADL event was observed.",
+    "Binance uses a local repair adapter after factual native fill persistence, without emitting another account IPC event.",
+    "Repair and deduplication state is process-local; a restart during repair requires reconciling outstanding orders and actual exposure.",
+    "Historical ADL records are not automatically replayed into orders."
+  ]
+}

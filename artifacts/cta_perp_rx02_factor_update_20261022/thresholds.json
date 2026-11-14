@@ -1,0 +1,56 @@
+{
+  "available": {
+    "ATOMUSDT": {
+      "medium_notional_threshold": 16.52028,
+      "large_notional_threshold": 328.8483
+    },
+    "AXSUSDT": {
+      "medium_notional_threshold": 24.28,
+      "large_notional_threshold": 438.256
+    },
+    "DASHUSDT": {
+      "medium_notional_threshold": 16.52799,
+      "large_notional_threshold": 294.492168
+    },
+    "DOGEUSDT": {
+      "medium_notional_threshold": 16.51716,
+      "large_notional_threshold": 939.55442
+    },
+    "ETCUSDT": {
+      "medium_notional_threshold": 40.006,
+      "large_notional_threshold": 353.316564
+    },
+    "NEARUSDT": {
+      "medium_notional_threshold": 31.694,
+      "large_notional_threshold": 999.454
+    },
+    "RSRUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "ZECUSDT": {
+      "medium_notional_threshold": 16.57319,
+      "large_notional_threshold": 560.91618
+    },
+    "ZENUSDT": {
+      "medium_notional_threshold": 16.79115,
+      "large_notional_threshold": 170.184
+    }
+  },
+  "missing": [
+    "1INCHUSDT",
+    "ALGOUSDT",
+    "BELUSDT",
+    "COMPUSDT",
+    "EGLDUSDT",
+    "IOTAUSDT",
+    "KAVAUSDT",
+    "KNCUSDT",
+    "QTUMUSDT",
+    "RLCUSDT",
+    "SKLUSDT",
+    "SUSHIUSDT",
+    "XTZUSDT",
+    "ZRXUSDT"
+  ]
+}

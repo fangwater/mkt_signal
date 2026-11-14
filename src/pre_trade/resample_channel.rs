@@ -8,7 +8,7 @@ use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::price_table::PriceEntry;
 use crate::pre_trade::signal_channel::take_signal_counts;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
-use crate::pre_trade::symbol_util::extract_base_asset;
+use crate::pre_trade::symbol_util::{extract_base_asset, is_exposure_exempt_asset};
 use crate::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
 use anyhow::Result;
 use ipc_common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
@@ -138,7 +138,7 @@ fn sum_position_usd(
     let price_mapper = create_symbol_mapper(mark_price_exchange);
     BasicExposureManager::compute_exposures_for_exchange(exchange, balance_mgrs, um_mgrs)
         .into_iter()
-        .filter(|entry| !entry.asset.eq_ignore_ascii_case("USDT"))
+        .filter(|entry| !is_exposure_exempt_asset(&entry.asset))
         .filter_map(|entry| {
             let symbol = price_mapper.asset_to_price_symbol(&entry.asset);
             let mark = price_snapshot
@@ -236,13 +236,22 @@ fn build_account_risk_view(
     PreTradeAccountRiskView {
         // 5 个 producer 均填毫秒（详见 docs/account_risk_msg_mapping.md 与各 parser 单测）
         ts_ms: msg.timestamp,
-        adj_equity_usd: msg.adj_equity_usd,
-        actual_equity_usd: msg.actual_equity_usd,
-        maintenance_margin_usd: msg.maintenance_margin_usd,
-        initial_margin_usd: msg.initial_margin_usd,
+        adj_equity_usd: msg.adj_equity_usd.is_finite().then_some(msg.adj_equity_usd),
+        actual_equity_usd: msg
+            .actual_equity_usd
+            .is_finite()
+            .then_some(msg.actual_equity_usd),
+        maintenance_margin_usd: msg
+            .maintenance_margin_usd
+            .is_finite()
+            .then_some(msg.maintenance_margin_usd),
+        initial_margin_usd: msg
+            .initial_margin_usd
+            .is_finite()
+            .then_some(msg.initial_margin_usd),
         margin_ratio: msg.margin_ratio,
-        borrowed_usd: msg.borrowed_usd,
-        notional_usd: msg.notional_usd,
+        borrowed_usd: msg.borrowed_usd.is_finite().then_some(msg.borrowed_usd),
+        notional_usd: msg.notional_usd.is_finite().then_some(msg.notional_usd),
         state,
     }
 }
@@ -523,7 +532,9 @@ impl ResampleChannel {
         let mut rows = Vec::new();
         for (asset, &(open_qty, hedge_qty)) in &exposures {
             let asset_upper = asset.to_ascii_uppercase();
-            if open_qty.abs() <= 1e-12 && hedge_qty.abs() <= 1e-12 {
+            if is_exposure_exempt_asset(&asset_upper)
+                || (open_qty.abs() <= 1e-12 && hedge_qty.abs() <= 1e-12)
+            {
                 continue;
             }
             let net_qty = open_qty + hedge_qty;
@@ -651,7 +662,7 @@ impl ResampleChannel {
                 .map(|(asset, &(open_qty, hedge_qty))| (asset.to_uppercase(), open_qty, hedge_qty))
                 .collect();
             for asset in arb_hedge_snapshot_by_asset.keys() {
-                if asset == "USDT" {
+                if is_exposure_exempt_asset(asset) {
                     continue;
                 }
                 exposure_items.push((asset.clone(), 0.0, 0.0));
@@ -660,7 +671,7 @@ impl ResampleChannel {
             exposure_items.dedup_by(|a, b| a.0 == b.0);
 
             for (asset_upper, open_qty, hedge_qty) in exposure_items {
-                if asset_upper == "USDT" {
+                if is_exposure_exempt_asset(&asset_upper) {
                     continue;
                 }
                 let (
@@ -925,6 +936,34 @@ mod tests {
     use crate::pre_trade::{basic_um_manager::BasicUmManager, price_table::PriceTable};
     use mkt_parsers::msg::basic_account_msg::BasicPositionMsg;
     use runtime_common::exchange::Exchange;
+
+    #[test]
+    fn ratio_only_financial_amounts_round_trip_as_null_not_zero() {
+        use mkt_parsers::msg::basic_account_msg::{BasicAccountRiskMsg, BasicAccountScope};
+        let msg = BasicAccountRiskMsg::ratio_only(1000, 3.8);
+        let view =
+            super::build_account_risk_view(BasicAccountScope::HyperliquidPortfolioMargin, &msg);
+        let json = serde_json::to_value(&view).unwrap();
+        for field in [
+            "adj_equity_usd",
+            "actual_equity_usd",
+            "maintenance_margin_usd",
+            "initial_margin_usd",
+            "borrowed_usd",
+            "notional_usd",
+        ] {
+            assert!(json[field].is_null(), "{field}");
+        }
+        let decoded: viz_common::resample::PreTradeAccountRiskView =
+            serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.margin_ratio, 3.8);
+        assert!(decoded.actual_equity_usd.is_none());
+        let known = BasicAccountRiskMsg::create(1000, 0.0, 10.0, 1.0, 2.0, 3.8, 0.0, 5.0);
+        let view =
+            super::build_account_risk_view(BasicAccountScope::HyperliquidPortfolioMargin, &known);
+        assert_eq!(view.adj_equity_usd, Some(0.0));
+        assert_eq!(view.actual_equity_usd, Some(10.0));
+    }
 
     #[test]
     fn hedge_snapshot_symbol_key_normalizes_internal_and_price_symbols() {

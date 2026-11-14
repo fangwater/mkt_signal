@@ -8,6 +8,10 @@
 # 说明：
 # - static: 后面建议写绝对路径；也支持 static:$HOME/... 或 static:~/...（由 scripts/setup_nginx_4191.sh 展开为绝对路径）
 # - 建议 path/dir 都以 / 结尾；脚本会自动生成 301：/cross/okex-binance -> /cross/okex-binance/
+#
+# 外部片段（在 server 块内生成 include，文件须已存在于本机，否则重写中止）：
+#   /manager/ external:/etc/nginx/snippets/crypto_cta_manager.conf
+# - external: 的路径列仅作文档和 /manager 防误删检查用；location 由被包含文件自行定义
 
 /fr/binance http://127.0.0.1:12345
 
@@ -21,3 +25,8 @@
 # Crypto NAV manager (canonical path)
 /nav-api/ http://127.0.0.1:4200/api/
 /nav/ static:$HOME/crypto_nav_manager/frontend/dist/
+
+# BEGIN managed: delist_risk_server
+# delist risk public HTTP
+/delist/ http://127.0.0.1:8787/
+# END managed: delist_risk_server

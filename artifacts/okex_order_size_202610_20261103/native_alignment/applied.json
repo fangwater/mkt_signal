@@ -1,0 +1,42 @@
+{
+  "execute": true,
+  "mode": "correct",
+  "source_month": "2026-10",
+  "apply_month": "2026-11",
+  "csv_sha256": "e81dfd6e934d5e8a21d01b214a394a0fafdf061b4cfb9fa29430544ab91a3832",
+  "units": {
+    "okex-futures": "price_x_contracts"
+  },
+  "changes": {
+    "okex-futures:amount-thresholds": {
+      "before": 8,
+      "after": 8,
+      "added": [],
+      "removed": [],
+      "updated": [
+        "ADA-USDT-SWAP",
+        "DOGE-USDT-SWAP",
+        "ETC-USDT-SWAP",
+        "NEAR-USDT-SWAP",
+        "TRB-USDT-SWAP"
+      ]
+    },
+    "okex-futures:factor-plan": {
+      "before": 0,
+      "after": 0,
+      "added": [],
+      "removed": [],
+      "updated": []
+    },
+    "okex-futures:factor-plan-1m": {
+      "before": 0,
+      "after": 0,
+      "added": [],
+      "removed": [],
+      "updated": []
+    }
+  },
+  "correction_from": "/home/ubuntu/tlen_config_shared/run/okex_order_size_202610_20261103/redis_before.json",
+  "verified": true,
+  "backup": "/home/ubuntu/tlen_config_shared/run/okex_order_size_202610_20261103/native_alignment/redis_before.json"
+}

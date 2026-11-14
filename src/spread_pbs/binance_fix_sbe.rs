@@ -349,7 +349,7 @@ async fn run_fix_md_session(
                     }
                     TEMPLATE_LOGOUT => bail!("Binance FIX MD server logout"),
                     TEMPLATE_NEWS => bail!("Binance FIX MD maintenance news; reconnecting"),
-                    _ => handler(recv_us, &frame),
+                    _ => handler(recv_us, &frame)?,
                 }
             }
         }

@@ -1,0 +1,170 @@
+{
+  "checked_at_ms": 1793789342662,
+  "cutover_ts_us": 1793785651222000,
+  "source": "binance_exec_rx03",
+  "workers": {
+    "cta-prep-binance-futures": {
+      "generation": "0bc52031-a5e6-4003-b2fa-c4ba5305d2c5",
+      "warming": false,
+      "calculation_count": 408,
+      "latest_count": 404,
+      "missing": [
+        "binance-futures-icxusdt-15min-baseline_104",
+        "binance-futures-icxusdt-15min-td_ti_027",
+        "binance-futures-icxusdt-1min-nq",
+        "binance-futures-icxusdt-1min-td_ti_043"
+      ],
+      "readiness": {
+        "15min:unready": 58,
+        "15min:ready": 143,
+        "1min:ready": 132,
+        "5min:ready": 55,
+        "1min:unready": 2,
+        "5min:unready": 14
+      },
+      "max_point_age_ms": {
+        "15min": 242662,
+        "1min": 62662,
+        "5min": 242662
+      },
+      "errors": [],
+      "publications_acknowledged": true
+    },
+    "cta-factor-spread": {
+      "generation": "7745578d-ede6-45f0-bccc-810879da8216",
+      "warming": false,
+      "calculation_count": 50,
+      "latest_count": 50,
+      "missing": [],
+      "readiness": {
+        "1min:ready": 50
+      },
+      "max_point_age_ms": {
+        "1min": 62662
+      },
+      "errors": [],
+      "publications_acknowledged": true
+    }
+  },
+  "execution": {
+    "position_ready": true,
+    "strategy_count": 9,
+    "old_active_strategies": 0,
+    "algorithm": "grid",
+    "template": "lgq_grid_prep",
+    "shares": 1,
+    "pending_publishes": 0
+  },
+  "migration": {
+    "account_quantity_conserved": true,
+    "historical_pnl_rewritten": false,
+    "pnl_windows_verified": [
+      "history",
+      "7d",
+      "1d",
+      "after"
+    ],
+    "cutover_ownership_applied": true
+  },
+  "env_and_main_configs_unchanged": [
+    "cta-prep-binance-futures/env.sh",
+    "cta-factor-spread/env.sh",
+    "binance_exec_rx03/env.sh",
+    "binance_exec_rx03/trade_engine.toml",
+    "config/cta_prep_binance_futures.toml",
+    "config/cta_factor_spread.toml"
+  ],
+  "installed_sha256_verified": true,
+  "processes": [
+    {
+      "pid": 2097112,
+      "env": "crypto_cta_manager",
+      "comm": "cta_web",
+      "cpus": "24"
+    },
+    {
+      "pid": 2968323,
+      "env": "cta-prep-binance-futures",
+      "comm": "cta-factor-conf",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 2970444,
+      "env": "cta-prep-binance-futures",
+      "comm": "cta-prep-binanc",
+      "cpus": "17"
+    },
+    {
+      "pid": 2970968,
+      "env": "cta-factor-spread",
+      "comm": "cta-factor-spre",
+      "cpus": "18"
+    },
+    {
+      "pid": 3016803,
+      "env": "binance_exec_rx03",
+      "comm": "exec-pre-trade",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 3016920,
+      "env": "binance_exec_rx03",
+      "comm": "trade_signal",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 3033518,
+      "env": "delist_risk_server",
+      "comm": "ssh",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 3033546,
+      "env": "delist_risk_server",
+      "comm": "delist_risk_ser",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 3684036,
+      "env": "binance_exec_rx03",
+      "comm": "persist_manager",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 3685214,
+      "env": "binance_exec_rx03",
+      "comm": "rapidx_account_",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 3685348,
+      "env": "binance_exec_rx03",
+      "comm": "viz_server",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 3685475,
+      "env": "binance_exec_rx03",
+      "comm": "python3",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 3936910,
+      "env": "binance_exec_rx03",
+      "comm": "trade_engine",
+      "cpus": "0-5,48-95"
+    }
+  ],
+  "all_factor_threads_cpu_verified": true,
+  "protected_rx03_process_identities_unchanged": [
+    3936910,
+    3684036,
+    3685214,
+    3685348
+  ],
+  "manager_and_rx03_config_pids_verified": [
+    2097112,
+    3685475
+  ],
+  "concurrent_bitget_process_changes": 15
+}

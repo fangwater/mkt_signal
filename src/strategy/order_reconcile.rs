@@ -1,28 +1,17 @@
 use crate::strategy::order_query_parser::parse_compact_order_query_resp as parse_compact_order_query_resp_common;
 pub use order_common::CUMULATIVE_FILL_ROLLBACK_EPS;
-use order_common::{Order, OrderExecutionStatus};
+use order_common::{Order, OrderExecutionStatus, TradeEngineResponse, TradeRequestKind};
 use order_common::{TimeInForce, TradingVenue};
 use signal_common::tick_math::QuantizedValue;
 use trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
 
-pub const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
-pub const BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 6_000_000;
+pub const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 6_000_000;
 
 pub fn order_query_watchdog_delay_us_for_venue(
-    venue: TradingVenue,
-    binance_is_standard: bool,
+    _venue: TradingVenue,
+    _binance_is_standard: bool,
 ) -> i64 {
-    if matches!(
-        venue,
-        TradingVenue::BinanceMargin
-            | TradingVenue::BinanceFutures
-            | TradingVenue::BinanceCoinFutures
-    ) && !binance_is_standard
-    {
-        BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US
-    } else {
-        ORDER_QUERY_WATCHDOG_DELAY_US
-    }
+    ORDER_QUERY_WATCHDOG_DELAY_US
 }
 
 pub fn order_query_watchdog_delay_us(order: &Order, binance_is_standard: bool) -> i64 {
@@ -59,6 +48,21 @@ impl PendingOrderQueryReason {
     }
 }
 
+pub fn ambiguous_action_query_reason(
+    response: &dyn TradeEngineResponse,
+    cancel_reason: PendingOrderQueryReason,
+) -> Option<PendingOrderQueryReason> {
+    if !response.is_action_result_unknown() {
+        return None;
+    }
+    match response.request_kind() {
+        TradeRequestKind::Open => Some(PendingOrderQueryReason::OrderWatchdog),
+        TradeRequestKind::Cancel => Some(cancel_reason),
+        TradeRequestKind::Modify => Some(PendingOrderQueryReason::OrderWatchdog),
+        TradeRequestKind::Other => None,
+    }
+}
+
 pub fn qv_decimal_or_fallback(value: f64) -> String {
     QuantizedValue::from_decimal(value)
         .map(|qv| qv.decimal_string())
@@ -87,10 +91,12 @@ pub fn parse_strategy_compact_order_query_resp(
 #[cfg(test)]
 mod tests {
     use super::{
-        monotonic_cumulative_fill, order_query_watchdog_delay_us_for_venue, qv_decimal_or_fallback,
-        BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US, ORDER_QUERY_WATCHDOG_DELAY_US,
+        ambiguous_action_query_reason, monotonic_cumulative_fill,
+        order_query_watchdog_delay_us_for_venue, qv_decimal_or_fallback, PendingOrderQueryReason,
+        ORDER_QUERY_WATCHDOG_DELAY_US,
     };
-    use order_common::TradingVenue;
+    use order_common::trade_error_code::hyperliquid::ACTION_AMBIGUOUS;
+    use order_common::{TradeEngineResponseMessage, TradeRequestType, TradingVenue};
 
     #[test]
     fn monotonic_cumulative_fill_keeps_local_value_on_rollback() {
@@ -108,22 +114,128 @@ mod tests {
     }
 
     #[test]
-    fn binance_pm_uses_long_order_query_watchdog_delay() {
-        assert_eq!(
-            order_query_watchdog_delay_us_for_venue(TradingVenue::BinanceFutures, false),
-            BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US
+    fn all_venues_use_long_order_query_watchdog_delay() {
+        for (venue, binance_is_standard) in [
+            (TradingVenue::BinanceFutures, false),
+            (TradingVenue::BinanceMargin, true),
+            (TradingVenue::GateFutures, false),
+            (TradingVenue::BitgetFutures, false),
+            (TradingVenue::OkexFutures, false),
+            (TradingVenue::BybitFutures, false),
+            (TradingVenue::HyperliquidFutures, false),
+        ] {
+            assert_eq!(
+                order_query_watchdog_delay_us_for_venue(venue, binance_is_standard),
+                ORDER_QUERY_WATCHDOG_DELAY_US
+            );
+        }
+    }
+
+    #[test]
+    fn hyperliquid_ambiguous_actions_route_to_order_status_reconciliation() {
+        let open = TradeEngineResponseMessage::new(
+            503,
+            TradeRequestType::HyperliquidNewUMOrder as u32,
+            symbol_utils::Exchange::Hyperliquid as u32,
+            7,
+            ACTION_AMBIGUOUS,
         );
         assert_eq!(
-            order_query_watchdog_delay_us_for_venue(TradingVenue::BinanceMargin, false),
-            BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US
+            ambiguous_action_query_reason(&open, PendingOrderQueryReason::CancelWatchdog),
+            Some(PendingOrderQueryReason::OrderWatchdog)
+        );
+
+        let cancel = TradeEngineResponseMessage::new(
+            503,
+            TradeRequestType::HyperliquidCancelUMOrder as u32,
+            symbol_utils::Exchange::Hyperliquid as u32,
+            7,
+            ACTION_AMBIGUOUS,
         );
         assert_eq!(
-            order_query_watchdog_delay_us_for_venue(TradingVenue::BinanceFutures, true),
-            ORDER_QUERY_WATCHDOG_DELAY_US
+            ambiguous_action_query_reason(&cancel, PendingOrderQueryReason::CancelFailed),
+            Some(PendingOrderQueryReason::CancelFailed)
         );
-        assert_eq!(
-            order_query_watchdog_delay_us_for_venue(TradingVenue::GateFutures, false),
-            ORDER_QUERY_WATCHDOG_DELAY_US
-        );
+    }
+
+    #[test]
+    fn action_result_unknown_uses_request_specific_reconciliation_path() {
+        for (exchange, request, expected) in [
+            (
+                symbol_utils::Exchange::Binance,
+                TradeRequestType::BinanceNewUMOrder,
+                PendingOrderQueryReason::OrderWatchdog,
+            ),
+            (
+                symbol_utils::Exchange::Okex,
+                TradeRequestType::OkexCancelUMOrder,
+                PendingOrderQueryReason::CancelFailed,
+            ),
+            (
+                symbol_utils::Exchange::Binance,
+                TradeRequestType::BinanceWsModifyUMOrder,
+                PendingOrderQueryReason::OrderWatchdog,
+            ),
+        ] {
+            let response = TradeEngineResponseMessage::new(
+                503,
+                request as u32,
+                exchange as u32,
+                42,
+                order_common::trade_error_code::ACTION_RESULT_UNKNOWN,
+            );
+            assert_eq!(
+                ambiguous_action_query_reason(&response, PendingOrderQueryReason::CancelFailed),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn binance_unknown_result_queries_open_cancel_and_modify() {
+        for code in [
+            order_common::trade_error_code::ACTION_RESULT_UNKNOWN,
+            order_common::trade_error_code::binance::UNEXPECTED_RESP,
+            order_common::trade_error_code::binance::TIMEOUT,
+        ] {
+            for (request, expected) in [
+                (
+                    TradeRequestType::BinanceNewMarginOrder,
+                    PendingOrderQueryReason::OrderWatchdog,
+                ),
+                (
+                    TradeRequestType::BinanceNewUMOrder,
+                    PendingOrderQueryReason::OrderWatchdog,
+                ),
+                (
+                    TradeRequestType::BinanceCancelMarginOrder,
+                    PendingOrderQueryReason::CancelWatchdog,
+                ),
+                (
+                    TradeRequestType::BinanceCancelUMOrder,
+                    PendingOrderQueryReason::CancelWatchdog,
+                ),
+                (
+                    TradeRequestType::BinanceModifyUMOrder,
+                    PendingOrderQueryReason::OrderWatchdog,
+                ),
+            ] {
+                let response = TradeEngineResponseMessage::new(
+                    0,
+                    request as u32,
+                    symbol_utils::Exchange::Binance as u32,
+                    42,
+                    code,
+                );
+                assert_eq!(
+                    ambiguous_action_query_reason(
+                        &response,
+                        PendingOrderQueryReason::CancelWatchdog
+                    ),
+                    Some(expected),
+                    "{request:?} {code}"
+                );
+            }
+        }
     }
 }

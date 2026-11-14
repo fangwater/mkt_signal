@@ -4,23 +4,38 @@ pub mod binance;
 pub mod bitget;
 pub mod bybit;
 pub mod gate;
+pub mod hyperliquid;
 pub mod okex;
+pub mod rapidx;
+
+/// Internal transport outcome: the action may have been accepted and must be queried.
+pub const ACTION_RESULT_UNKNOWN: i32 = -32080;
 
 /// Map common trade/rest/ws error codes to a short, stable description.
 ///
 /// Notes:
-/// - This intentionally maps only a small set of frequently-seen codes.
+/// - Native exchange modules intentionally map common codes. RapidX/LTP's
+///   currently documented business codes are used as a fallback for Binance
+///   and OKX because those backends share the logical exchange identity.
 /// - Some exchanges return additional dynamic details (e.g. OKX `sMsg`); those should be logged
 ///   separately and are not encoded here.
 pub fn describe_trade_error_code(exchange: Exchange, code: i32) -> Option<&'static str> {
-    match exchange {
+    if code == ACTION_RESULT_UNKNOWN {
+        return Some("Action result unknown; order status query required");
+    }
+    let native = match exchange {
         Exchange::Binance => binance::describe_trade_error_code(code),
         Exchange::Bitget => bitget::describe_trade_error_code(code),
         Exchange::Bybit => bybit::describe_trade_error_code(code),
         Exchange::Gate => gate::describe_trade_error_code(code),
+        Exchange::Hyperliquid => hyperliquid::describe_trade_error_code(code),
         Exchange::Okex => okex::describe_trade_error_code(code),
         _ => None,
-    }
+    };
+    native.or_else(|| match exchange {
+        Exchange::Binance | Exchange::Okex => rapidx::describe_error_code(code),
+        _ => None,
+    })
 }
 
 /// New-order errors where repeating the same request is not expected to help.
@@ -28,6 +43,7 @@ pub fn describe_non_retryable_order_error(exchange: Exchange, code: i32) -> Opti
     match exchange {
         Exchange::Binance => binance::describe_non_retryable_order_error(code),
         Exchange::Bybit => bybit::describe_non_retryable_order_error(code),
+        Exchange::Hyperliquid => hyperliquid::describe_non_retryable_order_error(code),
         _ => None,
     }
 }
@@ -182,6 +198,14 @@ mod tests {
             describe_trade_error_code(Exchange::Gate, gate::AUTO_BORROW_TOO_MUCH),
             Some("Auto borrow too much")
         );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Hyperliquid, hyperliquid::ORDER_NOT_FOUND),
+            Some("Order does not exist")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Hyperliquid, hyperliquid::INSUFFICIENT_MARGIN),
+            Some("Insufficient margin")
+        );
         assert_eq!(describe_trade_error_code(Exchange::Bitget, 999), None);
         assert_eq!(
             describe_trade_error_code(Exchange::Bybit, 10403),
@@ -285,6 +309,23 @@ mod tests {
 
     #[test]
     fn maps_non_retryable_order_errors() {
+        for code in [
+            hyperliquid::INVALID_TICK,
+            hyperliquid::MIN_NOTIONAL,
+            hyperliquid::REDUCE_ONLY_REJECTED,
+            hyperliquid::INVALID_TRIGGER_PRICE,
+        ] {
+            assert!(describe_non_retryable_order_error(Exchange::Hyperliquid, code).is_some());
+            assert!(describe_non_retryable_order_error(Exchange::Okex, code).is_none());
+        }
+        for code in [
+            hyperliquid::ACTION_AMBIGUOUS,
+            hyperliquid::NO_LIQUIDITY,
+            hyperliquid::POST_ONLY_REJECTED,
+            hyperliquid::ACTION_REJECTED,
+        ] {
+            assert!(describe_non_retryable_order_error(Exchange::Hyperliquid, code).is_none());
+        }
         assert_eq!(
             describe_non_retryable_order_error(Exchange::Binance, -4004),
             Some("QTY_LESS_THAN_MIN_QTY/数量小于最小值")

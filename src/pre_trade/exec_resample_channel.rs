@@ -1,7 +1,13 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
+use crate::pre_trade::symbol_util::is_exposure_exempt_asset;
+use crate::strategy::batch_exec_strategy::BatchExecSnapshot;
+use crate::strategy::chase_exec::ChaseExecSnapshot;
 use anyhow::Result;
-use ipc_common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
+use ipc_common::iceoryx_publisher::{
+    ExecStateResamplePublisher, GenericPublisher, ResamplePublisher, EXEC_STATE_RESAMPLE_BUFFER,
+    EXEC_STATE_RESAMPLE_HISTORY,
+};
 use log::{info, warn};
 use runtime_common::time_util::get_timestamp_us;
 use std::cell::OnceCell;
@@ -17,8 +23,34 @@ thread_local! {
 }
 
 pub struct ExecResampleChannel {
-    state_pub: Option<ResamplePublisher>,
+    state_pub: Option<ExecStateResamplePublisher>,
     risk_pub: Option<ResamplePublisher>,
+}
+
+fn is_idle_batch_exec(snapshot: &BatchExecSnapshot) -> bool {
+    snapshot.target_qty == Some(0.0)
+        && snapshot.position_qty == 0.0
+        && snapshot.effective_position_qty == 0.0
+        && snapshot.live_order_qty == 0.0
+        && snapshot.pending_qty == 0.0
+        && snapshot.active_batches == 0
+        && snapshot.remaining_batches == 0
+        && !snapshot.has_execution_in_flight
+        && snapshot.execution_complete
+        && snapshot.position_allocated
+}
+
+fn is_idle_chase_exec(snapshot: &ChaseExecSnapshot) -> bool {
+    snapshot.target_qty == Some(0.0)
+        && snapshot.position_qty == 0.0
+        && snapshot.effective_position_qty == 0.0
+        && snapshot.live_order_qty == 0.0
+        && snapshot.pending_qty == 0.0
+        && snapshot.live_children == 0
+        && !snapshot.has_execution_in_flight
+        && !snapshot.taker_obligation_pending
+        && snapshot.execution_complete
+        && snapshot.position_allocated
 }
 
 impl ExecResampleChannel {
@@ -33,14 +65,22 @@ impl ExecResampleChannel {
     }
 
     fn new() -> Self {
-        let make_pub = |channel: &str| {
-            ResamplePublisher::new_with_prefix("viz_pubs", channel)
-                .map_err(|err| warn!("ExecResampleChannel init failed channel={channel}: {err:#}"))
-                .ok()
-        };
         Self {
-            state_pub: make_pub(EXEC_STATE_CHANNEL),
-            risk_pub: make_pub(EXEC_RISK_CHANNEL),
+            state_pub: ExecStateResamplePublisher::new_with_prefix_and_queue_limits(
+                "viz_pubs",
+                EXEC_STATE_CHANNEL,
+                EXEC_STATE_RESAMPLE_HISTORY,
+                EXEC_STATE_RESAMPLE_BUFFER,
+            )
+            .map_err(|err| {
+                warn!("ExecResampleChannel init failed channel={EXEC_STATE_CHANNEL}: {err:#}")
+            })
+            .ok(),
+            risk_pub: ResamplePublisher::new_with_prefix("viz_pubs", EXEC_RISK_CHANNEL)
+                .map_err(|err| {
+                    warn!("ExecResampleChannel init failed channel={EXEC_RISK_CHANNEL}: {err:#}")
+                })
+                .ok(),
         }
     }
 
@@ -75,14 +115,20 @@ impl ExecResampleChannel {
         let mut published = 0usize;
 
         if let Some(publisher) = self.state_pub.as_ref() {
-            let snapshots = mon
-                .strategy_mgr()
-                .borrow()
-                .batch_exec_snapshots(ts_ms * 1_000);
+            let mgr = mon.strategy_mgr();
+            let mgr = mgr.borrow();
+            let snapshots = mgr.batch_exec_snapshots(ts_ms * 1_000);
+            let chase_snapshots = mgr.chase_exec_snapshots(ts_ms * 1_000);
             let position_ready = mon.exec_position_snapshot_ready()
-                && snapshots.iter().all(|snapshot| snapshot.position_allocated);
-            let mut rows = Vec::with_capacity(snapshots.len());
+                && snapshots.iter().all(|snapshot| snapshot.position_allocated)
+                && chase_snapshots
+                    .iter()
+                    .all(|snapshot| snapshot.position_allocated);
+            let mut rows = Vec::with_capacity(snapshots.len() + chase_snapshots.len());
             for snapshot in snapshots {
+                if is_idle_batch_exec(&snapshot) {
+                    continue;
+                }
                 let price = MktChannel::instance()
                     .get_quote(&snapshot.symbol, snapshot.exec_venue)
                     .map(|quote| (quote.bid + quote.ask) * 0.5)
@@ -90,9 +136,14 @@ impl ExecResampleChannel {
                 let target_qty = snapshot.target_qty.unwrap_or(0.0);
                 let delta_qty = target_qty - snapshot.effective_position_qty;
                 rows.push(ExecStrategyStateRow {
+                    algorithm: snapshot.algorithm,
+                    pov: snapshot.pov,
                     strategy_name: snapshot.strategy_name,
                     source_updated_at_ms: snapshot.source_updated_at_ms,
-                    symbol: snapshot.symbol,
+                    symbol: runtime_common::exec_market::target_symbol(
+                        snapshot.exec_venue,
+                        &snapshot.symbol,
+                    ),
                     position_allocated: snapshot.position_allocated,
                     account_position_qty: snapshot.account_position_qty,
                     target_qty,
@@ -112,16 +163,51 @@ impl ExecResampleChannel {
                     estimated_completion_ts_ms: snapshot.estimated_completion_ts_ms,
                     execution_complete: snapshot.execution_complete,
                     completion_reason: snapshot.completion_reason,
+                    mid_price: price,
                 });
             }
-            rows.sort_by(|lhs, rhs| {
-                (&lhs.strategy_name, &lhs.symbol).cmp(&(&rhs.strategy_name, &rhs.symbol))
-            });
-            let entry = ExecStrategyStateResampleEntry {
-                ts_ms,
-                position_ready,
-                rows,
-            };
+            for snapshot in chase_snapshots {
+                if is_idle_chase_exec(&snapshot) {
+                    continue;
+                }
+                let price = MktChannel::instance()
+                    .get_quote(&snapshot.symbol, snapshot.exec_venue)
+                    .map(|quote| (quote.bid + quote.ask) * 0.5)
+                    .unwrap_or(0.0);
+                let target_qty = snapshot.target_qty.unwrap_or(0.0);
+                let delta_qty = target_qty - snapshot.effective_position_qty;
+                rows.push(ExecStrategyStateRow {
+                    algorithm: snapshot.algorithm,
+                    pov: snapshot.pov,
+                    strategy_name: snapshot.strategy_name,
+                    source_updated_at_ms: snapshot.source_updated_at_ms,
+                    symbol: runtime_common::exec_market::target_symbol(
+                        snapshot.exec_venue,
+                        &snapshot.symbol,
+                    ),
+                    position_allocated: snapshot.position_allocated,
+                    account_position_qty: snapshot.account_position_qty,
+                    target_qty,
+                    current_qty: snapshot.position_qty,
+                    effective_position_qty: snapshot.effective_position_qty,
+                    delta_qty,
+                    live_order_qty: snapshot.live_order_qty,
+                    pending_qty: snapshot.pending_qty,
+                    account_position_usdt: snapshot.account_position_qty * price,
+                    target_usdt: target_qty * price,
+                    current_usdt: snapshot.position_qty * price,
+                    delta_usdt: delta_qty * price,
+                    live_order_usdt: snapshot.live_order_qty * price,
+                    pending_usdt: snapshot.pending_qty * price,
+                    active_batches: snapshot.live_children.min(u32::MAX as usize) as u32,
+                    remaining_batches: 0,
+                    estimated_completion_ts_ms: 0,
+                    execution_complete: snapshot.execution_complete,
+                    completion_reason: snapshot.completion_reason,
+                    mid_price: price,
+                });
+            }
+            let entry = ExecStrategyStateResampleEntry::from_rows(ts_ms, position_ready, rows)?;
             if Self::publish_encoded(entry.to_bytes()?, publisher, EXEC_STATE_CHANNEL)? {
                 published += 1;
             }
@@ -135,7 +221,7 @@ impl ExecResampleChannel {
             let mut short_notional_usdt = 0.0;
             for (asset, (open_qty, hedge_qty)) in exposures {
                 let qty = open_qty + hedge_qty;
-                if qty == 0.0 || asset.eq_ignore_ascii_case("USDT") {
+                if qty == 0.0 || is_exposure_exempt_asset(&asset) {
                     continue;
                 }
                 let symbol = price_mapper.asset_to_price_symbol(&asset);
@@ -176,24 +262,209 @@ impl ExecResampleChannel {
         Ok(published)
     }
 
-    fn publish_encoded(
+    fn publish_encoded<const PAYLOAD: usize>(
         bytes: Vec<u8>,
-        publisher: &ResamplePublisher,
+        publisher: &GenericPublisher<PAYLOAD>,
         channel: &str,
     ) -> Result<bool> {
         let mut payload = Vec::with_capacity(bytes.len() + 4);
         payload.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
         payload.extend_from_slice(&bytes);
-        if payload.len() > RESAMPLE_PAYLOAD {
+        if payload.len() > PAYLOAD {
             warn!(
                 "exec resample payload too large: channel={} bytes={} limit={}",
                 channel,
                 payload.len(),
-                RESAMPLE_PAYLOAD
+                PAYLOAD
             );
             return Ok(false);
         }
         publisher.publish(&payload)?;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_idle_batch_exec, is_idle_chase_exec};
+    use crate::strategy::batch_exec_strategy::BatchExecSnapshot;
+    use crate::strategy::chase_exec::ChaseExecSnapshot;
+    use order_common::TradingVenue;
+
+    fn idle_batch() -> BatchExecSnapshot {
+        BatchExecSnapshot {
+            algorithm: "batch".into(),
+            pov: None,
+            strategy_name: "test".into(),
+            source_updated_at_ms: 0,
+            symbol: "BTCUSDT".into(),
+            exec_venue: TradingVenue::BinanceFutures,
+            account_position_qty: 1.0,
+            position_qty: 0.0,
+            effective_position_qty: 0.0,
+            position_allocated: true,
+            target_qty: Some(0.0),
+            pending_qty: 0.0,
+            live_order_qty: 0.0,
+            active_batches: 0,
+            remaining_batches: 0,
+            has_execution_in_flight: false,
+            estimated_completion_ts_ms: 0,
+            execution_complete: true,
+            completion_reason: "target_reached".into(),
+        }
+    }
+
+    fn idle_chase() -> ChaseExecSnapshot {
+        ChaseExecSnapshot {
+            algorithm: "chase_exec".into(),
+            pov: None,
+            strategy_name: "test".into(),
+            source_updated_at_ms: 0,
+            symbol: "BTCUSDT".into(),
+            exec_venue: TradingVenue::BinanceFutures,
+            account_position_qty: 1.0,
+            position_qty: 0.0,
+            effective_position_qty: 0.0,
+            position_allocated: true,
+            target_qty: Some(0.0),
+            pending_qty: 0.0,
+            live_order_qty: 0.0,
+            live_children: 0,
+            has_execution_in_flight: false,
+            taker_obligation_pending: false,
+            execution_complete: true,
+            completion_reason: "target_reached".into(),
+        }
+    }
+
+    #[test]
+    fn idle_snapshots_are_filtered() {
+        assert!(is_idle_batch_exec(&idle_batch()));
+        assert!(is_idle_chase_exec(&idle_chase()));
+    }
+
+    #[test]
+    fn each_batch_disqualifier_keeps_the_row() {
+        let idle = idle_batch();
+        macro_rules! keeps_row {
+            ($field:ident = $value:expr) => {{
+                let mut snapshot = idle.clone();
+                snapshot.$field = $value;
+                assert!(!is_idle_batch_exec(&snapshot), stringify!($field));
+            }};
+        }
+        keeps_row!(target_qty = None);
+        keeps_row!(target_qty = Some(1.0));
+        keeps_row!(position_qty = 1.0);
+        keeps_row!(effective_position_qty = 1.0);
+        keeps_row!(live_order_qty = 1.0);
+        keeps_row!(pending_qty = 1.0);
+        keeps_row!(active_batches = 1);
+        keeps_row!(remaining_batches = 1);
+        keeps_row!(has_execution_in_flight = true);
+        keeps_row!(execution_complete = false);
+        keeps_row!(position_allocated = false);
+        keeps_row!(position_qty = f64::NAN);
+    }
+
+    #[test]
+    fn each_chase_disqualifier_keeps_the_row() {
+        let idle = idle_chase();
+        macro_rules! keeps_row {
+            ($field:ident = $value:expr) => {{
+                let mut snapshot = idle.clone();
+                snapshot.$field = $value;
+                assert!(!is_idle_chase_exec(&snapshot), stringify!($field));
+            }};
+        }
+        keeps_row!(target_qty = None);
+        keeps_row!(target_qty = Some(1.0));
+        keeps_row!(position_qty = 1.0);
+        keeps_row!(effective_position_qty = 1.0);
+        keeps_row!(live_order_qty = 1.0);
+        keeps_row!(pending_qty = 1.0);
+        keeps_row!(live_children = 1);
+        keeps_row!(has_execution_in_flight = true);
+        keeps_row!(taker_obligation_pending = true);
+        keeps_row!(execution_complete = false);
+        keeps_row!(position_allocated = false);
+        keeps_row!(pending_qty = f64::NAN);
+    }
+
+    #[test]
+    fn row_reappears_when_a_target_becomes_non_idle() {
+        let mut batch = idle_batch();
+        let visible_count =
+            |snapshot: &BatchExecSnapshot| usize::from(!is_idle_batch_exec(snapshot));
+        assert_eq!(visible_count(&batch), 0);
+        batch.target_qty = Some(1.0);
+        assert_eq!(visible_count(&batch), 1);
+        batch.target_qty = Some(0.0);
+        assert_eq!(visible_count(&batch), 0);
+
+        let mut chase = idle_chase();
+        assert!(is_idle_chase_exec(&chase));
+        chase.has_execution_in_flight = true;
+        assert!(!is_idle_chase_exec(&chase));
+    }
+
+    #[test]
+    fn large_cash_and_perpetual_state_survives_ipc_round_trip() {
+        use ipc_common::iceoryx_publisher::EXEC_STATE_RESAMPLE_PAYLOAD;
+        use viz_common::resample::{ExecStrategyStateResampleEntry, ExecStrategyStateRow};
+
+        // RX01 runs dozens of strategies in both markets. Exercise their full
+        // symbol universe, including live orders and fractional residuals.
+        let mut rows = Vec::new();
+        for strategy in 0..60 {
+            for symbol in 0..55 {
+                for suffix in ["", "USDT"] {
+                    rows.push(ExecStrategyStateRow {
+                        algorithm: "grid".into(),
+                        pov: None,
+                        strategy_name: format!("binance_cta_spread_rx01_factor_{strategy:03}"),
+                        source_updated_at_ms: 1_792_569_435_000,
+                        symbol: format!("TOKEN{symbol:03}{suffix}"),
+                        position_allocated: true,
+                        account_position_qty: 2.0,
+                        target_qty: 1.0,
+                        current_qty: 0.25,
+                        effective_position_qty: 0.25,
+                        delta_qty: 0.75,
+                        live_order_qty: 0.125,
+                        pending_qty: 0.625,
+                        account_position_usdt: 200.0,
+                        target_usdt: 100.0,
+                        current_usdt: 25.0,
+                        delta_usdt: 75.0,
+                        live_order_usdt: 12.5,
+                        pending_usdt: 62.5,
+                        active_batches: 1,
+                        remaining_batches: 3,
+                        estimated_completion_ts_ms: 1_792_569_555_000,
+                        execution_complete: false,
+                        completion_reason: String::new(),
+                        mid_price: 100.0,
+                    });
+                }
+            }
+        }
+        let expected = serde_json::to_value(&rows).unwrap();
+        let entry = ExecStrategyStateResampleEntry::from_rows(123, true, rows).unwrap();
+        let encoded = entry.to_bytes().unwrap();
+        assert!(encoded.len() + 4 > 64 * 1024);
+        assert!(
+            encoded.len() + 4 <= EXEC_STATE_RESAMPLE_PAYLOAD,
+            "full snapshot has {} bytes",
+            encoded.len() + 4,
+        );
+        let decoded = ExecStrategyStateResampleEntry::from_bytes(&encoded).unwrap();
+        assert!(decoded.position_ready);
+        assert_eq!(decoded.ts_ms, 123);
+        assert_eq!(
+            serde_json::to_value(decoded.expanded_rows().unwrap()).unwrap(),
+            expected,
+        );
     }
 }

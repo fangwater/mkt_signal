@@ -110,6 +110,25 @@ impl FuturesDepth5 {
         Ok(depth)
     }
 
+    /// Construct a native five-level book from an additive-HFQ research
+    /// series. Unlike raw/live quotes, finite zero and negative adjusted prices
+    /// are valid here; shape, amount, finiteness and crossed-book checks remain.
+    pub fn from_additive_hfq_slices(
+        bid_prices: &[f64],
+        bid_amounts: &[f64],
+        ask_prices: &[f64],
+        ask_amounts: &[f64],
+    ) -> Result<Self> {
+        let depth = Self {
+            bid_prices: exact_depth_array("bid_prices", bid_prices)?,
+            bid_amounts: exact_depth_array("bid_amounts", bid_amounts)?,
+            ask_prices: exact_depth_array("ask_prices", ask_prices)?,
+            ask_amounts: exact_depth_array("ask_amounts", ask_amounts)?,
+        };
+        depth.validate_additive_hfq_levels()?;
+        Ok(depth)
+    }
+
     fn validate_levels(&self) -> Result<()> {
         for (name, values) in [
             ("bid_prices", &self.bid_prices),
@@ -121,6 +140,24 @@ impl FuturesDepth5 {
                 }
             }
         }
+        self.validate_amounts_and_order()
+    }
+
+    fn validate_additive_hfq_levels(&self) -> Result<()> {
+        for (name, values) in [
+            ("bid_prices", &self.bid_prices),
+            ("ask_prices", &self.ask_prices),
+        ] {
+            for (index, value) in values.iter().copied().enumerate() {
+                if !value.is_nan() && !value.is_finite() {
+                    bail!("additive-HFQ {name}[{index}] must be NaN or finite, got {value}");
+                }
+            }
+        }
+        self.validate_amounts_and_order()
+    }
+
+    fn validate_amounts_and_order(&self) -> Result<()> {
         for (name, values) in [
             ("bid_amounts", &self.bid_amounts),
             ("ask_amounts", &self.ask_amounts),
@@ -179,6 +216,22 @@ pub struct FuturesFusionInput {
 
 impl FuturesFusionInput {
     pub fn validate(&self) -> Result<()> {
+        self.validate_common()?;
+        self.depth
+            .as_ref()
+            .expect("checked depth")
+            .validate_levels()
+    }
+
+    fn validate_additive_hfq(&self) -> Result<()> {
+        self.validate_common()?;
+        self.depth
+            .as_ref()
+            .expect("checked depth")
+            .validate_additive_hfq_levels()
+    }
+
+    fn validate_common(&self) -> Result<()> {
         if self.symbol.is_empty()
             || !self
                 .symbol
@@ -204,7 +257,7 @@ impl FuturesFusionInput {
                 self.trading_day
             );
         };
-        depth.validate_levels()?;
+        let _ = depth;
         Ok(())
     }
 }
@@ -298,6 +351,25 @@ pub struct FuturesFusionState {
 impl FuturesFusionState {
     pub fn push(&mut self, input: FuturesFusionInput) -> Result<()> {
         input.validate()?;
+        self.push_validated(input, true)
+    }
+
+    /// Push an additive-HFQ row while retaining the normal replay state and
+    /// formulas. This is not a raw/live quote input path.
+    pub fn push_additive_hfq(&mut self, input: FuturesFusionInput) -> Result<()> {
+        input.validate_additive_hfq()?;
+        self.push_validated(input, true)
+    }
+
+    /// Explicit offline coarse-bar path. Preserve real trading-day metadata,
+    /// but advance original formula windows across day changes. An explicit
+    /// quality break still resets; raw/live and existing HFQ paths are unchanged.
+    pub fn push_additive_hfq_continuous(&mut self, input: FuturesFusionInput) -> Result<()> {
+        input.validate_additive_hfq()?;
+        self.push_validated(input, false)
+    }
+
+    fn push_validated(&mut self, input: FuturesFusionInput, reset_on_day: bool) -> Result<()> {
         if let Some(symbol) = self.symbol.as_deref() {
             if symbol != input.symbol {
                 bail!(
@@ -318,9 +390,10 @@ impl FuturesFusionState {
         }
 
         let reset = input.quality_flags & QUALITY_SEGMENT_BREAK != 0
-            || self
-                .trading_day
-                .is_some_and(|trading_day| trading_day != input.trading_day);
+            || (reset_on_day
+                && self
+                    .trading_day
+                    .is_some_and(|trading_day| trading_day != input.trading_day));
         if reset {
             self.history.clear();
             self.formula_state = CnReplayState::default();
@@ -403,6 +476,36 @@ fn nonnegative_finite(value: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuous_hfq_preserves_500_bar_warmup_across_days_and_absences() {
+        let plan = FuturesFactorPlan::from_factor_names(vec![
+            "cn_features_factor_031".into(),
+            "cn_features_baseline_097".into(),
+        ])
+        .unwrap();
+        let mut state = FuturesFusionState::default();
+        for i in 0..520 {
+            let mut row = varied_input(i);
+            row.ts_ms += if i >= 250 { 7 * 86_400_000 } else { 0 };
+            row.trading_day = if i < 250 { 20251103 } else { 20251114 };
+            state.push_additive_hfq_continuous(row).unwrap();
+            let v = state.factor_values(&plan).unwrap();
+            assert_eq!(v[0].is_some(), i >= 499, "i={i}");
+            assert_eq!(v[1].is_some(), i >= 44, "i={i}");
+        }
+        assert_eq!(state.history_len(), 520);
+        let mut next = varied_input(520);
+        next.ts_ms += 7 * 86_400_000;
+        next.quality_flags = QUALITY_SEGMENT_BREAK;
+        state.push_additive_hfq_continuous(next).unwrap();
+        assert_eq!(state.history_len(), 1);
+        assert!(state
+            .factor_values(&plan)
+            .unwrap()
+            .iter()
+            .all(Option::is_none));
+    }
 
     fn depth() -> FuturesDepth5 {
         FuturesDepth5::from_slices(
@@ -539,6 +642,34 @@ mod tests {
                 "levels={levels} error={error:#}"
             );
         }
+    }
+
+    #[test]
+    fn additive_hfq_accepts_negative_prices_without_relaxing_raw_replay() {
+        let hfq_depth = FuturesDepth5::from_additive_hfq_slices(
+            &[-100.0, -101.0, -102.0, -103.0, -104.0],
+            &[10.0; 5],
+            &[-99.0, -98.0, -97.0, -96.0, -95.0],
+            &[10.0; 5],
+        )
+        .unwrap();
+        assert!(FuturesDepth5::from_slices(
+            &hfq_depth.bid_prices,
+            &hfq_depth.bid_amounts,
+            &hfq_depth.ask_prices,
+            &hfq_depth.ask_amounts,
+        )
+        .is_err());
+
+        let mut row = input(1_000, 20200102, 0, -99.5);
+        row.depth = Some(hfq_depth);
+        let mut state = FuturesFusionState::default();
+        state.push_additive_hfq(row.clone()).unwrap();
+        assert_eq!(state.history_len(), 1);
+
+        let mut raw_state = FuturesFusionState::default();
+        assert!(raw_state.push(row).is_err());
+        assert_eq!(raw_state.history_len(), 0);
     }
 
     #[test]

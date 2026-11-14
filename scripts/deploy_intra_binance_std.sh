@@ -8,15 +8,16 @@ source "$ROOT_DIR/scripts/deploy_intra_lib.sh"
 usage() {
   cat <<'EOF'
 用法:
-  scripts/deploy_intra_binance_std.sh --env-suffix <suffix> [--bin]
+  scripts/deploy_intra_binance_std.sh --env-suffix <suffix> [--exec-backend native|ltp] [--bin]
   scripts/deploy_intra_binance_std.sh <suffix>
 
 说明:
   - 默认只部署到本机 $HOME/binance-intra-<suffix>/（不启动进程）。
-  - 部署 Binance std 同所期现 intra 环境：
+  - 部署 Binance 同所期现 intra 环境：
       open=binance-margin
       hedge=binance-futures
-      BINANCE_ACCOUNT_MODE=STANDARD
+      native backend 使用 BINANCE_ACCOUNT_MODE=STANDARD
+      ltp backend 使用 RapidX portfolio credentials
   - 环境目录固定: $HOME/binance-intra-<suffix>
   - 仅部署，不启动任何进程
   - 支持 suffix: arb01、arb02、arb03
@@ -34,10 +35,12 @@ fi
 
 ENV_SUFFIX=""
 BIN_MODE="0"
+EXEC_BACKEND="native"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env-suffix) ENV_SUFFIX="${2:-}"; shift 2 ;;
     --bin)        BIN_MODE="1"; shift ;;
+    --exec-backend) EXEC_BACKEND="${2:-}"; shift 2 ;;
     --remote)
       echo "[ERROR] --remote 已移除；binance intra 入口现在只部署本机" >&2
       exit 1 ;;
@@ -68,6 +71,11 @@ case "$ENV_SUFFIX" in
 esac
 
 EXCHANGE="binance"
+case "${EXEC_BACKEND,,}" in
+  native) EXEC_BACKEND="native" ;;
+  ltp|rapidx) EXEC_BACKEND="ltp" ;;
+  *) echo "[ERROR] --exec-backend must be native or ltp" >&2; exit 1 ;;
+esac
 ENV_NAME="${EXCHANGE}-intra-${ENV_SUFFIX}"
 INTRA_ENV_SUFFIX="intra-${ENV_SUFFIX}"
 ENV_FILE="$HOME/${ENV_NAME}/env.sh"
@@ -119,30 +127,38 @@ PY
   fi
 }
 
-configure_binance_arb01_core_layout() {
-  if [[ "$ENV_NAME" != "binance-intra-arb01" ]]; then
-    return 0
-  fi
+configure_binance_core_layout() {
   if [[ ! -f "$ENV_FILE" ]]; then
-    echo "[WARN] $ENV_FILE 不存在，跳过 binance-intra-arb01 core layout 写入" >&2
+    echo "[WARN] $ENV_FILE 不存在，跳过 ${ENV_NAME} core layout 写入" >&2
     return 0
   fi
+  local account_core trade_signal_core pre_trade_core trade_engine_core persist_core
+  case "$ENV_NAME" in
+    binance-intra-arb01)
+      account_core=16; trade_signal_core=17; pre_trade_core=18; trade_engine_core=19; persist_core=26
+      ;;
+    binance-intra-arb02)
+      account_core=28; trade_signal_core=29; pre_trade_core=30; trade_engine_core=31; persist_core=15
+      ;;
+    *) return 0 ;;
+  esac
   intra_upsert_env_exports_block \
     "$ENV_FILE" \
-    "managed binance-intra-arb01 core layout" \
-    "Local binance intra arb01 core layout: hot path on cores 16-19 (trade_engine is single-threaded); persist_manager helper on overflow core 26." \
-    "ACCOUNT_MONITOR_CORE='16'" \
-    "TRADE_SIGNAL_CORE='17'" \
-    "PRE_TRADE_CORE='18'" \
-    "TRADE_ENGINE_CORE='19'" \
-    "PERSIST_MANAGER_CORE='26'"
-  echo "[INFO] binance-intra-arb01 core layout written to $ENV_FILE"
+    "managed ${ENV_NAME} core layout" \
+    "Local ${ENV_NAME} core layout; trade_engine is single-threaded." \
+    "ACCOUNT_MONITOR_CORE='${account_core}'" \
+    "TRADE_SIGNAL_CORE='${trade_signal_core}'" \
+    "PRE_TRADE_CORE='${pre_trade_core}'" \
+    "TRADE_ENGINE_CORE='${trade_engine_core}'" \
+    "PERSIST_MANAGER_CORE='${persist_core}'"
+  echo "[INFO] ${ENV_NAME} core layout written to $ENV_FILE"
 }
 
 echo "[INFO] Binance std intra deploy-only"
 echo "[INFO] env_name=${ENV_NAME}"
 echo "[INFO] exchange=${EXCHANGE} (open=${EXCHANGE}-margin, hedge=${EXCHANGE}-futures)"
 echo "[INFO] config_port=${CONFIG_PORT}"
+echo "[INFO] exec_backend=${EXEC_BACKEND}"
 echo "[INFO] 不会执行 start 命令"
 [[ "$BIN_MODE" == "1" ]] && echo "[INFO] mode=bin"
 echo "[INFO] target=local ${TARGET_DIR}"
@@ -153,12 +169,15 @@ if [[ "$BIN_MODE" != "1" ]]; then
   run_deploy bash scripts/deploy_setup_env_intra.sh \
     --env-name "$ENV_NAME" \
     --env-suffix "$INTRA_ENV_SUFFIX" \
-    --exchange "$EXCHANGE"
+    --exchange "$EXCHANGE" \
+    --exec-backend "$EXEC_BACKEND"
 
-  ensure_binance_standard_mode "$ENV_FILE"
+  if [[ "$EXEC_BACKEND" == "native" ]]; then
+    ensure_binance_standard_mode "$ENV_FILE"
+  fi
 fi
 
-configure_binance_arb01_core_layout
+configure_binance_core_layout
 
 if [[ "$BIN_MODE" != "1" ]]; then
   run_deploy bash scripts/deploy_intra_config_server.sh \
@@ -170,7 +189,8 @@ fi
 run_deploy bash scripts/deploy_intra_monitors.sh \
   --env-name "$ENV_NAME" \
   --env-suffix "$INTRA_ENV_SUFFIX" \
-  --exchange "$EXCHANGE"
+  --exchange "$EXCHANGE" \
+  --exec-backend "$EXEC_BACKEND"
 
 run_deploy bash scripts/deploy_intra_trade_engine.sh \
   --env-name "$ENV_NAME" \
@@ -200,8 +220,10 @@ run_deploy bash scripts/deploy_intra_trade_signal.sh \
   --sync-scripts
 
 if [[ "$BIN_MODE" != "1" ]]; then
-  ensure_binance_standard_mode "$ENV_FILE"
-  configure_binance_arb01_core_layout
+  if [[ "$EXEC_BACKEND" == "native" ]]; then
+    ensure_binance_standard_mode "$ENV_FILE"
+  fi
+  configure_binance_core_layout
 fi
 
 echo "[INFO] Binance std intra 部署完成（未启动进程）"

@@ -1,0 +1,4 @@
+[env]
+CC = { value = "/usr/bin/gcc", force = true }
+CXX = { value = "/usr/bin/g++", force = true }
+BINDGEN_EXTRA_CLANG_ARGS = { value = "-I/usr/lib/gcc/x86_64-linux-gnu/13/include", force = true }

@@ -1,0 +1,40 @@
+diff --git a/src/config.rs b/src/config.rs
+index 31aa9c7..f763393 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -1119,16 +1119,28 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn jp_meta_config_enables_four_trade_accounts() {
++    fn jp_meta_config_enables_six_trade_accounts() {
+         let config: AppConfig =
+             toml::from_str(include_str!("../deploy/jp_meta/cta-manager.toml")).unwrap();
+         config.validate().unwrap();
+-        assert_eq!(config.sources.len(), 4);
+-        assert_eq!(config.sources[0].id, "binance_exec_trade01");
+-        assert_eq!(config.sources[0].display_name(), "prc_cta_01");
+-        assert_eq!(config.sources[1].id, "binance_exec_trade02");
+-        assert_eq!(config.sources[1].display_name(), "prc_cta_02");
+-        assert_eq!(config.sources[3].display_name(), "prc");
++        assert_eq!(config.sources.len(), 6);
++        for (id, alias) in [
++            ("binance_exec_trade01", "prc_cta_01"),
++            ("binance_exec_trade02", "prc_cta_02"),
++            ("binance_exec_trade04", "prc"),
++            ("binance_exec_trade05", "lgq_cta_RX02"),
++            ("binance_exec_trade06", "lgq_cta_RX01"),
++        ] {
++            assert_eq!(
++                config
++                    .sources
++                    .iter()
++                    .find(|source| source.id == id)
++                    .unwrap()
++                    .display_name(),
++                alias
++            );
++        }
+         assert!(config.sources.iter().all(|source| source.enabled));
+         assert_eq!(
+             config.kline.rocksdb_path.as_os_str(),

@@ -1,0 +1,1 @@
+{"health": {"status": "ok", "source_count": 7, "generated_at_us": 1792405164158625, "last_attempt_at_us": 1792405161757573, "refresh_interval_secs": 60, "last_refresh_error": null}, "dashboard_keys": ["generated_at_us", "generation_duration_ms", "refresh_interval_secs", "accounts", "report"]}

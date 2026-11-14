@@ -183,7 +183,7 @@ impl RocksDbStore {
         tuning.apply_cf_options(&mut cf_opts);
 
         let mut names = Vec::new();
-        if path_ref.exists() {
+        if path_ref.join("CURRENT").exists() {
             match DB::list_cf(&db_opts, path_ref) {
                 Ok(existing) => names.extend(existing),
                 Err(err) => {
@@ -191,6 +191,17 @@ impl RocksDbStore {
                         .with_context(|| format!("failed to list column families for {}", path));
                 }
             }
+        } else if path_ref.exists()
+            && path_ref
+                .read_dir()
+                .with_context(|| format!("failed to inspect RocksDB directory {}", path))?
+                .next()
+                .is_some()
+        {
+            return Err(anyhow!(
+                "refusing to initialize non-empty RocksDB directory without CURRENT: {}",
+                path
+            ));
         }
         names.push("default".to_string());
         names.extend(cf_names.iter().cloned());
@@ -324,6 +335,20 @@ impl RocksDbStore {
     }
 
     pub fn put(&self, cf_name: &str, key: &[u8], value: &[u8]) -> Result<()> {
+        self.put_with_sync(cf_name, key, value, false)
+    }
+
+    pub fn put_sync(&self, cf_name: &str, key: &[u8], value: &[u8]) -> Result<()> {
+        self.put_with_sync(cf_name, key, value, true)
+    }
+
+    fn put_with_sync(
+        &self,
+        cf_name: &str,
+        key: &[u8],
+        value: &[u8],
+        force_sync: bool,
+    ) -> Result<()> {
         if self.read_only {
             return Err(anyhow!("rocksdb store is read-only"));
         }
@@ -332,13 +357,25 @@ impl RocksDbStore {
             .cf_handle(cf_name)
             .ok_or_else(|| anyhow!("column family {} not found", cf_name))?;
         let mut write_opts = WriteOptions::default();
-        write_opts.set_sync(self.sync_writes);
+        write_opts.set_sync(self.sync_writes || force_sync);
         self.db
             .put_cf_opt(cf, key, value, &write_opts)
             .with_context(|| format!("failed to write to column family {}", cf_name))
     }
 
     pub fn put_many(&self, writes: &[(String, Vec<u8>, Vec<u8>)]) -> Result<()> {
+        self.put_many_with_sync(writes, false)
+    }
+
+    pub fn put_many_sync(&self, writes: &[(String, Vec<u8>, Vec<u8>)]) -> Result<()> {
+        self.put_many_with_sync(writes, true)
+    }
+
+    fn put_many_with_sync(
+        &self,
+        writes: &[(String, Vec<u8>, Vec<u8>)],
+        force_sync: bool,
+    ) -> Result<()> {
         if self.read_only {
             return Err(anyhow!("rocksdb store is read-only"));
         }
@@ -354,7 +391,7 @@ impl RocksDbStore {
             batch.put_cf(cf, key, value);
         }
         let mut write_opts = WriteOptions::default();
-        write_opts.set_sync(self.sync_writes);
+        write_opts.set_sync(self.sync_writes || force_sync);
         self.db
             .write_opt(batch, &write_opts)
             .with_context(|| "failed to write rocksdb batch")
@@ -610,6 +647,41 @@ mod tests {
             );
         }
 
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn writable_open_initializes_existing_empty_directory() {
+        let path = temp_db_path("existing_empty");
+        std::fs::create_dir_all(&path).unwrap();
+        let store = RocksDbStore::open_with_existing_cfs_and_tuning(
+            path.to_str().unwrap(),
+            &["orders".to_string()],
+            false,
+            &RocksDbTuning::default(),
+        )
+        .unwrap();
+        assert!(store.has_column_family("orders"));
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn writable_open_rejects_nonempty_directory_without_manifest() {
+        let path = temp_db_path("nonempty_without_manifest");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("unexpected"), b"data").unwrap();
+        let result = RocksDbStore::open_with_existing_cfs_and_tuning(
+            path.to_str().unwrap(),
+            &["orders".to_string()],
+            false,
+            &RocksDbTuning::default(),
+        );
+        let err = match result {
+            Ok(_) => panic!("non-empty directory without CURRENT must be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("non-empty RocksDB directory"));
         std::fs::remove_dir_all(path).unwrap();
     }
 }

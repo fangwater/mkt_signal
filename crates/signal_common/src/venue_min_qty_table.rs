@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -6,8 +6,8 @@ use log::info;
 use reqwest::Client;
 
 use crate::min_qty_table::{
-    BinanceProvider, BitgetProvider, BybitProvider, GateProvider, MarketType, MinQtyEntry,
-    OkexProvider,
+    BinanceProvider, BitgetProvider, BybitProvider, GateProvider, HyperliquidProvider, MarketType,
+    MinQtyEntry, OkexProvider,
 };
 use order_common::TradingVenue;
 use runtime_common::exchange::Exchange;
@@ -81,11 +81,11 @@ impl VenueInfoProvider for ExchangeVenueProvider {
                     .fetch_filters_with_multipliers(client, self.market_type)
                     .await
             }
-            Exchange::Hyperliquid => Err(anyhow!(
-                "exchange {} not supported yet for venue {:?}",
-                self.exchange,
-                self.venue
-            )),
+            Exchange::Hyperliquid => {
+                let provider = HyperliquidProvider::new();
+                let entries = provider.fetch_filters(client, self.market_type).await?;
+                Ok((entries, HashMap::new()))
+            }
         }
     }
 }
@@ -119,6 +119,8 @@ pub struct VenueMinQtyTable {
     client: Client,
     filters: EntryMap,
     contract_multipliers: MultiplierMap,
+    tradable_symbols: HashSet<String>,
+    snapshot_loaded: bool,
 }
 
 impl VenueMinQtyTable {
@@ -128,6 +130,8 @@ impl VenueMinQtyTable {
             client: Client::new(),
             filters: HashMap::new(),
             contract_multipliers: HashMap::new(),
+            tradable_symbols: HashSet::new(),
+            snapshot_loaded: false,
         }
     }
 
@@ -147,7 +151,25 @@ impl VenueMinQtyTable {
         );
         self.filters = entries;
         self.contract_multipliers = multipliers;
+        self.tradable_symbols = self.filters.keys().cloned().collect();
+        self.snapshot_loaded = true;
         Ok(())
+    }
+
+    pub fn replace_snapshot(
+        &mut self,
+        filters: HashMap<String, MinQtyEntry>,
+        contract_multipliers: HashMap<String, f64>,
+        tradable_symbols: HashSet<String>,
+    ) {
+        self.filters = filters;
+        self.contract_multipliers = contract_multipliers;
+        self.tradable_symbols = tradable_symbols;
+        self.snapshot_loaded = true;
+    }
+
+    pub fn snapshot_loaded(&self) -> bool {
+        self.snapshot_loaded
     }
 
     fn get_entry(&self, symbol: &str) -> Option<&MinQtyEntry> {
@@ -159,13 +181,10 @@ impl VenueMinQtyTable {
         self.get_entry(symbol).is_some()
     }
 
-    /// Returns true when the current venue filter snapshot contains the symbol.
-    ///
-    /// For Bybit, the underlying instruments parser only inserts `status=Trading`
-    /// USDT spot/linear perpetual rows, so false means trade_signal should not
-    /// emit new open orders for that leg until filters refresh.
+    /// Returns true only when the latest complete snapshot marks the symbol tradable.
     pub fn is_tradable_symbol(&self, symbol: &str) -> bool {
-        self.contains_symbol(&min_qty_symbol_key(self.venue, symbol))
+        let key = min_qty_symbol_key(self.venue, symbol);
+        self.tradable_symbols.contains(&key)
     }
 
     pub fn min_qty(&self, symbol: &str) -> Option<f64> {
@@ -228,7 +247,10 @@ impl quote_plan::MinQtyLookup for VenueMinQtyTable {
 #[cfg(any(test, feature = "test-utils"))]
 impl VenueMinQtyTable {
     pub fn set_entry_for_test(&mut self, entry: MinQtyEntry) {
-        self.filters.insert(entry.symbol.to_uppercase(), entry);
+        let symbol = entry.symbol.to_uppercase();
+        self.filters.insert(symbol.clone(), entry);
+        self.tradable_symbols.insert(symbol);
+        self.snapshot_loaded = true;
     }
 
     pub fn set_contract_multiplier_for_test(&mut self, symbol: &str, multiplier: f64) {

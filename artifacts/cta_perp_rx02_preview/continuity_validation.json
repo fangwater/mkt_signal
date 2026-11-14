@@ -1,0 +1,13 @@
+{
+  "first_observed_utc": "2026-10-13T08:25:56.607228+00:00",
+  "second_observed_utc": "2026-10-13T08:26:52.264414+00:00",
+  "advanced_bindings": 24,
+  "first_model_utc": [
+    "2026-10-13T08:25:00+00:00"
+  ],
+  "second_model_utc": [
+    "2026-10-13T08:26:00+00:00"
+  ],
+  "published_events": 0,
+  "enabled": false
+}

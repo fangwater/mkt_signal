@@ -1,0 +1,13 @@
+{
+  "branch": "arbmm",
+  "commit": "4cf16d174ea9057d0e7f5943f5050c150c493224",
+  "sha256": {
+    "cta_perp_factor_model_1m_pub": "81b4f149f998917f4a9d83352df65b251793f733c6943b99c97aa3a892a3c1e1",
+    "cta_perp_signal": "71c98c753a0fd34ed89e6257bb2139dba3cd81c5732754dc105f3f4203a34d66",
+    "config/cta_perp_factor_model_1m_pub.toml": "0ef7ed6033cb6ca536ac7fedf5213f70026200745e237cce940d6650739df47d",
+    "config/cta_perp_symbol_factors.json": "f6ab06fb173cfe85e794dc9dae3a9a6a3d9ed682e018f35f8746b7afade23379",
+    "scripts/cta_perp_factor_config.py": "b6a1a2a3660241c7373fb94b8055969b0432402adeab2322958c24ba00e531dd",
+    "scripts/factor_validation_allowlist.txt": "59d19566e4f2c81f611df634a97cd70c95ca4a48a0a65a1dd1b521860aa367f2",
+    "scripts/start_cta_perp_factor_model_1m_pub.sh": "55dcb5fa012631dd30d4749019703bb0ccda91119562a0ea2ebdafb54bb42cbe"
+  }
+}

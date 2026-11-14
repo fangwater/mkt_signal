@@ -1,0 +1,16 @@
+{
+  "http": {
+    "/cta/binance-cta-rx01": 410,
+    "/cta/binance-cta-rx01/config/": 410,
+    "/cta/binance-cta-spread-rx01/": 410,
+    "/cta/binance-cta-spread-rx01/signals/": 410,
+    "/cta/binance-cta-spread-rx01/config/": 410,
+    "/cta/binance-cta-perp-rx02/": 200,
+    "/cta/binance-cta-perp-rx03/": 200,
+    "/cta/binance-cta-perp-rx04/": 200,
+    "/manager/": 200
+  },
+  "manager_retired_link_absent": true,
+  "manager_release": "web-releases/rx01-retired-20261030",
+  "other_rx_pages_healthy": true
+}

@@ -1,0 +1,813 @@
+{
+  "measured_on": "2026-11-11",
+  "baseline_commit": "6c514f6c",
+  "cpu_model": "AMD EPYC 7642 48-Core Processor",
+  "business_cpu": 190,
+  "shared_host": true,
+  "cpu_isolated": false,
+  "network": false,
+  "notes": [
+    "Hot-path runs alternate baseline/new implementations three times; each uses 15 samples of 128 operations with thread-local allocation instrumentation.",
+    "Pipeline runs use official SDK headers and a marked synthetic library, never vendor transport or account credentials.",
+    "Pipeline enables latency-metrics; default production features do not sample extra monotonic clocks.",
+    "Protocol names exercise adapter configuration, not actual TCP/UDP/XTCP transport performance.",
+    "Backlog is the maximum observed at producer sampling points.",
+    "Burst through durability includes all local processing and a synced WAL barrier; only 15 or 62 samples, insufficient to establish a stable p99.9.",
+    "No-journal long run validates correlation and deduplication, not durable end-to-end throughput."
+  ],
+  "hot_path_runs": [
+    {
+      "repeat": 0,
+      "implementation": "before",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 994.1875,
+          "allocations_per_op": 19.109375,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "ops_per_sample": 128,
+            "working_orders": 0
+          },
+          "operations": 1920,
+          "p50_ns": 952,
+          "p95_ns": 1523,
+          "p99_ns": 3597
+        },
+        {
+          "allocated_bytes_per_op": 149.15625,
+          "allocations_per_op": 19.0546875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "ops_per_sample": 128,
+            "working_orders": 0
+          },
+          "operations": 1920,
+          "p50_ns": 872,
+          "p95_ns": 1152,
+          "p99_ns": 1543
+        },
+        {
+          "allocated_bytes_per_op": 147.5,
+          "allocations_per_op": 19.046875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "ops_per_sample": 128,
+            "working_orders": 8
+          },
+          "operations": 1920,
+          "p50_ns": 1583,
+          "p95_ns": 1884,
+          "p99_ns": 2505
+        },
+        {
+          "allocated_bytes_per_op": 536.0,
+          "allocations_per_op": 1.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 1920,
+          "p50_ns": 421,
+          "p95_ns": 792,
+          "p99_ns": 3787
+        },
+        {
+          "allocated_bytes_per_op": 150.0,
+          "allocations_per_op": 5.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 1920,
+          "p50_ns": 782,
+          "p95_ns": 2104,
+          "p99_ns": 16622
+        }
+      ]
+    },
+    {
+      "repeat": 0,
+      "implementation": "after",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 73.96875,
+          "allocations_per_op": 8.046875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "ops_per_sample": 128,
+            "working_orders": 0
+          },
+          "operations": 1920,
+          "p50_ns": 1293,
+          "p95_ns": 7414,
+          "p999_ns": 22182,
+          "p99_ns": 10660
+        },
+        {
+          "allocated_bytes_per_op": 82.5,
+          "allocations_per_op": 8.046875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "ops_per_sample": 128,
+            "working_orders": 0
+          },
+          "operations": 1920,
+          "p50_ns": 582,
+          "p95_ns": 791,
+          "p999_ns": 5491,
+          "p99_ns": 2845
+        },
+        {
+          "allocated_bytes_per_op": 82.5,
+          "allocations_per_op": 8.046875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "ops_per_sample": 128,
+            "working_orders": 8
+          },
+          "operations": 1920,
+          "p50_ns": 641,
+          "p95_ns": 832,
+          "p999_ns": 4418,
+          "p99_ns": 2605
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 1920,
+          "p50_ns": 200,
+          "p95_ns": 471,
+          "p999_ns": 4589,
+          "p99_ns": 791
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 1920,
+          "p50_ns": 441,
+          "p95_ns": 761,
+          "p999_ns": 5210,
+          "p99_ns": 1112
+        }
+      ]
+    },
+    {
+      "repeat": 1,
+      "implementation": "before",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 994.1875,
+          "allocations_per_op": 19.109375,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "ops_per_sample": 128,
+            "working_orders": 0
+          },
+          "operations": 1920,
+          "p50_ns": 1593,
+          "p95_ns": 2746,
+          "p99_ns": 7785
+        },
+        {
+          "allocated_bytes_per_op": 149.15625,
+          "allocations_per_op": 19.0546875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "ops_per_sample": 128,
+            "working_orders": 0
+          },
+          "operations": 1920,
+          "p50_ns": 862,
+          "p95_ns": 1162,
+          "p99_ns": 1483
+        },
+        {
+          "allocated_bytes_per_op": 147.5,
+          "allocations_per_op": 19.046875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "ops_per_sample": 128,
+            "working_orders": 8
+          },
+          "operations": 1920,
+          "p50_ns": 1623,
+          "p95_ns": 1913,
+          "p99_ns": 2264
+        },
+        {
+          "allocated_bytes_per_op": 536.0,
+          "allocations_per_op": 1.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 1920,
+          "p50_ns": 291,
+          "p95_ns": 592,
+          "p99_ns": 2184
+        },
+        {
+          "allocated_bytes_per_op": 150.0,
+          "allocations_per_op": 5.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 1920,
+          "p50_ns": 641,
+          "p95_ns": 1623,
+          "p99_ns": 7273
+        }
+      ]
+    },
+    {
+      "repeat": 1,
+      "implementation": "after",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 73.96875,
+          "allocations_per_op": 8.046875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "ops_per_sample": 128,
+            "working_orders": 0
+          },
+          "operations": 1920,
+          "p50_ns": 1372,
+          "p95_ns": 7424,
+          "p999_ns": 14868,
+          "p99_ns": 11442
+        },
+        {
+          "allocated_bytes_per_op": 82.5,
+          "allocations_per_op": 8.046875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "ops_per_sample": 128,
+            "working_orders": 0
+          },
+          "operations": 1920,
+          "p50_ns": 591,
+          "p95_ns": 741,
+          "p999_ns": 2936,
+          "p99_ns": 1243
+        },
+        {
+          "allocated_bytes_per_op": 82.5,
+          "allocations_per_op": 8.046875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "ops_per_sample": 128,
+            "working_orders": 8
+          },
+          "operations": 1920,
+          "p50_ns": 632,
+          "p95_ns": 812,
+          "p999_ns": 3016,
+          "p99_ns": 1042
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 1920,
+          "p50_ns": 201,
+          "p95_ns": 390,
+          "p999_ns": 4488,
+          "p99_ns": 621
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 1920,
+          "p50_ns": 441,
+          "p95_ns": 721,
+          "p999_ns": 4188,
+          "p99_ns": 1042
+        }
+      ]
+    },
+    {
+      "repeat": 2,
+      "implementation": "before",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 994.1875,
+          "allocations_per_op": 19.109375,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "ops_per_sample": 128,
+            "working_orders": 0
+          },
+          "operations": 1920,
+          "p50_ns": 1002,
+          "p95_ns": 2194,
+          "p99_ns": 5501
+        },
+        {
+          "allocated_bytes_per_op": 149.15625,
+          "allocations_per_op": 19.0546875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "ops_per_sample": 128,
+            "working_orders": 0
+          },
+          "operations": 1920,
+          "p50_ns": 851,
+          "p95_ns": 1142,
+          "p99_ns": 1443
+        },
+        {
+          "allocated_bytes_per_op": 147.5,
+          "allocations_per_op": 19.046875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "ops_per_sample": 128,
+            "working_orders": 8
+          },
+          "operations": 1920,
+          "p50_ns": 1603,
+          "p95_ns": 1854,
+          "p99_ns": 2204
+        },
+        {
+          "allocated_bytes_per_op": 536.0,
+          "allocations_per_op": 1.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 1920,
+          "p50_ns": 321,
+          "p95_ns": 601,
+          "p99_ns": 3587
+        },
+        {
+          "allocated_bytes_per_op": 150.0,
+          "allocations_per_op": 5.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 1920,
+          "p50_ns": 671,
+          "p95_ns": 1573,
+          "p99_ns": 7815
+        }
+      ]
+    },
+    {
+      "repeat": 2,
+      "implementation": "after",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 73.96875,
+          "allocations_per_op": 8.046875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "ops_per_sample": 128,
+            "working_orders": 0
+          },
+          "operations": 1920,
+          "p50_ns": 1293,
+          "p95_ns": 7434,
+          "p999_ns": 18375,
+          "p99_ns": 9067
+        },
+        {
+          "allocated_bytes_per_op": 82.5,
+          "allocations_per_op": 8.046875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "ops_per_sample": 128,
+            "working_orders": 0
+          },
+          "operations": 1920,
+          "p50_ns": 581,
+          "p95_ns": 761,
+          "p999_ns": 3647,
+          "p99_ns": 2685
+        },
+        {
+          "allocated_bytes_per_op": 82.5,
+          "allocations_per_op": 8.046875,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "ops_per_sample": 128,
+            "working_orders": 8
+          },
+          "operations": 1920,
+          "p50_ns": 632,
+          "p95_ns": 792,
+          "p999_ns": 5681,
+          "p99_ns": 2625
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 1920,
+          "p50_ns": 231,
+          "p95_ns": 491,
+          "p999_ns": 3116,
+          "p99_ns": 752
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 1920,
+          "p50_ns": 451,
+          "p95_ns": 631,
+          "p999_ns": 4117,
+          "p99_ns": 1042
+        }
+      ]
+    }
+  ],
+  "native_pipeline_runs": [
+    {
+      "backlog_peak_observed": 640,
+      "benchmark": "native_sdk_pipeline",
+      "burst_cycles": 32,
+      "burst_through_durability": {
+        "count": 62,
+        "p50_ns": 31876107,
+        "p95_ns": 39540269,
+        "p999_ns": 42984350,
+        "p99_ns": 42984350
+      },
+      "callback_processing": {
+        "count": 16000,
+        "p50_ns": 1723,
+        "p95_ns": 5520,
+        "p999_ns": 28394,
+        "p99_ns": 8025
+      },
+      "callback_to_oms": {
+        "count": 16000,
+        "p50_ns": 12273,
+        "p95_ns": 32221,
+        "p999_ns": 537952,
+        "p99_ns": 102102
+      },
+      "cycles": 2000,
+      "durable_records": 40085,
+      "journal": true,
+      "largest_wal_batch": 64,
+      "late_duplicate_verified": true,
+      "mode": "fak_open_close",
+      "native_bridge_call": {
+        "count": 4000,
+        "p50_ns": 2785,
+        "p95_ns": 7254,
+        "p999_ns": 246314,
+        "p99_ns": 100198
+      },
+      "native_requests": 4000,
+      "native_requests_per_second": 1992.7616797939143,
+      "network": false,
+      "pending_requests_after_run": 0,
+      "profiling_feature": true,
+      "protocol": "tcp",
+      "submit_path": {
+        "count": 4000,
+        "p50_ns": 5851,
+        "p95_ns": 15349,
+        "p999_ns": 364075,
+        "p99_ns": 134653
+      },
+      "synced_wal_batches": 720,
+      "synthetic_sdk": true,
+      "terminal_path": {
+        "count": 4000,
+        "p50_ns": 26029,
+        "p95_ns": 57288,
+        "p999_ns": 671804,
+        "p99_ns": 285387
+      },
+      "wall_ns": 2007264612,
+      "persistence": {
+        "rocksdb_orders": 4002,
+        "rocksdb_unique_trades": 4000,
+        "rocksdb_evidence": 40086,
+        "projection_error_retained": false
+      }
+    },
+    {
+      "backlog_peak_observed": 2496,
+      "benchmark": "native_sdk_pipeline",
+      "burst_cycles": 128,
+      "burst_through_durability": {
+        "count": 15,
+        "p50_ns": 144904829,
+        "p95_ns": 150653998,
+        "p999_ns": 150653998,
+        "p99_ns": 150653998
+      },
+      "callback_processing": {
+        "count": 16000,
+        "p50_ns": 2314,
+        "p95_ns": 6112,
+        "p999_ns": 25458,
+        "p99_ns": 9397
+      },
+      "callback_to_oms": {
+        "count": 16000,
+        "p50_ns": 16441,
+        "p95_ns": 33483,
+        "p999_ns": 1270822,
+        "p99_ns": 46828
+      },
+      "cycles": 2000,
+      "durable_records": 40038,
+      "journal": true,
+      "largest_wal_batch": 64,
+      "late_duplicate_verified": true,
+      "mode": "fak_open_close",
+      "native_bridge_call": {
+        "count": 4000,
+        "p50_ns": 3617,
+        "p95_ns": 7274,
+        "p999_ns": 434398,
+        "p99_ns": 15981
+      },
+      "native_requests": 4000,
+      "native_requests_per_second": 1775.5166699245253,
+      "network": false,
+      "pending_requests_after_run": 0,
+      "profiling_feature": true,
+      "protocol": "udp",
+      "submit_path": {
+        "count": 4000,
+        "p50_ns": 7694,
+        "p95_ns": 15499,
+        "p999_ns": 571756,
+        "p99_ns": 24717
+      },
+      "synced_wal_batches": 659,
+      "synthetic_sdk": true,
+      "terminal_path": {
+        "count": 4000,
+        "p50_ns": 35447,
+        "p95_ns": 56757,
+        "p999_ns": 1669301,
+        "p99_ns": 77025
+      },
+      "wall_ns": 2252865359,
+      "persistence": {
+        "rocksdb_orders": 4002,
+        "rocksdb_unique_trades": 4000,
+        "rocksdb_evidence": 40039,
+        "projection_error_retained": false
+      }
+    },
+    {
+      "backlog_peak_observed": 288,
+      "benchmark": "native_sdk_pipeline",
+      "burst_cycles": 32,
+      "burst_through_durability": {
+        "count": 62,
+        "p50_ns": 13301178,
+        "p95_ns": 17577856,
+        "p999_ns": 18783846,
+        "p99_ns": 18783846
+      },
+      "callback_processing": {
+        "count": 6000,
+        "p50_ns": 2344,
+        "p95_ns": 3296,
+        "p999_ns": 22562,
+        "p99_ns": 5821
+      },
+      "callback_to_oms": {
+        "count": 6000,
+        "p50_ns": 6603,
+        "p95_ns": 14397,
+        "p999_ns": 156274,
+        "p99_ns": 105609
+      },
+      "cycles": 2000,
+      "durable_records": 18086,
+      "journal": true,
+      "largest_wal_batch": 64,
+      "late_duplicate_verified": true,
+      "mode": "passive_cancel",
+      "native_bridge_call": {
+        "count": 2000,
+        "p50_ns": 2995,
+        "p95_ns": 3938,
+        "p999_ns": 95580,
+        "p99_ns": 52058
+      },
+      "native_requests": 4000,
+      "native_requests_per_second": 4707.9040377091815,
+      "network": false,
+      "pending_requests_after_run": 0,
+      "profiling_feature": true,
+      "protocol": "xtcp",
+      "submit_path": {
+        "count": 2000,
+        "p50_ns": 7054,
+        "p95_ns": 21580,
+        "p999_ns": 191230,
+        "p99_ns": 97724
+      },
+      "synced_wal_batches": 387,
+      "synthetic_sdk": true,
+      "terminal_path": {
+        "count": 2000,
+        "p50_ns": 24216,
+        "p95_ns": 50545,
+        "p999_ns": 297620,
+        "p99_ns": 76023
+      },
+      "wall_ns": 849634990,
+      "persistence": {
+        "rocksdb_orders": 2002,
+        "rocksdb_unique_trades": 0,
+        "rocksdb_evidence": 18087,
+        "projection_error_retained": false
+      }
+    },
+    {
+      "backlog_peak_observed": 0,
+      "benchmark": "native_sdk_pipeline",
+      "burst_cycles": 1024,
+      "burst_through_durability": {
+        "count": 107,
+        "p50_ns": 18197763,
+        "p95_ns": 25334392,
+        "p999_ns": 49008719,
+        "p99_ns": 43096955
+      },
+      "callback_processing": {
+        "count": 880000,
+        "p50_ns": 791,
+        "p95_ns": 1863,
+        "p999_ns": 8857,
+        "p99_ns": 4148
+      },
+      "callback_to_oms": {
+        "count": 880000,
+        "p50_ns": 3938,
+        "p95_ns": 6683,
+        "p999_ns": 16722,
+        "p99_ns": 9297
+      },
+      "cycles": 110000,
+      "durable_records": null,
+      "journal": false,
+      "largest_wal_batch": null,
+      "late_duplicate_verified": true,
+      "mode": "fak_open_close",
+      "native_bridge_call": {
+        "count": 220000,
+        "p50_ns": 1763,
+        "p95_ns": 4228,
+        "p999_ns": 12443,
+        "p99_ns": 6382
+      },
+      "native_requests": 220000,
+      "native_requests_per_second": 102836.90552641146,
+      "network": false,
+      "pending_requests_after_run": 0,
+      "profiling_feature": true,
+      "protocol": "tcp",
+      "submit_path": {
+        "count": 220000,
+        "p50_ns": 3286,
+        "p95_ns": 6141,
+        "p999_ns": 15950,
+        "p99_ns": 8847
+      },
+      "synced_wal_batches": null,
+      "synthetic_sdk": true,
+      "terminal_path": {
+        "count": 220000,
+        "p50_ns": 7975,
+        "p95_ns": 12263,
+        "p999_ns": 25659,
+        "p99_ns": 16892
+      },
+      "wall_ns": 2139309802
+    }
+  ]
+}

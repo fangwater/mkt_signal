@@ -11,7 +11,10 @@ use tokio::time::Instant;
 
 use crate::config::{PreTradeSrcCfg, VizServerCfg};
 use crate::server::WsHub;
-use ipc_common::iceoryx_publisher::RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD;
+use ipc_common::iceoryx_publisher::{
+    EXEC_STATE_RESAMPLE_BUFFER, EXEC_STATE_RESAMPLE_HISTORY, EXEC_STATE_RESAMPLE_PAYLOAD,
+    RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD,
+};
 use runtime_common::time_util::get_timestamp_us;
 use viz_common::resample::{
     ExecAccountRiskResampleEntry, ExecStrategyStateResampleEntry, PreTradeExposureResampleEntry,
@@ -109,24 +112,91 @@ pub fn spawn_exec_pre_trade_resample_listeners_with_cfg(
         "viz: exec_pre_trade.enabled requires an explicit exec_pre_trade.namespace"
     );
 
-    spawn_exec_state_listener(hub.clone(), namespace)?;
-    spawn_exec_risk_listener(hub, namespace)
+    let venue = runtime_common::exec_market::parse_venue(&exec.venue)?;
+    spawn_exec_state_listener(hub.clone(), namespace, venue)?;
+    spawn_exec_risk_listener(hub.clone(), namespace, venue)?;
+    if venue == order_common::TradingVenue::BinanceCoinFutures {
+        use viz_common::coin_account::{CoinAccountSnapshot, COIN_ACCOUNT_CHANNEL};
+        let ns = namespace.to_string();
+        spawn_resample_channel(
+            &format!("viz_coin_account_{}", sanitize_node_component(namespace)),
+            &format!("{namespace}/viz_pubs/{COIN_ACCOUNT_CHANNEL}"),
+            move |entry: CoinAccountSnapshot, hub: WsHub| {
+                if entry.venue != "binance-coin-futures" || entry.account_mode != "STANDARD" {
+                    return;
+                }
+                if let Ok(message) = serde_json::to_string(&json!({
+                    "type": COIN_ACCOUNT_CHANNEL, "namespace": ns,
+                    "venue": entry.venue, "ts_ms": entry.ts_ms, "entry": entry,
+                })) {
+                    hub.broadcast(message);
+                }
+            },
+            hub,
+        )?;
+    }
+    Ok(())
 }
 
-fn spawn_exec_state_listener(hub: WsHub, namespace: &str) -> Result<()> {
+fn spawn_exec_state_listener(
+    hub: WsHub,
+    namespace: &str,
+    venue: order_common::TradingVenue,
+) -> Result<()> {
     let namespace = namespace.to_string();
     let namespace_for_msg = namespace.clone();
     let service_name = format!("{}/viz_pubs/{}", namespace, EXEC_STATE_CHANNEL);
-    spawn_resample_channel(
+    spawn_resample_channel_with_payload::<
+        ExecStrategyStateResampleEntry,
+        _,
+        EXEC_STATE_RESAMPLE_PAYLOAD,
+    >(
         &format!("viz_exec_state_{}", sanitize_node_component(&namespace)),
         &service_name,
+        (EXEC_STATE_RESAMPLE_HISTORY, EXEC_STATE_RESAMPLE_BUFFER),
         move |entry: ExecStrategyStateResampleEntry, hub: WsHub| {
+            let rows = match entry.expanded_rows() {
+                Ok(rows) => rows,
+                Err(err) => {
+                    warn!(
+                        "exec state payload expansion failed (namespace={}): {err:#}",
+                        namespace_for_msg
+                    );
+                    return;
+                }
+            };
+            if rows.iter().any(|row| {
+                let cash = !row.symbol.ends_with("USDT")
+                    && !row.symbol.ends_with("USDC")
+                    && !row.symbol.ends_with("USD");
+                if cash
+                    && matches!(
+                        venue,
+                        order_common::TradingVenue::BinanceFutures
+                            | order_common::TradingVenue::OkexFutures
+                    )
+                {
+                    return row.symbol.is_empty() || !row.symbol.chars().all(char::is_alphanumeric);
+                }
+                runtime_common::exec_market::validate_symbol(venue, &row.symbol).is_err()
+            }) {
+                warn!(
+                    "Exec Viz discarded a state sample containing another market (namespace={})",
+                    namespace_for_msg
+                );
+                return;
+            }
             if let Ok(msg) = serde_json::to_string(&json!({
                 "type": "exec_pre_trade_state",
                 "namespace": namespace_for_msg.as_str(),
+                "venue": venue.data_pub_slug(),
                 "channel": EXEC_STATE_CHANNEL,
                 "ts_ms": get_timestamp_us() / 1000,
-                "entry": entry,
+                "entry": {
+                    "ts_ms": entry.ts_ms,
+                    "position_ready": entry.position_ready,
+                    "rows": rows,
+                },
             })) {
                 hub.broadcast(msg);
             }
@@ -135,7 +205,11 @@ fn spawn_exec_state_listener(hub: WsHub, namespace: &str) -> Result<()> {
     )
 }
 
-fn spawn_exec_risk_listener(hub: WsHub, namespace: &str) -> Result<()> {
+fn spawn_exec_risk_listener(
+    hub: WsHub,
+    namespace: &str,
+    venue: order_common::TradingVenue,
+) -> Result<()> {
     let namespace = namespace.to_string();
     let namespace_for_msg = namespace.clone();
     let service_name = format!("{}/viz_pubs/{}", namespace, EXEC_RISK_CHANNEL);
@@ -143,9 +217,17 @@ fn spawn_exec_risk_listener(hub: WsHub, namespace: &str) -> Result<()> {
         &format!("viz_exec_risk_{}", sanitize_node_component(&namespace)),
         &service_name,
         move |entry: ExecAccountRiskResampleEntry, hub: WsHub| {
+            if entry.venue != venue.data_pub_slug() {
+                warn!(
+                    "Exec Viz discarded another market's risk sample (namespace={})",
+                    namespace_for_msg
+                );
+                return;
+            }
             if let Ok(msg) = serde_json::to_string(&json!({
                 "type": "exec_pre_trade_risk",
                 "namespace": namespace_for_msg.as_str(),
+                "venue": venue.data_pub_slug(),
                 "channel": EXEC_RISK_CHANNEL,
                 "ts_ms": get_timestamp_us() / 1000,
                 "entry": entry,
@@ -269,6 +351,26 @@ where
     T: serde::de::DeserializeOwned + Clone + 'static,
     F: Fn(T, WsHub) + 'static,
 {
+    spawn_resample_channel_with_payload::<T, F, RESAMPLE_PAYLOAD>(
+        node_suffix,
+        service_name,
+        (128, 256),
+        on_entry,
+        hub,
+    )
+}
+
+fn spawn_resample_channel_with_payload<T, F, const PAYLOAD: usize>(
+    node_suffix: &str,
+    service_name: &str,
+    queue_limits: (usize, usize),
+    on_entry: F,
+    hub: WsHub,
+) -> Result<()>
+where
+    T: serde::de::DeserializeOwned + Clone + 'static,
+    F: Fn(T, WsHub) + 'static,
+{
     let node_suffix = node_suffix.to_string();
     let service_name = service_name.to_string();
 
@@ -293,13 +395,13 @@ where
                 .create::<ipc::Service>()?;
             let service = node
                 .service_builder(&ServiceName::new(&service_name)?)
-                .publish_subscribe::<[u8; RESAMPLE_PAYLOAD]>()
+                .publish_subscribe::<[u8; PAYLOAD]>()
                 .max_publishers(1)
                 .max_subscribers(32)
-                .history_size(128)
-                .subscriber_max_buffer_size(256)
+                .history_size(queue_limits.0)
+                .subscriber_max_buffer_size(queue_limits.1)
                 .open_or_create()?;
-            let subscriber: Subscriber<ipc::Service, [u8; RESAMPLE_PAYLOAD], ()> =
+            let subscriber: Subscriber<ipc::Service, [u8; PAYLOAD], ()> =
                 service.subscriber_builder().create()?;
             info!(
                 "viz resample relay subscribed: service={} node={}",
@@ -330,9 +432,16 @@ where
                                         let mut st = stats.borrow_mut();
                                         st.count += 1;
                                         if st.window_start.elapsed() >= Duration::from_secs(3) {
-                                            info!(
+                                            log::log!(
+                                                if st.dropped > 0 {
+                                                    log::Level::Warn
+                                                } else {
+                                                    log::Level::Debug
+                                                },
                                                 "viz resample relay {} received count={} dropped={}",
-                                                channel_label, st.count, st.dropped
+                                                channel_label,
+                                                st.count,
+                                                st.dropped
                                             );
                                             st.window_start = Instant::now();
                                             st.count = 0;

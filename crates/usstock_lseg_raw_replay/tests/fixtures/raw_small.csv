@@ -1,0 +1,10 @@
+#RIC,Domain,Date-Time,GMT Offset,Type,MsgClass/FID number,UpdateType/Action,FID Name,FID Value,FID Enum String,PE Code,Template Number,Key/Msg Sequence Number,Number of FIDs
+AAA.O,Market Price,2021-07-01T00:00:00.000000001Z,-4,Raw,UPDATE,QUOTE,,,,74,,1,2
+,,,,FID,22,,BID,10.10,
+,,,,FID,25,,ASK,10.20,
+AAA.O,Market Price,2021-07-01T00:00:00.000000002Z,-4,Raw,UPDATE,TRADE,,,,74,,2,3
+,,,,FID,6,,TRDPRC_1,10.20,
+,,,,FID,178,,TRDVOL_1,100,
+,,,,FID,1025,,TRD_DATE,2021-06-30,
+BBB.N,Market Price,2021-07-01T00:00:00.000000003Z,-4,Raw,REFRESH,,,,,64,1,3,1
+,,,,FID,3,,DSPLY_NAME,BBB INC,

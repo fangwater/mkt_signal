@@ -60,6 +60,7 @@ class SymbolSpec:
     asset: str            # BTC
     spot_pair: str        # BTC_USDT
     futures_contract: str # BTC_USDT
+    futures_contract_available: bool
     spot_amount_step: Decimal
     spot_min_base_amount: Decimal
     futures_contract_size: Decimal  # quanto_multiplier
@@ -265,7 +266,7 @@ def split_usdt(symbol: str) -> str:
 # -------------------- state fetch --------------------
 
 
-def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
+def fetch_specs(symbols: List[str], *, allow_missing_futures: bool = False) -> Dict[str, SymbolSpec]:
     wanted_pairs = {split_usdt(s): s for s in symbols}
 
     # Spot currency pairs
@@ -306,18 +307,23 @@ def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
 
     out: Dict[str, SymbolSpec] = {}
     for asset, sym in wanted_pairs.items():
-        if asset not in fut_specs:
+        if asset not in fut_specs and not allow_missing_futures:
             sys.exit(f"[ERROR] Gate futures contract not found for {asset}_USDT")
         if asset not in spot_specs:
             sys.exit(f"[ERROR] Gate spot currency pair not found for {asset}_USDT")
         sp = spot_specs[asset]
-        fu = fut_specs[asset]
+        fu = fut_specs.get(asset)
+        if fu is None:
+            sys.stderr.write(
+                f"[WARN] Gate futures contract not found for {asset}_USDT; "
+                "skipping futures in clear mode\n"
+            )
         # Gate spot: amount_precision is base-asset decimal places. step = 10^-precision.
         amount_prec = int(decimal_or(sp.get("amount_precision"), "0"))
         spot_step = Decimal(10) ** -amount_prec if amount_prec > 0 else Decimal("1")
-        futures_min_contracts = decimal_or(fu.get("order_size_min"), "0")
-        futures_step_contracts = decimal_or(fu.get("order_size_step"), "0")
-        if futures_step_contracts <= 0 and parse_bool(fu.get("enable_decimal")) and ZERO < futures_min_contracts < Decimal("1"):
+        futures_min_contracts = decimal_or(fu.get("order_size_min"), "0") if fu else ZERO
+        futures_step_contracts = decimal_or(fu.get("order_size_step"), "0") if fu else Decimal("1")
+        if fu and futures_step_contracts <= 0 and parse_bool(fu.get("enable_decimal")) and ZERO < futures_min_contracts < Decimal("1"):
             futures_step_contracts = futures_min_contracts
         if futures_step_contracts <= 0:
             futures_step_contracts = Decimal("1")
@@ -326,9 +332,10 @@ def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
             asset=asset,
             spot_pair=f"{asset}_USDT",
             futures_contract=f"{asset}_USDT",
+            futures_contract_available=fu is not None,
             spot_amount_step=spot_step,
             spot_min_base_amount=decimal_or(sp.get("min_base_amount"), "0"),
-            futures_contract_size=decimal_or(fu.get("quanto_multiplier"), "1"),
+            futures_contract_size=decimal_or(fu.get("quanto_multiplier"), "1") if fu else Decimal("1"),
             futures_step_contracts=futures_step_contracts,
             futures_min_contracts=futures_min_contracts,
         )
@@ -363,11 +370,14 @@ def fetch_unified_balance(api_key, api_secret) -> Dict[str, Tuple[Decimal, Decim
     return out
 
 
-def fetch_futures_positions(symbols: List[str], api_key, api_secret) -> Dict[str, Decimal]:
+def fetch_futures_positions(specs: List[SymbolSpec], api_key, api_secret) -> Dict[str, Decimal]:
     """Return {contract: signed_contracts}."""
     out: Dict[str, Decimal] = {}
-    for sym in symbols:
-        contract = f"{split_usdt(sym)}_USDT"
+    for spec in specs:
+        contract = spec.futures_contract
+        if not spec.futures_contract_available:
+            out[contract] = ZERO
+            continue
         status, body = gate_private(
             "GET",
             f"/futures/usdt/positions/{contract}",
@@ -417,32 +427,36 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
     selldown_amt = ZERO
     selldown_skip: Optional[str] = None
 
-    if mode == "align":
+    if not spec.futures_contract_available:
+        delta_coins = ZERO
+        futures_skip = "futures contract unavailable; skipped in clear mode"
+    elif mode == "align":
         delta_coins = -net_qty
     else:
         delta_coins = -pos_coins
 
-    if delta_coins == 0:
-        futures_skip = "no futures action needed (target delta is zero)"
-    else:
-        futures_side = "buy" if delta_coins > 0 else "sell"
-        target_contracts = abs(delta_coins) / spec.futures_contract_size if spec.futures_contract_size > 0 else ZERO
-        futures_contracts = floor_to_step(target_contracts, spec.futures_step_contracts)
-        if futures_contracts < spec.futures_min_contracts:
-            futures_skip = (
-                f"contracts {format_decimal(futures_contracts)} < min "
-                f"{format_decimal(spec.futures_min_contracts)}: dust below threshold"
-            )
-            futures_contracts = ZERO
-            futures_side = None
-        elif futures_reduce_only and futures_side == "sell" and pos_contracts <= 0:
-            futures_skip = f"reduce_only sell needs pos>0 contracts, have {format_decimal(pos_contracts)}"
-            futures_contracts = ZERO
-            futures_side = None
-        elif futures_reduce_only and futures_side == "buy" and pos_contracts >= 0:
-            futures_skip = f"reduce_only buy needs pos<0 contracts, have {format_decimal(pos_contracts)}"
-            futures_contracts = ZERO
-            futures_side = None
+    if futures_skip is None:
+        if delta_coins == 0:
+            futures_skip = "no futures action needed (target delta is zero)"
+        else:
+            futures_side = "buy" if delta_coins > 0 else "sell"
+            target_contracts = abs(delta_coins) / spec.futures_contract_size if spec.futures_contract_size > 0 else ZERO
+            futures_contracts = floor_to_step(target_contracts, spec.futures_step_contracts)
+            if futures_contracts < spec.futures_min_contracts:
+                futures_skip = (
+                    f"contracts {format_decimal(futures_contracts)} < min "
+                    f"{format_decimal(spec.futures_min_contracts)}: dust below threshold"
+                )
+                futures_contracts = ZERO
+                futures_side = None
+            elif futures_reduce_only and futures_side == "sell" and pos_contracts <= 0:
+                futures_skip = f"reduce_only sell needs pos>0 contracts, have {format_decimal(pos_contracts)}"
+                futures_contracts = ZERO
+                futures_side = None
+            elif futures_reduce_only and futures_side == "buy" and pos_contracts >= 0:
+                futures_skip = f"reduce_only buy needs pos<0 contracts, have {format_decimal(pos_contracts)}"
+                futures_contracts = ZERO
+                futures_side = None
 
     if mode == "clear":
         if borrow_after > 0:
@@ -685,9 +699,9 @@ def main() -> None:
     api_key, api_secret = load_credentials()
     symbols = parse_symbols(args.symbols)
 
-    specs = fetch_specs(symbols)
+    specs = fetch_specs(symbols, allow_missing_futures=args.mode == "clear")
     balances = fetch_unified_balance(api_key, api_secret)
-    futures_positions = fetch_futures_positions(symbols, api_key, api_secret)
+    futures_positions = fetch_futures_positions(list(specs.values()), api_key, api_secret)
 
     plans: List[SymbolPlan] = []
     for sym in symbols:

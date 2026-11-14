@@ -1,0 +1,627 @@
+[
+  {
+    "env": "binance_fr_arb01",
+    "before_trading": {},
+    "before_config": {},
+    "files": {
+      "check_fr_collateral.py": {
+        "old": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f",
+        "new": "a7d598ea1c2c91a39973b4cc4e95bedcbf5493a724ca2379f5cbfcbb0c4585af"
+      },
+      "fr_config_server.py": {
+        "old": "1c3ab2a794df0d857f0e7213281f82b4378de1f86f101c499eb9bd7d395308c6",
+        "new": "c875fae36b9e1aa4e45f63a5ed4969ad8ae9aa09f9c66fbc647e52323173382e"
+      },
+      "sync_fr_symbol_lists.py": {
+        "old": "9a59e4b4a434fec13af2f53b2d23c5b84c8ef7831254354a6870d756f7e72d7a",
+        "new": "58593213eb8f41f7fc8e38f91a0ec85019d1a074c1549ff725c88b525f3f6ef1"
+      }
+    },
+    "at_ms": 1793349802143,
+    "after_trading": {},
+    "after_config": {}
+  },
+  {
+    "env": "binance_fr_arb02",
+    "before_trading": {
+      "43876": {
+        "comm": "account_monitor",
+        "start": "120794"
+      },
+      "47756": {
+        "comm": "trade_engine",
+        "start": "127645"
+      },
+      "99911": {
+        "comm": "pre_trade",
+        "start": "225809"
+      },
+      "149220": {
+        "comm": "trade_signal",
+        "start": "346996"
+      }
+    },
+    "before_config": {
+      "44350": 20032
+    },
+    "files": {
+      "check_fr_collateral.py": {
+        "old": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f",
+        "new": "a7d598ea1c2c91a39973b4cc4e95bedcbf5493a724ca2379f5cbfcbb0c4585af"
+      },
+      "fr_config_server.py": {
+        "old": "c8dbb66bde5d3ef41b15feeff59fe3aba458b80d3419e0ecb9195291cd3c2d47",
+        "new": "c875fae36b9e1aa4e45f63a5ed4969ad8ae9aa09f9c66fbc647e52323173382e"
+      },
+      "sync_fr_symbol_lists.py": {
+        "old": "9a59e4b4a434fec13af2f53b2d23c5b84c8ef7831254354a6870d756f7e72d7a",
+        "new": "58593213eb8f41f7fc8e38f91a0ec85019d1a074c1549ff725c88b525f3f6ef1"
+      }
+    },
+    "at_ms": 1793349802288,
+    "guard_rejected_mismatched_account": true,
+    "after_trading": {
+      "43876": {
+        "comm": "account_monitor",
+        "start": "120794"
+      },
+      "47756": {
+        "comm": "trade_engine",
+        "start": "127645"
+      },
+      "99911": {
+        "comm": "pre_trade",
+        "start": "225809"
+      },
+      "149220": {
+        "comm": "trade_signal",
+        "start": "346996"
+      }
+    },
+    "after_config": {
+      "3454124": 20032
+    }
+  },
+  {
+    "env": "binance_fr_arb03",
+    "before_trading": {
+      "44461": {
+        "comm": "account_monitor",
+        "start": "121075"
+      },
+      "47920": {
+        "comm": "trade_engine",
+        "start": "127772"
+      },
+      "147066": {
+        "comm": "pre_trade",
+        "start": "342776"
+      },
+      "149309": {
+        "comm": "trade_signal",
+        "start": "347336"
+      }
+    },
+    "before_config": {
+      "44946": 20033
+    },
+    "files": {
+      "check_fr_collateral.py": {
+        "old": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f",
+        "new": "a7d598ea1c2c91a39973b4cc4e95bedcbf5493a724ca2379f5cbfcbb0c4585af"
+      },
+      "fr_config_server.py": {
+        "old": "c8dbb66bde5d3ef41b15feeff59fe3aba458b80d3419e0ecb9195291cd3c2d47",
+        "new": "c875fae36b9e1aa4e45f63a5ed4969ad8ae9aa09f9c66fbc647e52323173382e"
+      },
+      "sync_fr_symbol_lists.py": {
+        "old": "9a59e4b4a434fec13af2f53b2d23c5b84c8ef7831254354a6870d756f7e72d7a",
+        "new": "58593213eb8f41f7fc8e38f91a0ec85019d1a074c1549ff725c88b525f3f6ef1"
+      }
+    },
+    "at_ms": 1793349805645,
+    "guard_rejected_mismatched_account": true,
+    "after_trading": {
+      "44461": {
+        "comm": "account_monitor",
+        "start": "121075"
+      },
+      "47920": {
+        "comm": "trade_engine",
+        "start": "127772"
+      },
+      "147066": {
+        "comm": "pre_trade",
+        "start": "342776"
+      },
+      "149309": {
+        "comm": "trade_signal",
+        "start": "347336"
+      }
+    },
+    "after_config": {
+      "3454218": 20033
+    }
+  },
+  {
+    "env": "binance_fr_arb04",
+    "before_trading": {
+      "45056": {
+        "comm": "account_monitor",
+        "start": "121291"
+      },
+      "48089": {
+        "comm": "trade_engine",
+        "start": "127907"
+      },
+      "144946": {
+        "comm": "pre_trade",
+        "start": "337482"
+      },
+      "149403": {
+        "comm": "trade_signal",
+        "start": "347669"
+      }
+    },
+    "before_config": {
+      "45543": 20034
+    },
+    "files": {
+      "check_fr_collateral.py": {
+        "old": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f",
+        "new": "a7d598ea1c2c91a39973b4cc4e95bedcbf5493a724ca2379f5cbfcbb0c4585af"
+      },
+      "fr_config_server.py": {
+        "old": "c8dbb66bde5d3ef41b15feeff59fe3aba458b80d3419e0ecb9195291cd3c2d47",
+        "new": "c875fae36b9e1aa4e45f63a5ed4969ad8ae9aa09f9c66fbc647e52323173382e"
+      },
+      "sync_fr_symbol_lists.py": {
+        "old": "9a59e4b4a434fec13af2f53b2d23c5b84c8ef7831254354a6870d756f7e72d7a",
+        "new": "58593213eb8f41f7fc8e38f91a0ec85019d1a074c1549ff725c88b525f3f6ef1"
+      }
+    },
+    "at_ms": 1793349808661,
+    "guard_rejected_mismatched_account": true,
+    "after_trading": {
+      "45056": {
+        "comm": "account_monitor",
+        "start": "121291"
+      },
+      "48089": {
+        "comm": "trade_engine",
+        "start": "127907"
+      },
+      "144946": {
+        "comm": "pre_trade",
+        "start": "337482"
+      },
+      "149403": {
+        "comm": "trade_signal",
+        "start": "347669"
+      }
+    },
+    "after_config": {
+      "3454309": 20034
+    }
+  },
+  {
+    "env": "bitget_fr_arb01",
+    "before_trading": {
+      "63432": {
+        "comm": "account_monitor",
+        "start": "155752"
+      },
+      "63801": {
+        "comm": "trade_engine",
+        "start": "155855"
+      },
+      "142609": {
+        "comm": "pre_trade",
+        "start": "328583"
+      },
+      "149767": {
+        "comm": "trade_signal",
+        "start": "349037"
+      }
+    },
+    "before_config": {
+      "64049": 20051
+    },
+    "files": {
+      "check_fr_collateral.py": {
+        "old": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f",
+        "new": "a7d598ea1c2c91a39973b4cc4e95bedcbf5493a724ca2379f5cbfcbb0c4585af"
+      },
+      "fr_config_server.py": {
+        "old": "1c3ab2a794df0d857f0e7213281f82b4378de1f86f101c499eb9bd7d395308c6",
+        "new": "c875fae36b9e1aa4e45f63a5ed4969ad8ae9aa09f9c66fbc647e52323173382e"
+      },
+      "sync_fr_symbol_lists.py": {
+        "old": "9a59e4b4a434fec13af2f53b2d23c5b84c8ef7831254354a6870d756f7e72d7a",
+        "new": "58593213eb8f41f7fc8e38f91a0ec85019d1a074c1549ff725c88b525f3f6ef1"
+      }
+    },
+    "at_ms": 1793349810879,
+    "guard_rejected_mismatched_account": true,
+    "after_trading": {
+      "63432": {
+        "comm": "account_monitor",
+        "start": "155752"
+      },
+      "63801": {
+        "comm": "trade_engine",
+        "start": "155855"
+      },
+      "142609": {
+        "comm": "pre_trade",
+        "start": "328583"
+      },
+      "149767": {
+        "comm": "trade_signal",
+        "start": "349037"
+      }
+    },
+    "after_config": {
+      "3454404": 20051
+    }
+  },
+  {
+    "env": "bitget_fr_arb02",
+    "before_trading": {
+      "64192": {
+        "comm": "account_monitor",
+        "start": "156213"
+      },
+      "64572": {
+        "comm": "trade_engine",
+        "start": "156319"
+      },
+      "142765": {
+        "comm": "pre_trade",
+        "start": "330008"
+      },
+      "149857": {
+        "comm": "trade_signal",
+        "start": "349371"
+      }
+    },
+    "before_config": {
+      "64795": 20052
+    },
+    "files": {
+      "check_fr_collateral.py": {
+        "old": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f",
+        "new": "a7d598ea1c2c91a39973b4cc4e95bedcbf5493a724ca2379f5cbfcbb0c4585af"
+      },
+      "fr_config_server.py": {
+        "old": "1c3ab2a794df0d857f0e7213281f82b4378de1f86f101c499eb9bd7d395308c6",
+        "new": "c875fae36b9e1aa4e45f63a5ed4969ad8ae9aa09f9c66fbc647e52323173382e"
+      },
+      "sync_fr_symbol_lists.py": {
+        "old": "9a59e4b4a434fec13af2f53b2d23c5b84c8ef7831254354a6870d756f7e72d7a",
+        "new": "58593213eb8f41f7fc8e38f91a0ec85019d1a074c1549ff725c88b525f3f6ef1"
+      }
+    },
+    "at_ms": 1793349813121,
+    "guard_rejected_mismatched_account": true,
+    "after_trading": {
+      "64192": {
+        "comm": "account_monitor",
+        "start": "156213"
+      },
+      "64572": {
+        "comm": "trade_engine",
+        "start": "156319"
+      },
+      "142765": {
+        "comm": "pre_trade",
+        "start": "330008"
+      },
+      "149857": {
+        "comm": "trade_signal",
+        "start": "349371"
+      }
+    },
+    "after_config": {
+      "3454501": 20052
+    }
+  },
+  {
+    "env": "bitget_fr_arb03",
+    "before_trading": {
+      "64965": {
+        "comm": "account_monitor",
+        "start": "156678"
+      },
+      "65382": {
+        "comm": "trade_engine",
+        "start": "156789"
+      },
+      "129512": {
+        "comm": "pre_trade",
+        "start": "293239"
+      },
+      "149949": {
+        "comm": "trade_signal",
+        "start": "349719"
+      }
+    },
+    "before_config": {
+      "65640": 20053
+    },
+    "files": {
+      "check_fr_collateral.py": {
+        "old": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f",
+        "new": "a7d598ea1c2c91a39973b4cc4e95bedcbf5493a724ca2379f5cbfcbb0c4585af"
+      },
+      "fr_config_server.py": {
+        "old": "c8dbb66bde5d3ef41b15feeff59fe3aba458b80d3419e0ecb9195291cd3c2d47",
+        "new": "c875fae36b9e1aa4e45f63a5ed4969ad8ae9aa09f9c66fbc647e52323173382e"
+      },
+      "sync_fr_symbol_lists.py": {
+        "old": "d73a96c5d3031b759d7a19f3fae47e3468a1209cb919091a79192ec58cd9ca41",
+        "new": "58593213eb8f41f7fc8e38f91a0ec85019d1a074c1549ff725c88b525f3f6ef1"
+      }
+    },
+    "at_ms": 1793349816966,
+    "guard_rejected_mismatched_account": true,
+    "after_trading": {
+      "64965": {
+        "comm": "account_monitor",
+        "start": "156678"
+      },
+      "65382": {
+        "comm": "trade_engine",
+        "start": "156789"
+      },
+      "129512": {
+        "comm": "pre_trade",
+        "start": "293239"
+      },
+      "149949": {
+        "comm": "trade_signal",
+        "start": "349719"
+      }
+    },
+    "after_config": {
+      "3454594": 20053
+    }
+  },
+  {
+    "env": "gate_fr_arb01",
+    "before_trading": {
+      "60648": {
+        "comm": "account_monitor",
+        "start": "154400"
+      },
+      "61143": {
+        "comm": "trade_engine",
+        "start": "154502"
+      },
+      "123262": {
+        "comm": "pre_trade",
+        "start": "275868"
+      },
+      "149496": {
+        "comm": "trade_signal",
+        "start": "348011"
+      }
+    },
+    "before_config": {
+      "61632": 20021
+    },
+    "files": {
+      "check_fr_collateral.py": {
+        "old": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f",
+        "new": "a7d598ea1c2c91a39973b4cc4e95bedcbf5493a724ca2379f5cbfcbb0c4585af"
+      },
+      "fr_config_server.py": {
+        "old": "1c3ab2a794df0d857f0e7213281f82b4378de1f86f101c499eb9bd7d395308c6",
+        "new": "c875fae36b9e1aa4e45f63a5ed4969ad8ae9aa09f9c66fbc647e52323173382e"
+      },
+      "sync_fr_symbol_lists.py": {
+        "old": "9a59e4b4a434fec13af2f53b2d23c5b84c8ef7831254354a6870d756f7e72d7a",
+        "new": "58593213eb8f41f7fc8e38f91a0ec85019d1a074c1549ff725c88b525f3f6ef1"
+      }
+    },
+    "at_ms": 1793349822156,
+    "guard_rejected_mismatched_account": true,
+    "after_trading": {
+      "60648": {
+        "comm": "account_monitor",
+        "start": "154400"
+      },
+      "61143": {
+        "comm": "trade_engine",
+        "start": "154502"
+      },
+      "123262": {
+        "comm": "pre_trade",
+        "start": "275868"
+      },
+      "149496": {
+        "comm": "trade_signal",
+        "start": "348011"
+      }
+    },
+    "after_config": {
+      "3454685": 20021
+    }
+  },
+  {
+    "env": "gate_fr_arb02",
+    "before_trading": {
+      "61805": {
+        "comm": "account_monitor",
+        "start": "154841"
+      },
+      "62192": {
+        "comm": "trade_engine",
+        "start": "154940"
+      },
+      "116154": {
+        "comm": "pre_trade",
+        "start": "259314"
+      },
+      "149584": {
+        "comm": "trade_signal",
+        "start": "348347"
+      }
+    },
+    "before_config": {
+      "62407": 20022
+    },
+    "files": {
+      "check_fr_collateral.py": {
+        "old": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f",
+        "new": "a7d598ea1c2c91a39973b4cc4e95bedcbf5493a724ca2379f5cbfcbb0c4585af"
+      },
+      "fr_config_server.py": {
+        "old": "1c3ab2a794df0d857f0e7213281f82b4378de1f86f101c499eb9bd7d395308c6",
+        "new": "c875fae36b9e1aa4e45f63a5ed4969ad8ae9aa09f9c66fbc647e52323173382e"
+      },
+      "sync_fr_symbol_lists.py": {
+        "old": "9a59e4b4a434fec13af2f53b2d23c5b84c8ef7831254354a6870d756f7e72d7a",
+        "new": "58593213eb8f41f7fc8e38f91a0ec85019d1a074c1549ff725c88b525f3f6ef1"
+      }
+    },
+    "at_ms": 1793349825046,
+    "guard_rejected_mismatched_account": true,
+    "after_trading": {
+      "61805": {
+        "comm": "account_monitor",
+        "start": "154841"
+      },
+      "62192": {
+        "comm": "trade_engine",
+        "start": "154940"
+      },
+      "116154": {
+        "comm": "pre_trade",
+        "start": "259314"
+      },
+      "149584": {
+        "comm": "trade_signal",
+        "start": "348347"
+      }
+    },
+    "after_config": {
+      "3454783": 20022
+    }
+  },
+  {
+    "env": "gate_fr_arb03",
+    "before_trading": {
+      "62577": {
+        "comm": "account_monitor",
+        "start": "155286"
+      },
+      "62997": {
+        "comm": "trade_engine",
+        "start": "155389"
+      },
+      "120900": {
+        "comm": "pre_trade",
+        "start": "271130"
+      },
+      "149679": {
+        "comm": "trade_signal",
+        "start": "348691"
+      }
+    },
+    "before_config": {
+      "63265": 20023
+    },
+    "files": {
+      "check_fr_collateral.py": {
+        "old": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f",
+        "new": "a7d598ea1c2c91a39973b4cc4e95bedcbf5493a724ca2379f5cbfcbb0c4585af"
+      },
+      "fr_config_server.py": {
+        "old": "c8dbb66bde5d3ef41b15feeff59fe3aba458b80d3419e0ecb9195291cd3c2d47",
+        "new": "c875fae36b9e1aa4e45f63a5ed4969ad8ae9aa09f9c66fbc647e52323173382e"
+      },
+      "sync_fr_symbol_lists.py": {
+        "old": "9a59e4b4a434fec13af2f53b2d23c5b84c8ef7831254354a6870d756f7e72d7a",
+        "new": "58593213eb8f41f7fc8e38f91a0ec85019d1a074c1549ff725c88b525f3f6ef1"
+      }
+    },
+    "at_ms": 1793349828052,
+    "guard_rejected_mismatched_account": true,
+    "after_trading": {
+      "62577": {
+        "comm": "account_monitor",
+        "start": "155286"
+      },
+      "62997": {
+        "comm": "trade_engine",
+        "start": "155389"
+      },
+      "120900": {
+        "comm": "pre_trade",
+        "start": "271130"
+      },
+      "149679": {
+        "comm": "trade_signal",
+        "start": "348691"
+      }
+    },
+    "after_config": {
+      "3454875": 20023
+    }
+  },
+  {
+    "env": "gate_fr_arb04",
+    "before_trading": {
+      "4175337": {
+        "comm": "account_monitor",
+        "start": "92929650"
+      }
+    },
+    "before_config": {},
+    "files": {
+      "check_fr_collateral.py": {
+        "old": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f",
+        "new": "a7d598ea1c2c91a39973b4cc4e95bedcbf5493a724ca2379f5cbfcbb0c4585af"
+      },
+      "fr_config_server.py": {
+        "old": "c8dbb66bde5d3ef41b15feeff59fe3aba458b80d3419e0ecb9195291cd3c2d47",
+        "new": "c875fae36b9e1aa4e45f63a5ed4969ad8ae9aa09f9c66fbc647e52323173382e"
+      },
+      "sync_fr_symbol_lists.py": {
+        "old": "d73a96c5d3031b759d7a19f3fae47e3468a1209cb919091a79192ec58cd9ca41",
+        "new": "58593213eb8f41f7fc8e38f91a0ec85019d1a074c1549ff725c88b525f3f6ef1"
+      }
+    },
+    "at_ms": 1793349830613,
+    "after_trading": {
+      "4175337": {
+        "comm": "account_monitor",
+        "start": "92929650"
+      }
+    },
+    "after_config": {}
+  },
+  {
+    "env": "gate_fr_arb05",
+    "before_trading": {},
+    "before_config": {},
+    "files": {
+      "check_fr_collateral.py": {
+        "old": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f",
+        "new": "a7d598ea1c2c91a39973b4cc4e95bedcbf5493a724ca2379f5cbfcbb0c4585af"
+      },
+      "fr_config_server.py": {
+        "old": "c8dbb66bde5d3ef41b15feeff59fe3aba458b80d3419e0ecb9195291cd3c2d47",
+        "new": "c875fae36b9e1aa4e45f63a5ed4969ad8ae9aa09f9c66fbc647e52323173382e"
+      },
+      "sync_fr_symbol_lists.py": {
+        "old": "d73a96c5d3031b759d7a19f3fae47e3468a1209cb919091a79192ec58cd9ca41",
+        "new": "58593213eb8f41f7fc8e38f91a0ec85019d1a074c1549ff725c88b525f3f6ef1"
+      }
+    },
+    "at_ms": 1793349830711,
+    "after_trading": {},
+    "after_config": {}
+  }
+]

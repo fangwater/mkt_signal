@@ -1,0 +1,249 @@
+{
+  "ready_pairs": 68,
+  "total_pairs": 69,
+  "ready_symbols": [
+    "1INCHUSDT",
+    "ALGOUSDT",
+    "ATOMUSDT",
+    "AXSUSDT",
+    "BELUSDT",
+    "COMPUSDT",
+    "DASHUSDT",
+    "DOGEUSDT",
+    "EGLDUSDT",
+    "ETCUSDT",
+    "IOTAUSDT",
+    "KAVAUSDT",
+    "KNCUSDT",
+    "NEARUSDT",
+    "QTUMUSDT",
+    "RSRUSDT",
+    "SKLUSDT",
+    "SUSHIUSDT",
+    "XTZUSDT",
+    "ZECUSDT",
+    "ZENUSDT",
+    "ZRXUSDT"
+  ],
+  "pending_pairs": [
+    {
+      "symbol": "RLCUSDT",
+      "factor": "factor_114",
+      "first_score_ts_ms": 1792597440000,
+      "last_score": 0.08424122185851099,
+      "finite_scores_in_latest_1440_rows": 1318,
+      "minimum_additional_valid_samples": 122
+    }
+  ],
+  "first_ready_ts_ms": {
+    "SKLUSDT/baseline_091": 1792645980000,
+    "XTZUSDT/baseline_091": 1792645980000,
+    "XTZUSDT/baseline_160": 1792645980000,
+    "RSRUSDT/TD_TI_027": 1792646760000,
+    "ZECUSDT/TD_TI_027": 1792646760000,
+    "ZECUSDT/baseline_169": 1792646760000,
+    "ZECUSDT/baseline_020": 1792646880000,
+    "ZECUSDT/TD_PR_013": 1792647120000,
+    "BELUSDT/TD_PR_013": 1792647180000,
+    "NEARUSDT/TD_TI_018": 1792647420000,
+    "RSRUSDT/baseline_195": 1792647480000,
+    "ZECUSDT/baseline_195": 1792647480000,
+    "DOGEUSDT/baseline_195": 1792647480000,
+    "RSRUSDT/baseline_200": 1792647720000,
+    "RLCUSDT/baseline_200": 1792647720000,
+    "ZECUSDT/baseline_200": 1792647720000,
+    "ATOMUSDT/baseline_200": 1792647720000,
+    "SKLUSDT/baseline_200": 1792647720000,
+    "QTUMUSDT/baseline_200": 1792647720000,
+    "NEARUSDT/baseline_200": 1792647720000,
+    "XTZUSDT/baseline_200": 1792647720000,
+    "KAVAUSDT/baseline_200": 1792647720000,
+    "DOGEUSDT/TD_TI_013": 1792647720000,
+    "DOGEUSDT/baseline_200": 1792647720000,
+    "ALGOUSDT/baseline_200": 1792647720000,
+    "AXSUSDT/baseline_200": 1792647720000,
+    "ETCUSDT/baseline_200": 1792647720000,
+    "EGLDUSDT/baseline_200": 1792647780000,
+    "SUSHIUSDT/baseline_200": 1792647780000,
+    "DASHUSDT/baseline_200": 1792647780000,
+    "ZECUSDT/baseline_028": 1792647780000,
+    "SKLUSDT/baseline_028": 1792647780000,
+    "QTUMUSDT/baseline_028": 1792647780000,
+    "KNCUSDT/baseline_200": 1792647780000,
+    "NEARUSDT/baseline_028": 1792647780000,
+    "BELUSDT/baseline_200": 1792647780000,
+    "ZRXUSDT/baseline_200": 1792647780000,
+    "COMPUSDT/baseline_200": 1792647780000,
+    "IOTAUSDT/baseline_200": 1792647780000,
+    "1INCHUSDT/baseline_200": 1792647780000,
+    "ZENUSDT/baseline_200": 1792647780000,
+    "EGLDUSDT/baseline_028": 1792647840000,
+    "SUSHIUSDT/baseline_028": 1792647840000,
+    "DASHUSDT/baseline_028": 1792647840000,
+    "RSRUSDT/baseline_141": 1792649520000,
+    "ATOMUSDT/baseline_141": 1792649520000,
+    "NEARUSDT/baseline_141": 1792649520000,
+    "ALGOUSDT/baseline_140": 1792649520000,
+    "AXSUSDT/baseline_141": 1792649520000,
+    "ETCUSDT/baseline_141": 1792649520000,
+    "DASHUSDT/baseline_141": 1792649580000,
+    "RLCUSDT/baseline_005": 1792649580000,
+    "SKLUSDT/baseline_005": 1792649580000,
+    "KNCUSDT/baseline_141": 1792649580000,
+    "NEARUSDT/baseline_005": 1792649580000,
+    "IOTAUSDT/baseline_141": 1792649580000,
+    "ZENUSDT/baseline_141": 1792649580000,
+    "IOTAUSDT/baseline_005": 1792649640000,
+    "ZENUSDT/baseline_005": 1792649640000,
+    "ZRXUSDT/factor_128": 1792650720000,
+    "KAVAUSDT/TD_TI_008": 1792653120000,
+    "DOGEUSDT/TD_TI_008": 1792653120000,
+    "NEARUSDT/factor_051": 1792663920000,
+    "ALGOUSDT/factor_051": 1792663920000,
+    "COMPUSDT/TD_TI_033": 1792663980000,
+    "BELUSDT/sell_avg_price": 1792667580000,
+    "ZENUSDT/TP_VPI_006": 1792668360000,
+    "ZRXUSDT/buy_avg_price": 1792675980000
+  },
+  "symbols": {
+    "RSRUSDT": {
+      "rows": 2947,
+      "first_ts_ms": 1792499700000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "RLCUSDT": {
+      "rows": 2947,
+      "first_ts_ms": 1792499700000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "ZECUSDT": {
+      "rows": 2947,
+      "first_ts_ms": 1792499700000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "ATOMUSDT": {
+      "rows": 2947,
+      "first_ts_ms": 1792499700000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "SKLUSDT": {
+      "rows": 2947,
+      "first_ts_ms": 1792499700000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "QTUMUSDT": {
+      "rows": 2947,
+      "first_ts_ms": 1792499700000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "NEARUSDT": {
+      "rows": 2947,
+      "first_ts_ms": 1792499700000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "XTZUSDT": {
+      "rows": 2947,
+      "first_ts_ms": 1792499700000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "KAVAUSDT": {
+      "rows": 2947,
+      "first_ts_ms": 1792499700000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "DOGEUSDT": {
+      "rows": 2947,
+      "first_ts_ms": 1792499700000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "ALGOUSDT": {
+      "rows": 2947,
+      "first_ts_ms": 1792499700000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "AXSUSDT": {
+      "rows": 2947,
+      "first_ts_ms": 1792499700000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "ETCUSDT": {
+      "rows": 2947,
+      "first_ts_ms": 1792499700000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "EGLDUSDT": {
+      "rows": 2946,
+      "first_ts_ms": 1792499760000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "SUSHIUSDT": {
+      "rows": 2946,
+      "first_ts_ms": 1792499760000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "DASHUSDT": {
+      "rows": 2946,
+      "first_ts_ms": 1792499760000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "KNCUSDT": {
+      "rows": 2946,
+      "first_ts_ms": 1792499760000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "BELUSDT": {
+      "rows": 2946,
+      "first_ts_ms": 1792499760000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "ZRXUSDT": {
+      "rows": 2946,
+      "first_ts_ms": 1792499760000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "COMPUSDT": {
+      "rows": 2946,
+      "first_ts_ms": 1792499760000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "IOTAUSDT": {
+      "rows": 2946,
+      "first_ts_ms": 1792499760000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "1INCHUSDT": {
+      "rows": 2946,
+      "first_ts_ms": 1792499760000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    },
+    "ZENUSDT": {
+      "rows": 2946,
+      "first_ts_ms": 1792499760000,
+      "latest_ts_ms": 1792676460000,
+      "nq_ready": true
+    }
+  },
+  "remaining_sample_note": "Lower bound from valid scores in the rolling window; gaps or later invalid scores can extend warm-up."
+}

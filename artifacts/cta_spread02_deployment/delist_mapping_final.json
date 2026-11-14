@@ -1,0 +1,2367 @@
+{
+  "as_of_ms": 1794464772700,
+  "managers": [
+    {
+      "site": "jp",
+      "ok": false,
+      "error": "Manager read-only database is not configured"
+    }
+  ],
+  "strategies": [
+    {
+      "slug": "cta-prep01-bn-15min-pos",
+      "name": "binance-futures_15min",
+      "factor_worker": "cta-prep-binance-futures",
+      "kind": "prep",
+      "risk_by_venue": [
+        {
+          "slug": "cta-prep01-bn-15min-pos",
+          "alias": "binance-futures_15min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 38,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "1INCHUSDT",
+            "AAVEUSDT",
+            "ADAUSDT",
+            "ALGOUSDT",
+            "ATOMUSDT",
+            "AXSUSDT",
+            "BELUSDT",
+            "BNBUSDT",
+            "CRVUSDT",
+            "DASHUSDT",
+            "DOTUSDT",
+            "EGLDUSDT",
+            "ENJUSDT",
+            "ETCUSDT",
+            "FILUSDT",
+            "IOSTUSDT",
+            "IOTAUSDT",
+            "KAVAUSDT",
+            "KNCUSDT",
+            "KSMUSDT",
+            "LTCUSDT",
+            "NEARUSDT",
+            "ONTUSDT",
+            "QTUMUSDT",
+            "RLCUSDT",
+            "RSRUSDT",
+            "RUNEUSDT",
+            "SKLUSDT",
+            "SNXUSDT",
+            "SOLUSDT",
+            "SUSHIUSDT",
+            "THETAUSDT",
+            "VETUSDT",
+            "XRPUSDT",
+            "YFIUSDT",
+            "ZENUSDT",
+            "ZILUSDT",
+            "ZRXUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#binance-futures_15min"
+        }
+      ],
+      "factor_count": 180,
+      "enabled": true,
+      "bar_interval": "15min",
+      "updated_ms": 1794464771417,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-prep01-bn-15min-pos",
+        "alias": "binance-futures_15min",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 38,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "1INCHUSDT",
+          "AAVEUSDT",
+          "ADAUSDT",
+          "ALGOUSDT",
+          "ATOMUSDT",
+          "AXSUSDT",
+          "BELUSDT",
+          "BNBUSDT",
+          "CRVUSDT",
+          "DASHUSDT",
+          "DOTUSDT",
+          "EGLDUSDT",
+          "ENJUSDT",
+          "ETCUSDT",
+          "FILUSDT",
+          "IOSTUSDT",
+          "IOTAUSDT",
+          "KAVAUSDT",
+          "KNCUSDT",
+          "KSMUSDT",
+          "LTCUSDT",
+          "NEARUSDT",
+          "ONTUSDT",
+          "QTUMUSDT",
+          "RLCUSDT",
+          "RSRUSDT",
+          "RUNEUSDT",
+          "SKLUSDT",
+          "SNXUSDT",
+          "SOLUSDT",
+          "SUSHIUSDT",
+          "THETAUSDT",
+          "VETUSDT",
+          "XRPUSDT",
+          "YFIUSDT",
+          "ZENUSDT",
+          "ZILUSDT",
+          "ZRXUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#binance-futures_15min"
+      }
+    },
+    {
+      "slug": "cta-prep01-bn-1min-pos",
+      "name": "binance-futures_1min",
+      "factor_worker": "cta-prep-binance-futures",
+      "kind": "prep",
+      "risk_by_venue": [
+        {
+          "slug": "cta-prep01-bn-1min-pos",
+          "alias": "binance-futures_1min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 16,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "ALGOUSDT",
+            "BELUSDT",
+            "DASHUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "FILUSDT",
+            "LINKUSDT",
+            "NEARUSDT",
+            "RLCUSDT",
+            "SKLUSDT",
+            "TRBUSDT",
+            "VETUSDT",
+            "XTZUSDT",
+            "ZECUSDT",
+            "ZENUSDT",
+            "ZRXUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#binance-futures_1min"
+        }
+      ],
+      "factor_count": 61,
+      "enabled": true,
+      "bar_interval": "1min",
+      "updated_ms": 1794464771417,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-prep01-bn-1min-pos",
+        "alias": "binance-futures_1min",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 16,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "ALGOUSDT",
+          "BELUSDT",
+          "DASHUSDT",
+          "DOGEUSDT",
+          "DOTUSDT",
+          "FILUSDT",
+          "LINKUSDT",
+          "NEARUSDT",
+          "RLCUSDT",
+          "SKLUSDT",
+          "TRBUSDT",
+          "VETUSDT",
+          "XTZUSDT",
+          "ZECUSDT",
+          "ZENUSDT",
+          "ZRXUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#binance-futures_1min"
+      }
+    },
+    {
+      "slug": "cta-prep01-bn-5min-pos",
+      "name": "binance-futures_5min",
+      "factor_worker": "cta-prep-binance-futures",
+      "kind": "prep",
+      "risk_by_venue": [
+        {
+          "slug": "cta-prep01-bn-5min-pos",
+          "alias": "binance-futures_5min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 15,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "BANDUSDT",
+            "BELUSDT",
+            "DASHUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "IOTAUSDT",
+            "NEARUSDT",
+            "RUNEUSDT",
+            "SKLUSDT",
+            "SOLUSDT",
+            "VETUSDT",
+            "XLMUSDT",
+            "YFIUSDT",
+            "ZENUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#binance-futures_5min"
+        }
+      ],
+      "factor_count": 63,
+      "enabled": true,
+      "bar_interval": "5min",
+      "updated_ms": 1794464771417,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-prep01-bn-5min-pos",
+        "alias": "binance-futures_5min",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 15,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "BANDUSDT",
+          "BELUSDT",
+          "DASHUSDT",
+          "DOGEUSDT",
+          "DOTUSDT",
+          "ETCUSDT",
+          "IOTAUSDT",
+          "NEARUSDT",
+          "RUNEUSDT",
+          "SKLUSDT",
+          "SOLUSDT",
+          "VETUSDT",
+          "XLMUSDT",
+          "YFIUSDT",
+          "ZENUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#binance-futures_5min"
+      }
+    },
+    {
+      "slug": "cta-last-20-prep02-bn-15min-pos",
+      "name": "last-20_prep02_binance-futures_15min",
+      "factor_worker": "cta-prep-binance-futures",
+      "kind": "prep",
+      "risk_by_venue": [
+        {
+          "slug": "cta-last-20-prep02-bn-15min-pos",
+          "alias": "last-20_prep02_binance-futures_15min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 12,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "BATUSDT",
+            "BELUSDT",
+            "DASHUSDT",
+            "IOTAUSDT",
+            "KNCUSDT",
+            "KSMUSDT",
+            "QTUMUSDT",
+            "RLCUSDT",
+            "SKLUSDT",
+            "YFIUSDT",
+            "ZENUSDT",
+            "ZRXUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#last-20_prep02_binance-futures_15min"
+        }
+      ],
+      "factor_count": 17,
+      "enabled": true,
+      "bar_interval": "15min",
+      "updated_ms": 1794464771417,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-last-20-prep02-bn-15min-pos",
+        "alias": "last-20_prep02_binance-futures_15min",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 12,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "BATUSDT",
+          "BELUSDT",
+          "DASHUSDT",
+          "IOTAUSDT",
+          "KNCUSDT",
+          "KSMUSDT",
+          "QTUMUSDT",
+          "RLCUSDT",
+          "SKLUSDT",
+          "YFIUSDT",
+          "ZENUSDT",
+          "ZRXUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#last-20_prep02_binance-futures_15min"
+      }
+    },
+    {
+      "slug": "cta-last-20-prep02-bn-1h-pos",
+      "name": "last-20_prep02_binance-futures_1h",
+      "factor_worker": "cta-prep-binance-futures",
+      "kind": "prep",
+      "risk_by_venue": [
+        {
+          "slug": "cta-last-20-prep02-bn-1h-pos",
+          "alias": "last-20_prep02_binance-futures_1h",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 15,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "1INCHUSDT",
+            "BANDUSDT",
+            "BELUSDT",
+            "DASHUSDT",
+            "EGLDUSDT",
+            "IOSTUSDT",
+            "IOTAUSDT",
+            "KAVAUSDT",
+            "KNCUSDT",
+            "QTUMUSDT",
+            "RLCUSDT",
+            "RSRUSDT",
+            "SKLUSDT",
+            "ZENUSDT",
+            "ZRXUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#last-20_prep02_binance-futures_1h"
+        }
+      ],
+      "factor_count": 111,
+      "enabled": true,
+      "bar_interval": "1h",
+      "updated_ms": 1794464771417,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-last-20-prep02-bn-1h-pos",
+        "alias": "last-20_prep02_binance-futures_1h",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 15,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "1INCHUSDT",
+          "BANDUSDT",
+          "BELUSDT",
+          "DASHUSDT",
+          "EGLDUSDT",
+          "IOSTUSDT",
+          "IOTAUSDT",
+          "KAVAUSDT",
+          "KNCUSDT",
+          "QTUMUSDT",
+          "RLCUSDT",
+          "RSRUSDT",
+          "SKLUSDT",
+          "ZENUSDT",
+          "ZRXUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#last-20_prep02_binance-futures_1h"
+      }
+    },
+    {
+      "slug": "cta-last-20-prep02-bn-5min-pos",
+      "name": "last-20_prep02_binance-futures_5min",
+      "factor_worker": "cta-prep-binance-futures",
+      "kind": "prep",
+      "risk_by_venue": [
+        {
+          "slug": "cta-last-20-prep02-bn-5min-pos",
+          "alias": "last-20_prep02_binance-futures_5min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 4,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "1INCHUSDT",
+            "DASHUSDT",
+            "EGLDUSDT",
+            "IOTAUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#last-20_prep02_binance-futures_5min"
+        }
+      ],
+      "factor_count": 5,
+      "enabled": true,
+      "bar_interval": "5min",
+      "updated_ms": 1794464771417,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-last-20-prep02-bn-5min-pos",
+        "alias": "last-20_prep02_binance-futures_5min",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 4,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "1INCHUSDT",
+          "DASHUSDT",
+          "EGLDUSDT",
+          "IOTAUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#last-20_prep02_binance-futures_5min"
+      }
+    },
+    {
+      "slug": "cta-prep01-bn-1h-pos",
+      "name": "prep01_binance-futures_1h",
+      "factor_worker": "cta-prep-binance-futures",
+      "kind": "prep",
+      "risk_by_venue": [
+        {
+          "slug": "cta-prep01-bn-1h-pos",
+          "alias": "prep01_binance-futures_1h",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 23,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "ALGOUSDT",
+            "ATOMUSDT",
+            "AXSUSDT",
+            "BANDUSDT",
+            "BELUSDT",
+            "BNBUSDT",
+            "COMPUSDT",
+            "CRVUSDT",
+            "DASHUSDT",
+            "DOGEUSDT",
+            "ETCUSDT",
+            "GRTUSDT",
+            "IOTAUSDT",
+            "KAVAUSDT",
+            "NEARUSDT",
+            "QTUMUSDT",
+            "SKLUSDT",
+            "SOLUSDT",
+            "THETAUSDT",
+            "VETUSDT",
+            "XRPUSDT",
+            "XTZUSDT",
+            "ZECUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#prep01_binance-futures_1h"
+        }
+      ],
+      "factor_count": 135,
+      "enabled": true,
+      "bar_interval": "1h",
+      "updated_ms": 1794464771417,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-prep01-bn-1h-pos",
+        "alias": "prep01_binance-futures_1h",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 23,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "ALGOUSDT",
+          "ATOMUSDT",
+          "AXSUSDT",
+          "BANDUSDT",
+          "BELUSDT",
+          "BNBUSDT",
+          "COMPUSDT",
+          "CRVUSDT",
+          "DASHUSDT",
+          "DOGEUSDT",
+          "ETCUSDT",
+          "GRTUSDT",
+          "IOTAUSDT",
+          "KAVAUSDT",
+          "NEARUSDT",
+          "QTUMUSDT",
+          "SKLUSDT",
+          "SOLUSDT",
+          "THETAUSDT",
+          "VETUSDT",
+          "XRPUSDT",
+          "XTZUSDT",
+          "ZECUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#prep01_binance-futures_1h"
+      }
+    },
+    {
+      "slug": "cta-top-20-prep02-bn-15min-pos",
+      "name": "top-20_prep02_binance-futures_15min",
+      "factor_worker": "cta-prep-binance-futures",
+      "kind": "prep",
+      "risk_by_venue": [
+        {
+          "slug": "cta-top-20-prep02-bn-15min-pos",
+          "alias": "top-20_prep02_binance-futures_15min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 9,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "AXSUSDT",
+            "BNBUSDT",
+            "BTCUSDT",
+            "ETCUSDT",
+            "LINKUSDT",
+            "LTCUSDT",
+            "NEARUSDT",
+            "SOLUSDT",
+            "XRPUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-20_prep02_binance-futures_15min"
+        }
+      ],
+      "factor_count": 15,
+      "enabled": true,
+      "bar_interval": "15min",
+      "updated_ms": 1794464771417,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-top-20-prep02-bn-15min-pos",
+        "alias": "top-20_prep02_binance-futures_15min",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 9,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "AXSUSDT",
+          "BNBUSDT",
+          "BTCUSDT",
+          "ETCUSDT",
+          "LINKUSDT",
+          "LTCUSDT",
+          "NEARUSDT",
+          "SOLUSDT",
+          "XRPUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-20_prep02_binance-futures_15min"
+      }
+    },
+    {
+      "slug": "cta-top-20-prep02-bn-1h-pos",
+      "name": "top-20_prep02_binance-futures_1h",
+      "factor_worker": "cta-prep-binance-futures",
+      "kind": "prep",
+      "risk_by_venue": [
+        {
+          "slug": "cta-top-20-prep02-bn-1h-pos",
+          "alias": "top-20_prep02_binance-futures_1h",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 11,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "AAVEUSDT",
+            "ATOMUSDT",
+            "AXSUSDT",
+            "BNBUSDT",
+            "DOGEUSDT",
+            "ETCUSDT",
+            "ETHUSDT",
+            "FILUSDT",
+            "NEARUSDT",
+            "SOLUSDT",
+            "XRPUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-20_prep02_binance-futures_1h"
+        }
+      ],
+      "factor_count": 100,
+      "enabled": true,
+      "bar_interval": "1h",
+      "updated_ms": 1794464771417,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-top-20-prep02-bn-1h-pos",
+        "alias": "top-20_prep02_binance-futures_1h",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 11,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "AAVEUSDT",
+          "ATOMUSDT",
+          "AXSUSDT",
+          "BNBUSDT",
+          "DOGEUSDT",
+          "ETCUSDT",
+          "ETHUSDT",
+          "FILUSDT",
+          "NEARUSDT",
+          "SOLUSDT",
+          "XRPUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-20_prep02_binance-futures_1h"
+      }
+    },
+    {
+      "slug": "cta-top-20-prep02-bn-5min-pos",
+      "name": "top-20_prep02_binance-futures_5min",
+      "factor_worker": "cta-prep-binance-futures",
+      "kind": "prep",
+      "risk_by_venue": [
+        {
+          "slug": "cta-top-20-prep02-bn-5min-pos",
+          "alias": "top-20_prep02_binance-futures_5min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 0,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-20_prep02_binance-futures_5min"
+        }
+      ],
+      "factor_count": 0,
+      "enabled": true,
+      "bar_interval": "5min",
+      "updated_ms": 1794464771417,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-top-20-prep02-bn-5min-pos",
+        "alias": "top-20_prep02_binance-futures_5min",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 0,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-20_prep02_binance-futures_5min"
+      }
+    },
+    {
+      "slug": "cta-top-5-prep02-bn-15min-pos",
+      "name": "top-5_prep02_binance-futures_15min",
+      "factor_worker": "cta-prep-binance-futures",
+      "kind": "prep",
+      "risk_by_venue": [
+        {
+          "slug": "cta-top-5-prep02-bn-15min-pos",
+          "alias": "top-5_prep02_binance-futures_15min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 5,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "BTCUSDT",
+            "DOGEUSDT",
+            "ETHUSDT",
+            "SOLUSDT",
+            "XRPUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-5_prep02_binance-futures_15min"
+        }
+      ],
+      "factor_count": 12,
+      "enabled": true,
+      "bar_interval": "15min",
+      "updated_ms": 1794464771417,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-top-5-prep02-bn-15min-pos",
+        "alias": "top-5_prep02_binance-futures_15min",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 5,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "BTCUSDT",
+          "DOGEUSDT",
+          "ETHUSDT",
+          "SOLUSDT",
+          "XRPUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-5_prep02_binance-futures_15min"
+      }
+    },
+    {
+      "slug": "cta-top-5-prep02-bn-1h-pos",
+      "name": "top-5_prep02_binance-futures_1h",
+      "factor_worker": "cta-prep-binance-futures",
+      "kind": "prep",
+      "risk_by_venue": [
+        {
+          "slug": "cta-top-5-prep02-bn-1h-pos",
+          "alias": "top-5_prep02_binance-futures_1h",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 4,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "DOGEUSDT",
+            "ETHUSDT",
+            "SOLUSDT",
+            "XRPUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-5_prep02_binance-futures_1h"
+        }
+      ],
+      "factor_count": 30,
+      "enabled": true,
+      "bar_interval": "1h",
+      "updated_ms": 1794464771417,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-top-5-prep02-bn-1h-pos",
+        "alias": "top-5_prep02_binance-futures_1h",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 4,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "DOGEUSDT",
+          "ETHUSDT",
+          "SOLUSDT",
+          "XRPUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-5_prep02_binance-futures_1h"
+      }
+    },
+    {
+      "slug": "cta-top-5-prep02-bn-5min-pos",
+      "name": "top-5_prep02_binance-futures_5min",
+      "factor_worker": "cta-prep-binance-futures",
+      "kind": "prep",
+      "risk_by_venue": [
+        {
+          "slug": "cta-top-5-prep02-bn-5min-pos",
+          "alias": "top-5_prep02_binance-futures_5min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 2,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "DOGEUSDT",
+            "SOLUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-5_prep02_binance-futures_5min"
+        }
+      ],
+      "factor_count": 2,
+      "enabled": true,
+      "bar_interval": "5min",
+      "updated_ms": 1794464771417,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-top-5-prep02-bn-5min-pos",
+        "alias": "top-5_prep02_binance-futures_5min",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 2,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "DOGEUSDT",
+          "SOLUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-5_prep02_binance-futures_5min"
+      }
+    },
+    {
+      "slug": "cta-spread01-okx-bn-15min-pos",
+      "name": "okex-futures_binance-futures_15min",
+      "factor_worker": "cta-factor-spread",
+      "kind": "spread",
+      "risk_by_venue": [
+        {
+          "slug": "cta-spread01-okx-bn-15min-pos",
+          "alias": "okex-futures_binance-futures_15min",
+          "exchange": "okex",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "okex-futures"
+          ],
+          "universe_n": 4,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "ADAUSDT",
+            "DOGEUSDT",
+            "NEARUSDT",
+            "TRBUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_15min"
+        },
+        {
+          "slug": "cta-spread01-okx-bn-15min-pos",
+          "alias": "okex-futures_binance-futures_15min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 4,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "ADAUSDT",
+            "DOGEUSDT",
+            "NEARUSDT",
+            "TRBUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_15min"
+        }
+      ],
+      "factor_count": 22,
+      "enabled": true,
+      "bar_interval": "15min",
+      "updated_ms": 1794464771483,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-spread01-okx-bn-15min-pos",
+        "alias": "okex-futures_binance-futures_15min",
+        "exchange": "okex",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "okex-futures",
+          "binance-futures"
+        ],
+        "universe_n": 4,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "ADAUSDT",
+          "DOGEUSDT",
+          "NEARUSDT",
+          "TRBUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_15min"
+      }
+    },
+    {
+      "slug": "cta-spread01-okx-bn-1h-pos",
+      "name": "okex-futures_binance-futures_1h",
+      "factor_worker": "cta-factor-spread",
+      "kind": "spread",
+      "risk_by_venue": [
+        {
+          "slug": "cta-spread01-okx-bn-1h-pos",
+          "alias": "okex-futures_binance-futures_1h",
+          "exchange": "okex",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "okex-futures"
+          ],
+          "universe_n": 12,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "AAVEUSDT",
+            "ADAUSDT",
+            "ATOMUSDT",
+            "BCHUSDT",
+            "CRVUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "FILUSDT",
+            "NEARUSDT",
+            "TRBUSDT",
+            "UNIUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_1h"
+        },
+        {
+          "slug": "cta-spread01-okx-bn-1h-pos",
+          "alias": "okex-futures_binance-futures_1h",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 12,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "AAVEUSDT",
+            "ADAUSDT",
+            "ATOMUSDT",
+            "BCHUSDT",
+            "CRVUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "FILUSDT",
+            "NEARUSDT",
+            "TRBUSDT",
+            "UNIUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_1h"
+        }
+      ],
+      "factor_count": 109,
+      "enabled": true,
+      "bar_interval": "1h",
+      "updated_ms": 1794464771483,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-spread01-okx-bn-1h-pos",
+        "alias": "okex-futures_binance-futures_1h",
+        "exchange": "okex",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "okex-futures",
+          "binance-futures"
+        ],
+        "universe_n": 12,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "AAVEUSDT",
+          "ADAUSDT",
+          "ATOMUSDT",
+          "BCHUSDT",
+          "CRVUSDT",
+          "DOGEUSDT",
+          "DOTUSDT",
+          "ETCUSDT",
+          "FILUSDT",
+          "NEARUSDT",
+          "TRBUSDT",
+          "UNIUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_1h"
+      }
+    },
+    {
+      "slug": "cta-spread01-okx-bn-1min-pos",
+      "name": "okex-futures_binance-futures_1min",
+      "factor_worker": "cta-factor-spread",
+      "kind": "spread",
+      "risk_by_venue": [
+        {
+          "slug": "cta-spread01-okx-bn-1min-pos",
+          "alias": "okex-futures_binance-futures_1min",
+          "exchange": "okex",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "okex-futures"
+          ],
+          "universe_n": 5,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "ADAUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "NEARUSDT",
+            "TRBUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_1min"
+        },
+        {
+          "slug": "cta-spread01-okx-bn-1min-pos",
+          "alias": "okex-futures_binance-futures_1min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 5,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "ADAUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "NEARUSDT",
+            "TRBUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_1min"
+        }
+      ],
+      "factor_count": 35,
+      "enabled": true,
+      "bar_interval": "1min",
+      "updated_ms": 1794464771483,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-spread01-okx-bn-1min-pos",
+        "alias": "okex-futures_binance-futures_1min",
+        "exchange": "okex",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "okex-futures",
+          "binance-futures"
+        ],
+        "universe_n": 5,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "ADAUSDT",
+          "DOGEUSDT",
+          "DOTUSDT",
+          "NEARUSDT",
+          "TRBUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_1min"
+      }
+    },
+    {
+      "slug": "cta-spread01-okx-bn-5min-pos",
+      "name": "okex-futures_binance-futures_5min",
+      "factor_worker": "cta-factor-spread",
+      "kind": "spread",
+      "risk_by_venue": [
+        {
+          "slug": "cta-spread01-okx-bn-5min-pos",
+          "alias": "okex-futures_binance-futures_5min",
+          "exchange": "okex",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "okex-futures"
+          ],
+          "universe_n": 4,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "TRBUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_5min"
+        },
+        {
+          "slug": "cta-spread01-okx-bn-5min-pos",
+          "alias": "okex-futures_binance-futures_5min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 4,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "TRBUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_5min"
+        }
+      ],
+      "factor_count": 49,
+      "enabled": true,
+      "bar_interval": "5min",
+      "updated_ms": 1794464771483,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-spread01-okx-bn-5min-pos",
+        "alias": "okex-futures_binance-futures_5min",
+        "exchange": "okex",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "okex-futures",
+          "binance-futures"
+        ],
+        "universe_n": 4,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "DOGEUSDT",
+          "DOTUSDT",
+          "ETCUSDT",
+          "TRBUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_5min"
+      }
+    },
+    {
+      "slug": "cta-spread02-okx-bn-15min-pos",
+      "name": "spread02_okex-futures_binance-futures_15min",
+      "factor_worker": "cta-factor-spread",
+      "kind": "spread",
+      "risk_by_venue": [
+        {
+          "slug": "cta-spread02-okx-bn-15min-pos",
+          "alias": "spread02_okex-futures_binance-futures_15min",
+          "exchange": "okex",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "okex-futures"
+          ],
+          "universe_n": 17,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "AAVEUSDT",
+            "ADAUSDT",
+            "ATOMUSDT",
+            "AVAXUSDT",
+            "BCHUSDT",
+            "CRVUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "ETHUSDT",
+            "FILUSDT",
+            "LINKUSDT",
+            "NEARUSDT",
+            "TRBUSDT",
+            "TRXUSDT",
+            "UNIUSDT",
+            "XRPUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_15min"
+        },
+        {
+          "slug": "cta-spread02-okx-bn-15min-pos",
+          "alias": "spread02_okex-futures_binance-futures_15min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 17,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "AAVEUSDT",
+            "ADAUSDT",
+            "ATOMUSDT",
+            "AVAXUSDT",
+            "BCHUSDT",
+            "CRVUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "ETHUSDT",
+            "FILUSDT",
+            "LINKUSDT",
+            "NEARUSDT",
+            "TRBUSDT",
+            "TRXUSDT",
+            "UNIUSDT",
+            "XRPUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_15min"
+        }
+      ],
+      "factor_count": 78,
+      "enabled": false,
+      "bar_interval": "15min",
+      "updated_ms": 1794464771483,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-spread02-okx-bn-15min-pos",
+        "alias": "spread02_okex-futures_binance-futures_15min",
+        "exchange": "okex",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "okex-futures",
+          "binance-futures"
+        ],
+        "universe_n": 17,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "AAVEUSDT",
+          "ADAUSDT",
+          "ATOMUSDT",
+          "AVAXUSDT",
+          "BCHUSDT",
+          "CRVUSDT",
+          "DOGEUSDT",
+          "DOTUSDT",
+          "ETCUSDT",
+          "ETHUSDT",
+          "FILUSDT",
+          "LINKUSDT",
+          "NEARUSDT",
+          "TRBUSDT",
+          "TRXUSDT",
+          "UNIUSDT",
+          "XRPUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_15min"
+      }
+    },
+    {
+      "slug": "cta-spread02-okx-bn-1h-pos",
+      "name": "spread02_okex-futures_binance-futures_1h",
+      "factor_worker": "cta-factor-spread",
+      "kind": "spread",
+      "risk_by_venue": [
+        {
+          "slug": "cta-spread02-okx-bn-1h-pos",
+          "alias": "spread02_okex-futures_binance-futures_1h",
+          "exchange": "okex",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "okex-futures"
+          ],
+          "universe_n": 17,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "AAVEUSDT",
+            "ADAUSDT",
+            "ATOMUSDT",
+            "AVAXUSDT",
+            "BCHUSDT",
+            "CRVUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "ETHUSDT",
+            "FILUSDT",
+            "LINKUSDT",
+            "LTCUSDT",
+            "NEARUSDT",
+            "TRBUSDT",
+            "UNIUSDT",
+            "XRPUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_1h"
+        },
+        {
+          "slug": "cta-spread02-okx-bn-1h-pos",
+          "alias": "spread02_okex-futures_binance-futures_1h",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 17,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "AAVEUSDT",
+            "ADAUSDT",
+            "ATOMUSDT",
+            "AVAXUSDT",
+            "BCHUSDT",
+            "CRVUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "ETHUSDT",
+            "FILUSDT",
+            "LINKUSDT",
+            "LTCUSDT",
+            "NEARUSDT",
+            "TRBUSDT",
+            "UNIUSDT",
+            "XRPUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_1h"
+        }
+      ],
+      "factor_count": 130,
+      "enabled": false,
+      "bar_interval": "1h",
+      "updated_ms": 1794464771483,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-spread02-okx-bn-1h-pos",
+        "alias": "spread02_okex-futures_binance-futures_1h",
+        "exchange": "okex",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "okex-futures",
+          "binance-futures"
+        ],
+        "universe_n": 17,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "AAVEUSDT",
+          "ADAUSDT",
+          "ATOMUSDT",
+          "AVAXUSDT",
+          "BCHUSDT",
+          "CRVUSDT",
+          "DOGEUSDT",
+          "DOTUSDT",
+          "ETCUSDT",
+          "ETHUSDT",
+          "FILUSDT",
+          "LINKUSDT",
+          "LTCUSDT",
+          "NEARUSDT",
+          "TRBUSDT",
+          "UNIUSDT",
+          "XRPUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_1h"
+      }
+    },
+    {
+      "slug": "cta-spread02-okx-bn-1min-pos",
+      "name": "spread02_okex-futures_binance-futures_1min",
+      "factor_worker": "cta-factor-spread",
+      "kind": "spread",
+      "risk_by_venue": [
+        {
+          "slug": "cta-spread02-okx-bn-1min-pos",
+          "alias": "spread02_okex-futures_binance-futures_1min",
+          "exchange": "okex",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "okex-futures"
+          ],
+          "universe_n": 7,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "ADAUSDT",
+            "ATOMUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "FILUSDT",
+            "NEARUSDT",
+            "TRBUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_1min"
+        },
+        {
+          "slug": "cta-spread02-okx-bn-1min-pos",
+          "alias": "spread02_okex-futures_binance-futures_1min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 7,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "ADAUSDT",
+            "ATOMUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "FILUSDT",
+            "NEARUSDT",
+            "TRBUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_1min"
+        }
+      ],
+      "factor_count": 50,
+      "enabled": false,
+      "bar_interval": "1min",
+      "updated_ms": 1794464771483,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-spread02-okx-bn-1min-pos",
+        "alias": "spread02_okex-futures_binance-futures_1min",
+        "exchange": "okex",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "okex-futures",
+          "binance-futures"
+        ],
+        "universe_n": 7,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "ADAUSDT",
+          "ATOMUSDT",
+          "DOTUSDT",
+          "ETCUSDT",
+          "FILUSDT",
+          "NEARUSDT",
+          "TRBUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_1min"
+      }
+    },
+    {
+      "slug": "cta-spread02-okx-bn-5min-pos",
+      "name": "spread02_okex-futures_binance-futures_5min",
+      "factor_worker": "cta-factor-spread",
+      "kind": "spread",
+      "risk_by_venue": [
+        {
+          "slug": "cta-spread02-okx-bn-5min-pos",
+          "alias": "spread02_okex-futures_binance-futures_5min",
+          "exchange": "okex",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "okex-futures"
+          ],
+          "universe_n": 13,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "ADAUSDT",
+            "ATOMUSDT",
+            "CRVUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "FILUSDT",
+            "LINKUSDT",
+            "NEARUSDT",
+            "TRBUSDT",
+            "TRXUSDT",
+            "UNIUSDT",
+            "XRPUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_5min"
+        },
+        {
+          "slug": "cta-spread02-okx-bn-5min-pos",
+          "alias": "spread02_okex-futures_binance-futures_5min",
+          "exchange": "binance",
+          "kind": "cta",
+          "host": "jp",
+          "venues": [
+            "binance-futures"
+          ],
+          "universe_n": 13,
+          "redis_ok": true,
+          "tone": "uncovered",
+          "risk_n": 0,
+          "hits": [],
+          "symbols": [
+            "ADAUSDT",
+            "ATOMUSDT",
+            "CRVUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "FILUSDT",
+            "LINKUSDT",
+            "NEARUSDT",
+            "TRBUSDT",
+            "TRXUSDT",
+            "UNIUSDT",
+            "XRPUSDT"
+          ],
+          "unimmr_empty": false,
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_5min"
+        }
+      ],
+      "factor_count": 83,
+      "enabled": false,
+      "bar_interval": "5min",
+      "updated_ms": 1794464771483,
+      "stale": false,
+      "errors": [],
+      "accounts": [],
+      "risk": {
+        "slug": "cta-spread02-okx-bn-5min-pos",
+        "alias": "spread02_okex-futures_binance-futures_5min",
+        "exchange": "okex",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "okex-futures",
+          "binance-futures"
+        ],
+        "universe_n": 13,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "ADAUSDT",
+          "ATOMUSDT",
+          "CRVUSDT",
+          "DOGEUSDT",
+          "DOTUSDT",
+          "ETCUSDT",
+          "FILUSDT",
+          "LINKUSDT",
+          "NEARUSDT",
+          "TRBUSDT",
+          "TRXUSDT",
+          "UNIUSDT",
+          "XRPUSDT"
+        ],
+        "unimmr_empty": false,
+        "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_5min"
+      }
+    }
+  ],
+  "factor_processes": [
+    {
+      "name": "cta-prep-binance-futures",
+      "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures",
+      "configured": true,
+      "unique_factor_count": 596,
+      "topics": [
+        "binance-futures"
+      ],
+      "combinations": [
+        {
+          "name": "binance-futures_15min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#binance-futures_15min",
+          "factor_count": 180,
+          "symbols": [
+            "1INCHUSDT",
+            "AAVEUSDT",
+            "ADAUSDT",
+            "ALGOUSDT",
+            "ATOMUSDT",
+            "AXSUSDT",
+            "BELUSDT",
+            "BNBUSDT",
+            "CRVUSDT",
+            "DASHUSDT",
+            "DOTUSDT",
+            "EGLDUSDT",
+            "ENJUSDT",
+            "ETCUSDT",
+            "FILUSDT",
+            "IOSTUSDT",
+            "IOTAUSDT",
+            "KAVAUSDT",
+            "KNCUSDT",
+            "KSMUSDT",
+            "LTCUSDT",
+            "NEARUSDT",
+            "ONTUSDT",
+            "QTUMUSDT",
+            "RLCUSDT",
+            "RSRUSDT",
+            "RUNEUSDT",
+            "SKLUSDT",
+            "SNXUSDT",
+            "SOLUSDT",
+            "SUSHIUSDT",
+            "THETAUSDT",
+            "VETUSDT",
+            "XRPUSDT",
+            "YFIUSDT",
+            "ZENUSDT",
+            "ZILUSDT",
+            "ZRXUSDT"
+          ],
+          "intervals": [
+            "15min"
+          ],
+          "position_strategies": [
+            "cta-prep01-bn-15min-pos"
+          ]
+        },
+        {
+          "name": "binance-futures_1min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#binance-futures_1min",
+          "factor_count": 61,
+          "symbols": [
+            "ALGOUSDT",
+            "BELUSDT",
+            "DASHUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "FILUSDT",
+            "LINKUSDT",
+            "NEARUSDT",
+            "RLCUSDT",
+            "SKLUSDT",
+            "TRBUSDT",
+            "VETUSDT",
+            "XTZUSDT",
+            "ZECUSDT",
+            "ZENUSDT",
+            "ZRXUSDT"
+          ],
+          "intervals": [
+            "1min"
+          ],
+          "position_strategies": [
+            "cta-prep01-bn-1min-pos"
+          ]
+        },
+        {
+          "name": "binance-futures_5min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#binance-futures_5min",
+          "factor_count": 63,
+          "symbols": [
+            "BANDUSDT",
+            "BELUSDT",
+            "DASHUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "IOTAUSDT",
+            "NEARUSDT",
+            "RUNEUSDT",
+            "SKLUSDT",
+            "SOLUSDT",
+            "VETUSDT",
+            "XLMUSDT",
+            "YFIUSDT",
+            "ZENUSDT"
+          ],
+          "intervals": [
+            "5min"
+          ],
+          "position_strategies": [
+            "cta-prep01-bn-5min-pos"
+          ]
+        },
+        {
+          "name": "last-20_prep02_binance-futures_15min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#last-20_prep02_binance-futures_15min",
+          "factor_count": 17,
+          "symbols": [
+            "BATUSDT",
+            "BELUSDT",
+            "DASHUSDT",
+            "IOTAUSDT",
+            "KNCUSDT",
+            "KSMUSDT",
+            "QTUMUSDT",
+            "RLCUSDT",
+            "SKLUSDT",
+            "YFIUSDT",
+            "ZENUSDT",
+            "ZRXUSDT"
+          ],
+          "intervals": [
+            "15min"
+          ],
+          "position_strategies": [
+            "cta-last-20-prep02-bn-15min-pos"
+          ]
+        },
+        {
+          "name": "last-20_prep02_binance-futures_1h",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#last-20_prep02_binance-futures_1h",
+          "factor_count": 111,
+          "symbols": [
+            "1INCHUSDT",
+            "BANDUSDT",
+            "BELUSDT",
+            "DASHUSDT",
+            "EGLDUSDT",
+            "IOSTUSDT",
+            "IOTAUSDT",
+            "KAVAUSDT",
+            "KNCUSDT",
+            "QTUMUSDT",
+            "RLCUSDT",
+            "RSRUSDT",
+            "SKLUSDT",
+            "ZENUSDT",
+            "ZRXUSDT"
+          ],
+          "intervals": [
+            "1h"
+          ],
+          "position_strategies": [
+            "cta-last-20-prep02-bn-1h-pos"
+          ]
+        },
+        {
+          "name": "last-20_prep02_binance-futures_5min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#last-20_prep02_binance-futures_5min",
+          "factor_count": 5,
+          "symbols": [
+            "1INCHUSDT",
+            "DASHUSDT",
+            "EGLDUSDT",
+            "IOTAUSDT"
+          ],
+          "intervals": [
+            "5min"
+          ],
+          "position_strategies": [
+            "cta-last-20-prep02-bn-5min-pos"
+          ]
+        },
+        {
+          "name": "prep01_binance-futures_1h",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#prep01_binance-futures_1h",
+          "factor_count": 135,
+          "symbols": [
+            "ALGOUSDT",
+            "ATOMUSDT",
+            "AXSUSDT",
+            "BANDUSDT",
+            "BELUSDT",
+            "BNBUSDT",
+            "COMPUSDT",
+            "CRVUSDT",
+            "DASHUSDT",
+            "DOGEUSDT",
+            "ETCUSDT",
+            "GRTUSDT",
+            "IOTAUSDT",
+            "KAVAUSDT",
+            "NEARUSDT",
+            "QTUMUSDT",
+            "SKLUSDT",
+            "SOLUSDT",
+            "THETAUSDT",
+            "VETUSDT",
+            "XRPUSDT",
+            "XTZUSDT",
+            "ZECUSDT"
+          ],
+          "intervals": [
+            "1h"
+          ],
+          "position_strategies": [
+            "cta-prep01-bn-1h-pos"
+          ]
+        },
+        {
+          "name": "top-20_prep02_binance-futures_15min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-20_prep02_binance-futures_15min",
+          "factor_count": 15,
+          "symbols": [
+            "AXSUSDT",
+            "BNBUSDT",
+            "BTCUSDT",
+            "ETCUSDT",
+            "LINKUSDT",
+            "LTCUSDT",
+            "NEARUSDT",
+            "SOLUSDT",
+            "XRPUSDT"
+          ],
+          "intervals": [
+            "15min"
+          ],
+          "position_strategies": [
+            "cta-top-20-prep02-bn-15min-pos"
+          ]
+        },
+        {
+          "name": "top-20_prep02_binance-futures_1h",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-20_prep02_binance-futures_1h",
+          "factor_count": 100,
+          "symbols": [
+            "AAVEUSDT",
+            "ATOMUSDT",
+            "AXSUSDT",
+            "BNBUSDT",
+            "DOGEUSDT",
+            "ETCUSDT",
+            "ETHUSDT",
+            "FILUSDT",
+            "NEARUSDT",
+            "SOLUSDT",
+            "XRPUSDT"
+          ],
+          "intervals": [
+            "1h"
+          ],
+          "position_strategies": [
+            "cta-top-20-prep02-bn-1h-pos"
+          ]
+        },
+        {
+          "name": "top-20_prep02_binance-futures_5min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-20_prep02_binance-futures_5min",
+          "factor_count": 0,
+          "symbols": [],
+          "intervals": [],
+          "position_strategies": [
+            "cta-top-20-prep02-bn-5min-pos"
+          ]
+        },
+        {
+          "name": "top-5_prep02_binance-futures_15min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-5_prep02_binance-futures_15min",
+          "factor_count": 12,
+          "symbols": [
+            "BTCUSDT",
+            "DOGEUSDT",
+            "ETHUSDT",
+            "SOLUSDT",
+            "XRPUSDT"
+          ],
+          "intervals": [
+            "15min"
+          ],
+          "position_strategies": [
+            "cta-top-5-prep02-bn-15min-pos"
+          ]
+        },
+        {
+          "name": "top-5_prep02_binance-futures_1h",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-5_prep02_binance-futures_1h",
+          "factor_count": 30,
+          "symbols": [
+            "DOGEUSDT",
+            "ETHUSDT",
+            "SOLUSDT",
+            "XRPUSDT"
+          ],
+          "intervals": [
+            "1h"
+          ],
+          "position_strategies": [
+            "cta-top-5-prep02-bn-1h-pos"
+          ]
+        },
+        {
+          "name": "top-5_prep02_binance-futures_5min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#top-5_prep02_binance-futures_5min",
+          "factor_count": 2,
+          "symbols": [
+            "DOGEUSDT",
+            "SOLUSDT"
+          ],
+          "intervals": [
+            "5min"
+          ],
+          "position_strategies": [
+            "cta-top-5-prep02-bn-5min-pos"
+          ]
+        }
+      ],
+      "updated_ms": 1794464771417,
+      "stale": false,
+      "warming": false,
+      "plan_matches_config": true,
+      "errors": []
+    },
+    {
+      "name": "cta-factor-spread",
+      "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread",
+      "configured": true,
+      "unique_factor_count": 532,
+      "topics": [
+        "binance-futures",
+        "okex-swap"
+      ],
+      "combinations": [
+        {
+          "name": "okex-futures_binance-futures_15min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_15min",
+          "factor_count": 22,
+          "symbols": [
+            "ADAUSDT",
+            "DOGEUSDT",
+            "NEARUSDT",
+            "TRBUSDT"
+          ],
+          "intervals": [
+            "15min"
+          ],
+          "position_strategies": [
+            "cta-spread01-okx-bn-15min-pos"
+          ]
+        },
+        {
+          "name": "okex-futures_binance-futures_1h",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_1h",
+          "factor_count": 109,
+          "symbols": [
+            "AAVEUSDT",
+            "ADAUSDT",
+            "ATOMUSDT",
+            "BCHUSDT",
+            "CRVUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "FILUSDT",
+            "NEARUSDT",
+            "TRBUSDT",
+            "UNIUSDT"
+          ],
+          "intervals": [
+            "1h"
+          ],
+          "position_strategies": [
+            "cta-spread01-okx-bn-1h-pos"
+          ]
+        },
+        {
+          "name": "okex-futures_binance-futures_1min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_1min",
+          "factor_count": 35,
+          "symbols": [
+            "ADAUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "NEARUSDT",
+            "TRBUSDT"
+          ],
+          "intervals": [
+            "1min"
+          ],
+          "position_strategies": [
+            "cta-spread01-okx-bn-1min-pos"
+          ]
+        },
+        {
+          "name": "okex-futures_binance-futures_5min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#okex-futures_binance-futures_5min",
+          "factor_count": 49,
+          "symbols": [
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "TRBUSDT"
+          ],
+          "intervals": [
+            "5min"
+          ],
+          "position_strategies": [
+            "cta-spread01-okx-bn-5min-pos"
+          ]
+        },
+        {
+          "name": "spread02_okex-futures_binance-futures_15min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_15min",
+          "factor_count": 78,
+          "symbols": [
+            "AAVEUSDT",
+            "ADAUSDT",
+            "ATOMUSDT",
+            "AVAXUSDT",
+            "BCHUSDT",
+            "CRVUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "ETHUSDT",
+            "FILUSDT",
+            "LINKUSDT",
+            "NEARUSDT",
+            "TRBUSDT",
+            "TRXUSDT",
+            "UNIUSDT",
+            "XRPUSDT"
+          ],
+          "intervals": [
+            "15min"
+          ],
+          "position_strategies": [
+            "cta-spread02-okx-bn-15min-pos"
+          ]
+        },
+        {
+          "name": "spread02_okex-futures_binance-futures_1h",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_1h",
+          "factor_count": 130,
+          "symbols": [
+            "AAVEUSDT",
+            "ADAUSDT",
+            "ATOMUSDT",
+            "AVAXUSDT",
+            "BCHUSDT",
+            "CRVUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "ETHUSDT",
+            "FILUSDT",
+            "LINKUSDT",
+            "LTCUSDT",
+            "NEARUSDT",
+            "TRBUSDT",
+            "UNIUSDT",
+            "XRPUSDT"
+          ],
+          "intervals": [
+            "1h"
+          ],
+          "position_strategies": [
+            "cta-spread02-okx-bn-1h-pos"
+          ]
+        },
+        {
+          "name": "spread02_okex-futures_binance-futures_1min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_1min",
+          "factor_count": 50,
+          "symbols": [
+            "ADAUSDT",
+            "ATOMUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "FILUSDT",
+            "NEARUSDT",
+            "TRBUSDT"
+          ],
+          "intervals": [
+            "1min"
+          ],
+          "position_strategies": [
+            "cta-spread02-okx-bn-1min-pos"
+          ]
+        },
+        {
+          "name": "spread02_okex-futures_binance-futures_5min",
+          "config_url": "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_5min",
+          "factor_count": 83,
+          "symbols": [
+            "ADAUSDT",
+            "ATOMUSDT",
+            "CRVUSDT",
+            "DOGEUSDT",
+            "DOTUSDT",
+            "ETCUSDT",
+            "FILUSDT",
+            "LINKUSDT",
+            "NEARUSDT",
+            "TRBUSDT",
+            "TRXUSDT",
+            "UNIUSDT",
+            "XRPUSDT"
+          ],
+          "intervals": [
+            "5min"
+          ],
+          "position_strategies": [
+            "cta-spread02-okx-bn-5min-pos"
+          ]
+        }
+      ],
+      "updated_ms": 1794464771483,
+      "stale": false,
+      "warming": false,
+      "plan_matches_config": true,
+      "errors": []
+    }
+  ],
+  "errors": []
+}

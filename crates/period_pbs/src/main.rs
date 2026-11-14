@@ -61,7 +61,7 @@ fn main() -> Result<()> {
     );
     for venue in &venues {
         log::info!(
-            "period_pbs venue configured: venue={} topic={} poster_id={} poll_batch={} idle_sleep_us={} delay_ms={} mapped_symbols={}",
+            "period_pbs venue configured: venue={} topic={} poster_id={} poll_batch={} idle_sleep_us={} delay_ms={} mapped_symbols={} depth_snapshot_symbols={}",
             venue.config.name,
             venue.config.topic,
             venue.config.poster_id,
@@ -69,6 +69,7 @@ fn main() -> Result<()> {
             venue.config.idle_sleep_us,
             venue.config.delay_ms,
             venue.config.symbols.len(),
+            venue.config.depth_snapshot_symbols.len(),
         );
     }
 
@@ -197,6 +198,7 @@ impl VenueRuntime {
             delay_ms: config.delay_ms,
             poster_id: config.poster_id.clone(),
             slot_symbols: config.symbols.canonical_symbols(),
+            depth_snapshot_symbols: config.depth_snapshot_symbols.clone(),
         });
         Self {
             config,

@@ -15,7 +15,9 @@ use crate::okex_query_rate_limiter::OkexQueryRateLimiter;
 use crate::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
 use crate::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
 use crate::query_parsers::binance_spot_account_snapshot_std::parse_binance_spot_account_snapshot_std;
-use crate::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
+use crate::query_parsers::binance_um_account_snapshot::{
+    parse_binance_um_account_snapshot, parse_binance_um_account_snapshot_std,
+};
 use crate::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
 use crate::query_parsers::binance_um_order::parse_binance_um_order_query_json;
 use crate::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
@@ -44,9 +46,10 @@ use crate::query_response_handle::QueryExecOutcome;
 use crate::query_type_mapping::QueryTypeMapping;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
 use crate::trade_request::{
-    BinanceCancelOrderParams, BinanceNewOrderParams, BinanceNewOrderParamsRef,
-    BitgetNewOrderParams, GateNewOrderParams, TradeRequestIpcPayload, TradeRequestMsg,
-    TradeRequestType,
+    BinanceBatchModifyOrdersParams, BinanceCancelOrderParams, BinanceModifyOrderParams,
+    BinanceModifyOrderParamsRef, BinanceNewOrderParams, BinanceNewOrderParamsRef,
+    BitgetNewOrderParams, GateNewOrderParams, HyperliquidNewOrderParams, TradeRequestIpcPayload,
+    TradeRequestMsg, TradeRequestType,
 };
 use crate::trade_response_handle::TradeExecOutcome;
 use crate::trade_type_mapping::TradeTypeMapping;
@@ -64,6 +67,7 @@ use ipc_common::iceoryx_publisher::{
     QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD, QUERY_SUBSCRIBER_MAX_BUFFER_SIZE,
 };
 use log::{debug, info, warn};
+use mkt_parsers::msg::basic_account_msg::{get_basic_event_type, BasicAccountEventType};
 use rolling_common::health_snapshot::{
     HealthSnapshotMsg, HEALTH_FLAG_CONNECTED, HEALTH_MARKET_FUTURES, HEALTH_MARKET_SPOT,
     HEALTH_SNAPSHOT_PAYLOAD_LEN, HEALTH_STATE_DISCONNECTED, HEALTH_STATE_DRAINING,
@@ -77,6 +81,7 @@ use runtime_common::time_util::get_timestamp_us;
 use serde_json::Value;
 use std::net::IpAddr;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{cell::RefCell, rc::Rc as StdRc};
 use tokio_util::sync::CancellationToken;
@@ -93,6 +98,9 @@ const INTERNAL_OPEN_TERMINATE_SUMMARY_MAX_GROUPS: usize = 32;
 const DEFAULT_TCP_HEALTH_LOG_INTERVAL_MS: u64 = 60_000;
 const BINANCE_BASIC_WS_CONNECTIONS: usize = 4;
 const BINANCE_BASIC_WS_RECONNECT_PERIOD_MS: u64 = 300_000;
+const DEFAULT_HYPERLIQUID_WS_MAX_INFLIGHT_POSTS: usize = 90;
+const HYPERLIQUID_WS_MAX_INFLIGHT_POSTS: usize = 100;
+const DEFAULT_HYPERLIQUID_WS_POST_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct TcpHealthSummary {
@@ -534,7 +542,25 @@ fn parse_bool_env(value: &str) -> Option<bool> {
     }
 }
 
+fn read_only_trade_rejection(msg: &TradeRequestMsg, exchange: Exchange) -> TradeExecOutcome {
+    TradeExecOutcome {
+        req_type: msg.req_type,
+        client_order_id: msg.client_order_id,
+        status: 403,
+        body: "trade engine is in read-only mode".to_string(),
+        exchange,
+        order_id: 0,
+        order_status_u8: 0,
+        order_update_time: 0,
+        executed_qty: 0.0,
+        response_price: 0.0,
+    }
+}
+
 fn configured_binance_ws_markets() -> (bool, bool) {
+    if let Ok(Some(venue)) = runtime_common::exec_market::configured_venue() {
+        return (venue == order_common::TradingVenue::BinanceFutures, false);
+    }
     let venues: Vec<String> = [
         "OPEN_VENUE",
         "HEDGE_VENUE",
@@ -553,6 +579,124 @@ fn configured_binance_ws_markets() -> (bool, bool) {
     let um = venues.iter().any(|venue| venue == "binance-futures");
     let spot = venues.iter().any(|venue| venue == "binance-margin");
     (um, spot)
+}
+
+fn exec_trade_request_allowed(
+    venue: order_common::TradingVenue,
+    request: TradeRequestType,
+) -> bool {
+    use order_common::TradingVenue;
+    use TradeRequestType::*;
+    match venue {
+        TradingVenue::BinanceFutures => matches!(
+            request,
+            BinanceNewUMOrder
+                | BinanceNewUMConditionalOrder
+                | BinanceCancelUMOrder
+                | BinanceCancelAllUMOrders
+                | BinanceCancelUMConditionalOrder
+                | BinanceCancelAllUMConditionalOrders
+                | BinanceModifyUMOrder
+                | BinanceUMSetLeverage
+                | BinanceWsNewUMOrder
+                | BinanceWsCancelUMOrder
+                | BinanceWsModifyUMOrder
+                | BinanceStdModifyUMOrder
+                | BinanceStdBatchModifyUMOrders
+                | BinanceStdMainToUmTransfer
+                | BinanceStdUmToMainTransfer
+        ),
+        TradingVenue::BinanceCoinFutures => matches!(
+            request,
+            BinanceNewCmOrder
+                | BinanceCancelCmOrder
+                | BinanceCmSetLeverage
+                | BinancePmNewCmOrder
+                | BinancePmCancelCmOrder
+                | BinancePmCmSetLeverage
+                | BinanceModifyCmOrder
+                | BinancePmModifyCmOrder
+        ),
+        TradingVenue::OkexFutures => matches!(
+            request,
+            OkexNewUMOrder | OkexCancelUMOrder | OkexModifyUMOrder
+        ),
+        TradingVenue::BinanceMargin => matches!(
+            request,
+            BinanceNewMarginOrder
+                | BinanceCancelMarginOrder
+                | BinanceLtpNewSpotOrder
+                | BinanceLtpCancelSpotOrder
+                | BinanceWsNewMarginOrder
+                | BinanceWsCancelMarginOrder
+        ),
+        TradingVenue::OkexMargin => matches!(request, OkexNewMarginOrder | OkexCancelMarginOrder),
+        TradingVenue::BybitFutures => matches!(request, BybitNewUMOrder | BybitCancelUMOrder),
+        TradingVenue::BitgetFutures => matches!(request, BitgetNewUMOrder | BitgetCancelUMOrder),
+        _ => false,
+    }
+}
+
+fn exec_query_request_allowed(
+    venue: order_common::TradingVenue,
+    request: QueryRequestType,
+) -> bool {
+    use order_common::TradingVenue;
+    use QueryRequestType::*;
+    match venue {
+        // Portfolio balance and risk are shared collateral, not another market's positions.
+        TradingVenue::BinanceFutures => matches!(
+            request,
+            BinanceUMQuery
+                | BinanceWsUMQuery
+                | BinancePmBalanceSnapshot
+                | BinancePmAccountSnapshot
+                | BinanceUmAccountSnapshot
+                | BinanceUmBalanceSnapshotStd
+                | BinanceUmAccountSnapshotStd
+        ),
+        TradingVenue::BinanceCoinFutures => matches!(
+            request,
+            BinanceCmQuery
+                | BinancePmCmQuery
+                | BinancePmBalanceSnapshot
+                | BinancePmAccountSnapshot
+                | BinanceCmBalanceSnapshotStd
+                | BinanceCmAccountSnapshotStd
+                | BinancePmCmAccountSnapshot
+        ),
+        TradingVenue::BinanceMargin => matches!(
+            request,
+            BinanceMarginQuery
+                | BinanceWsMarginQuery
+                | BinancePmBalanceSnapshot
+                | BinancePmAccountSnapshot
+                | BinanceSpotAccountSnapshotStd
+        ),
+        TradingVenue::OkexMargin => matches!(
+            request,
+            OkexMarginQuery | OkexAccountBalanceSnapshot | OkexUsdtAvailableSnapshot
+        ),
+        TradingVenue::OkexFutures => matches!(
+            request,
+            OkexUMQuery
+                | OkexAccountBalanceSnapshot
+                | OkexPositionsSnapshot
+                | OkexUsdtAvailableSnapshot
+        ),
+        TradingVenue::BybitFutures => matches!(
+            request,
+            BybitUMQuery | BybitAccountBalanceSnapshot | BybitPositionsSnapshot
+        ),
+        TradingVenue::BitgetFutures => matches!(
+            request,
+            BitgetUMQuery
+                | BitgetAccountBalanceSnapshot
+                | BitgetPositionsSnapshot
+                | BitgetUsdtAvailableSnapshot
+        ),
+        _ => false,
+    }
 }
 
 fn enable_ipc_fast_poll() -> bool {
@@ -743,6 +887,184 @@ fn binance_cancel_order_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPai
     ])
 }
 
+fn binance_modify_order_rest_pairs_from_ref(
+    params: &BinanceModifyOrderParamsRef<'_>,
+) -> RestParamPairs {
+    let mut pairs = Vec::with_capacity(8);
+    if let Some(modify_id) = params.modify_id {
+        pairs.push(("modifyId".to_string(), modify_id.to_string()));
+    }
+    if params.order_id > 0 {
+        pairs.push(("orderId".to_string(), params.order_id.to_string()));
+    }
+    if params.orig_client_order_id > 0 {
+        pairs.push((
+            "origClientOrderId".to_string(),
+            params.orig_client_order_id.to_string(),
+        ));
+    }
+    if let Some(price_match) = params.price_match.as_str() {
+        pairs.push(("priceMatch".to_string(), price_match.to_string()));
+    } else {
+        pairs.push(("price".to_string(), params.price_qv.decimal_string()));
+    }
+    pairs.push(("quantity".to_string(), params.quantity_qv.decimal_string()));
+    pairs.push(("side".to_string(), params.side.as_str().to_string()));
+    pairs.push(("symbol".to_string(), params.symbol.to_string()));
+    sorted_rest_pairs(pairs)
+}
+
+fn binance_modify_order_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
+    let params = BinanceModifyOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
+        anyhow!(
+            "Binance REST modify order requires valid typed params, req_type={:?}",
+            msg.req_type
+        )
+    })?;
+    let owned = BinanceModifyOrderParams::from_bytes(&msg.params)
+        .ok_or_else(|| anyhow!("invalid Binance REST modify order values"))?;
+    debug_assert_eq!(owned.symbol, params.symbol);
+    Ok(binance_modify_order_rest_pairs_from_ref(&params))
+}
+
+fn binance_batch_modify_order_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
+    let params = BinanceBatchModifyOrdersParams::from_bytes(&msg.params)
+        .ok_or_else(|| anyhow!("Binance REST batch modify requires 1..=5 valid typed orders"))?;
+    let batch_orders = params
+        .orders
+        .iter()
+        .map(|order| {
+            let raw = order
+                .to_bytes()
+                .ok_or_else(|| anyhow!("invalid Binance batch order"))?;
+            let params = BinanceModifyOrderParamsRef::from_bytes(&raw)
+                .ok_or_else(|| anyhow!("invalid Binance batch order encoding"))?;
+            Ok(binance_modify_order_rest_pairs_from_ref(&params)
+                .into_iter()
+                .map(|(key, value)| (key, Value::String(value)))
+                .collect::<serde_json::Map<String, Value>>())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(vec![(
+        "batchOrders".to_string(),
+        serde_json::to_string(&batch_orders).with_context(|| "serialize Binance batchOrders")?,
+    )])
+}
+
+fn json_i64(value: Option<&Value>) -> i64 {
+    value
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+                .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+        })
+        .unwrap_or(0)
+}
+
+fn json_f64(value: Option<&Value>) -> f64 {
+    value
+        .and_then(|value| {
+            value
+                .as_f64()
+                .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+        })
+        .unwrap_or(0.0)
+}
+
+fn binance_order_status_u8(value: Option<&Value>) -> u8 {
+    match value.and_then(Value::as_str).unwrap_or_default() {
+        "NEW" => 1,
+        "PARTIALLY_FILLED" => 2,
+        "FILLED" => 3,
+        "CANCELED" | "CANCELLED" => 4,
+        "EXPIRED" => 5,
+        "EXPIRED_IN_MATCH" => 6,
+        _ => 0,
+    }
+}
+
+fn batch_modify_protocol_error_body(message: &str) -> String {
+    serde_json::json!({
+        "code": order_common::trade_error_code::ACTION_RESULT_UNKNOWN,
+        "msg": message,
+    })
+    .to_string()
+}
+
+fn binance_batch_modify_outcomes(
+    params: &BinanceBatchModifyOrdersParams,
+    status: u16,
+    body: &str,
+    exchange: Exchange,
+) -> Vec<TradeExecOutcome> {
+    let parsed = (200..300)
+        .contains(&(status as u32))
+        .then(|| serde_json::from_str::<Value>(body).ok())
+        .flatten()
+        .and_then(|value| value.as_array().cloned())
+        .filter(|items| items.len() == params.orders.len());
+
+    params
+        .orders
+        .iter()
+        .enumerate()
+        .map(|(index, order)| {
+            let item = parsed.as_ref().and_then(|items| items.get(index));
+            let (item_status, item_body) = if status == 0 {
+                (
+                    0,
+                    batch_modify_protocol_error_body(&format!(
+                        "Binance batch modify transport error: {body}"
+                    )),
+                )
+            } else if !(200..300).contains(&(status as u32)) {
+                (status, body.to_string())
+            } else if let Some(item) = item {
+                (status, item.to_string())
+            } else {
+                (
+                    502,
+                    batch_modify_protocol_error_body(
+                        "Binance batch modify response is not an array matching the request count",
+                    ),
+                )
+            };
+            TradeExecOutcome {
+                req_type: TradeRequestType::BinanceStdBatchModifyUMOrders,
+                client_order_id: order.response_client_order_id,
+                status: item_status,
+                body: item_body,
+                exchange,
+                order_id: json_i64(item.and_then(|item| item.get("orderId"))),
+                order_status_u8: binance_order_status_u8(item.and_then(|item| item.get("status"))),
+                order_update_time: json_i64(
+                    item.and_then(|item| {
+                        item.get("updateTime").or_else(|| item.get("transactTime"))
+                    }),
+                ),
+                executed_qty: json_f64(item.and_then(|item| item.get("executedQty"))),
+                response_price: json_f64(item.and_then(|item| item.get("price"))),
+            }
+        })
+        .collect()
+}
+
+fn binance_modify_transport_error_body(req_type: TradeRequestType, message: &str) -> String {
+    if matches!(
+        req_type,
+        TradeRequestType::BinanceModifyUMOrder
+            | TradeRequestType::BinanceStdModifyUMOrder
+            | TradeRequestType::BinanceStdBatchModifyUMOrders
+            | TradeRequestType::BinanceModifyCmOrder
+            | TradeRequestType::BinancePmModifyCmOrder
+    ) {
+        batch_modify_protocol_error_body(message)
+    } else {
+        message.to_string()
+    }
+}
+
 fn trade_request_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
     match msg.req_type {
         TradeRequestType::BinanceNewUMOrder
@@ -753,6 +1075,13 @@ fn trade_request_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
         | TradeRequestType::BinanceCancelMarginOrder
         | TradeRequestType::BinanceCancelCmOrder
         | TradeRequestType::BinancePmCancelCmOrder => binance_cancel_order_rest_pairs(msg),
+        TradeRequestType::BinanceModifyUMOrder
+        | TradeRequestType::BinanceStdModifyUMOrder
+        | TradeRequestType::BinanceModifyCmOrder
+        | TradeRequestType::BinancePmModifyCmOrder => binance_modify_order_rest_pairs(msg),
+        TradeRequestType::BinanceStdBatchModifyUMOrders => {
+            binance_batch_modify_order_rest_pairs(msg)
+        }
         TradeRequestType::BinanceStdMainToUmTransfer
         | TradeRequestType::BinanceStdUmToMainTransfer => binance_std_usdt_transfer_rest_pairs(msg),
         _ => parse_urlencoded_rest_pairs(&msg.params, "Binance REST trade request"),
@@ -984,7 +1313,9 @@ fn decode_internal_open_terminate_order_meta(
                 qty: params.quantity_qv.get_val(),
             })
         }
-        TradeRequestType::BinanceNewMarginOrder | TradeRequestType::BinanceWsNewMarginOrder => {
+        TradeRequestType::BinanceNewMarginOrder
+        | TradeRequestType::BinanceWsNewMarginOrder
+        | TradeRequestType::BinanceLtpNewSpotOrder => {
             let params = BinanceNewOrderParams::from_bytes(&msg.params)?;
             Some(InternalOpenTerminateOrderMeta {
                 symbol: params.symbol,
@@ -1074,6 +1405,19 @@ fn decode_internal_open_terminate_order_meta(
                     "bitget_spot"
                 } else {
                     "bitget_margin"
+                },
+                qty: params.quantity_qv.get_val(),
+            })
+        }
+        TradeRequestType::HyperliquidNewUMOrder | TradeRequestType::HyperliquidNewMarginOrder => {
+            let params = HyperliquidNewOrderParams::from_bytes(&msg.params)?;
+            Some(InternalOpenTerminateOrderMeta {
+                symbol: params.symbol,
+                dir: params.side.as_str(),
+                venue: if msg.req_type == TradeRequestType::HyperliquidNewUMOrder {
+                    "hyperliquid_perp"
+                } else {
+                    "hyperliquid_spot"
                 },
                 qty: params.quantity_qv.get_val(),
             })
@@ -1241,6 +1585,15 @@ impl TradeEngine {
         exchange: Exchange,
         shutdown: CancellationToken,
     ) -> Result<()> {
+        let exec_venue = runtime_common::exec_market::configured_venue()?;
+        if let Some(venue) = exec_venue {
+            anyhow::ensure!(
+                venue.trade_engine_exchange() == exchange.as_str(),
+                "Exec market {} does not match trade engine exchange {}",
+                venue.data_pub_slug(),
+                exchange
+            );
+        }
         if !matches!(
             exchange,
             Exchange::Binance
@@ -1248,13 +1601,14 @@ impl TradeEngine {
                 | Exchange::Bybit
                 | Exchange::Bitget
                 | Exchange::Gate
+                | Exchange::Hyperliquid
         ) {
             return Err(anyhow!(
-                "unsupported exchange '{}'. Allowed: binance, okex, bybit, bitget, gate",
+                "unsupported exchange '{}'. Allowed: binance, okex, bybit, bitget, gate, hyperliquid",
                 exchange
             ));
         }
-        let exec_backend = ExecBackend::for_exchange(exchange);
+        let exec_backend = ExecBackend::for_exchange(exchange)?;
         if !exec_backend.supports_exchange(exchange) {
             return Err(anyhow!(
                 "execution backend '{}' does not support exchange '{}'",
@@ -1262,9 +1616,30 @@ impl TradeEngine {
                 exchange
             ));
         }
+        // Resolve once at startup; the request hot path needs no allocation.
+        let exec_markets = exec_venue.map(|venue| {
+            let markets = runtime_common::exec_market::runtime_venues(venue, exec_backend);
+            [Some(venue), markets.get(1).copied()]
+        });
         let use_ltp_backend = exec_backend == ExecBackend::Ltp;
+        anyhow::ensure!(
+            !use_ltp_backend || exec_venue != Some(order_common::TradingVenue::BinanceCoinFutures),
+            "COIN-M execution requires the native Binance backend"
+        );
+        if use_ltp_backend {
+            runtime_common::execution_backend::rapidx_portfolio_id()?;
+        }
 
         let canonical_exchange = exchange.as_str();
+        let read_only = match std::env::var("TRADE_ENGINE_READ_ONLY") {
+            Ok(value) => parse_bool_env(&value)
+                .ok_or_else(|| anyhow!("TRADE_ENGINE_READ_ONLY must be a boolean"))?,
+            Err(std::env::VarError::NotPresent) => false,
+            Err(err) => return Err(anyhow!("invalid TRADE_ENGINE_READ_ONLY: {err}")),
+        };
+        if read_only {
+            info!("trade_engine read-only mode: all trade requests are rejected; queries remain enabled");
+        }
         let fast_poll = enable_ipc_fast_poll();
         let router_idle_spin_iters = router_idle_spin_iters(fast_poll);
         let internal_open_terminate_enabled = fast_poll;
@@ -1403,7 +1778,6 @@ impl TradeEngine {
             Some(Rc::new(tokio::sync::Mutex::new(Dispatcher::new(
                 &self.local_ips,
                 &self.accounts,
-                shutdown.clone(),
                 binance_um_ip_whitelist_mode,
                 self.binance_um_whitelist_ip,
             )?)))
@@ -1483,7 +1857,12 @@ impl TradeEngine {
                             {
                                 let summary = TcpHealthSummary::from_snapshots(&snapshots);
                                 if summary.endpoints > 0 {
-                                    info!(
+                                    log::log!(
+                                        if summary.disconnected > 0 || summary.paused > 0 || summary.protected > 0 {
+                                            log::Level::Info
+                                        } else {
+                                            log::Level::Debug
+                                        },
                                         "TcpHealthSummary: exchange={} endpoints={} connected={} healthy={} disconnected={} paused={} draining={} reconnecting={} protected={} spot_connected={}/{} futures_connected={}/{} window_data_segs_out={} window_retrans={} window_bp={} total_retrans={} rtt_us_avg={} rtt_us_max={} rttvar_us_max={} pending={} inflight={}",
                                         health_exchange,
                                         summary.endpoints,
@@ -1604,6 +1983,11 @@ impl TradeEngine {
 
             let connect_timeout_ms = WsConstants::CONNECT_TIMEOUT_MS;
             let ping_interval_ms = env_u64_or("LTP_WS_PING_INTERVAL_MS", 10_000);
+            if !(1_000..=10_000).contains(&ping_interval_ms) {
+                return Err(anyhow!(
+                    "LTP_WS_PING_INTERVAL_MS must be between 1000 and 10000"
+                ));
+            }
             let max_inflight = WsConstants::MAX_INFLIGHT;
             let ltp_ws_url = std::env::var("LTP_WS_URL")
                 .ok()
@@ -1654,21 +2038,104 @@ impl TradeEngine {
                 endpoints.push(WsEndpointHandle::new(cmd_queue, state));
             }
             Some(endpoints)
+        } else if exchange == Exchange::Hyperliquid {
+            let mut local_ips = self.local_ips.clone();
+            if local_ips.is_empty() {
+                warn!("Hyperliquid ws local_ips empty; using default binding 0.0.0.0");
+                local_ips.push("0.0.0.0".parse()?);
+            }
+            if local_ips.len() > 10 {
+                return Err(anyhow!(
+                    "Hyperliquid allows at most 10 websocket connections per IP; configured endpoints={}",
+                    local_ips.len()
+                ));
+            }
+            let max_inflight = env_usize_or(
+                "HYPERLIQUID_WS_MAX_INFLIGHT_POSTS",
+                DEFAULT_HYPERLIQUID_WS_MAX_INFLIGHT_POSTS,
+            );
+            if max_inflight > HYPERLIQUID_WS_MAX_INFLIGHT_POSTS {
+                return Err(anyhow!(
+                    "HYPERLIQUID_WS_MAX_INFLIGHT_POSTS={} exceeds Hyperliquid's absolute inflight post limit {}; connections sharing one public egress IP must also stay within that aggregate limit",
+                    max_inflight,
+                    HYPERLIQUID_WS_MAX_INFLIGHT_POSTS
+                ));
+            }
+            let post_timeout_ms = env_u64_or(
+                "HYPERLIQUID_WS_POST_TIMEOUT_MS",
+                DEFAULT_HYPERLIQUID_WS_POST_TIMEOUT_MS,
+            );
+            let trading_client = Arc::new(
+                crate::hyperliquid_ws::HyperliquidTradingClient::from_env(
+                    local_ips.first().copied(),
+                )
+                .await?,
+            );
+            let ws_url = trading_client.ws_url().to_string();
+            let mut endpoints = Vec::with_capacity(local_ips.len());
+            for (idx, ip) in local_ips.into_iter().enumerate() {
+                let cmd_queue = WsCommandQueue::new();
+                let state = StdRc::new(RefCell::new(Default::default()));
+                let client = TradeWsClient::new(
+                    idx,
+                    exchange,
+                    exchange,
+                    false,
+                    ip,
+                    ws_url.clone(),
+                    WsConstants::CONNECT_TIMEOUT_MS,
+                    30_000,
+                    max_inflight,
+                    None,
+                    None,
+                    None,
+                    Some(query_resp_sink.clone()),
+                    cmd_queue.clone(),
+                    trade_resp_sink.clone(),
+                    internal_open_terminates.clone(),
+                    internal_open_terminate_summary.clone(),
+                    shutdown.clone(),
+                    state.clone(),
+                    false,
+                    health_registry.clone(),
+                )
+                .with_hyperliquid_client(trading_client.clone())
+                .with_hyperliquid_post_timeout(Duration::from_millis(post_timeout_ms))
+                .with_tcp_loss_act(ws_route_dispatch);
+                info!(
+                    "spawning Hyperliquid ws client id={} ip={} url={} combined_post_limit={} post_timeout_ms={} limit_scope=connection configured_local_ip; all connections/processes sharing one public egress IP must aggregate to <=100 posts",
+                    idx,
+                    client.local_ip(),
+                    ws_url,
+                    max_inflight,
+                    post_timeout_ms
+                );
+                let handle = tokio::task::spawn_local(async move {
+                    client.run().await;
+                });
+                worker_handles.push(("hyperliquid_ws_client", handle));
+                endpoints.push(WsEndpointHandle::new(cmd_queue, state));
+            }
+            Some(endpoints)
         } else if exchange == Exchange::Bitget {
             // 前置校验：Bitget 必须是 UTA + one-way 持仓模式；margin 路径还要求 Advanced。
-            // 这里直接 panic，避免配置错误时 trade_engine 继续运行并反复拒单。
+            // Return startup errors rather than allowing an online process to repeatedly reject orders.
             let bitget_precheck_creds = account_common::bitget_auth::BitgetCredentials::from_env()
                 .context(
                     "bitget precheck: BITGET_API_KEY/BITGET_API_SECRET/BITGET_PASSPHRASE not set",
                 )?;
-            let bitget_precheck_http = reqwest::Client::new();
-            if let Err(err) = crate::bitget_precheck::ensure_unified_account(
-                &bitget_precheck_http,
-                &bitget_precheck_creds,
-            )
-            .await
-            {
-                panic!("bitget precheck failed: {err:#}");
+            let uta_exec = runtime_common::exec_market::configured_venue()?
+                == Some(order_common::TradingVenue::BitgetFutures);
+            if uta_exec {
+                crate::native_uta_exec::validate_startup(order_common::TradingVenue::BitgetFutures)
+                    .await?;
+            } else {
+                crate::bitget_precheck::ensure_unified_account(
+                    &reqwest::Client::new(),
+                    &bitget_precheck_creds,
+                )
+                .await
+                .context("bitget precheck failed")?;
             }
 
             let mut local_ips = self.local_ips.clone();
@@ -1735,11 +2202,18 @@ impl TradeEngine {
                     .map(|ip| ip.to_string())
                     .unwrap_or_else(|| "system default".to_string())
             );
-            crate::bybit_precheck::ensure_uta_and_spot_margin(
-                &bybit_precheck_http,
-                &bybit_precheck_creds,
-            )
-            .await?;
+            if runtime_common::exec_market::configured_venue()?
+                == Some(order_common::TradingVenue::BybitFutures)
+            {
+                crate::native_uta_exec::validate_startup(order_common::TradingVenue::BybitFutures)
+                    .await?;
+            } else {
+                crate::bybit_precheck::ensure_uta_and_spot_margin(
+                    &bybit_precheck_http,
+                    &bybit_precheck_creds,
+                )
+                .await?;
+            }
 
             let mut local_ips = self.local_ips.clone();
             if local_ips.is_empty() {
@@ -2058,7 +2532,7 @@ impl TradeEngine {
                     .join(",")
             );
 
-            let um_shutdown_on_rate_limit = true;
+            let um_shutdown_on_rate_limit = false;
             let spot_shutdown_on_rate_limit = spot_local_ips.len() <= 1;
             let mut um_endpoints = Vec::with_capacity(planned_um_connection_count);
             let mut um_endpoint_groups = Vec::with_capacity(1);
@@ -2264,6 +2738,35 @@ impl TradeEngine {
                 };
                 idle_spin_count = 0;
                 routed_since_yield = true;
+                if read_only {
+                    warn!(
+                        "trade_engine read-only mode rejected request type={:?} client_order_id={}",
+                        msg.req_type, msg.client_order_id
+                    );
+                    let _ = trade_resp_sink_for_req_worker
+                        .send(read_only_trade_rejection(&msg, exchange_for_req_worker));
+                    continue;
+                }
+                if exec_markets.is_some_and(|markets| {
+                    !markets
+                        .into_iter()
+                        .flatten()
+                        .any(|market| exec_trade_request_allowed(market, msg.req_type))
+                }) {
+                    let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
+                        req_type: msg.req_type,
+                        client_order_id: msg.client_order_id,
+                        status: 400,
+                        body: "request does not belong to this Exec market".to_string(),
+                        exchange: exchange_for_req_worker,
+                        order_id: 0,
+                        order_status_u8: 0,
+                        order_update_time: 0,
+                        executed_qty: 0.0,
+                        response_price: 0.0,
+                    });
+                    continue;
+                }
                 let _ = drain_order_control_ingress(
                     &mut order_control_ingress,
                     &internal_open_terminates,
@@ -2377,9 +2880,13 @@ impl TradeEngine {
 
                 // 根据 mapping 判断是否走 WebSocket；LTP 后端统一从 WS 执行。
                 if use_ltp_backend_for_req_worker || TradeTypeMapping::is_websocket(msg.req_type) {
-                    let is_binance_um_new = exchange_for_req_worker == Exchange::Binance
-                        && msg.req_type == TradeRequestType::BinanceWsNewUMOrder;
-                    if is_binance_um_new {
+                    let is_binance_um_latency_routed = exchange_for_req_worker == Exchange::Binance
+                        && matches!(
+                            msg.req_type,
+                            TradeRequestType::BinanceWsNewUMOrder
+                                | TradeRequestType::BinanceWsModifyUMOrder
+                        );
+                    if is_binance_um_latency_routed {
                         if let Some(groups) = binance_um_ws_endpoint_groups.as_mut() {
                             let len = groups.len();
                             if len == 0 {
@@ -2504,7 +3011,7 @@ impl TradeEngine {
                         ws_rr_cursor = (ws_rr_cursor + 1) % len;
 
                         let mut target_idx = None;
-                        if is_binance_um_new {
+                        if is_binance_um_latency_routed {
                             // 统一 RR 选路（无 group 的回退路径）；dispatch 下 is_available() 已绕开丢包端点。
                             let candidates: Vec<BinanceUmWsRouteCandidate> = endpoints
                                 .iter()
@@ -2523,7 +3030,7 @@ impl TradeEngine {
                             }
                         }
 
-                        if target_idx.is_none() && !is_binance_um_new {
+                        if target_idx.is_none() && !is_binance_um_latency_routed {
                             for offset in 0..len {
                                 let idx = (start + offset) % len;
                                 debug!(
@@ -2545,7 +3052,7 @@ impl TradeEngine {
                         if let Some(idx) = target_idx {
                             endpoints[idx].enqueue_available(WsCommand::Send(msg));
                         } else {
-                            let reason = if is_binance_um_new {
+                            let reason = if is_binance_um_latency_routed {
                                 "no Binance UM websocket endpoint available"
                             } else {
                                 "all websocket endpoints unavailable"
@@ -2610,6 +3117,10 @@ impl TradeEngine {
                                 continue;
                             }
                         };
+                        let batch_modify_params = (msg.req_type
+                            == TradeRequestType::BinanceStdBatchModifyUMOrders)
+                            .then(|| BinanceBatchModifyOrdersParams::from_bytes(&msg.params))
+                            .flatten();
 
                         let evt = crate::order_event::OrderRequestEvent {
                             req_type: Some(format!("{:?}", msg.req_type)),
@@ -2637,33 +3148,58 @@ impl TradeEngine {
                                     outcome.ip,
                                     outcome.body.len()
                                 );
-                                let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
-                                    req_type: msg.req_type,
-                                    client_order_id: msg.client_order_id,
-                                    status: outcome.status,
-                                    body: outcome.body,
-                                    exchange: exchange_for_req_worker,
-                                    order_id: 0,
-                                    order_status_u8: 0,
-                                    order_update_time: 0,
-                                    executed_qty: 0.0,
-                                    response_price: 0.0,
-                                });
+                                if let Some(batch) = batch_modify_params.as_ref() {
+                                    for item_outcome in binance_batch_modify_outcomes(
+                                        batch,
+                                        outcome.status,
+                                        &outcome.body,
+                                        exchange_for_req_worker,
+                                    ) {
+                                        let _ = trade_resp_sink_for_req_worker.send(item_outcome);
+                                    }
+                                } else {
+                                    let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_order_id: msg.client_order_id,
+                                        status: outcome.status,
+                                        body: outcome.body,
+                                        exchange: exchange_for_req_worker,
+                                        order_id: 0,
+                                        order_status_u8: 0,
+                                        order_update_time: 0,
+                                        executed_qty: 0.0,
+                                        response_price: 0.0,
+                                    });
+                                }
                             }
                             Err(e) => {
                                 debug!("http error: {}", e);
-                                let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
-                                    req_type: msg.req_type,
-                                    client_order_id: msg.client_order_id,
-                                    status: 0,
-                                    body: e.to_string(),
-                                    exchange: exchange_for_req_worker,
-                                    order_id: 0,
-                                    order_status_u8: 0,
-                                    order_update_time: 0,
-                                    executed_qty: 0.0,
-                                    response_price: 0.0,
-                                });
+                                if let Some(batch) = batch_modify_params.as_ref() {
+                                    for item_outcome in binance_batch_modify_outcomes(
+                                        batch,
+                                        0,
+                                        &e.to_string(),
+                                        exchange_for_req_worker,
+                                    ) {
+                                        let _ = trade_resp_sink_for_req_worker.send(item_outcome);
+                                    }
+                                } else {
+                                    let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_order_id: msg.client_order_id,
+                                        status: 0,
+                                        body: binance_modify_transport_error_body(
+                                            msg.req_type,
+                                            &e.to_string(),
+                                        ),
+                                        exchange: exchange_for_req_worker,
+                                        order_id: 0,
+                                        order_status_u8: 0,
+                                        order_update_time: 0,
+                                        executed_qty: 0.0,
+                                        response_price: 0.0,
+                                    });
+                                }
                             }
                         }
                     } else {
@@ -2698,12 +3234,29 @@ impl TradeEngine {
             let binance_spot_ws_endpoints = binance_spot_ws_endpoints.clone();
             let gate_spot_ws_endpoints = ws_endpoints.clone();
             let gate_futures_ws_endpoints = gate_futures_ws_endpoints.clone();
+            let hyperliquid_ws_endpoints = ws_endpoints.clone();
             let use_ltp_backend_for_query_router = use_ltp_backend;
             let shutdown_for_query_router = shutdown.clone();
             let fast_poll_for_query_router = fast_poll;
             let router_idle_spin_iters_for_query_router = router_idle_spin_iters;
             let bybit_rest_local_ip = self.local_ips.first().copied();
-            let bybit_http = crate::bybit_query::build_bybit_rest_client(bybit_rest_local_ip)?;
+            let native_uta = matches!(
+                exec_venue,
+                Some(
+                    order_common::TradingVenue::BybitFutures
+                        | order_common::TradingVenue::BitgetFutures
+                )
+            );
+            let bybit_http = if native_uta {
+                crate::native_uta_exec::account_client()?
+            } else {
+                crate::bybit_query::build_bybit_rest_client(bybit_rest_local_ip)?
+            };
+            let bitget_http = if native_uta {
+                crate::native_uta_exec::account_client()?
+            } else {
+                reqwest::Client::new()
+            };
             let query_router = tokio::task::spawn_local(async move {
                 let ltp_rest = if use_ltp_backend_for_query_router {
                     Some(
@@ -2716,13 +3269,13 @@ impl TradeEngine {
                 let okex_http = reqwest::Client::new();
                 let okex_creds = account_common::okex_auth::OkexCredentials::from_env().ok();
                 let bybit_creds = account_common::bybit_auth::BybitCredentials::from_env().ok();
-                let bitget_http = reqwest::Client::new();
                 let bitget_creds = account_common::bitget_auth::BitgetCredentials::from_env().ok();
                 let gate_http = reqwest::Client::new();
                 let gate_creds = account_common::gate_auth::GateCredentials::from_env().ok();
                 let mut binance_query_rr = 0usize;
                 let mut gate_query_rr = 0usize;
                 let mut gate_futures_query_rr = 0usize;
+                let mut hyperliquid_query_rr = 0usize;
                 let mut okex_query_rate_limiter = OkexQueryRateLimiter::default();
                 let mut bitget_query_rate_limiter = BitgetQueryRateLimiter::default();
                 let mut query_req_ingress = query_req_ingress;
@@ -2758,6 +3311,25 @@ impl TradeEngine {
                     };
                     idle_spin_count = 0;
                     routed_since_yield = true;
+                    if exec_markets.is_some_and(|markets| {
+                        !markets
+                            .into_iter()
+                            .flatten()
+                            .any(|market| exec_query_request_allowed(market, msg.req_type))
+                    }) {
+                        let _ = query_resp_sink.send(QueryExecOutcome {
+                            req_type: msg.req_type,
+                            client_query_id: msg.client_query_id,
+                            status: 400,
+                            body: bytes::Bytes::from_static(
+                                b"query does not belong to this Exec market",
+                            ),
+                            exchange: exchange_copy,
+                            ip_used_weight_1m: None,
+                            query_count_1m: None,
+                        });
+                        continue;
+                    }
                     debug!(
                         "routing query: type={:?} client_query_id={}",
                         msg.req_type, msg.client_query_id
@@ -3085,8 +3657,19 @@ impl TradeEngine {
                                         | crate::query_request::QueryRequestType::BinanceCmAccountSnapshotStd
                                             if outcome.status == 200 =>
                                         {
-                                            if let Some(msgs) = parse_binance_um_account_snapshot(&outcome.body) {
-                                                if msgs.is_empty() {
+                                            let parsed = if msg.req_type
+                                                == crate::query_request::QueryRequestType::BinanceUmAccountSnapshotStd
+                                            {
+                                                parse_binance_um_account_snapshot_std(&outcome.body)
+                                            } else {
+                                                parse_binance_um_account_snapshot(&outcome.body)
+                                            };
+                                            if let Some(msgs) = parsed {
+                                                let has_position = msgs.iter().any(|payload| {
+                                                    get_basic_event_type(payload)
+                                                        == BasicAccountEventType::PositionUpdate
+                                                });
+                                                if !has_position {
                                                     let _ = query_resp_sink.send(QueryExecOutcome {
                                                         req_type: msg.req_type,
                                                         client_query_id: msg.client_query_id,
@@ -3096,18 +3679,17 @@ impl TradeEngine {
                                                         ip_used_weight_1m: outcome.ip_used_weight_1m,
                                                         query_count_1m: outcome.order_count_1m,
                                                     });
-                                                } else {
-                                                    for payload in msgs {
-                                                        let _ = query_resp_sink.send(QueryExecOutcome {
-                                                            req_type: msg.req_type,
-                                                            client_query_id: msg.client_query_id,
-                                                            status: outcome.status,
-                                                            body: payload,
-                                                            exchange: exchange_copy,
-                                                            ip_used_weight_1m: outcome.ip_used_weight_1m,
-                                                            query_count_1m: outcome.order_count_1m,
-                                                        });
-                                                    }
+                                                }
+                                                for payload in msgs {
+                                                    let _ = query_resp_sink.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status: outcome.status,
+                                                        body: payload,
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                        query_count_1m: outcome.order_count_1m,
+                                                    });
                                                 }
                                                 let _ = query_resp_sink.send(QueryExecOutcome {
                                                     req_type: msg.req_type,
@@ -4104,6 +4686,68 @@ impl TradeEngine {
                                 }
                             }
                         }
+                        Exchange::Hyperliquid => {
+                            if !QueryTypeMapping::is_hyperliquid_ws(msg.req_type) {
+                                let _ = query_resp_sink.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 400,
+                                    body: bytes::Bytes::from_static(b"E"),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            }
+                            let Some(endpoints) = hyperliquid_ws_endpoints.as_ref() else {
+                                let _ = query_resp_sink.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 503,
+                                    body: bytes::Bytes::from_static(b"E"),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            };
+                            if endpoints.is_empty() {
+                                let _ = query_resp_sink.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 503,
+                                    body: bytes::Bytes::from_static(b"E"),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            }
+
+                            let len = endpoints.len();
+                            let start = hyperliquid_query_rr;
+                            hyperliquid_query_rr = (hyperliquid_query_rr + 1) % len;
+                            let target = (0..len)
+                                .map(|offset| (start + offset) % len)
+                                .find(|idx| endpoints[*idx].is_available());
+                            if let Some(idx) = target {
+                                endpoints[idx].enqueue_available(WsCommand::SendQuery(msg));
+                            } else {
+                                warn!(
+                                    "hyperliquid ws query endpoints unavailable req_type={:?} client_query_id={}",
+                                    msg.req_type, msg.client_query_id
+                                );
+                                let _ = query_resp_sink.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 503,
+                                    body: bytes::Bytes::from_static(b"E"),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                            }
+                        }
                         _ => {
                             let _ = query_resp_sink.send(QueryExecOutcome {
                                 req_type: msg.req_type,
@@ -4150,14 +4794,82 @@ impl TradeEngine {
 #[cfg(test)]
 mod tests {
     use super::{
-        binance_std_usdt_transfer_rest_pairs, configured_binance_ws_markets, enable_ipc_fast_poll,
-        parse_bool_env, router_idle_spin_iters, DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
+        binance_batch_modify_order_rest_pairs, binance_batch_modify_outcomes,
+        binance_modify_order_rest_pairs, binance_std_usdt_transfer_rest_pairs,
+        configured_binance_ws_markets, enable_ipc_fast_poll, exec_query_request_allowed,
+        exec_trade_request_allowed, parse_bool_env, read_only_trade_rejection,
+        router_idle_spin_iters, trade_request_rest_pairs, DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
     };
+    use crate::query_request::QueryRequestType;
+    use crate::trade_request::{
+        BinanceBatchModifyOrdersParams, BinanceModifyOrderParams, BinancePriceMatch,
+        TradeRequestMsg, TradeRequestType,
+    };
+    use order_common::Side;
+    use runtime_common::exchange::Exchange;
+    use serde_json::Value;
+    use signal_common::tick_math::QuantizedValue;
     use std::sync::{Mutex, OnceLock};
 
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn read_only_rejection_preserves_request_identity_for_orders_and_cancels() {
+        for req_type in [
+            TradeRequestType::OkexNewUMOrder,
+            TradeRequestType::OkexCancelUMOrder,
+        ] {
+            let msg = TradeRequestMsg::create(req_type, 123, 456, b"{}").unwrap();
+            let response = read_only_trade_rejection(&msg, Exchange::Okex);
+            assert_eq!(response.req_type, req_type);
+            assert_eq!(response.client_order_id, 456);
+            assert_eq!(response.status, 403);
+            assert_eq!(response.order_id, 0);
+            assert_eq!(response.executed_qty, 0.0);
+        }
+    }
+
+    #[test]
+    fn native_uta_exec_routes_orders_and_queries_without_cash_or_coin() {
+        use order_common::TradingVenue::*;
+        use QueryRequestType::*;
+        use TradeRequestType::*;
+        for (venue, new, cancel, query, position, spot) in [
+            (
+                BybitFutures,
+                BybitNewUMOrder,
+                BybitCancelUMOrder,
+                BybitUMQuery,
+                BybitPositionsSnapshot,
+                BybitNewMarginOrder,
+            ),
+            (
+                BitgetFutures,
+                BitgetNewUMOrder,
+                BitgetCancelUMOrder,
+                BitgetUMQuery,
+                BitgetPositionsSnapshot,
+                BitgetNewMarginOrder,
+            ),
+        ] {
+            assert!(exec_trade_request_allowed(venue, new));
+            assert!(exec_trade_request_allowed(venue, cancel));
+            assert!(exec_query_request_allowed(venue, query));
+            assert!(exec_query_request_allowed(venue, position));
+            assert!(!exec_trade_request_allowed(venue, spot));
+            assert!(!exec_trade_request_allowed(
+                venue,
+                BitgetNewCoinFuturesOrder
+            ));
+            assert!(!exec_query_request_allowed(
+                venue,
+                BitgetCoinPositionsSnapshot
+            ));
+            assert!(!exec_query_request_allowed(venue, BinanceUmAccountSnapshot));
+        }
     }
 
     #[test]
@@ -4181,6 +4893,126 @@ mod tests {
         );
     }
 
+    fn best_modify(client_order_id: i64, side: Side) -> BinanceModifyOrderParams {
+        BinanceModifyOrderParams::at_best_price(
+            "BTCUSDT",
+            side,
+            QuantizedValue::from_decimal(0.01).unwrap(),
+            1000 + client_order_id,
+            client_order_id,
+            None,
+        )
+    }
+
+    #[test]
+    fn coin_modify_rest_serializes_native_symbol_and_contract_count() {
+        for kind in [
+            TradeRequestType::BinanceModifyCmOrder,
+            TradeRequestType::BinancePmModifyCmOrder,
+        ] {
+            let params = BinanceModifyOrderParams::with_price(
+                "BTCUSD_PERP",
+                Side::Buy,
+                QuantizedValue::from_decimal(5.0).unwrap(),
+                QuantizedValue::from_decimal(50000.5).unwrap(),
+                1042,
+                42,
+                None,
+            );
+            let bytes = params.request_bytes(kind, 1, 42).unwrap();
+            let msg = TradeRequestMsg::parse(&bytes).unwrap();
+            let pairs = trade_request_rest_pairs(&msg).unwrap();
+            assert!(pairs.contains(&("symbol".to_string(), "BTCUSD_PERP".to_string())));
+            assert!(pairs.contains(&("quantity".to_string(), "5".to_string())));
+            assert!(pairs.contains(&("price".to_string(), "50000.5".to_string())));
+        }
+    }
+
+    #[test]
+    fn binance_modify_rest_pairs_select_price_or_queue() {
+        let explicit = BinanceModifyOrderParams::with_price(
+            "BTCUSDT",
+            Side::Buy,
+            QuantizedValue::from_decimal(0.01).unwrap(),
+            QuantizedValue::from_decimal(65000.5).unwrap(),
+            1042,
+            42,
+            Some(9),
+        );
+        let msg = TradeRequestMsg::create(
+            TradeRequestType::BinanceStdModifyUMOrder,
+            1,
+            42,
+            &explicit.to_bytes().unwrap(),
+        )
+        .unwrap();
+        let pairs = binance_modify_order_rest_pairs(&msg).unwrap();
+        assert!(pairs.contains(&("price".to_string(), "65000.5".to_string())));
+        assert!(!pairs.iter().any(|(key, _)| key == "priceMatch"));
+
+        let best = best_modify(43, Side::Sell);
+        assert_eq!(best.price_match, BinancePriceMatch::Queue);
+        let msg = TradeRequestMsg::create(
+            TradeRequestType::BinanceModifyUMOrder,
+            1,
+            43,
+            &best.to_bytes().unwrap(),
+        )
+        .unwrap();
+        let pairs = binance_modify_order_rest_pairs(&msg).unwrap();
+        assert!(pairs.contains(&("priceMatch".to_string(), "QUEUE".to_string())));
+        assert!(!pairs.iter().any(|(key, _)| key == "price"));
+    }
+
+    #[test]
+    fn binance_papi_modify_rejects_urlencoded_params() {
+        let msg = TradeRequestMsg::create(
+            TradeRequestType::BinanceModifyUMOrder,
+            1,
+            42,
+            b"symbol=BTCUSDT&side=BUY&quantity=0.01&priceMatch=QUEUE&origClientOrderId=42",
+        )
+        .unwrap();
+        assert!(trade_request_rest_pairs(&msg).is_err());
+    }
+
+    #[test]
+    fn binance_batch_modify_serializes_and_fans_out_partial_results() {
+        let batch = BinanceBatchModifyOrdersParams {
+            orders: vec![best_modify(42, Side::Buy), best_modify(43, Side::Sell)],
+        };
+        let msg = TradeRequestMsg::create(
+            TradeRequestType::BinanceStdBatchModifyUMOrders,
+            1,
+            99,
+            &batch.to_bytes().unwrap(),
+        )
+        .unwrap();
+        let pairs = binance_batch_modify_order_rest_pairs(&msg).unwrap();
+        let encoded = pairs
+            .iter()
+            .find(|(key, _)| key == "batchOrders")
+            .map(|(_, value)| value)
+            .unwrap();
+        let json: Value = serde_json::from_str(encoded).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 2);
+        assert_eq!(json[0]["priceMatch"], "QUEUE");
+        assert!(json[0].get("response_client_order_id").is_none());
+
+        let body = r#"[
+            {"orderId":1042,"status":"NEW","updateTime":123,"executedQty":"0","price":"65000.0"},
+            {"code":-2011,"msg":"Unknown order sent."}
+        ]"#;
+        let outcomes = binance_batch_modify_outcomes(&batch, 200, body, Exchange::Binance);
+        assert_eq!(outcomes.len(), 2);
+        assert_eq!(outcomes[0].client_order_id, 42);
+        assert_eq!(outcomes[0].order_id, 1042);
+        assert_eq!(outcomes[0].order_status_u8, 1);
+        assert_eq!(outcomes[0].response_price, 65000.0);
+        assert_eq!(outcomes[1].client_order_id, 43);
+        assert!(outcomes[1].body.contains("-2011"));
+    }
+
     #[test]
     fn coin_only_venue_disables_unrelated_binance_trade_websockets() {
         let _guard = env_test_lock();
@@ -4190,9 +5022,57 @@ mod tests {
         std::env::set_var("EXEC_VENUE", "binance-coin-futures");
         assert_eq!(configured_binance_ws_markets(), (false, false));
         std::env::set_var("OPEN_VENUE", "binance-margin");
-        assert_eq!(configured_binance_ws_markets(), (false, true));
+        assert_eq!(configured_binance_ws_markets(), (false, false));
         std::env::remove_var("OPEN_VENUE");
         std::env::remove_var("EXEC_VENUE");
+    }
+
+    #[test]
+    fn exec_rejects_foreign_market_orders_cancels_and_position_queries() {
+        use order_common::TradingVenue::{BinanceCoinFutures as Cm, BinanceFutures as Um};
+        for request in [
+            TradeRequestType::BinanceNewCmOrder,
+            TradeRequestType::BinancePmNewCmOrder,
+            TradeRequestType::BinanceCancelCmOrder,
+            TradeRequestType::BinancePmCancelCmOrder,
+            TradeRequestType::BinanceModifyCmOrder,
+            TradeRequestType::BinancePmModifyCmOrder,
+        ] {
+            assert!(exec_trade_request_allowed(Cm, request));
+            assert!(!exec_trade_request_allowed(Um, request));
+        }
+        for request in [
+            TradeRequestType::BinanceNewUMOrder,
+            TradeRequestType::BinanceWsNewUMOrder,
+            TradeRequestType::BinanceCancelUMOrder,
+            TradeRequestType::BinanceWsCancelUMOrder,
+            TradeRequestType::BinanceWsModifyUMOrder,
+        ] {
+            assert!(exec_trade_request_allowed(Um, request));
+            assert!(!exec_trade_request_allowed(Cm, request));
+        }
+        for venue in [Cm, Um] {
+            assert!(!exec_trade_request_allowed(
+                venue,
+                TradeRequestType::BinanceNewMarginOrder
+            ));
+            assert!(exec_query_request_allowed(
+                venue,
+                QueryRequestType::BinancePmAccountSnapshot
+            ));
+            assert!(exec_query_request_allowed(
+                venue,
+                QueryRequestType::BinancePmBalanceSnapshot
+            ));
+        }
+        assert!(!exec_query_request_allowed(
+            Cm,
+            QueryRequestType::BinanceUmAccountSnapshot
+        ));
+        assert!(!exec_query_request_allowed(
+            Um,
+            QueryRequestType::BinancePmCmAccountSnapshot
+        ));
     }
 
     #[test]

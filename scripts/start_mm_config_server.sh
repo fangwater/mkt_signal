@@ -43,7 +43,7 @@ EXCHANGE="${EXCHANGE:-${DEFAULT_EXCHANGE:-${detected_exchange:-binance}}}"
 if [[ "$EXCHANGE" == "okx" ]]; then
   EXCHANGE="okex"
 fi
-HOST="${HOST:-0.0.0.0}"
+HOST="${HOST:-127.0.0.1}"
 DEFAULT_EXCHANGE="${DEFAULT_EXCHANGE:-$EXCHANGE}"
 ENV_NAME="${ENV_NAME:-$dir_name}"
 DEFAULT_APP_NAME="mm_config_server_${dir_tag}"

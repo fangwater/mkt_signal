@@ -1,0 +1,586 @@
+{
+  "checked_at_ms": 1792048885861,
+  "thresholds": {
+    "0GUSDT": {
+      "medium_notional_threshold": 14.345,
+      "large_notional_threshold": 146.132
+    },
+    "AAVEUSDT": {
+      "medium_notional_threshold": 22.506,
+      "large_notional_threshold": 322.14
+    },
+    "ADAUSDT": {
+      "medium_notional_threshold": 31.7655,
+      "large_notional_threshold": 915.4322
+    },
+    "AGLDUSDT": {
+      "medium_notional_threshold": 16.7067,
+      "large_notional_threshold": 167.139
+    },
+    "APEUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "APTUSDT": {
+      "medium_notional_threshold": 16.52896,
+      "large_notional_threshold": 222.1128
+    },
+    "ARBUSDT": {
+      "medium_notional_threshold": 25.38138,
+      "large_notional_threshold": 675.32404
+    },
+    "ASTERUSDT": {
+      "medium_notional_threshold": 20.733,
+      "large_notional_threshold": 502.9184
+    },
+    "ATOMUSDT": {
+      "medium_notional_threshold": 16.52028,
+      "large_notional_threshold": 328.8483
+    },
+    "AUCTIONUSDT": {
+      "medium_notional_threshold": 15.57813,
+      "large_notional_threshold": 125.761236
+    },
+    "AVAXUSDT": {
+      "medium_notional_threshold": 20.91,
+      "large_notional_threshold": 622.2
+    },
+    "AVNTUSDT": {
+      "medium_notional_threshold": 19.591,
+      "large_notional_threshold": 281.0508
+    },
+    "AXSUSDT": {
+      "medium_notional_threshold": 24.28,
+      "large_notional_threshold": 438.256
+    },
+    "BARDUSDT": {
+      "medium_notional_threshold": 17.7024,
+      "large_notional_threshold": 174.246
+    },
+    "BCHUSDT": {
+      "medium_notional_threshold": 40.32119,
+      "large_notional_threshold": 499.001745
+    },
+    "BEATUSDT": {
+      "medium_notional_threshold": 12.952,
+      "large_notional_threshold": 119.7858
+    },
+    "BERAUSDT": {
+      "medium_notional_threshold": 16.51078,
+      "large_notional_threshold": 169.94934
+    },
+    "BICOUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "BIOUSDT": {
+      "medium_notional_threshold": 16.51494,
+      "large_notional_threshold": 200.00743
+    },
+    "BNBUSDT": {
+      "medium_notional_threshold": 12.9996,
+      "large_notional_threshold": 883.365
+    },
+    "BREVUSDT": {
+      "medium_notional_threshold": 22.591,
+      "large_notional_threshold": 233.295
+    },
+    "BTCUSDT": {
+      "medium_notional_threshold": 210.8313,
+      "large_notional_threshold": 4997.252
+    },
+    "C98USDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "CCUSDT": {
+      "medium_notional_threshold": 11.15224,
+      "large_notional_threshold": 145.384764
+    },
+    "CELOUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "CHRUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "CHZUSDT": {
+      "medium_notional_threshold": 18.8292,
+      "large_notional_threshold": 247.92537
+    },
+    "CRVUSDT": {
+      "medium_notional_threshold": 39.4218,
+      "large_notional_threshold": 747.0
+    },
+    "DASHUSDT": {
+      "medium_notional_threshold": 16.52799,
+      "large_notional_threshold": 294.492168
+    },
+    "DOGEUSDT": {
+      "medium_notional_threshold": 16.51716,
+      "large_notional_threshold": 939.55442
+    },
+    "DOTUSDT": {
+      "medium_notional_threshold": 24.4186,
+      "large_notional_threshold": 811.26432
+    },
+    "DYDXUSDT": {
+      "medium_notional_threshold": 25.4345,
+      "large_notional_threshold": 304.97152
+    },
+    "ENAUSDT": {
+      "medium_notional_threshold": 28.9465,
+      "large_notional_threshold": 845.73624
+    },
+    "ENSOUSDT": {
+      "medium_notional_threshold": 13.7598,
+      "large_notional_threshold": 135.68
+    },
+    "ETCUSDT": {
+      "medium_notional_threshold": 40.006,
+      "large_notional_threshold": 353.316564
+    },
+    "ETHFIUSDT": {
+      "medium_notional_threshold": 16.52213,
+      "large_notional_threshold": 179.008
+    },
+    "ETHUSDT": {
+      "medium_notional_threshold": 30.98535,
+      "large_notional_threshold": 2232.714344
+    },
+    "FARTCOINUSDT": {
+      "medium_notional_threshold": 16.51716,
+      "large_notional_threshold": 594.32175
+    },
+    "FILUSDT": {
+      "medium_notional_threshold": 29.915,
+      "large_notional_threshold": 853.1696
+    },
+    "FLOWUSDT": {
+      "medium_notional_threshold": 16.498478,
+      "large_notional_threshold": 206.898252
+    },
+    "GALAUSDT": {
+      "medium_notional_threshold": 27.64608,
+      "large_notional_threshold": 675.045561
+    },
+    "GIGGLEUSDT": {
+      "medium_notional_threshold": 21.3598,
+      "large_notional_threshold": 201.3242
+    },
+    "GMXUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "GPSUSDT": {
+      "medium_notional_threshold": 10.007871,
+      "large_notional_threshold": 68.56
+    },
+    "HBARUSDT": {
+      "medium_notional_threshold": 16.51914,
+      "large_notional_threshold": 268.419202
+    },
+    "HUMAUSDT": {
+      "medium_notional_threshold": 10.015662,
+      "large_notional_threshold": 92.749503
+    },
+    "HUSDT": {
+      "medium_notional_threshold": 10.15125,
+      "large_notional_threshold": 131.851183
+    },
+    "HYPEUSDT": {
+      "medium_notional_threshold": 16.07282,
+      "large_notional_threshold": 605.03716
+    },
+    "ICPUSDT": {
+      "medium_notional_threshold": 23.81,
+      "large_notional_threshold": 429.616
+    },
+    "INITUSDT": {
+      "medium_notional_threshold": 10.04295,
+      "large_notional_threshold": 79.28379
+    },
+    "INJUSDT": {
+      "medium_notional_threshold": 16.797,
+      "large_notional_threshold": 301.53184
+    },
+    "IOTXUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "IPUSDT": {
+      "medium_notional_threshold": 16.5459,
+      "large_notional_threshold": 248.559886
+    },
+    "JELLYJELLYUSDT": {
+      "medium_notional_threshold": 14.015,
+      "large_notional_threshold": 125.671518
+    },
+    "JOEUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "JTOUSDT": {
+      "medium_notional_threshold": 16.776,
+      "large_notional_threshold": 196.5839
+    },
+    "KAITOUSDT": {
+      "medium_notional_threshold": 16.51104,
+      "large_notional_threshold": 152.05812
+    },
+    "LAUSDT": {
+      "medium_notional_threshold": 17.432,
+      "large_notional_threshold": 158.57664
+    },
+    "LDOUSDT": {
+      "medium_notional_threshold": 19.1646,
+      "large_notional_threshold": 314.0181
+    },
+    "LIGHTUSDT": {
+      "medium_notional_threshold": 16.6594,
+      "large_notional_threshold": 176.7035
+    },
+    "LINKUSDT": {
+      "medium_notional_threshold": 40.39717,
+      "large_notional_threshold": 833.424
+    },
+    "LITUSDT": {
+      "medium_notional_threshold": 38.994,
+      "large_notional_threshold": 445.00806
+    },
+    "LQTYUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "LTCUSDT": {
+      "medium_notional_threshold": 40.9101,
+      "large_notional_threshold": 580.360236
+    },
+    "MERLUSDT": {
+      "medium_notional_threshold": 8.73639,
+      "large_notional_threshold": 128.44936
+    },
+    "MEUSDT": {
+      "medium_notional_threshold": 17.84628,
+      "large_notional_threshold": 302.560176
+    },
+    "MINAUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "MONUSDT": {
+      "medium_notional_threshold": 18.29736,
+      "large_notional_threshold": 271.981964
+    },
+    "MOODENGUSDT": {
+      "medium_notional_threshold": 11.32228,
+      "large_notional_threshold": 152.077626
+    },
+    "MUUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "NEARUSDT": {
+      "medium_notional_threshold": 31.694,
+      "large_notional_threshold": 999.454
+    },
+    "NIGHTUSDT": {
+      "medium_notional_threshold": 16.98504,
+      "large_notional_threshold": 143.7941
+    },
+    "ONDOUSDT": {
+      "medium_notional_threshold": 18.59452,
+      "large_notional_threshold": 376.664308
+    },
+    "ONEUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "ONTUSDT": {
+      "medium_notional_threshold": 49.94612,
+      "large_notional_threshold": 802.338078
+    },
+    "OPUSDT": {
+      "medium_notional_threshold": 25.05048,
+      "large_notional_threshold": 493.3084
+    },
+    "PENGUUSDT": {
+      "medium_notional_threshold": 16.497217,
+      "large_notional_threshold": 296.000305
+    },
+    "PIEVERSEUSDT": {
+      "medium_notional_threshold": 13.2256,
+      "large_notional_threshold": 106.84
+    },
+    "PIPPINUSDT": {
+      "medium_notional_threshold": 14.71379,
+      "large_notional_threshold": 129.6575
+    },
+    "POLUSDT": {
+      "medium_notional_threshold": 13.248,
+      "large_notional_threshold": 162.215314
+    },
+    "PUMPUSDT": {
+      "medium_notional_threshold": 25.348288,
+      "large_notional_threshold": 671.038313
+    },
+    "RAVEUSDT": {
+      "medium_notional_threshold": 10.21274,
+      "large_notional_threshold": 48.783216
+    },
+    "RENDERUSDT": {
+      "medium_notional_threshold": 24.2272,
+      "large_notional_threshold": 515.1128
+    },
+    "RESOLVUSDT": {
+      "medium_notional_threshold": 14.837125,
+      "large_notional_threshold": 145.93824
+    },
+    "RSRUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "SAHARAUSDT": {
+      "medium_notional_threshold": 20.62421,
+      "large_notional_threshold": 357.78064
+    },
+    "SANDUSDT": {
+      "medium_notional_threshold": 16.53696,
+      "large_notional_threshold": 162.79965
+    },
+    "SEIUSDT": {
+      "medium_notional_threshold": 16.5576,
+      "large_notional_threshold": 242.762436
+    },
+    "SENTUSDT": {
+      "medium_notional_threshold": 25.19491,
+      "large_notional_threshold": 228.380208
+    },
+    "SIGNUSDT": {
+      "medium_notional_threshold": 20.69106,
+      "large_notional_threshold": 250.150574
+    },
+    "SNDKUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "SOLUSDT": {
+      "medium_notional_threshold": 45.3186,
+      "large_notional_threshold": 2275.01264
+    },
+    "STABLEUSDT": {
+      "medium_notional_threshold": 10.019982,
+      "large_notional_threshold": 73.60412
+    },
+    "SUIUSDT": {
+      "medium_notional_threshold": 16.53741,
+      "large_notional_threshold": 670.838428
+    },
+    "TAOUSDT": {
+      "medium_notional_threshold": 16.6,
+      "large_notional_threshold": 399.099456
+    },
+    "TIAUSDT": {
+      "medium_notional_threshold": 19.6821,
+      "large_notional_threshold": 300.4452
+    },
+    "TONUSDT": {
+      "medium_notional_threshold": 16.50564,
+      "large_notional_threshold": 199.617282
+    },
+    "TRUMPUSDT": {
+      "medium_notional_threshold": 20.4294,
+      "large_notional_threshold": 812.265278
+    },
+    "TRXUSDT": {
+      "medium_notional_threshold": 17.95573,
+      "large_notional_threshold": 597.255768
+    },
+    "TURBOUSDT": {
+      "medium_notional_threshold": 16.275715,
+      "large_notional_threshold": 156.857313
+    },
+    "UNIUSDT": {
+      "medium_notional_threshold": 20.16,
+      "large_notional_threshold": 521.424
+    },
+    "USELESSUSDT": {
+      "medium_notional_threshold": 12.18573,
+      "large_notional_threshold": 133.624396
+    },
+    "VIRTUALUSDT": {
+      "medium_notional_threshold": 16.52693,
+      "large_notional_threshold": 266.409
+    },
+    "WIFUSDT": {
+      "medium_notional_threshold": 22.554,
+      "large_notional_threshold": 542.470091
+    },
+    "WLDUSDT": {
+      "medium_notional_threshold": 17.0252,
+      "large_notional_threshold": 500.1631
+    },
+    "WLFIUSDT": {
+      "medium_notional_threshold": 29.7348,
+      "large_notional_threshold": 563.325
+    },
+    "WOOUSDT": {
+      "medium_notional_threshold": 10.0,
+      "large_notional_threshold": 100.0
+    },
+    "XLMUSDT": {
+      "medium_notional_threshold": 12.429,
+      "large_notional_threshold": 282.45732
+    },
+    "XPLUSDT": {
+      "medium_notional_threshold": 25.1125,
+      "large_notional_threshold": 499.4784
+    },
+    "XRPUSDT": {
+      "medium_notional_threshold": 16.56392,
+      "large_notional_threshold": 1214.388672
+    },
+    "ZECUSDT": {
+      "medium_notional_threshold": 16.57319,
+      "large_notional_threshold": 560.91618
+    },
+    "ZENUSDT": {
+      "medium_notional_threshold": 16.79115,
+      "large_notional_threshold": 170.184
+    },
+    "ZILUSDT": {
+      "medium_notional_threshold": 24.114625,
+      "large_notional_threshold": 367.75003
+    },
+    "ZKUSDT": {
+      "medium_notional_threshold": 18.54,
+      "large_notional_threshold": 230.357916
+    },
+    "ZROUSDT": {
+      "medium_notional_threshold": 10.23237,
+      "large_notional_threshold": 128.70624
+    }
+  },
+  "signal_config": {
+    "enabled": true,
+    "max_pos_u": 300.0,
+    "entry": {
+      "factor_long_quantile": 0.9,
+      "factor_short_quantile": 0.1,
+      "nq_change_enabled": true,
+      "nq_long_quantile": 0.5,
+      "nq_short_quantile": 0.5
+    },
+    "execution": {
+      "factor_exit_quantile_long": 0.7,
+      "factor_exit_quantile_short": 0.3
+    }
+  },
+  "symbol_factors": {
+    "AAVEUSDT": {
+      "TD_TI_024": -1.0,
+      "baseline_141": 1.0,
+      "baseline_164": 1.0,
+      "baseline_200": -1.0
+    },
+    "DASHUSDT": {
+      "TD_TI_024": -1.0,
+      "baseline_141": 1.0,
+      "baseline_164": 1.0,
+      "baseline_200": -1.0
+    },
+    "DOGEUSDT": {
+      "TD_TI_024": -1.0,
+      "baseline_200": -1.0
+    },
+    "ETHUSDT": {
+      "baseline_141": 1.0
+    },
+    "NEARUSDT": {
+      "TD_TI_024": -1.0,
+      "baseline_141": 1.0,
+      "factor_036": -1.0
+    },
+    "SOLUSDT": {
+      "baseline_141": 1.0,
+      "baseline_200": -1.0
+    },
+    "XLMUSDT": {
+      "TD_TI_024": -1.0,
+      "baseline_141": 1.0,
+      "baseline_200": -1.0
+    },
+    "XRPUSDT": {
+      "baseline_141": 1.0
+    },
+    "ZECUSDT": {
+      "TD_TI_024": -1.0,
+      "baseline_141": 1.0,
+      "baseline_164": 1.0,
+      "baseline_200": -1.0
+    }
+  },
+  "ready_pairs": 24,
+  "nonzero_signal_positions": 0,
+  "publication_error": null,
+  "journal_healthy": true,
+  "missing_threshold_symbols": [
+    "1INCHUSDT",
+    "ALGOUSDT",
+    "BANDUSDT",
+    "BELUSDT",
+    "COMPUSDT",
+    "EGLDUSDT",
+    "ENJUSDT",
+    "GRTUSDT",
+    "ICXUSDT",
+    "IOSTUSDT",
+    "IOTAUSDT",
+    "KAVAUSDT",
+    "KNCUSDT",
+    "KSMUSDT",
+    "NEOUSDT",
+    "QTUMUSDT",
+    "RLCUSDT",
+    "SKLUSDT",
+    "SNXUSDT",
+    "SUSHIUSDT",
+    "THETAUSDT",
+    "TRBUSDT",
+    "VETUSDT",
+    "XTZUSDT",
+    "YFIUSDT",
+    "ZRXUSDT"
+  ],
+  "missing_threshold_symbol_count": 26,
+  "valid_threshold_symbol_count": 22,
+  "missing_or_invalid_threshold_symbols": [
+    "1INCHUSDT",
+    "ALGOUSDT",
+    "BANDUSDT",
+    "BELUSDT",
+    "COMPUSDT",
+    "EGLDUSDT",
+    "ENJUSDT",
+    "GRTUSDT",
+    "ICXUSDT",
+    "IOSTUSDT",
+    "IOTAUSDT",
+    "KAVAUSDT",
+    "KNCUSDT",
+    "KSMUSDT",
+    "NEOUSDT",
+    "QTUMUSDT",
+    "RLCUSDT",
+    "SKLUSDT",
+    "SNXUSDT",
+    "SUSHIUSDT",
+    "THETAUSDT",
+    "TRBUSDT",
+    "VETUSDT",
+    "XTZUSDT",
+    "YFIUSDT",
+    "ZRXUSDT"
+  ]
+}

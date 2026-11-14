@@ -1,0 +1,228 @@
+{
+  "verified_at_ms": 1794464772440,
+  "host": "jp-meta-elvpn",
+  "environment": "/home/ubuntu/cta-factor-spread",
+  "generation": "67181a32-7d5a-4ed9-9daf-156517a13136",
+  "warming": false,
+  "symbols": 18,
+  "rules": 319,
+  "tables": [
+    {
+      "interval": "15min",
+      "rules": 64,
+      "enabled": false,
+      "max_pos_u": 100,
+      "strategy": "cta-spread02-okx-bn-15min-pos",
+      "calculations": 78,
+      "ready": 63,
+      "unready": [
+        "okex-futures-adausdt-15min-sell_avg_price",
+        "okex-futures-atomusdt-15min-tp_vpi_001",
+        "okex-futures-avaxusdt-15min-avg_price",
+        "okex-futures-avaxusdt-15min-td_ti_031",
+        "okex-futures-crvusdt-15min-baseline_100",
+        "okex-futures-etcusdt-15min-baseline_104",
+        "okex-futures-filusdt-15min-baseline_104",
+        "okex-futures-filusdt-15min-baseline_120",
+        "okex-futures-filusdt-15min-factor_114",
+        "okex-futures-filusdt-15min-tp_vpi_014",
+        "okex-futures-trbusdt-15min-baseline_120",
+        "okex-futures-trxusdt-15min-td_ti_031",
+        "okex-futures-uniusdt-15min-factor_094",
+        "okex-futures-xrpusdt-15min-baseline_035",
+        "okex-futures-xrpusdt-15min-factor_032"
+      ]
+    },
+    {
+      "interval": "1h",
+      "rules": 128,
+      "enabled": false,
+      "max_pos_u": 100,
+      "strategy": "cta-spread02-okx-bn-1h-pos",
+      "calculations": 130,
+      "ready": 57,
+      "unready": [
+        "okex-futures-aaveusdt-1h-baseline_020",
+        "okex-futures-aaveusdt-1h-nq",
+        "okex-futures-aaveusdt-1h-td_ti_013",
+        "okex-futures-adausdt-1h-baseline_098",
+        "okex-futures-adausdt-1h-baseline_110",
+        "okex-futures-adausdt-1h-baseline_127",
+        "okex-futures-adausdt-1h-baseline_200",
+        "okex-futures-adausdt-1h-factor_116",
+        "okex-futures-adausdt-1h-nq",
+        "okex-futures-atomusdt-1h-baseline_031",
+        "okex-futures-atomusdt-1h-factor_052",
+        "okex-futures-atomusdt-1h-factor_114",
+        "okex-futures-atomusdt-1h-nq",
+        "okex-futures-atomusdt-1h-td_ti_015",
+        "okex-futures-atomusdt-1h-td_ti_016",
+        "okex-futures-atomusdt-1h-td_ti_033",
+        "okex-futures-bchusdt-1h-baseline_113",
+        "okex-futures-bchusdt-1h-factor_047",
+        "okex-futures-bchusdt-1h-factor_094",
+        "okex-futures-bchusdt-1h-nq",
+        "okex-futures-bchusdt-1h-tp_vpi_003",
+        "okex-futures-crvusdt-1h-baseline_104",
+        "okex-futures-crvusdt-1h-baseline_138",
+        "okex-futures-crvusdt-1h-factor_052",
+        "okex-futures-crvusdt-1h-nq",
+        "okex-futures-crvusdt-1h-tp_vpi_005",
+        "okex-futures-dogeusdt-1h-factor_046",
+        "okex-futures-dogeusdt-1h-nq",
+        "okex-futures-dogeusdt-1h-td_ti_030",
+        "okex-futures-dotusdt-1h-baseline_043",
+        "okex-futures-dotusdt-1h-baseline_058",
+        "okex-futures-dotusdt-1h-baseline_081",
+        "okex-futures-dotusdt-1h-baseline_157",
+        "okex-futures-dotusdt-1h-factor_045",
+        "okex-futures-dotusdt-1h-factor_052",
+        "okex-futures-dotusdt-1h-nq",
+        "okex-futures-dotusdt-1h-td_ti_027",
+        "okex-futures-etcusdt-1h-baseline_016",
+        "okex-futures-etcusdt-1h-baseline_081",
+        "okex-futures-etcusdt-1h-baseline_113",
+        "okex-futures-etcusdt-1h-factor_052",
+        "okex-futures-etcusdt-1h-nq",
+        "okex-futures-etcusdt-1h-td_ti_008",
+        "okex-futures-ethusdt-1h-nq",
+        "okex-futures-filusdt-1h-baseline_198",
+        "okex-futures-filusdt-1h-nq",
+        "okex-futures-filusdt-1h-td_mt_015",
+        "okex-futures-filusdt-1h-td_ti_008",
+        "okex-futures-linkusdt-1h-baseline_200",
+        "okex-futures-linkusdt-1h-factor_052",
+        "okex-futures-linkusdt-1h-nq",
+        "okex-futures-linkusdt-1h-tp_vpi_014",
+        "okex-futures-ltcusdt-1h-baseline_047",
+        "okex-futures-ltcusdt-1h-baseline_113",
+        "okex-futures-ltcusdt-1h-factor_094",
+        "okex-futures-ltcusdt-1h-nq",
+        "okex-futures-nearusdt-1h-baseline_054",
+        "okex-futures-nearusdt-1h-factor_052",
+        "okex-futures-nearusdt-1h-nq",
+        "okex-futures-trbusdt-1h-baseline_081",
+        "okex-futures-trbusdt-1h-baseline_120",
+        "okex-futures-trbusdt-1h-factor_094",
+        "okex-futures-trbusdt-1h-factor_114",
+        "okex-futures-trbusdt-1h-nq",
+        "okex-futures-trbusdt-1h-td_mt_021",
+        "okex-futures-trbusdt-1h-td_ti_025",
+        "okex-futures-uniusdt-1h-baseline_173",
+        "okex-futures-uniusdt-1h-nq",
+        "okex-futures-xrpusdt-1h-baseline_058",
+        "okex-futures-xrpusdt-1h-baseline_157",
+        "okex-futures-xrpusdt-1h-nq",
+        "okex-futures-xrpusdt-1h-td_ti_037",
+        "okex-futures-xrpusdt-1h-tp_vpi_014"
+      ]
+    },
+    {
+      "interval": "1min",
+      "rules": 48,
+      "enabled": false,
+      "max_pos_u": 100,
+      "strategy": "cta-spread02-okx-bn-1min-pos",
+      "calculations": 50,
+      "ready": 49,
+      "unready": [
+        "okex-futures-trbusdt-1min-factor_114"
+      ]
+    },
+    {
+      "interval": "5min",
+      "rules": 79,
+      "enabled": false,
+      "max_pos_u": 100,
+      "strategy": "cta-spread02-okx-bn-5min-pos",
+      "calculations": 83,
+      "ready": 68,
+      "unready": [
+        "okex-futures-adausdt-5min-tp_vpi_001",
+        "okex-futures-crvusdt-5min-td_ti_002",
+        "okex-futures-crvusdt-5min-td_ti_033",
+        "okex-futures-dotusdt-5min-avg_price",
+        "okex-futures-etcusdt-5min-sell_avg_price",
+        "okex-futures-filusdt-5min-td_ti_008",
+        "okex-futures-nearusdt-5min-factor_031",
+        "okex-futures-nearusdt-5min-factor_051",
+        "okex-futures-trbusdt-5min-factor_031",
+        "okex-futures-trbusdt-5min-td_ti_002",
+        "okex-futures-trbusdt-5min-tp_vpi_005",
+        "okex-futures-trxusdt-5min-buy_avg_price",
+        "okex-futures-uniusdt-5min-buy_avg_price",
+        "okex-futures-xrpusdt-5min-factor_052",
+        "okex-futures-xrpusdt-5min-td_ti_002"
+      ]
+    }
+  ],
+  "merged_calculations": 532,
+  "error": null,
+  "positions_error": null,
+  "manager_publications": [
+    {
+      "error": null,
+      "last_success_ts_us": 1794464700527536,
+      "manager_url": "http://127.0.0.1:18201/api",
+      "pending_strategies": []
+    }
+  ],
+  "spread01_restored_ledger_checkpoint": {
+    "checked_at_ms": 1794463653233,
+    "spread01_ledger_matches": {
+      "cta-spread01-okx-bn-15min-pos.json": true,
+      "cta-spread01-okx-bn-1min-pos.json": true,
+      "cta-spread01-okx-bn-5min-pos.json": true,
+      "cta-spread01-okx-bn-1h-pos.json": true
+    },
+    "spread01_configuration_matches": {
+      "config/cta_factor_spread/okex-futures_binance-futures_15min.json": true,
+      "config/cta_factor_spread/okex-futures_binance-futures_1h.json": true,
+      "config/cta_factor_spread/okex-futures_binance-futures_1min.json": true,
+      "config/cta_factor_spread/okex-futures_binance-futures_5min.json": true,
+      "config/cta_factor_spread/symbol_groups.json": true,
+      "config/cta_factor_spread.toml": true
+    },
+    "env_changed_fields": [
+      "CTA_HOURLY_HISTORY_DIR"
+    ],
+    "worker_warming": true,
+    "warm_records": 55203
+  },
+  "stable_service_process_changes": {},
+  "completed_scheduled_nav_batch_processes": {},
+  "services": {
+    "/home/ubuntu/cta-prep-binance-futures/cta-factor-config": [
+      [
+        "1954474",
+        {
+          "exe": "/home/ubuntu/cta-prep-binance-futures/cta-factor-config",
+          "starttime": "215202188",
+          "cpus": "0-5,48-95"
+        }
+      ]
+    ],
+    "/home/ubuntu/delist_risk_server/delist_risk_server": [
+      [
+        "1969486",
+        {
+          "exe": "/home/ubuntu/delist_risk_server/delist_risk_server",
+          "starttime": "215244559",
+          "cpus": "28"
+        }
+      ]
+    ],
+    "/home/ubuntu/cta-factor-spread/cta-factor-spread": [
+      [
+        "1965122",
+        {
+          "exe": "/home/ubuntu/cta-factor-spread/cta-factor-spread",
+          "starttime": "215231684",
+          "cpus": "18"
+        }
+      ]
+    ]
+  },
+  "threshold_symbols_loaded": 70,
+  "private_rollback": "/home/ubuntu/cta-factor-spread/run/spread02_20261112T055433Z/before"
+}

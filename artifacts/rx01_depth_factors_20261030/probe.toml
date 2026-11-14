@@ -1,0 +1,35 @@
+bar_interval = "15m"
+
+[universe]
+# Waiting for the operator's new RX01 list; no RX03 symbols or factors are copied.
+symbols = ["BTCUSDT", "ETHUSDT"]
+factors = ["depth_imb_bps1", "depth_imb_bps5", "depth_imb_bps10", "depth_imb_bps20", "depth_imb_bps50", "depth_imb_bps100", "depth_imb_all", "depth_log_ba_bps5", "depth_log_ba_bps20", "depth_log_ba_bps100", "depth_near_far_bid", "depth_near_far_ask", "depth_far_share_bid", "depth_far_share_ask", "depth_gap_bps_10k", "depth_gap_bps_50k", "depth_gap_bps_100k", "depth_flow_add_imb", "depth_flow_sub_imb", "depth_flow_net", "depth_touch_add_imb", "depth_touch_net", "depth_level_imb"]
+
+[tlen_server]
+base_url = "http://127.0.0.1:6322"
+request_timeout_ms = 5000
+symbol_reload_secs = 180
+
+# Normalization and factor percentile windows are measured in 15m bars.
+[normalize]
+window_bars = 96
+min_periods = 67
+clip_zscore = 3.0
+
+[kafka]
+lookback_secs = 259200
+catchup_timeout_secs = 3600
+topic = "binance-futures"
+topics = ["binance-futures"]
+brokers = "156.231.137.189:1501"
+group_id = "rx01_depth_probe_20261030"
+client_id = "rx01_depth_probe_20261030"
+offset_reset = "earliest"
+payload_compression = "zlib"
+poll_timeout_ms = 1000
+enable_auto_commit = false
+enable_partition_eof = false
+security_protocol = "none"
+broker_addr_rewrites = [
+  { from_host = "10.140.140.55", to_host = "156.231.137.189" },
+]

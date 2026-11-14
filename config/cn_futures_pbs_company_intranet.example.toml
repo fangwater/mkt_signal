@@ -1,0 +1,7 @@
+# Company-intranet deployment. This is not a public/colo market-data endpoint.
+service_root = "cn_futures_pbs/company_intranet"
+
+[zmq]
+access_scope = "company_intranet"
+endpoint = "tcp://10.61.20.12:13005"
+receive_hwm = 100000

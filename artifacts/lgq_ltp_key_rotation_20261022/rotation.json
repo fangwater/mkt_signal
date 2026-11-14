@@ -1,0 +1,20 @@
+{
+  "account": "lgq_ltp_81857",
+  "source_id": "binance_exec_trade08",
+  "rotated_at_ms": 1792675395019,
+  "validation": {
+    "PAPI": {
+      "status": 401,
+      "code": -2015,
+      "authenticated": false
+    },
+    "FAPI": {
+      "status": 200,
+      "code": null,
+      "authenticated": true
+    },
+    "account_mode": "STANDARD",
+    "can_trade": true
+  },
+  "env_mode": "0o600"
+}

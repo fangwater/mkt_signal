@@ -1,0 +1,28 @@
+{
+  "rust_library": {
+    "passed": 1401,
+    "failed": 0,
+    "ignored": 3
+  },
+  "cta_python": {
+    "passed": 108
+  },
+  "depth_python_reference": {
+    "passed": 2,
+    "formula_cases": 11,
+    "factors_per_case": 23
+  },
+  "checks": [
+    "cargo fmt --check",
+    "cargo check --bin cta_perp_factor_model_1m_pub --bin cta_perp_factor_model_5m_pub --bin cta_perp_factor_model_15m_pub --bin cta_perp_15m_signal"
+  ],
+  "local_release_build": [
+    "cta_perp_factor_model_15m_pub",
+    "cta_perp_15m_signal"
+  ],
+  "band_boundary_regression": {
+    "passed": 4,
+    "source_commit": "6f49c3e9",
+    "assertions": "Exact 1bp bid and ask price ticks are included"
+  }
+}

@@ -1,0 +1,484 @@
+{
+  "earliest": {
+    "records": [
+      {
+        "topic": "binance-futures",
+        "partition": 0,
+        "offset": 11151001,
+        "compression": "zlib",
+        "compressed_bytes": 629569,
+        "pb_bytes": 1919694,
+        "period": 29267928,
+        "ts": 1791870987000,
+        "post_ts": 1791870987950,
+        "poster_id": "msg_processor",
+        "symbols": 525,
+        "trades": 4520,
+        "incs": 14242
+      },
+      {
+        "topic": "binance-futures",
+        "partition": 0,
+        "offset": 11151002,
+        "compression": "zlib",
+        "compressed_bytes": 626862,
+        "pb_bytes": 1902512,
+        "period": 29267929,
+        "ts": 1791870990000,
+        "post_ts": 1791870990954,
+        "poster_id": "msg_processor",
+        "symbols": 525,
+        "trades": 3972,
+        "incs": 14740
+      }
+    ],
+    "requested_symbols_seen": 47,
+    "missing_symbols": [
+      "ICXUSDT"
+    ],
+    "no_book_events": [],
+    "no_trade_events_in_short_sample": [
+      "1INCHUSDT",
+      "BANDUSDT",
+      "BELUSDT",
+      "COMPUSDT",
+      "ENJUSDT",
+      "GRTUSDT",
+      "IOSTUSDT",
+      "KNCUSDT",
+      "KSMUSDT",
+      "NEOUSDT",
+      "QTUMUSDT",
+      "SNXUSDT",
+      "SUSHIUSDT",
+      "YFIUSDT",
+      "ZRXUSDT"
+    ],
+    "counts": {
+      "1INCHUSDT": {
+        "incs": 23,
+        "trades": 0
+      },
+      "AAVEUSDT": {
+        "incs": 109,
+        "trades": 1
+      },
+      "ADAUSDT": {
+        "incs": 146,
+        "trades": 41
+      },
+      "ALGOUSDT": {
+        "incs": 56,
+        "trades": 5
+      },
+      "ATOMUSDT": {
+        "incs": 59,
+        "trades": 1
+      },
+      "AVAXUSDT": {
+        "incs": 113,
+        "trades": 21
+      },
+      "AXSUSDT": {
+        "incs": 58,
+        "trades": 32
+      },
+      "BANDUSDT": {
+        "incs": 21,
+        "trades": 0
+      },
+      "BELUSDT": {
+        "incs": 14,
+        "trades": 0
+      },
+      "BTCUSDT": {
+        "incs": 228,
+        "trades": 123
+      },
+      "COMPUSDT": {
+        "incs": 50,
+        "trades": 0
+      },
+      "CRVUSDT": {
+        "incs": 118,
+        "trades": 40
+      },
+      "DASHUSDT": {
+        "incs": 70,
+        "trades": 6
+      },
+      "DOGEUSDT": {
+        "incs": 164,
+        "trades": 279
+      },
+      "DOTUSDT": {
+        "incs": 128,
+        "trades": 21
+      },
+      "EGLDUSDT": {
+        "incs": 66,
+        "trades": 7
+      },
+      "ENJUSDT": {
+        "incs": 25,
+        "trades": 0
+      },
+      "ETCUSDT": {
+        "incs": 65,
+        "trades": 7
+      },
+      "ETHUSDT": {
+        "incs": 224,
+        "trades": 114
+      },
+      "GRTUSDT": {
+        "incs": 26,
+        "trades": 0
+      },
+      "IOSTUSDT": {
+        "incs": 38,
+        "trades": 0
+      },
+      "IOTAUSDT": {
+        "incs": 38,
+        "trades": 1
+      },
+      "KAVAUSDT": {
+        "incs": 17,
+        "trades": 3
+      },
+      "KNCUSDT": {
+        "incs": 32,
+        "trades": 0
+      },
+      "KSMUSDT": {
+        "incs": 15,
+        "trades": 0
+      },
+      "LTCUSDT": {
+        "incs": 103,
+        "trades": 12
+      },
+      "NEARUSDT": {
+        "incs": 169,
+        "trades": 201
+      },
+      "NEOUSDT": {
+        "incs": 19,
+        "trades": 0
+      },
+      "ONTUSDT": {
+        "incs": 21,
+        "trades": 1
+      },
+      "QTUMUSDT": {
+        "incs": 54,
+        "trades": 0
+      },
+      "RLCUSDT": {
+        "incs": 96,
+        "trades": 86
+      },
+      "RSRUSDT": {
+        "incs": 148,
+        "trades": 13
+      },
+      "SKLUSDT": {
+        "incs": 104,
+        "trades": 6
+      },
+      "SNXUSDT": {
+        "incs": 20,
+        "trades": 0
+      },
+      "SOLUSDT": {
+        "incs": 204,
+        "trades": 98
+      },
+      "SUSHIUSDT": {
+        "incs": 30,
+        "trades": 0
+      },
+      "THETAUSDT": {
+        "incs": 43,
+        "trades": 1
+      },
+      "TRBUSDT": {
+        "incs": 42,
+        "trades": 1
+      },
+      "UNIUSDT": {
+        "incs": 133,
+        "trades": 53
+      },
+      "VETUSDT": {
+        "incs": 190,
+        "trades": 6
+      },
+      "XLMUSDT": {
+        "incs": 128,
+        "trades": 33
+      },
+      "XTZUSDT": {
+        "incs": 65,
+        "trades": 7
+      },
+      "YFIUSDT": {
+        "incs": 29,
+        "trades": 0
+      },
+      "ZECUSDT": {
+        "incs": 222,
+        "trades": 253
+      },
+      "ZENUSDT": {
+        "incs": 29,
+        "trades": 1
+      },
+      "ZILUSDT": {
+        "incs": 15,
+        "trades": 1
+      },
+      "ZRXUSDT": {
+        "incs": 15,
+        "trades": 0
+      }
+    }
+  },
+  "latest": {
+    "records": [
+      {
+        "topic": "binance-futures",
+        "partition": 0,
+        "offset": 11210347,
+        "compression": "zlib",
+        "compressed_bytes": 837698,
+        "pb_bytes": 2600892,
+        "period": 29327274,
+        "ts": 1792049025000,
+        "post_ts": 1792049025946,
+        "poster_id": "msg_processor",
+        "symbols": 525,
+        "trades": 5231,
+        "incs": 15846
+      },
+      {
+        "topic": "binance-futures",
+        "partition": 0,
+        "offset": 11210348,
+        "compression": "zlib",
+        "compressed_bytes": 691512,
+        "pb_bytes": 2108586,
+        "period": 29327275,
+        "ts": 1792049028000,
+        "post_ts": 1792049028973,
+        "poster_id": "msg_processor",
+        "symbols": 525,
+        "trades": 3897,
+        "incs": 14977
+      }
+    ],
+    "requested_symbols_seen": 47,
+    "missing_symbols": [
+      "ICXUSDT"
+    ],
+    "no_book_events": [],
+    "no_trade_events_in_short_sample": [
+      "ZRXUSDT"
+    ],
+    "counts": {
+      "1INCHUSDT": {
+        "incs": 20,
+        "trades": 6
+      },
+      "AAVEUSDT": {
+        "incs": 139,
+        "trades": 24
+      },
+      "ADAUSDT": {
+        "incs": 160,
+        "trades": 33
+      },
+      "ALGOUSDT": {
+        "incs": 45,
+        "trades": 7
+      },
+      "ATOMUSDT": {
+        "incs": 66,
+        "trades": 8
+      },
+      "AVAXUSDT": {
+        "incs": 124,
+        "trades": 19
+      },
+      "AXSUSDT": {
+        "incs": 48,
+        "trades": 12
+      },
+      "BANDUSDT": {
+        "incs": 13,
+        "trades": 1
+      },
+      "BELUSDT": {
+        "incs": 83,
+        "trades": 1
+      },
+      "BTCUSDT": {
+        "incs": 226,
+        "trades": 212
+      },
+      "COMPUSDT": {
+        "incs": 24,
+        "trades": 17
+      },
+      "CRVUSDT": {
+        "incs": 144,
+        "trades": 139
+      },
+      "DASHUSDT": {
+        "incs": 84,
+        "trades": 18
+      },
+      "DOGEUSDT": {
+        "incs": 184,
+        "trades": 66
+      },
+      "DOTUSDT": {
+        "incs": 127,
+        "trades": 24
+      },
+      "EGLDUSDT": {
+        "incs": 29,
+        "trades": 5
+      },
+      "ENJUSDT": {
+        "incs": 30,
+        "trades": 14
+      },
+      "ETCUSDT": {
+        "incs": 90,
+        "trades": 17
+      },
+      "ETHUSDT": {
+        "incs": 226,
+        "trades": 271
+      },
+      "GRTUSDT": {
+        "incs": 49,
+        "trades": 54
+      },
+      "IOSTUSDT": {
+        "incs": 26,
+        "trades": 2
+      },
+      "IOTAUSDT": {
+        "incs": 31,
+        "trades": 5
+      },
+      "KAVAUSDT": {
+        "incs": 24,
+        "trades": 7
+      },
+      "KNCUSDT": {
+        "incs": 18,
+        "trades": 2
+      },
+      "KSMUSDT": {
+        "incs": 25,
+        "trades": 2
+      },
+      "LTCUSDT": {
+        "incs": 103,
+        "trades": 10
+      },
+      "NEARUSDT": {
+        "incs": 191,
+        "trades": 43
+      },
+      "NEOUSDT": {
+        "incs": 33,
+        "trades": 2
+      },
+      "ONTUSDT": {
+        "incs": 22,
+        "trades": 12
+      },
+      "QTUMUSDT": {
+        "incs": 28,
+        "trades": 1
+      },
+      "RLCUSDT": {
+        "incs": 86,
+        "trades": 31
+      },
+      "RSRUSDT": {
+        "incs": 112,
+        "trades": 79
+      },
+      "SKLUSDT": {
+        "incs": 98,
+        "trades": 5
+      },
+      "SNXUSDT": {
+        "incs": 28,
+        "trades": 4
+      },
+      "SOLUSDT": {
+        "incs": 211,
+        "trades": 86
+      },
+      "SUSHIUSDT": {
+        "incs": 17,
+        "trades": 1
+      },
+      "THETAUSDT": {
+        "incs": 34,
+        "trades": 1
+      },
+      "TRBUSDT": {
+        "incs": 71,
+        "trades": 5
+      },
+      "UNIUSDT": {
+        "incs": 133,
+        "trades": 10
+      },
+      "VETUSDT": {
+        "incs": 62,
+        "trades": 15
+      },
+      "XLMUSDT": {
+        "incs": 107,
+        "trades": 24
+      },
+      "XTZUSDT": {
+        "incs": 47,
+        "trades": 14
+      },
+      "YFIUSDT": {
+        "incs": 24,
+        "trades": 2
+      },
+      "ZECUSDT": {
+        "incs": 222,
+        "trades": 490
+      },
+      "ZENUSDT": {
+        "incs": 27,
+        "trades": 5
+      },
+      "ZILUSDT": {
+        "incs": 27,
+        "trades": 2
+      },
+      "ZRXUSDT": {
+        "incs": 10,
+        "trades": 0
+      }
+    }
+  },
+  "sampled_span_hours": 49.45583333333333,
+  "start_utc": "2026-10-13T05:56:27+00:00",
+  "end_utc": "2026-10-15T07:23:48+00:00",
+  "caveat": "Two records sampled at each boundary; this does not prove uninterrupted coverage or factor readiness."
+}

@@ -1,0 +1,20 @@
+{
+  "isolated_nginx": true,
+  "checks": [
+    {
+      "path": "/delist/cta/config/",
+      "delist_login_status": 200,
+      "actor_verified": true
+    },
+    {
+      "path": "/delist/cta/config/api/config?worker=cta-factor-spread",
+      "delist_login_status": 200,
+      "actor_verified": true
+    }
+  ],
+  "anonymous_denied": true,
+  "manager_flow_preserved": true,
+  "cross_origin_and_missing_origin_denied": true,
+  "spoofed_actor_overwritten": true,
+  "internal_verifier_hidden": true
+}

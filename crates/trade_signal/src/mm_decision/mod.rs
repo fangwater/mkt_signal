@@ -10,7 +10,9 @@ use super::arb_decision::DEFAULT_ARBITRAGE_BACKWARD_CHANNEL;
 use super::common::{normalize_tlens_for_compare, query_batch_tlens_or_zero};
 use super::mkt_channel::MktChannel;
 use super::tlen_threshold_loader;
-use crate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
+use crate::inventory_hedge_inputs::{
+    effective_return_score_adjust_hedge, resolve_inventory_hedge_signal_inputs,
+};
 use ipc_common::iceoryx_publisher::SIGNAL_PAYLOAD;
 use ipc_common::iceoryx_subscriber::GenericSignalSubscriber;
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
@@ -546,13 +548,17 @@ impl MmDecision {
             }
         };
         let model_service = self.state.return_model_service.clone();
+        let enable_return_score_adjust_hedge = effective_return_score_adjust_hedge(
+            self.state.enable_return_score_adjust_hedge,
+            model_service.as_deref(),
+        );
         let (signal, signal_qtl, volatility) = match resolve_inventory_hedge_signal_inputs(
             &mut self.state.factor_value_hub,
             Some(&mut self.state.model_output_hub),
-            Some(model_service.as_deref().unwrap_or("-")),
+            model_service.as_deref(),
             &symbol,
             self.state.hedge_venue,
-            self.state.enable_return_score_adjust_hedge,
+            enable_return_score_adjust_hedge,
         ) {
             Ok(values) => values,
             Err(err) => {
@@ -585,7 +591,7 @@ impl MmDecision {
             hedge_window_scale_high: self.state.hedge_window_scale_high,
             next_query_delay_ms: self.state.next_query_delay_ms,
             clock_shift_ms,
-            enable_return_score_adjust_hedge: self.state.enable_return_score_adjust_hedge,
+            enable_return_score_adjust_hedge,
         };
         let plan = match build_inventory_hedge_quote_plan(input, &self.state.open_min_qty_table) {
             Ok(plan) => plan,

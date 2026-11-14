@@ -1,0 +1,20 @@
+{
+  "verified_at_ms": 1794466244105,
+  "nginx_master_pid": "1862269",
+  "protected_processes": 178,
+  "changed_processes": {},
+  "protected_configs": 29,
+  "configurations_unchanged": true,
+  "file_hashes": {
+    "web": "884332684e371c700b2ad94ec7d8feb0ee5c9b841f880903e3f1a3db342cf0c0",
+    "nginx": "4cf08afa670fd6e82591f3a69a5371401eaba360af04c00e83e400dd17560e75"
+  },
+  "anonymous_statuses": {
+    "/delist/cta/config/?worker=cta-factor-spread": 401,
+    "/delist/cta/config/api/config?worker=cta-factor-spread": 401,
+    "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread": 401,
+    "/delist-auth/cta-factor-config": 404
+  },
+  "spread02_enabled": false,
+  "rollback_directory": "/home/ubuntu/delist_risk_server/run/spread02_config_access_20261112T064604Z/before"
+}

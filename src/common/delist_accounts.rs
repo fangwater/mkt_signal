@@ -1,0 +1,1261 @@
+//! Redis online-symbol universes for NAV-configured strategies, intersected with /risk.
+
+use anyhow::{Context, Result};
+use redis::AsyncCommands;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::common::delist_risk::{
+    normalize_symbol, RiskBook, RiskEvent, RiskEventView, RiskQueryResponse,
+};
+use crate::common::delist_store::LlmRunStatus;
+use crate::common::exchange_info::ListingIndex;
+
+const FR_LISTS: [&str; 5] = [
+    "dump_symbols",
+    "pos_dump_symbols",
+    "fwd_trade_symbols",
+    "bwd_trade_symbols",
+    "unimmr_close_symbols",
+];
+const INTRA_LISTS: [&str; 3] = ["dump_symbols", "fwd_trade_symbols", "bwd_trade_symbols"];
+const QUOTES: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BTC", "ETH", "BNB"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedisSite {
+    Jp,
+    Sg,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountSpec {
+    pub slug: String,
+    pub alias: String,
+    pub exchange: String,
+    pub kind: String,
+    pub host: String,
+    pub site: RedisSite,
+    /// NAV-provided per-env console/config URL (`/…/config`, absolute for SG).
+    pub config_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NavStrategy {
+    slug: String,
+    #[serde(default)]
+    alias: String,
+    #[serde(default)]
+    display_name: String,
+    host: String,
+    strategy_kind: String,
+    exchange: String,
+    #[serde(default)]
+    config_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountHitEvent {
+    pub venue: String,
+    pub action: String,
+    pub utc: String,
+    pub status: String,
+    pub listing: String,
+    pub title: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountHit {
+    pub symbol: String,
+    pub listing: String,
+    pub tone: String,
+    pub events: Vec<AccountHitEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountRiskView {
+    pub slug: String,
+    pub alias: String,
+    pub exchange: String,
+    pub kind: String,
+    pub host: String,
+    pub venues: Vec<String>,
+    pub universe_n: usize,
+    pub redis_ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redis_error: Option<String>,
+    pub tone: String,
+    pub risk_n: usize,
+    pub hits: Vec<AccountHit>,
+    pub symbols: Vec<String>,
+    /// FR 盘 `fr_unimmr_close_symbols` 解析后的币对数；非 FR 或读取失败为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unimmr_close_n: Option<usize>,
+    /// 已确认 `fr_unimmr_close_symbols` 为空（key 缺失或列表无币对）。
+    #[serde(default)]
+    pub unimmr_empty: bool,
+    /// Entry point to the env's viz dashboard (`/{ns}/<env>/` on that host's :4191).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viz_url: Option<String>,
+    /// Entry point to the env's config/console endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_url: Option<String>,
+}
+
+/// Public front base for SG-hosted envs; JP envs stay origin-relative.
+const SG_LINK_BASE: &str = "http://47.131.162.78:4191";
+
+fn link_base(site: RedisSite) -> &'static str {
+    match site {
+        RedisSite::Sg => SG_LINK_BASE,
+        _ => "",
+    }
+}
+
+fn kind_ns(kind: &str) -> Option<&'static str> {
+    match kind {
+        "funding_rate" => Some("fr"),
+        "intra_exchange" => Some("intra"),
+        "market_making" => Some("mm"),
+        "cross_exchange" => Some("cross"),
+        _ => None,
+    }
+}
+
+/// Entry points for one account env. The NAV `config_url` is authoritative
+/// (handles SG absolute URLs and nonstandard consoles like the CTA manager);
+/// when it is missing the standard `/{ns}/<env>` layout is derived.
+pub fn env_urls(spec: &AccountSpec) -> (Option<String>, Option<String>) {
+    let base = link_base(spec.site);
+    let mut config = (!spec.config_url.is_empty()).then(|| spec.config_url.clone());
+    let mut viz = config
+        .as_deref()
+        .and_then(|c| c.strip_suffix("/config"))
+        .map(|c| format!("{c}/"));
+    if config.is_none() {
+        if spec.kind == "cta" {
+            config = Some(format!("{base}/manager/account/?source={}", spec.slug));
+        } else if let Some(ns) = kind_ns(&spec.kind) {
+            config = Some(format!("{base}/{ns}/{}/config", spec.slug));
+            viz = Some(format!("{base}/{ns}/{}/", spec.slug));
+        }
+    }
+    // JP Manager exposes Binance Exec Viz under its existing /exec_tradeNN gateway.
+    if viz.is_none()
+        && spec.kind == "cta"
+        && spec.site == RedisSite::Jp
+        && config
+            .as_deref()
+            .is_some_and(|url| url.starts_with("/manager/account/"))
+    {
+        if let Some(instance) = spec
+            .slug
+            .strip_prefix("binance_exec_trade")
+            .filter(|suffix| !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            viz = Some(format!("/exec_trade{instance}/"));
+        }
+    }
+    (viz, config)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountRiskResponse {
+    pub ok: bool,
+    pub as_of_ms: i64,
+    pub nav_accounts_current: bool,
+    pub redis: BTreeMap<String, bool>,
+    pub summary: BTreeMap<String, usize>,
+    pub accounts: Vec<AccountRiskView>,
+    /// Latest analysed announcement per exchange, independent of risk-query filters.
+    pub latest_announcements: BTreeMap<String, LatestAnnouncementView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LatestAnnouncementView {
+    pub title: String,
+    pub url: String,
+    pub published_ms: i64,
+    pub checked_ms: i64,
+    pub ok: bool,
+    pub last_success_ms: Option<i64>,
+    pub error: Option<String>,
+    pub actions: Vec<RiskEvent>,
+}
+
+pub fn latest_announcement_views(
+    book: &RiskBook,
+    statuses: BTreeMap<String, LlmRunStatus>,
+) -> BTreeMap<String, LatestAnnouncementView> {
+    statuses
+        .into_iter()
+        .map(|(exchange, status)| {
+            let meta = book
+                .announcements
+                .iter()
+                .find(|item| item.exchange == exchange && item.id == status.announcement_id);
+            // Keep lifecycle actions regardless of deadline, using the same
+            // lending-only exclusion as /risk and account risk matching.
+            let mut actions: Vec<RiskEvent> = book
+                .lifecycle_events()
+                .filter(|event| {
+                    event.source == "llm_extract"
+                        && event.exchange == exchange
+                        && event.announcement_id == status.announcement_id
+                        && status.last_success_ms.is_some()
+                })
+                .collect();
+            actions.sort_by(|left, right| {
+                left.utc_ms
+                    .cmp(&right.utc_ms)
+                    .then_with(|| left.venue.cmp(&right.venue))
+                    .then_with(|| left.action.cmp(&right.action))
+            });
+            let first = actions.first();
+            let url = meta
+                .map(|item| item.url.as_str())
+                .filter(|url| !url.is_empty())
+                .or_else(|| {
+                    first
+                        .map(|event| event.url.as_str())
+                        .filter(|url| !url.is_empty())
+                })
+                .or_else(|| {
+                    status
+                        .announcement_id
+                        .starts_with("https://")
+                        .then_some(status.announcement_id.as_str())
+                })
+                .unwrap_or_default()
+                .to_string();
+            let view = LatestAnnouncementView {
+                title: if status.title.is_empty() {
+                    meta.map(|item| item.title.clone()).unwrap_or_default()
+                } else {
+                    status.title
+                },
+                url,
+                published_ms: meta
+                    .map(|item| item.published_ms)
+                    .or_else(|| first.map(|event| event.published_ms))
+                    .unwrap_or_default(),
+                checked_ms: status.last_attempt_ms,
+                ok: status.ok,
+                last_success_ms: status.last_success_ms,
+                error: status.last_error,
+                actions,
+            };
+            (exchange, view)
+        })
+        .collect()
+}
+
+/// Marker returned inside the error chain when NAV rejects the session.
+pub const NAV_UNAUTHORIZED: &str = "NAV strategies unauthorized";
+
+/// Logs in to the NAV API and returns the `nav_session` token.
+/// `login_url` is the `/api/auth/login` endpoint (e.g. via `/nav-api/`).
+pub async fn nav_login(
+    client: &Client,
+    login_url: &str,
+    username: &str,
+    password: &str,
+) -> Result<String> {
+    let response = client
+        .post(login_url)
+        .json(&serde_json::json!({"username": username, "password": password}))
+        .send()
+        .await
+        .with_context(|| format!("fetch NAV login {login_url}"))?
+        .error_for_status()
+        .with_context(|| format!("NAV login rejected {login_url}"))?;
+    for value in response.headers().get_all(reqwest::header::SET_COOKIE) {
+        let value = value.to_str().context("decode NAV login cookie")?;
+        let Some((name, token)) = value
+            .split(';')
+            .next()
+            .and_then(|pair| pair.split_once('='))
+        else {
+            continue;
+        };
+        if name.trim() == "nav_session" && !token.trim().is_empty() {
+            return Ok(token.trim().to_string());
+        }
+    }
+    anyhow::bail!("NAV login response missing nav_session cookie")
+}
+
+pub async fn fetch_nav_accounts(
+    client: &Client,
+    url: &str,
+    session: Option<&str>,
+) -> Result<Vec<AccountSpec>> {
+    // NAV's interactive list also checks env files over SSH. Discovery uses
+    // the same authorized catalog without depending on credential probes.
+    let mut request = client.get(url).query(&[("include_credentials", false)]);
+    if let Some(token) = session {
+        request = request.header(reqwest::header::COOKIE, format!("nav_session={token}"));
+    }
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("fetch NAV strategies {url}"))?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        anyhow::bail!(NAV_UNAUTHORIZED);
+    }
+    let strategies: Vec<NavStrategy> = response
+        .error_for_status()
+        .with_context(|| format!("NAV strategies returned an error {url}"))?
+        .json()
+        .await
+        .with_context(|| format!("decode NAV strategies {url}"))?;
+    if strategies.is_empty() {
+        anyhow::bail!("NAV strategy catalog is empty");
+    }
+    let mut seen = BTreeSet::new();
+    let mut accounts = Vec::with_capacity(strategies.len());
+    for strategy in strategies {
+        validate_nav_identifier("slug", &strategy.slug)?;
+        let kind = strategy.strategy_kind.trim().to_ascii_lowercase();
+        validate_nav_identifier("strategyKind", &kind)?;
+        if !seen.insert(strategy.slug.clone()) {
+            anyhow::bail!("duplicate NAV strategy slug {}", strategy.slug);
+        }
+        let host = strategy.host.trim().to_ascii_lowercase();
+        let site = match host.as_str() {
+            "local" | "jp" | "jp-meta-elvpn" => RedisSite::Jp,
+            "sg" => RedisSite::Sg,
+            _ => RedisSite::Unsupported,
+        };
+        let exchange = match strategy.exchange.trim().to_ascii_lowercase().as_str() {
+            "okx" => "okex".to_string(),
+            exchange => exchange.to_string(),
+        };
+        validate_nav_identifier("exchange", &exchange)?;
+        let alias = if !strategy.alias.trim().is_empty() {
+            strategy.alias
+        } else if !strategy.display_name.trim().is_empty() {
+            strategy.display_name
+        } else {
+            strategy.slug.clone()
+        };
+        accounts.push(AccountSpec {
+            slug: strategy.slug,
+            alias,
+            exchange,
+            kind,
+            host,
+            site,
+            config_url: strategy.config_url,
+        });
+    }
+    Ok(accounts)
+}
+
+fn validate_nav_identifier(field: &str, value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+    {
+        anyhow::bail!("invalid NAV strategy {field}: {value:?}");
+    }
+    Ok(())
+}
+
+pub fn redis_keys(spec: &AccountSpec) -> (Vec<String>, Vec<String>) {
+    let ex = spec.exchange.as_str();
+    match spec.kind.as_str() {
+        "funding_rate" => {
+            let suffix = format!("{ex}-margin_{ex}-futures");
+            let keys = FR_LISTS
+                .iter()
+                .map(|list| format!("{}:fr_{list}:{suffix}", spec.slug))
+                .collect();
+            (keys, vec![format!("{ex}-margin"), format!("{ex}-futures")])
+        }
+        "intra_exchange" => {
+            let keys = INTRA_LISTS
+                .iter()
+                .map(|list| format!("{}:intra_{list}:{ex}", spec.slug))
+                .collect();
+            (keys, vec![format!("{ex}-margin"), format!("{ex}-futures")])
+        }
+        "market_making" => (
+            vec![format!("mm_trade_symbols:{ex}-futures")],
+            vec![format!("{ex}-futures")],
+        ),
+        "cta" if ex == "binance" => (
+            vec![format!("{}:binance-futures:exec:max_pos_u", spec.slug)],
+            vec!["binance-futures".to_string()],
+        ),
+        _ => (Vec::new(), Vec::new()),
+    }
+}
+
+pub fn pair_and_base(token: &str) -> (Option<String>, Option<String>) {
+    let compact = normalize_symbol(token);
+    if compact.is_empty() {
+        return (None, None);
+    }
+    for quote in QUOTES {
+        if compact.len() > quote.len() && compact.ends_with(quote) {
+            let base = compact[..compact.len() - quote.len()].to_string();
+            if !base.is_empty() {
+                return (Some(compact), Some(base));
+            }
+        }
+    }
+    (None, Some(compact))
+}
+
+pub fn parse_universe(raw: &str) -> BTreeSet<String> {
+    let parsed: serde_json::Value = match serde_json::from_str(raw) {
+        Ok(value) => value,
+        Err(_) => return BTreeSet::new(),
+    };
+    let items: Vec<String> = if let Some(map) = parsed.as_object() {
+        map.keys().cloned().collect()
+    } else if let Some(list) = parsed.as_array() {
+        list.iter()
+            .filter_map(|item| {
+                item.as_str()
+                    .map(ToOwned::to_owned)
+                    .or_else(|| item.as_i64().map(|n| n.to_string()))
+            })
+            .collect()
+    } else {
+        return BTreeSet::new();
+    };
+    let mut out = BTreeSet::new();
+    for item in items {
+        match pair_and_base(&item) {
+            (Some(pair), _) => {
+                out.insert(pair);
+            }
+            (None, Some(base)) => {
+                out.insert(format!("{base}USDT"));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+pub fn matched_symbols(event: &RiskEventView, universe: &BTreeSet<String>) -> Vec<String> {
+    let mut pairs = Vec::new();
+    for symbol in &event.symbols {
+        if let (Some(pair), _) = pair_and_base(symbol) {
+            if !pairs.iter().any(|seen| seen == &pair) {
+                pairs.push(pair);
+            }
+        }
+    }
+    for asset in &event.assets {
+        if let (Some(pair), _) = pair_and_base(asset) {
+            if !pairs.iter().any(|seen| seen == &pair) {
+                pairs.push(pair);
+            }
+        }
+    }
+    if !pairs.is_empty() {
+        return pairs
+            .into_iter()
+            .filter(|pair| universe.contains(pair))
+            .collect();
+    }
+    let mut hits = Vec::new();
+    for asset in &event.assets {
+        if let (_, Some(base)) = pair_and_base(asset) {
+            let pair = format!("{base}USDT");
+            if universe.contains(&pair) && !hits.iter().any(|seen| seen == &pair) {
+                hits.push(pair);
+            }
+        }
+    }
+    hits
+}
+
+fn hit_tone(listing: &str, status: &str) -> &'static str {
+    if listing == "pending" || listing == "delisted" {
+        return "risk";
+    }
+    if matches!(status, "upcoming" | "due" | "unknown") {
+        return "risk";
+    }
+    "ok"
+}
+
+pub fn build_account_views(
+    accounts: &[AccountSpec],
+    risk: &RiskQueryResponse,
+    listings: &ListingIndex,
+    universes: &BTreeMap<String, Result<BTreeSet<String>, String>>,
+) -> Vec<AccountRiskView> {
+    build_account_views_for_venues(accounts, risk, listings, universes, &BTreeMap::new())
+}
+
+/// Explicit market scopes for multi-leg CTA signals. Coverage remains unknown
+/// for a venue without a current supported exchange listing catalog.
+pub fn build_account_views_for_venues(
+    accounts: &[AccountSpec],
+    risk: &RiskQueryResponse,
+    listings: &ListingIndex,
+    universes: &BTreeMap<String, Result<BTreeSet<String>, String>>,
+    venue_scopes: &BTreeMap<String, Vec<String>>,
+) -> Vec<AccountRiskView> {
+    let mut out = Vec::new();
+    for spec in accounts {
+        let venues = venue_scopes
+            .get(&spec.slug)
+            .cloned()
+            .unwrap_or_else(|| redis_keys(spec).1);
+        let host = match spec.site {
+            RedisSite::Jp => "jp",
+            RedisSite::Sg => "sg",
+            RedisSite::Unsupported => spec.host.as_str(),
+        };
+        let (redis_ok, redis_error, universe) = match universes.get(&spec.slug) {
+            Some(Ok(set)) => (true, None, set.clone()),
+            Some(Err(err)) => (false, Some(err.clone()), BTreeSet::new()),
+            None => (false, Some("redis not queried".into()), BTreeSet::new()),
+        };
+        let covered = !venues.is_empty()
+            && matches!(
+                spec.exchange.as_str(),
+                "binance" | "bitget" | "gate" | "bybit" | "okex"
+            )
+            && venues.iter().all(|venue| listings.has_venue(venue));
+        let mut hits_by_symbol: BTreeMap<String, AccountHit> = BTreeMap::new();
+        if redis_ok && (covered || spec.kind == "cta") {
+            if let Some(bucket) = risk.exchanges.get(&spec.exchange) {
+                for event in &bucket.items {
+                    if !venues.iter().any(|venue| venue == &event.venue) {
+                        continue;
+                    }
+                    for symbol in matched_symbols(event, &universe) {
+                        let listing =
+                            listings.listing_for(&event.venue, std::slice::from_ref(&symbol), &[]);
+                        let entry = hits_by_symbol.entry(symbol.clone()).or_insert(AccountHit {
+                            symbol: symbol.clone(),
+                            listing: listing.clone(),
+                            tone: hit_tone(&listing, &event.status).to_string(),
+                            events: Vec::new(),
+                        });
+                        if listing == "pending" || listing == "delisted" {
+                            entry.listing = listing.clone();
+                            entry.tone = "risk".to_string();
+                        }
+                        entry.events.push(AccountHitEvent {
+                            venue: event.venue.clone(),
+                            action: event.action.clone(),
+                            utc: event.utc.clone(),
+                            status: event.status.clone(),
+                            listing,
+                            title: event.title.clone(),
+                            url: event.url.clone(),
+                        });
+                    }
+                }
+            }
+
+            // The risk book only contains known delist notices. Also compare every
+            // live Redis symbol with its venue catalog so an already-removed pair
+            // is visible even when no announcement was captured.
+            for symbol in &universe {
+                for venue in &venues {
+                    let listing = listings.listing_for(venue, std::slice::from_ref(symbol), &[]);
+                    if listing != "delisted" {
+                        continue;
+                    }
+                    let entry = hits_by_symbol.entry(symbol.clone()).or_insert(AccountHit {
+                        symbol: symbol.clone(),
+                        listing: listing.clone(),
+                        tone: "risk".to_string(),
+                        events: Vec::new(),
+                    });
+                    entry.listing = listing.clone();
+                    entry.tone = "risk".to_string();
+                    if entry
+                        .events
+                        .iter()
+                        .any(|event| event.venue == *venue && event.listing == "delisted")
+                    {
+                        continue;
+                    }
+                    entry.events.push(AccountHitEvent {
+                        venue: venue.clone(),
+                        action: "catalog_removed".to_string(),
+                        utc: String::new(),
+                        status: "delisted".to_string(),
+                        listing,
+                        title: "not in current exchange catalog".to_string(),
+                        url: String::new(),
+                    });
+                }
+            }
+        }
+        let hits: Vec<AccountHit> = hits_by_symbol.into_values().collect();
+        let risk_n = hits.iter().filter(|hit| hit.tone == "risk").count();
+        let tone = if !redis_ok {
+            "error"
+        } else if risk_n > 0 {
+            "risk"
+        } else if !covered
+            || universe.iter().any(|symbol| {
+                venues.iter().any(|venue| {
+                    listings.listing_for(venue, std::slice::from_ref(symbol), &[]) == "unknown"
+                })
+            })
+        {
+            "uncovered"
+        } else {
+            "ok"
+        };
+        let (viz_url, config_url) = env_urls(spec);
+        out.push(AccountRiskView {
+            slug: spec.slug.to_string(),
+            alias: spec.alias.to_string(),
+            exchange: spec.exchange.to_string(),
+            kind: spec.kind.to_string(),
+            host: host.to_string(),
+            venues,
+            universe_n: universe.len(),
+            redis_ok,
+            redis_error,
+            tone: tone.to_string(),
+            risk_n,
+            hits,
+            symbols: universe.into_iter().collect(),
+            unimmr_close_n: None,
+            unimmr_empty: false,
+            viz_url,
+            config_url,
+        });
+    }
+    out
+}
+
+pub fn summarize(accounts: &[AccountRiskView]) -> BTreeMap<String, usize> {
+    let mut summary = BTreeMap::from([
+        ("accounts".into(), accounts.len()),
+        ("risk".into(), 0),
+        ("error".into(), 0),
+        ("ok".into(), 0),
+        ("uncovered".into(), 0),
+    ]);
+    for account in accounts {
+        *summary.entry(account.tone.clone()).or_insert(0) += 1;
+    }
+    summary
+}
+
+pub async fn mget_strings(url: &str, keys: &[String]) -> Result<Vec<Option<String>>> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let client = redis::Client::open(url).with_context(|| format!("open redis {url}"))?;
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .with_context(|| format!("connect redis {url}"))?;
+    let values: Vec<Option<String>> = conn
+        .mget(keys)
+        .await
+        .with_context(|| format!("mget redis {url}"))?;
+    Ok(values)
+}
+
+pub async fn load_universes(
+    accounts: &[AccountSpec],
+    jp_url: &str,
+    sg_url: Option<&str>,
+) -> BTreeMap<String, Result<BTreeSet<String>, String>> {
+    let mut jp_keys = Vec::new();
+    let mut sg_keys = Vec::new();
+    let mut owners: Vec<(String, RedisSite, Vec<String>)> = Vec::new();
+    for spec in accounts {
+        let (keys, _venues) = redis_keys(spec);
+        match spec.site {
+            RedisSite::Jp => jp_keys.extend(keys.iter().cloned()),
+            RedisSite::Sg => sg_keys.extend(keys.iter().cloned()),
+            RedisSite::Unsupported => {}
+        }
+        owners.push((spec.slug.clone(), spec.site, keys));
+    }
+    let jp = mget_strings(jp_url, &jp_keys).await;
+    let sg = match sg_url {
+        Some(url) if !url.trim().is_empty() => mget_strings(url, &sg_keys).await,
+        _ if sg_keys.is_empty() => Ok(Vec::new()),
+        _ => Err(anyhow::anyhow!("sg redis not configured")),
+    };
+    let jp_map = to_map(&jp_keys, jp);
+    let sg_map = to_map(&sg_keys, sg);
+    let mut out = BTreeMap::new();
+    for (slug, site, keys) in owners {
+        if keys.is_empty() {
+            out.insert(slug, Ok(BTreeSet::new()));
+            continue;
+        }
+        let source = match site {
+            RedisSite::Jp => &jp_map,
+            RedisSite::Sg => &sg_map,
+            RedisSite::Unsupported => {
+                out.insert(
+                    slug,
+                    Err("NAV strategy host has no Redis mapping".to_string()),
+                );
+                continue;
+            }
+        };
+        match source {
+            Err(err) => {
+                out.insert(slug, Err(err.clone()));
+            }
+            Ok(values) => {
+                let mut universe = BTreeSet::new();
+                for key in keys {
+                    if let Some(Some(raw)) = values.get(&key) {
+                        universe.extend(parse_universe(raw));
+                    }
+                }
+                out.insert(slug, Ok(universe));
+            }
+        }
+    }
+    out
+}
+
+/// One `fr_*` symbol list on a funding-rate account, e.g.
+/// `{slug}:fr_unimmr_close_symbols:{exchange}-margin_{exchange}-futures`.
+#[derive(Debug, Clone)]
+pub struct FrSymbolListState {
+    pub key: String,
+    /// The Redis key existed; a missing key still yields an empty `symbols`.
+    pub present: bool,
+    pub symbols: BTreeSet<String>,
+}
+
+/// Loads one `fr_{list}` key for every `funding_rate` NAV account from its
+/// site's Redis. A site-level read failure marks every account on that site;
+/// a missing key yields `present=false` with an empty set.
+pub async fn load_fr_symbol_list(
+    accounts: &[AccountSpec],
+    list: &str,
+    jp_url: &str,
+    sg_url: Option<&str>,
+) -> BTreeMap<String, Result<FrSymbolListState, String>> {
+    let mut jp_keys = Vec::new();
+    let mut sg_keys = Vec::new();
+    let mut owners: Vec<(String, RedisSite, String)> = Vec::new();
+    for spec in accounts.iter().filter(|spec| spec.kind == "funding_rate") {
+        let suffix = format!("{}-margin_{}-futures", spec.exchange, spec.exchange);
+        let key = format!("{}:fr_{list}:{suffix}", spec.slug);
+        match spec.site {
+            RedisSite::Jp => jp_keys.push(key.clone()),
+            RedisSite::Sg => sg_keys.push(key.clone()),
+            RedisSite::Unsupported => {}
+        }
+        owners.push((spec.slug.clone(), spec.site, key));
+    }
+    let jp = mget_strings(jp_url, &jp_keys).await;
+    let sg = match sg_url {
+        Some(url) if !url.trim().is_empty() => mget_strings(url, &sg_keys).await,
+        _ if sg_keys.is_empty() => Ok(Vec::new()),
+        _ => Err(anyhow::anyhow!("sg redis not configured")),
+    };
+    let jp_map = to_map(&jp_keys, jp);
+    let sg_map = to_map(&sg_keys, sg);
+    let mut out = BTreeMap::new();
+    for (slug, site, key) in owners {
+        let source = match site {
+            RedisSite::Jp => &jp_map,
+            RedisSite::Sg => &sg_map,
+            RedisSite::Unsupported => {
+                out.insert(
+                    slug,
+                    Err("NAV strategy host has no Redis mapping".to_string()),
+                );
+                continue;
+            }
+        };
+        let state = match source {
+            Err(err) => Err(err.clone()),
+            Ok(values) => {
+                let raw = values.get(&key).and_then(|raw| raw.as_deref());
+                Ok(FrSymbolListState {
+                    key,
+                    present: raw.is_some(),
+                    symbols: raw.map(parse_universe).unwrap_or_default(),
+                })
+            }
+        };
+        out.insert(slug, state);
+    }
+    out
+}
+
+pub async fn load_fr_dump_symbols(
+    accounts: &[AccountSpec],
+    jp_url: &str,
+    sg_url: Option<&str>,
+) -> BTreeMap<String, Result<BTreeSet<String>, String>> {
+    load_fr_symbol_list(accounts, "dump_symbols", jp_url, sg_url)
+        .await
+        .into_iter()
+        .map(|(slug, state)| (slug, state.map(|state| state.symbols)))
+        .collect()
+}
+
+fn to_map(
+    keys: &[String],
+    result: Result<Vec<Option<String>>, anyhow::Error>,
+) -> Result<BTreeMap<String, Option<String>>, String> {
+    match result {
+        Ok(values) => Ok(keys.iter().cloned().zip(values).collect()),
+        Err(err) => Err(format!("{err:#}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::announcement_llm::{LlmAction, LlmExtractInput};
+    use crate::common::delist_risk::RiskEventView;
+    use axum::{routing::get, Json, Router};
+
+    #[test]
+    fn cta_okx_and_binance_catalogs_are_independent() {
+        let accounts = ["okex", "binance"].map(|exchange| AccountSpec {
+            slug: exchange.into(),
+            alias: exchange.into(),
+            exchange: exchange.into(),
+            kind: "cta".into(),
+            host: "jp".into(),
+            site: RedisSite::Jp,
+            config_url: String::new(),
+        });
+        let universes = accounts
+            .iter()
+            .map(|s| (s.slug.clone(), Ok(BTreeSet::from(["BTCUSDT".into()]))))
+            .collect();
+        let scopes = accounts
+            .iter()
+            .map(|s| (s.slug.clone(), vec![format!("{}-futures", s.exchange)]))
+            .collect();
+        let mut listings = ListingIndex::default();
+        listings.insert_test("okex-futures", "BTC-USDT-SWAP");
+        listings.insert_test("binance-futures", "BTCUSDT");
+        let risk = RiskBook::default().query(&Default::default());
+        let views =
+            build_account_views_for_venues(&accounts, &risk, &listings, &universes, &scopes);
+        assert!(views.iter().all(|v| v.tone == "ok"));
+        let mut refreshed = ListingIndex::default();
+        refreshed.insert_test("binance-futures", "BTCUSDT");
+        listings.merge_refresh(refreshed);
+        let views =
+            build_account_views_for_venues(&accounts, &risk, &listings, &universes, &scopes);
+        assert_eq!(views[0].tone, "uncovered");
+        assert_eq!(views[1].tone, "ok");
+        assert!(views[0].hits.is_empty());
+    }
+
+    #[test]
+    fn latest_announcement_keeps_elapsed_and_distant_actions_with_exact_source_identity() {
+        let mut book = RiskBook::default();
+        let input = LlmExtractInput {
+            exchange: "bybit".into(),
+            id: "zil".into(),
+            title: "ZIL margin delisting and borrowing deadlines".into(),
+            url: "https://announcements.bybit.com/en-US/article/zil/".into(),
+            published_ms: 1,
+            body: String::new(),
+        };
+        let action = |kind: &str, utc: &str| LlmAction {
+            action: kind.into(),
+            exchange: "bybit".into(),
+            venue: "bybit-margin".into(),
+            utc: utc.into(),
+            assets: vec!["ZIL".into()],
+            symbols: vec![],
+            note: String::new(),
+        };
+        book.ingest_llm(
+            &input,
+            true,
+            &[
+                action("disable_margin", "2099-09-07T08:00:00Z"),
+                action("disable_loan", "2020-09-02T08:00:00Z"),
+                action("delist", "2099-09-08T08:00:00Z"),
+            ],
+        );
+        let mut other_exchange = book.events[0].clone();
+        other_exchange.exchange = "gate".into();
+        let mut official = book.events[0].clone();
+        official.source = "official".into();
+        book.events.extend([other_exchange, official]);
+        // None of the extracted actions belongs to the default current-risk window.
+        assert_eq!(
+            book.query(&crate::common::delist_risk::RiskQuery {
+                days: Some(30),
+                ..Default::default()
+            })
+            .count,
+            0
+        );
+        let mut statuses = crate::common::delist_store::StatusBook::default();
+        statuses.mark_llm(
+            "bybit",
+            "zil",
+            &input.title,
+            true,
+            None,
+            input.fingerprint(),
+        );
+        let latest = latest_announcement_views(&book, statuses.llm_latest_by_exchange());
+        let item = &latest["bybit"];
+        assert_eq!(item.title, input.title);
+        assert_eq!(item.url, input.url);
+        assert_eq!(item.published_ms, 1);
+        assert_eq!(item.actions.len(), 3);
+        assert_eq!(item.actions[0].action, "disable_loan");
+        assert_eq!(item.actions[1].action, "disable_margin");
+        assert_eq!(item.actions[2].action, "delist");
+
+        statuses.mark_llm(
+            "bybit",
+            "zil",
+            &input.title,
+            false,
+            Some("timeout"),
+            input.fingerprint(),
+        );
+        let failed = latest_announcement_views(&book, statuses.llm_latest_by_exchange());
+        assert!(!failed["bybit"].ok);
+        assert_eq!(failed["bybit"].last_success_ms, item.last_success_ms);
+        assert_eq!(failed["bybit"].actions, item.actions);
+    }
+
+    #[test]
+    fn latest_announcement_distinguishes_empty_success_from_failed_first_analysis() {
+        let mut book = RiskBook::default();
+        let input = LlmExtractInput {
+            exchange: "gate".into(),
+            id: "unrelated".into(),
+            title: "Other announcement".into(),
+            url: "https://www.gate.io/article/unrelated".into(),
+            published_ms: 1,
+            body: String::new(),
+        };
+        book.ingest_llm(&input, false, &[]);
+        let mut statuses = crate::common::delist_store::StatusBook::default();
+        statuses.mark_llm(
+            "gate",
+            &input.id,
+            &input.title,
+            true,
+            None,
+            input.fingerprint(),
+        );
+        let latest = latest_announcement_views(&book, statuses.llm_latest_by_exchange());
+        assert!(latest["gate"].ok);
+        assert!(latest["gate"].actions.is_empty());
+        assert!(latest["gate"].last_success_ms.is_some());
+
+        statuses.mark_llm(
+            "bybit",
+            "failed",
+            "Failed article",
+            false,
+            Some("timeout"),
+            "hash".into(),
+        );
+        let latest = latest_announcement_views(&book, statuses.llm_latest_by_exchange());
+        assert!(!latest["bybit"].ok);
+        assert!(latest["bybit"].actions.is_empty());
+        assert!(latest["bybit"].last_success_ms.is_none());
+    }
+
+    #[test]
+    fn gate_lending_only_notice_does_not_flag_accounts_or_announce_delisting() {
+        let input = LlmExtractInput {
+            exchange: "gate".into(),
+            id: "https://www.gate.io/article/102264".into(),
+            title: "Gate to Disable Lending Feature for Certain Tokens".into(),
+            url: "https://www.gate.io/article/102264".into(),
+            published_ms: 1,
+            body: "Spot trading is unaffected. Outstanding loans will be repaid.".into(),
+        };
+        let mut book = RiskBook::default();
+        book.ingest_llm(
+            &input,
+            true,
+            &[LlmAction {
+                action: "disable_loan".into(),
+                venue: "gate-margin".into(),
+                exchange: "gate".into(),
+                utc: String::new(),
+                assets: vec!["ARIA".into(), "BANK".into()],
+                symbols: vec![],
+                note: input.body.clone(),
+            }],
+        );
+        let account = AccountSpec {
+            slug: "gate_fr_arb01".into(),
+            alias: "Gate".into(),
+            exchange: "gate".into(),
+            kind: "funding_rate".into(),
+            host: "jp".into(),
+            site: RedisSite::Jp,
+            config_url: String::new(),
+        };
+        let universe = BTreeMap::from([(
+            account.slug.clone(),
+            Ok(BTreeSet::from(["ARIAUSDT".into(), "BANKUSDT".into()])),
+        )]);
+        let mut listings = ListingIndex::default();
+        for venue in ["gate-margin", "gate-futures"] {
+            for symbol in ["ARIAUSDT", "BANKUSDT"] {
+                listings.insert_test(venue, symbol);
+            }
+        }
+        let accounts = [account];
+        let risk = book.query(&Default::default());
+        let views = build_account_views(&accounts, &risk, &listings, &universe);
+        assert_eq!(views[0].tone, "ok");
+        assert_eq!(views[0].risk_n, 0);
+        assert!(views[0].hits.is_empty());
+        assert_eq!(views[0].universe_n, 2, "retain the trading universe");
+
+        let mut statuses = crate::common::delist_store::StatusBook::default();
+        statuses.mark_llm(
+            "gate",
+            &input.id,
+            &input.title,
+            true,
+            None,
+            input.fingerprint(),
+        );
+        let latest = latest_announcement_views(&book, statuses.llm_latest_by_exchange());
+        assert!(latest["gate"].ok);
+        assert_eq!(latest["gate"].url, input.url);
+        assert!(latest["gate"].actions.is_empty());
+
+        // A real catalog removal still raises risk without a delist announcement.
+        let mut removed = ListingIndex::default();
+        removed.insert_test("gate-margin", "BANKUSDT");
+        removed.insert_test("gate-futures", "BANKUSDT");
+        removed.insert_test("gate-futures", "ARIAUSDT");
+        let views = build_account_views(&accounts, &risk, &removed, &universe);
+        assert_eq!(views[0].risk_n, 1);
+        assert_eq!(views[0].hits[0].symbol, "ARIAUSDT");
+        assert_eq!(views[0].hits[0].events[0].action, "catalog_removed");
+    }
+
+    #[test]
+    fn bybit_requires_complete_catalog_and_matches_only_affected_leg() {
+        let account = AccountSpec {
+            slug: "bybit-intra-arb01".into(),
+            alias: "Bybit".into(),
+            exchange: "bybit".into(),
+            kind: "intra_exchange".into(),
+            host: "sg".into(),
+            site: RedisSite::Sg,
+            config_url: String::new(),
+        };
+        let universe = BTreeMap::from([(
+            account.slug.clone(),
+            Ok(BTreeSet::from(["SCORUSDT".into(), "BTCUSDT".into()])),
+        )]);
+        let mut risk = RiskQueryResponse {
+            ok: true,
+            as_of_ms: 1,
+            abnormal: true,
+            count: 1,
+            exchanges: BTreeMap::new(),
+        };
+        let mut notice = event(&["SCORUSDT"], &[]);
+        notice.exchange = "bybit".into();
+        notice.venue = "bybit-margin".into();
+        notice.status = "upcoming".into();
+        risk.exchanges.insert(
+            "bybit".into(),
+            crate::common::delist_risk::ExchangeRisk {
+                exchange: "bybit".into(),
+                abnormal: true,
+                count: 1,
+                items: vec![notice],
+            },
+        );
+        let mut listings = ListingIndex::default();
+        let accounts = [account];
+        assert_eq!(
+            build_account_views(&accounts, &risk, &listings, &universe)[0].tone,
+            "uncovered"
+        );
+        for venue in ["bybit-margin", "bybit-futures"] {
+            for symbol in ["SCORUSDT", "BTCUSDT"] {
+                listings.insert_test(venue, symbol);
+            }
+        }
+        let view = &build_account_views(&accounts, &risk, &listings, &universe)[0];
+        assert!(view.redis_ok);
+        assert_eq!(view.tone, "risk");
+        assert_eq!(view.hits.len(), 1);
+        assert_eq!(view.hits[0].symbol, "SCORUSDT");
+        assert_eq!(view.hits[0].events[0].venue, "bybit-margin");
+    }
+
+    #[test]
+    fn explicit_cta_markets_check_the_spot_leg_without_changing_existing_futures_scope() {
+        let account = AccountSpec {
+            slug: "spread".into(),
+            alias: "spread".into(),
+            exchange: "binance".into(),
+            kind: "cta".into(),
+            host: "jp".into(),
+            site: RedisSite::Jp,
+            config_url: String::new(),
+        };
+        let universe = BTreeMap::from([("spread".into(), Ok(BTreeSet::from(["BTCUSDT".into()])))]);
+        let risk = RiskBook::default().query(&Default::default());
+        let mut listings = ListingIndex::default();
+        listings.insert_test("binance-futures", "BTCUSDT");
+        listings.insert_test("binance-margin", "ETHUSDT");
+        assert_eq!(
+            build_account_views(std::slice::from_ref(&account), &risk, &listings, &universe)[0]
+                .tone,
+            "ok"
+        );
+        let scope = BTreeMap::from([(
+            "spread".into(),
+            vec!["binance-margin".into(), "binance-futures".into()],
+        )]);
+        let view = build_account_views_for_venues(&[account], &risk, &listings, &universe, &scope)
+            .remove(0);
+        assert_eq!(view.tone, "risk");
+        assert_eq!(view.hits[0].events[0].venue, "binance-margin");
+    }
+
+    fn event(symbols: &[&str], assets: &[&str]) -> RiskEventView {
+        RiskEventView {
+            exchange: "binance".into(),
+            venue: "binance-margin".into(),
+            action: "delist".into(),
+            utc: "2026-08-21T03:00:00Z".into(),
+            status: "due".into(),
+            assets: assets.iter().map(|s| s.to_string()).collect(),
+            symbols: symbols.iter().map(|s| s.to_string()).collect(),
+            note: String::new(),
+            source: "llm_extract".into(),
+            title: "t".into(),
+            url: String::new(),
+            announcement_id: "x".into(),
+            listing: String::new(),
+        }
+    }
+
+    #[test]
+    fn pair_only_notice_does_not_flag_usdt_book() {
+        let universe = BTreeSet::from(["SUIUSDT".to_string()]);
+        let hits = matched_symbols(&event(&["SUIBNB", "HIVEUSDC"], &[]), &universe);
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn token_delist_matches_usdt_book() {
+        let universe = BTreeSet::from(["ICXUSDT".to_string(), "BTCUSDT".to_string()]);
+        let hits = matched_symbols(&event(&[], &["ICX", "SCRT"]), &universe);
+        assert_eq!(hits, vec!["ICXUSDT"]);
+    }
+
+    #[test]
+    fn usdc_margin_pairs_do_not_lift_usdt() {
+        let universe = BTreeSet::from(["BEAMXUSDT".to_string()]);
+        let hits = matched_symbols(&event(&["BEAMXUSDC", "CETUSUSDC"], &["BEAMX"]), &universe);
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn parses_max_pos_u_object() {
+        let raw = r#"{"BNBUSDT":10000.0,"BTCUSDT":20000.0}"#;
+        let set = parse_universe(raw);
+        assert!(set.contains("BNBUSDT"));
+        assert!(set.contains("BTCUSDT"));
+    }
+
+    #[tokio::test]
+    async fn loads_accounts_from_nav_and_normalizes_local_metadata() {
+        let app = Router::new().route(
+            "/strategies",
+            get(
+                |axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>,
+                 headers: axum::http::HeaderMap| async move {
+                    assert_eq!(
+                        query.get("include_credentials").map(String::as_str),
+                        Some("false")
+                    );
+                    assert_eq!(query.get("scope").map(String::as_str), Some("delist"));
+                    assert_eq!(headers.get("cookie").unwrap(), "nav_session=test-session");
+                    Json(serde_json::json!([
+                        {
+                            "slug": "bitget_fr_arb01",
+                            "alias": "bitget arb01",
+                            "displayName": "Bitget FR 01",
+                            "host": "local",
+                            "strategyKind": "funding_rate",
+                            "exchange": "bitget"
+                        },
+                        {
+                            "slug": "okex_mm_alpha",
+                            "alias": "",
+                            "displayName": "OKX MM",
+                            "host": "sg",
+                            "strategyKind": "market_making",
+                            "exchange": "okx"
+                        }
+                    ]))
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let accounts = fetch_nav_accounts(
+            &Client::new(),
+            &format!("http://{address}/strategies?scope=delist"),
+            Some("test-session"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].slug, "bitget_fr_arb01");
+        assert_eq!(accounts[0].site, RedisSite::Jp);
+        assert_eq!(accounts[1].alias, "OKX MM");
+        assert_eq!(accounts[1].exchange, "okex");
+        assert_eq!(accounts[1].site, RedisSite::Sg);
+    }
+
+    #[tokio::test]
+    async fn rejects_empty_nav_catalog() {
+        let app = Router::new().route("/strategies", get(|| async { Json(serde_json::json!([])) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let error = fetch_nav_accounts(
+            &Client::new(),
+            &format!("http://{address}/strategies"),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("catalog is empty"));
+    }
+}

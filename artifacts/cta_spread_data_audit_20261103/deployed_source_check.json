@@ -1,0 +1,10 @@
+{
+  "api_sha256": "aff36d8b35544952307f3ad3348122f979336c50a7c438d36268427298acc100",
+  "source_hash_matches": {
+    "src/kline.rs": true,
+    "src/funding_rates.rs": true,
+    "src/nav/funding_estimate.rs": true,
+    "src/nav/minute_marks.rs": true,
+    "src/funding.rs": true
+  }
+}

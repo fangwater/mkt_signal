@@ -1,0 +1,32 @@
+{
+  "published": false,
+  "public_alias": "okex_binace_cross_1min",
+  "public_accounts": 1,
+  "iframes": 0,
+  "unified_tables": 1,
+  "summary_panels": 1,
+  "real_websocket_statuses": [
+    101,
+    101
+  ],
+  "connections_stable_during_metadata_and_refresh": true,
+  "actual_exec_snapshots_empty": true,
+  "combined_pnl_empty": true,
+  "hidden_user_denied": true,
+  "page_errors": [],
+  "fixtures": {
+    "browser_only": true,
+    "venues_preserved": true,
+    "shared_filters": true,
+    "strategy_group_once": true,
+    "equity": 400,
+    "gross": 200,
+    "leverage": 0.5,
+    "opposite_pending_gross": 40,
+    "live_update_pending": 70,
+    "old_snapshot_ignored": true,
+    "stale_totals_unknown": true,
+    "one_leg_denied_isolated": true,
+    "mobile_no_overflow": true
+  }
+}

@@ -1,0 +1,708 @@
+{
+  "verified_at": "2026-10-10T14:52:44.443609+00:00",
+  "reports": [
+    {
+      "environment": "binance-cta-special-rx02",
+      "symbols": 16,
+      "factor_bindings": 32,
+      "paired_qty_check": true,
+      "nq_opening_gates_checked": true,
+      "trading_enabled": false,
+      "execution_processes": 0,
+      "rules": {
+        "entry": {
+          "trade_sides": "both",
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "cooldown_seconds": 0,
+          "signal_delay_seconds": 0,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_enabled": true,
+          "factor_exit_quantile_long": 0.3,
+          "factor_exit_quantile_short": 0.7
+        }
+      },
+      "programs": [
+        {
+          "pid": 1898311,
+          "comm": "account_monitor",
+          "script": ""
+        },
+        {
+          "pid": 1898714,
+          "comm": "persist_manager",
+          "script": ""
+        },
+        {
+          "pid": 1975542,
+          "comm": "cta_special_fac",
+          "script": ""
+        },
+        {
+          "pid": 2203766,
+          "comm": "python3",
+          "script": "cta_special_config_server.py"
+        },
+        {
+          "pid": 2203855,
+          "comm": "cta_special_sig",
+          "script": ""
+        },
+        {
+          "pid": 2456915,
+          "comm": "python3",
+          "script": "cta_special_dashboard.py"
+        }
+      ],
+      "checks": [
+        {
+          "symbol": "AAVEUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 1,
+          "actions": 1
+        },
+        {
+          "symbol": "AAVEUSDT",
+          "factor": "factor_051",
+          "closed_trades": 0,
+          "open_positions": 1,
+          "actions": 1
+        },
+        {
+          "symbol": "AVAXUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 1,
+          "actions": 1
+        },
+        {
+          "symbol": "BNBUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 0,
+          "open_positions": 1,
+          "actions": 1
+        },
+        {
+          "symbol": "BNBUSDT",
+          "factor": "factor_051",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "DASHUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "DOGEUSDT",
+          "factor": "baseline_004",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "DOGEUSDT",
+          "factor": "factor_170",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "DOTUSDT",
+          "factor": "factor_170",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "ETHUSDT",
+          "factor": "baseline_004",
+          "closed_trades": 0,
+          "open_positions": 1,
+          "actions": 1
+        },
+        {
+          "symbol": "FILUSDT",
+          "factor": "factor_036",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "FILUSDT",
+          "factor": "factor_051",
+          "closed_trades": 2,
+          "open_positions": 0,
+          "actions": 4
+        },
+        {
+          "symbol": "LINKUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 0,
+          "open_positions": 1,
+          "actions": 1
+        },
+        {
+          "symbol": "LINKUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "LINKUSDT",
+          "factor": "factor_051",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "LINKUSDT",
+          "factor": "factor_170",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "LTCUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "LTCUSDT",
+          "factor": "factor_051",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "LTCUSDT",
+          "factor": "factor_170",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "NEARUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "NEARUSDT",
+          "factor": "factor_051",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "NEARUSDT",
+          "factor": "factor_170",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "SOLUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 0,
+          "open_positions": 1,
+          "actions": 1
+        },
+        {
+          "symbol": "SOLUSDT",
+          "factor": "factor_051",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "UNIUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "UNIUSDT",
+          "factor": "factor_170",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "XLMUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "XRPUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 0,
+          "open_positions": 1,
+          "actions": 1
+        },
+        {
+          "symbol": "XRPUSDT",
+          "factor": "factor_170",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "ZECUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "ZECUSDT",
+          "factor": "factor_051",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "ZECUSDT",
+          "factor": "factor_170",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        }
+      ]
+    },
+    {
+      "environment": "binance-cta-special-rx03",
+      "symbols": 16,
+      "factor_bindings": 52,
+      "paired_qty_check": true,
+      "nq_opening_gates_checked": true,
+      "trading_enabled": false,
+      "execution_processes": 0,
+      "rules": {
+        "entry": {
+          "trade_sides": "both",
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "cooldown_seconds": 0,
+          "signal_delay_seconds": 0,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_enabled": true,
+          "factor_exit_quantile_long": 0.7,
+          "factor_exit_quantile_short": 0.3
+        }
+      },
+      "programs": [
+        {
+          "pid": 1902298,
+          "comm": "account_monitor",
+          "script": ""
+        },
+        {
+          "pid": 1903557,
+          "comm": "persist_manager",
+          "script": ""
+        },
+        {
+          "pid": 2205550,
+          "comm": "python3",
+          "script": "cta_special_config_server.py"
+        },
+        {
+          "pid": 2205948,
+          "comm": "cta_special_sig",
+          "script": ""
+        },
+        {
+          "pid": 2457787,
+          "comm": "python3",
+          "script": "cta_special_dashboard.py"
+        }
+      ],
+      "checks": [
+        {
+          "symbol": "AAVEUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "AAVEUSDT",
+          "factor": "factor_004",
+          "closed_trades": 48,
+          "open_positions": 0,
+          "actions": 96
+        },
+        {
+          "symbol": "AVAXUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "AVAXUSDT",
+          "factor": "factor_051",
+          "closed_trades": 2,
+          "open_positions": 0,
+          "actions": 4
+        },
+        {
+          "symbol": "AVAXUSDT",
+          "factor": "factor_170",
+          "closed_trades": 4,
+          "open_positions": 0,
+          "actions": 8
+        },
+        {
+          "symbol": "BNBUSDT",
+          "factor": "factor_004",
+          "closed_trades": 35,
+          "open_positions": 0,
+          "actions": 70
+        },
+        {
+          "symbol": "BNBUSDT",
+          "factor": "factor_036",
+          "closed_trades": 1,
+          "open_positions": 1,
+          "actions": 3
+        },
+        {
+          "symbol": "BNBUSDT",
+          "factor": "factor_051",
+          "closed_trades": 4,
+          "open_positions": 1,
+          "actions": 9
+        },
+        {
+          "symbol": "BNBUSDT",
+          "factor": "factor_170",
+          "closed_trades": 4,
+          "open_positions": 1,
+          "actions": 9
+        },
+        {
+          "symbol": "DASHUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "DASHUSDT",
+          "factor": "factor_004",
+          "closed_trades": 25,
+          "open_positions": 0,
+          "actions": 50
+        },
+        {
+          "symbol": "DASHUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "DASHUSDT",
+          "factor": "factor_170",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "DOGEUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "DOGEUSDT",
+          "factor": "factor_004",
+          "closed_trades": 10,
+          "open_positions": 0,
+          "actions": 20
+        },
+        {
+          "symbol": "DOGEUSDT",
+          "factor": "factor_036",
+          "closed_trades": 1,
+          "open_positions": 1,
+          "actions": 3
+        },
+        {
+          "symbol": "DOTUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 0,
+          "open_positions": 1,
+          "actions": 1
+        },
+        {
+          "symbol": "DOTUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "DOTUSDT",
+          "factor": "factor_051",
+          "closed_trades": 3,
+          "open_positions": 0,
+          "actions": 6
+        },
+        {
+          "symbol": "ETHUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "ETHUSDT",
+          "factor": "factor_004",
+          "closed_trades": 16,
+          "open_positions": 1,
+          "actions": 33
+        },
+        {
+          "symbol": "ETHUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "ETHUSDT",
+          "factor": "factor_170",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "FILUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "FILUSDT",
+          "factor": "factor_004",
+          "closed_trades": 77,
+          "open_positions": 0,
+          "actions": 154
+        },
+        {
+          "symbol": "FILUSDT",
+          "factor": "factor_036",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "FILUSDT",
+          "factor": "factor_051",
+          "closed_trades": 2,
+          "open_positions": 0,
+          "actions": 4
+        },
+        {
+          "symbol": "FILUSDT",
+          "factor": "factor_170",
+          "closed_trades": 3,
+          "open_positions": 0,
+          "actions": 6
+        },
+        {
+          "symbol": "LINKUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 0,
+          "open_positions": 1,
+          "actions": 1
+        },
+        {
+          "symbol": "LINKUSDT",
+          "factor": "factor_004",
+          "closed_trades": 41,
+          "open_positions": 0,
+          "actions": 82
+        },
+        {
+          "symbol": "LINKUSDT",
+          "factor": "factor_036",
+          "closed_trades": 4,
+          "open_positions": 1,
+          "actions": 9
+        },
+        {
+          "symbol": "LINKUSDT",
+          "factor": "factor_051",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "LINKUSDT",
+          "factor": "factor_170",
+          "closed_trades": 3,
+          "open_positions": 1,
+          "actions": 7
+        },
+        {
+          "symbol": "LTCUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "LTCUSDT",
+          "factor": "factor_004",
+          "closed_trades": 35,
+          "open_positions": 0,
+          "actions": 70
+        },
+        {
+          "symbol": "LTCUSDT",
+          "factor": "factor_036",
+          "closed_trades": 4,
+          "open_positions": 1,
+          "actions": 9
+        },
+        {
+          "symbol": "LTCUSDT",
+          "factor": "factor_051",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "LTCUSDT",
+          "factor": "factor_170",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "NEARUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "NEARUSDT",
+          "factor": "factor_004",
+          "closed_trades": 71,
+          "open_positions": 0,
+          "actions": 142
+        },
+        {
+          "symbol": "NEARUSDT",
+          "factor": "factor_036",
+          "closed_trades": 3,
+          "open_positions": 0,
+          "actions": 6
+        },
+        {
+          "symbol": "NEARUSDT",
+          "factor": "factor_051",
+          "closed_trades": 1,
+          "open_positions": 0,
+          "actions": 2
+        },
+        {
+          "symbol": "SOLUSDT",
+          "factor": "factor_004",
+          "closed_trades": 17,
+          "open_positions": 1,
+          "actions": 35
+        },
+        {
+          "symbol": "SOLUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "UNIUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 0,
+          "open_positions": 1,
+          "actions": 1
+        },
+        {
+          "symbol": "UNIUSDT",
+          "factor": "factor_170",
+          "closed_trades": 2,
+          "open_positions": 1,
+          "actions": 5
+        },
+        {
+          "symbol": "XLMUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "XLMUSDT",
+          "factor": "factor_004",
+          "closed_trades": 40,
+          "open_positions": 1,
+          "actions": 81
+        },
+        {
+          "symbol": "XRPUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "XRPUSDT",
+          "factor": "factor_051",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "ZECUSDT",
+          "factor": "TD_TI_002",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        },
+        {
+          "symbol": "ZECUSDT",
+          "factor": "factor_036",
+          "closed_trades": 0,
+          "open_positions": 0,
+          "actions": 0
+        }
+      ]
+    }
+  ]
+}

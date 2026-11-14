@@ -1,0 +1,113 @@
+{
+  "checked_ts_us": 1792072595885757,
+  "pid": 341167,
+  "binary_sha256": "4968a8a633710ae4402b6cb240b0df44806f6838077c826a51ccb485094aff02",
+  "required_symbols": [
+    "ALGOUSDT",
+    "ATOMUSDT",
+    "AVAXUSDT",
+    "AXSUSDT",
+    "BELUSDT",
+    "CRVUSDT",
+    "NEARUSDT",
+    "RLCUSDT",
+    "SOLUSDT",
+    "UNIUSDT",
+    "YFIUSDT",
+    "ZECUSDT",
+    "ZILUSDT"
+  ],
+  "confirmed_leverages": {
+    "1INCHUSDT": 5,
+    "AAVEUSDT": 5,
+    "ADAUSDT": 5,
+    "ALGOUSDT": 5,
+    "ATOMUSDT": 5,
+    "AVAXUSDT": 5,
+    "AXSUSDT": 5,
+    "BANDUSDT": 4,
+    "BELUSDT": 3,
+    "BTCUSDT": 5,
+    "COMPUSDT": 5,
+    "CRVUSDT": 5,
+    "DASHUSDT": 5,
+    "DOGEUSDT": 5,
+    "EGLDUSDT": 5,
+    "ENJUSDT": 4,
+    "ETCUSDT": 5,
+    "ETHUSDT": 5,
+    "GRTUSDT": 5,
+    "IOSTUSDT": 4,
+    "IOTAUSDT": 5,
+    "KAVAUSDT": 4,
+    "KNCUSDT": 4,
+    "KSMUSDT": 4,
+    "LTCUSDT": 5,
+    "NEARUSDT": 5,
+    "NEOUSDT": 5,
+    "ONTUSDT": 4,
+    "QTUMUSDT": 5,
+    "SOLUSDT": 5,
+    "SUSHIUSDT": 5,
+    "THETAUSDT": 5,
+    "TRBUSDT": 4,
+    "UNIUSDT": 5,
+    "VETUSDT": 5,
+    "XLMUSDT": 5,
+    "XTZUSDT": 5,
+    "ZECUSDT": 5,
+    "ZENUSDT": 5,
+    "ZILUSDT": 3,
+    "YFIUSDT": 5,
+    "RLCUSDT": 4
+  },
+  "capped": {
+    "BANDUSDT": {
+      "requested": 5,
+      "limit": 4
+    },
+    "BELUSDT": {
+      "requested": 5,
+      "limit": 3
+    },
+    "ENJUSDT": {
+      "requested": 5,
+      "limit": 4
+    },
+    "IOSTUSDT": {
+      "requested": 5,
+      "limit": 4
+    },
+    "KAVAUSDT": {
+      "requested": 5,
+      "limit": 4
+    },
+    "KNCUSDT": {
+      "requested": 5,
+      "limit": 4
+    },
+    "KSMUSDT": {
+      "requested": 5,
+      "limit": 4
+    },
+    "ONTUSDT": {
+      "requested": 5,
+      "limit": 4
+    },
+    "TRBUSDT": {
+      "requested": 5,
+      "limit": 4
+    },
+    "ZILUSDT": {
+      "requested": 5,
+      "limit": 3
+    },
+    "RLCUSDT": {
+      "requested": 5,
+      "limit": 4
+    }
+  },
+  "required_unconfirmed": [],
+  "blocked_since_startup": [],
+  "error_lines_since_startup": 0
+}

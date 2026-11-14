@@ -1,0 +1,11 @@
+{
+  "positions_rows": 32,
+  "symbols": 16,
+  "factor_strategies": 5,
+  "symbol_cap_usdt": 500,
+  "link_allocation_usdt_per_factor": 125,
+  "nq_preserved": true,
+  "single_factor_signal_chart": true,
+  "desktop_mobile_no_overflow": true,
+  "javascript_errors": []
+}

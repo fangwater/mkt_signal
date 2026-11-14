@@ -200,6 +200,7 @@
         flex-direction: column;
         gap: 4px;
       }
+      .metric-card[hidden] { display: none; }
       .metric-card h3 {
         margin: 0;
         font-size: 11px;
@@ -495,7 +496,7 @@
               <div class="value" id="risk-max-leverage">--</div>
             </div>
             <div class="metric-card">
-              <h3>USDT可用最大保证金</h3>
+              <h3 title="组合账户的保证金余量；不是可直接支付现货买单的 USDT 现金">账户可用保证金</h3>
               <div class="value" id="risk-usdt-max-margin">--</div>
             </div>
           </div>

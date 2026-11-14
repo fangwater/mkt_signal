@@ -1,0 +1,9 @@
+{"intent": {"category": "spot", "symbol": "BNBUSDT", "side": "Buy", "orderType": "Market", "qty": "0.0238", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "marketUnit": "baseCoin", "isLeverage": 0, "orderLinkId": "9223372033694918892"}}
+{"accepted": {"orderId": "2327003825694837248", "orderLinkId": "9223372033694918892"}}
+{"final": {"symbol": "BNBUSDT", "orderId": "2327003825694837248", "orderStatus": "Filled", "cumExecQty": "0.0238", "cumExecValue": "17.389232", "avgPrice": "730.64", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "spot", "symbol": "ETHUSDT", "side": "Buy", "orderType": "Market", "qty": "0.00571", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "marketUnit": "baseCoin", "isLeverage": 0, "orderLinkId": "9223372033694918987"}}
+{"accepted": {"orderId": "2327003826273651200", "orderLinkId": "9223372033694918987"}}
+{"final": {"symbol": "ETHUSDT", "orderId": "2327003826273651200", "orderStatus": "Filled", "cumExecQty": "0.00571", "cumExecValue": "13.9975511", "avgPrice": "2451.41", "rejectReason": "EC_NoError"}}
+{"intent": {"category": "linear", "symbol": "XRPUSDT", "side": "Buy", "orderType": "Market", "qty": "3.6", "slippageToleranceType": "Percent", "slippageTolerance": "0.50", "reduceOnly": true, "positionIdx": 0, "orderLinkId": "9223372033694919046"}}
+{"accepted": {"orderId": "39445740-6200-4486-a498-390d679d5b6f", "orderLinkId": "9223372033694919046"}}
+{"final": {"symbol": "XRPUSDT", "orderId": "39445740-6200-4486-a498-390d679d5b6f", "orderStatus": "Filled", "cumExecQty": "3.6", "cumExecValue": "4.81572", "avgPrice": "1.3377", "rejectReason": "EC_NoError"}}

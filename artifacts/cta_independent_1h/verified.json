@@ -1,0 +1,418 @@
+{
+  "verified_at_ms": 1794234493866,
+  "env": "/home/ubuntu/cta-prep-binance-futures",
+  "worker_generation": "6297f72e-fe66-4265-a8b0-c92249807d8b",
+  "warming": false,
+  "processes": [
+    {
+      "pid": 2168358,
+      "comm": "cta-prep-binanc",
+      "cpus": [
+        17
+      ]
+    },
+    {
+      "pid": 2169023,
+      "comm": "cta-factor-conf",
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    }
+  ],
+  "config_server_port": 19220,
+  "separate_hourly_process": false,
+  "additional_dedicated_cpu": false,
+  "calculations": 596,
+  "readiness": {
+    "15min": {
+      "total": 201,
+      "ready": 143,
+      "unready": [
+        "binance-futures-1inchusdt-15min-baseline_100",
+        "binance-futures-1inchusdt-15min-tp_vpi_005",
+        "binance-futures-atomusdt-15min-factor_170",
+        "binance-futures-axsusdt-15min-baseline_104",
+        "binance-futures-axsusdt-15min-baseline_151",
+        "binance-futures-batusdt-15min-baseline_104",
+        "binance-futures-belusdt-15min-baseline_040",
+        "binance-futures-belusdt-15min-factor_093",
+        "binance-futures-bnbusdt-15min-baseline_104",
+        "binance-futures-crvusdt-15min-baseline_100",
+        "binance-futures-crvusdt-15min-factor_134",
+        "binance-futures-dashusdt-15min-baseline_141",
+        "binance-futures-dashusdt-15min-td_ti_030",
+        "binance-futures-egldusdt-15min-baseline_040",
+        "binance-futures-egldusdt-15min-baseline_104",
+        "binance-futures-enjusdt-15min-factor_114",
+        "binance-futures-enjusdt-15min-td_ti_008",
+        "binance-futures-etcusdt-15min-baseline_104",
+        "binance-futures-filusdt-15min-baseline_035",
+        "binance-futures-iostusdt-15min-baseline_040",
+        "binance-futures-iostusdt-15min-factor_170",
+        "binance-futures-iotausdt-15min-baseline_040",
+        "binance-futures-iotausdt-15min-baseline_104",
+        "binance-futures-iotausdt-15min-factor_032",
+        "binance-futures-iotausdt-15min-factor_052",
+        "binance-futures-iotausdt-15min-td_ti_015",
+        "binance-futures-kavausdt-15min-factor_051",
+        "binance-futures-kavausdt-15min-factor_170",
+        "binance-futures-kncusdt-15min-baseline_104",
+        "binance-futures-kncusdt-15min-tp_vpi_001",
+        "binance-futures-ksmusdt-15min-baseline_040",
+        "binance-futures-ksmusdt-15min-baseline_104",
+        "binance-futures-ksmusdt-15min-sell_avg_price",
+        "binance-futures-linkusdt-15min-baseline_104",
+        "binance-futures-ontusdt-15min-baseline_040",
+        "binance-futures-ontusdt-15min-factor_048",
+        "binance-futures-qtumusdt-15min-avg_price",
+        "binance-futures-qtumusdt-15min-baseline_104",
+        "binance-futures-rlcusdt-15min-baseline_040",
+        "binance-futures-rsrusdt-15min-factor_048",
+        "binance-futures-runeusdt-15min-baseline_100",
+        "binance-futures-sklusdt-15min-baseline_040",
+        "binance-futures-sklusdt-15min-factor_051",
+        "binance-futures-sklusdt-15min-factor_170",
+        "binance-futures-snxusdt-15min-baseline_047",
+        "binance-futures-snxusdt-15min-tp_vpi_002",
+        "binance-futures-solusdt-15min-baseline_104",
+        "binance-futures-solusdt-15min-baseline_189",
+        "binance-futures-solusdt-15min-tp_vpi_005",
+        "binance-futures-sushiusdt-15min-baseline_040",
+        "binance-futures-sushiusdt-15min-baseline_120",
+        "binance-futures-sushiusdt-15min-sell_avg_price",
+        "binance-futures-vetusdt-15min-baseline_104",
+        "binance-futures-yfiusdt-15min-baseline_104",
+        "binance-futures-yfiusdt-15min-factor_170",
+        "binance-futures-zenusdt-15min-baseline_104",
+        "binance-futures-zilusdt-15min-factor_094",
+        "binance-futures-zrxusdt-15min-baseline_040"
+      ]
+    },
+    "1h": {
+      "total": 265,
+      "ready": 264,
+      "unready": [
+        "binance-futures-dashusdt-1h-depth_imb_bps1"
+      ]
+    },
+    "5min": {
+      "total": 69,
+      "ready": 56,
+      "unready": [
+        "binance-futures-bandusdt-5min-baseline_040",
+        "binance-futures-belusdt-5min-sell_avg_price",
+        "binance-futures-belusdt-5min-td_ti_033",
+        "binance-futures-dashusdt-5min-baseline_118",
+        "binance-futures-dogeusdt-5min-td_ti_008",
+        "binance-futures-nearusdt-5min-factor_051",
+        "binance-futures-sklusdt-5min-baseline_040",
+        "binance-futures-sklusdt-5min-baseline_120",
+        "binance-futures-sklusdt-5min-td_ti_033",
+        "binance-futures-sklusdt-5min-tp_vpi_006",
+        "binance-futures-solusdt-5min-factor_032",
+        "binance-futures-vetusdt-5min-tp_vpi_001",
+        "binance-futures-yfiusdt-5min-avg_price"
+      ]
+    },
+    "1min": {
+      "total": 61,
+      "ready": 61,
+      "unready": []
+    }
+  },
+  "hourly_rules": 326,
+  "hourly_tables_enabled": 4,
+  "amounts": {
+    "prep01": 50,
+    "prep02": 100
+  },
+  "next_hourly_decision_utc": "2026-11-09T15:00:00Z",
+  "historical_entries_forced": false,
+  "publication_error": null,
+  "manager_pending": 0,
+  "accounts": {
+    "binance_exec_rx01": {
+      "bindings": [
+        {
+          "source_id": "binance_exec_rx01",
+          "binding_name": "cta-prep01-bn-15min-pos",
+          "position_strategy_name": "cta-prep01-bn-15min-pos",
+          "order_strategy_name": "lgq_grid_prep",
+          "shares": 1.0,
+          "updated_at_us": 1793696431166059
+        },
+        {
+          "source_id": "binance_exec_rx01",
+          "binding_name": "cta-prep01-bn-1h-pos",
+          "position_strategy_name": "cta-prep01-bn-1h-pos",
+          "order_strategy_name": "lgq_grid_prep",
+          "shares": 1.0,
+          "updated_at_us": 1794234335682867
+        },
+        {
+          "source_id": "binance_exec_rx01",
+          "binding_name": "cta-prep01-bn-1min-pos",
+          "position_strategy_name": "cta-prep01-bn-1min-pos",
+          "order_strategy_name": "lgq_grid_prep",
+          "shares": 1.0,
+          "updated_at_us": 1793696431155093
+        },
+        {
+          "source_id": "binance_exec_rx01",
+          "binding_name": "cta-prep01-bn-5min-pos",
+          "position_strategy_name": "cta-prep01-bn-5min-pos",
+          "order_strategy_name": "lgq_grid_prep",
+          "shares": 1.0,
+          "updated_at_us": 1793696431161226
+        }
+      ],
+      "hourly_exec_configs": [
+        {
+          "strategy": "cta-prep01-bn-1h-pos",
+          "algorithm": "grid",
+          "target_symbols": 23,
+          "indexed": true
+        }
+      ],
+      "exec_ready": true,
+      "pending_publishes": 0
+    },
+    "binance_exec_rx03": {
+      "bindings": [
+        {
+          "source_id": "binance_exec_rx03",
+          "binding_name": "cta-last-20-prep02-bn-15min-pos",
+          "position_strategy_name": "cta-last-20-prep02-bn-15min-pos",
+          "order_strategy_name": "lgq_grid_prep",
+          "shares": 1.0,
+          "updated_at_us": 1793787202825980
+        },
+        {
+          "source_id": "binance_exec_rx03",
+          "binding_name": "cta-last-20-prep02-bn-1h-pos",
+          "position_strategy_name": "cta-last-20-prep02-bn-1h-pos",
+          "order_strategy_name": "lgq_grid_prep",
+          "shares": 1.0,
+          "updated_at_us": 1794234335649616
+        },
+        {
+          "source_id": "binance_exec_rx03",
+          "binding_name": "cta-last-20-prep02-bn-5min-pos",
+          "position_strategy_name": "cta-last-20-prep02-bn-5min-pos",
+          "order_strategy_name": "lgq_grid_prep",
+          "shares": 1.0,
+          "updated_at_us": 1793787202867245
+        },
+        {
+          "source_id": "binance_exec_rx03",
+          "binding_name": "cta-top-20-prep02-bn-15min-pos",
+          "position_strategy_name": "cta-top-20-prep02-bn-15min-pos",
+          "order_strategy_name": "lgq_grid_prep",
+          "shares": 1.0,
+          "updated_at_us": 1793787202833087
+        },
+        {
+          "source_id": "binance_exec_rx03",
+          "binding_name": "cta-top-20-prep02-bn-1h-pos",
+          "position_strategy_name": "cta-top-20-prep02-bn-1h-pos",
+          "order_strategy_name": "lgq_grid_prep",
+          "shares": 1.0,
+          "updated_at_us": 1794234335711448
+        },
+        {
+          "source_id": "binance_exec_rx03",
+          "binding_name": "cta-top-20-prep02-bn-5min-pos",
+          "position_strategy_name": "cta-top-20-prep02-bn-5min-pos",
+          "order_strategy_name": "lgq_grid_prep",
+          "shares": 1.0,
+          "updated_at_us": 1793787202873143
+        },
+        {
+          "source_id": "binance_exec_rx03",
+          "binding_name": "cta-top-5-prep02-bn-15min-pos",
+          "position_strategy_name": "cta-top-5-prep02-bn-15min-pos",
+          "order_strategy_name": "lgq_grid_prep",
+          "shares": 1.0,
+          "updated_at_us": 1793787202841386
+        },
+        {
+          "source_id": "binance_exec_rx03",
+          "binding_name": "cta-top-5-prep02-bn-1h-pos",
+          "position_strategy_name": "cta-top-5-prep02-bn-1h-pos",
+          "order_strategy_name": "lgq_grid_prep",
+          "shares": 1.0,
+          "updated_at_us": 1794234335741031
+        },
+        {
+          "source_id": "binance_exec_rx03",
+          "binding_name": "cta-top-5-prep02-bn-5min-pos",
+          "position_strategy_name": "cta-top-5-prep02-bn-5min-pos",
+          "order_strategy_name": "lgq_grid_prep",
+          "shares": 1.0,
+          "updated_at_us": 1793787202879543
+        }
+      ],
+      "hourly_exec_configs": [
+        {
+          "strategy": "cta-last-20-prep02-bn-1h-pos",
+          "algorithm": "grid",
+          "target_symbols": 15,
+          "indexed": true
+        },
+        {
+          "strategy": "cta-top-20-prep02-bn-1h-pos",
+          "algorithm": "grid",
+          "target_symbols": 11,
+          "indexed": true
+        },
+        {
+          "strategy": "cta-top-5-prep02-bn-1h-pos",
+          "algorithm": "grid",
+          "target_symbols": 4,
+          "indexed": true
+        }
+      ],
+      "exec_ready": true,
+      "pending_publishes": 0
+    }
+  },
+  "existing_minute_config_hashes_unchanged": true,
+  "existing_bindings_unchanged": true,
+  "backed_up_ledger_files_retained": 15,
+  "rx03_1min": {
+    "configurations": 0,
+    "bindings": 0,
+    "active_batches": 0,
+    "nonzero_targets": 0,
+    "pending_or_live_orders": 0,
+    "residual_rows": 16,
+    "residual_abs_usdt": 32.34794705540808,
+    "residuals": [
+      {
+        "strategy_name": "cta-last-20-prep02-bn-1min-pos",
+        "symbol": "IOTAUSDT",
+        "current_qty": -0.04271956122443043,
+        "current_usdt": -0.0014924078713754773,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-last-20-prep02-bn-1min-pos",
+        "symbol": "KAVAUSDT",
+        "current_qty": -0.09999999999843112,
+        "current_usdt": -0.006852499999892493,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-last-20-prep02-bn-1min-pos",
+        "symbol": "KSMUSDT",
+        "current_qty": -0.04813138543713791,
+        "current_usdt": -0.15377977647165564,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-last-20-prep02-bn-1min-pos",
+        "symbol": "QTUMUSDT",
+        "current_qty": -0.0940639269406276,
+        "current_usdt": -0.06561899543378182,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-last-20-prep02-bn-1min-pos",
+        "symbol": "RLCUSDT",
+        "current_qty": 0.03657623947614752,
+        "current_usdt": 0.015345561272217692,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-last-20-prep02-bn-1min-pos",
+        "symbol": "SKLUSDT",
+        "current_qty": -0.517749863465724,
+        "current_usdt": -0.0018915991261720228,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-last-20-prep02-bn-1min-pos",
+        "symbol": "YFIUSDT",
+        "current_qty": -0.00046589716684155777,
+        "current_usdt": -0.9283001049318038,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-last-20-prep02-bn-1min-pos",
+        "symbol": "ZENUSDT",
+        "current_qty": -0.05941814998560169,
+        "current_usdt": -0.2983979492276917,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-top-20-prep02-bn-1min-pos",
+        "symbol": "AXSUSDT",
+        "current_qty": 0.5560181217093145,
+        "current_usdt": 0.45807552957021874,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-top-20-prep02-bn-1min-pos",
+        "symbol": "BNBUSDT",
+        "current_qty": 0.006439410253097369,
+        "current_usdt": 4.415857778112787,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-top-20-prep02-bn-1min-pos",
+        "symbol": "DOGEUSDT",
+        "current_qty": 0.702241144087111,
+        "current_usdt": 0.04894971894859207,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-top-20-prep02-bn-1min-pos",
+        "symbol": "ETCUSDT",
+        "current_qty": 0.004179057799920116,
+        "current_usdt": 0.028582665822553636,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-top-20-prep02-bn-1min-pos",
+        "symbol": "LINKUSDT",
+        "current_qty": 0.0025118925473339715,
+        "current_usdt": 0.02672025697226512,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-top-20-prep02-bn-1min-pos",
+        "symbol": "LTCUSDT",
+        "current_qty": 0.0005430096895392422,
+        "current_usdt": 0.0280871761914173,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-top-5-prep02-bn-1min-pos",
+        "symbol": "BTCUSDT",
+        "current_qty": 0.00034626284166468105,
+        "current_usdt": 25.85366313346716,
+        "completion_reason": "exchange_minimum"
+      },
+      {
+        "strategy_name": "cta-top-5-prep02-bn-1min-pos",
+        "symbol": "DOGEUSDT",
+        "current_qty": 0.23430029393148288,
+        "current_usdt": 0.01633190198849401,
+        "completion_reason": "exchange_minimum"
+      }
+    ]
+  },
+  "audit": "/home/ubuntu/cta-hourly-history/merged-deployment",
+  "worker_sha256": "e2dfd380ce5a99bc2fd7e28e4bec1dbcb5e93b1e08fa07ce7ad855f8d33d289d",
+  "checks": {
+    "cta_library": 69,
+    "cta_config": 4,
+    "hourly_lifecycle": 1,
+    "cargo_fmt": true
+  }
+}

@@ -127,6 +127,8 @@ fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
         "bitget-coin-futures" => Some(TradingVenue::BitgetCoinFutures),
         "gate-margin" => Some(TradingVenue::GateMargin),
         "gate-futures" => Some(TradingVenue::GateFutures),
+        "hyperliquid-margin" => Some(TradingVenue::HyperliquidMargin),
+        "hyperliquid-futures" => Some(TradingVenue::HyperliquidFutures),
         _ => None,
     }
 }
@@ -149,6 +151,7 @@ fn futures_venue_for_exchange(exchange: &str) -> Option<TradingVenue> {
         "bybit" => Some(TradingVenue::BybitFutures),
         "bitget" => Some(TradingVenue::BitgetFutures),
         "gate" => Some(TradingVenue::GateFutures),
+        "hyperliquid" => Some(TradingVenue::HyperliquidFutures),
         _ => None,
     }
 }
@@ -160,6 +163,7 @@ fn margin_venue_for_exchange(exchange: &str) -> Option<TradingVenue> {
         "bybit" => Some(TradingVenue::BybitMargin),
         "bitget" => Some(TradingVenue::BitgetMargin),
         "gate" => Some(TradingVenue::GateMargin),
+        "hyperliquid" => Some(TradingVenue::HyperliquidMargin),
         _ => None,
     }
 }
@@ -211,12 +215,6 @@ fn infer_exec_venue_from_key_suffix(key_suffix: &str) -> Option<TradingVenue> {
     }
 
     futures_venue_for_exchange(normalize_exchange_str(&raw))
-}
-
-fn infer_exec_venue_from_env() -> Option<TradingVenue> {
-    std::env::var("EXEC_VENUE")
-        .ok()
-        .and_then(|venue| venue_from_slug(&venue))
 }
 
 fn infer_arb_venues_from_env() -> Option<(TradingVenue, TradingVenue)> {
@@ -636,6 +634,9 @@ async fn main() -> Result<()> {
                     hedge_venue,
                 )
             }
+            Some((ns, _)) if ns.eq_ignore_ascii_case("cta") => {
+                anyhow::bail!("Legacy CTA execution is retired; use cta_perp/cta_spread target publishers with Exec");
+            }
             Some((ns, suffix)) if ns.eq_ignore_ascii_case("cross") => {
                 let (open_venue, hedge_venue) = infer_cross_venues_from_key_suffix(&suffix)
                     .or_else(infer_arb_venues_from_env)
@@ -702,8 +703,8 @@ async fn main() -> Result<()> {
                 )
             }
             Some((ns, suffix)) if ns.eq_ignore_ascii_case("exec") => {
-                let exec_venue = infer_exec_venue_from_key_suffix(&suffix)
-                    .or_else(infer_exec_venue_from_env)
+                let exec_venue = runtime_common::exec_market::configured_venue()?
+                    .or_else(|| infer_exec_venue_from_key_suffix(&suffix))
                     .with_context(|| {
                         format!(
                             "failed to infer exec venue from CWD suffix='{}' or env EXEC_VENUE",
@@ -723,6 +724,13 @@ async fn main() -> Result<()> {
                         );
                     }
                 }
+                let backend = runtime_common::execution_backend::ExecBackend::for_exchange(
+                    Exchange::from_str(exec_venue.trade_engine_exchange())
+                        .context("Exec exchange")?,
+                )?;
+                let cash_venue = *runtime_common::exec_market::runtime_venues(exec_venue, backend)
+                    .last()
+                    .expect("Exec always owns a market");
                 (
                     DecisionBranch::Exec,
                     None,
@@ -730,7 +738,7 @@ async fn main() -> Result<()> {
                     exec_venue.data_pub_slug().to_string(),
                     None,
                     exec_venue,
-                    exec_venue,
+                    cash_venue,
                 )
             }
             Some((ns, suffix)) if ns.eq_ignore_ascii_case("mm") => {
@@ -866,6 +874,21 @@ mod tests {
         let (open, hedge) = infer_intra_venues_from_key_suffix("binance").unwrap();
         assert_eq!(open, TradingVenue::BinanceMargin);
         assert_eq!(hedge, TradingVenue::BinanceFutures);
+    }
+
+    #[test]
+    fn hyperliquid_intra_suffix_and_slugs_resolve() {
+        let (open, hedge) = infer_intra_venues_from_key_suffix("hyperliquid").unwrap();
+        assert_eq!(open, TradingVenue::HyperliquidMargin);
+        assert_eq!(hedge, TradingVenue::HyperliquidFutures);
+        assert_eq!(
+            super::venue_from_slug("hyperliquid_margin"),
+            Some(TradingVenue::HyperliquidMargin)
+        );
+        assert_eq!(
+            super::venue_from_slug("hyperliquid-futures"),
+            Some(TradingVenue::HyperliquidFutures)
+        );
     }
 
     #[test]

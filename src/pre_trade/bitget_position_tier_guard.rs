@@ -12,7 +12,9 @@ use std::time::Duration;
 use trade_signal::ArbMode;
 
 use crate::pre_trade::params_load::PreTradeParamsLoader;
-use crate::pre_trade::POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER;
+use crate::pre_trade::{
+    POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER, POSITION_LIMIT_PRICE_BUFFER_RATIO,
+};
 
 const DEFAULT_CACHE_KEY: &str = "bitget_position_tier_cache:USDT-FUTURES";
 const DEFAULT_COIN_CACHE_KEY: &str = "bitget_position_tier_cache:COIN-FUTURES";
@@ -609,7 +611,10 @@ fn calculate_cap_for_record(
             symbol, amount_u
         ));
     }
-    let buffer = pending_limit_orders as f64 * amount_u * POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER;
+    let pending_buffer =
+        pending_limit_orders as f64 * amount_u * POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER;
+    let price_buffer = record.risk_limit * POSITION_LIMIT_PRICE_BUFFER_RATIO;
+    let buffer = pending_buffer + price_buffer;
     let cap = record.risk_limit - buffer;
     if !(cap.is_finite() && cap > 0.0) {
         return Err(format!(

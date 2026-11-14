@@ -1,0 +1,1632 @@
+[
+  {
+    "env": "binance_fr_arb01",
+    "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+    "audit_utc": "2026-11-03T14:04:18Z",
+    "active": false,
+    "errors": [
+      "account: /papi/v1/account: HTTP 401; code=-2015",
+      "balances: /papi/v1/balance: HTTP 401; code=-2015",
+      "positions: /papi/v1/um/account: HTTP 401; code=-2015",
+      "futures_orders: /papi/v1/um/openOrders: HTTP 401; code=-2015",
+      "spot_orders: /papi/v1/margin/openOrders: HTTP 401; code=-2015"
+    ],
+    "equity": null,
+    "total_exposure": null,
+    "exchange_abs_exposure_priced": 0,
+    "leverage": null,
+    "max_leverage": null,
+    "futures_orders": 0,
+    "spot_orders": 0,
+    "top_exposures": [],
+    "ledger_gaps_over_10_usdt": [],
+    "exchange_vs_viz_over_1_usdt": [],
+    "unpriced_assets": [],
+    "unresolved_contracts": []
+  },
+  {
+    "env": "binance_fr_arb02",
+    "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+    "audit_utc": "2026-11-03T14:04:18Z",
+    "active": true,
+    "errors": [],
+    "equity": 43559.33418468,
+    "total_exposure": 18.32647212155718,
+    "exchange_abs_exposure_priced": 18.32649400534164,
+    "leverage": 1.8573055388541544,
+    "max_leverage": 2.1,
+    "futures_orders": 0,
+    "spot_orders": 0,
+    "top_exposures": [
+      {
+        "asset": "COTI",
+        "spot": "0",
+        "hedge": "-463",
+        "net": "-463",
+        "net_usdt": -4.56476793,
+        "ledger_gap_usdt": 0.0,
+        "pending_qty": -463.0
+      },
+      {
+        "asset": "F",
+        "spot": "0",
+        "hedge": "1259",
+        "net": "1259",
+        "net_usdt": 3.4320214100000004,
+        "ledger_gap_usdt": 0.0,
+        "pending_qty": 0.0
+      },
+      {
+        "asset": "LISTA",
+        "spot": "9116.063261",
+        "hedge": "-9086",
+        "net": "30.063261",
+        "net_usdt": 2.24783002497,
+        "ledger_gap_usdt": -7.477e-16,
+        "pending_qty": 0.2999999999999545
+      },
+      {
+        "asset": "CATI",
+        "spot": "3135.6",
+        "hedge": "-3094",
+        "net": "41.6",
+        "net_usdt": 1.6682952,
+        "ledger_gap_usdt": 3.6092925e-15,
+        "pending_qty": 0.0
+      },
+      {
+        "asset": "TRB",
+        "spot": "66.9",
+        "hedge": "-66.8",
+        "net": "0.1",
+        "net_usdt": 1.627281488,
+        "ledger_gap_usdt": 1.5518964884074767e-06,
+        "pending_qty": 0.0999999999999952
+      },
+      {
+        "asset": "BICO",
+        "spot": "73747.0",
+        "hedge": "-73659",
+        "net": "88.0",
+        "net_usdt": 1.32929368,
+        "ledger_gap_usdt": 0.0,
+        "pending_qty": 0.0
+      },
+      {
+        "asset": "CVX",
+        "spot": "0.000685",
+        "hedge": "0.3",
+        "net": "0.300685",
+        "net_usdt": 0.57009876,
+        "ledger_gap_usdt": -0.017672812265640093,
+        "pending_qty": -0.09000000000000341
+      },
+      {
+        "asset": "KITE",
+        "spot": "3995.64718",
+        "hedge": "-3991",
+        "net": "4.64718",
+        "net_usdt": 0.530243238,
+        "ledger_gap_usdt": 7.4165e-15,
+        "pending_qty": 0.0
+      }
+    ],
+    "ledger_gaps_over_10_usdt": [],
+    "exchange_vs_viz_over_1_usdt": [],
+    "unpriced_assets": [
+      {
+        "asset": "BNB",
+        "spot": "-0.00263946",
+        "hedge": "0"
+      }
+    ],
+    "unresolved_contracts": []
+  },
+  {
+    "env": "binance_fr_arb03",
+    "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+    "audit_utc": "2026-11-03T14:04:18Z",
+    "active": true,
+    "errors": [],
+    "equity": 1136527.45979681,
+    "total_exposure": 171.86043484057296,
+    "exchange_abs_exposure_priced": 171.85445108307024,
+    "leverage": 1.6653308567357932,
+    "max_leverage": 1.7,
+    "futures_orders": 0,
+    "spot_orders": 0,
+    "top_exposures": [
+      {
+        "asset": "BNB",
+        "spot": "-0.05553732",
+        "hedge": "0",
+        "net": "-0.05553732",
+        "net_usdt": -38.7272839824,
+        "ledger_gap_usdt": null,
+        "pending_qty": null
+      },
+      {
+        "asset": "BEAMX",
+        "spot": "10954240.95056",
+        "hedge": "-10958573",
+        "net": "-4332.04944",
+        "net_usdt": -17.33252980944,
+        "ledger_gap_usdt": -18.69854546800008,
+        "pending_qty": 342.0000000000218
+      },
+      {
+        "asset": "GENIUS",
+        "spot": "97086.873668",
+        "hedge": "-97128",
+        "net": "-41.126332",
+        "net_usdt": -12.46990155403044,
+        "ledger_gap_usdt": -12.359761247822142,
+        "pending_qty": 0.599999999999568
+      },
+      {
+        "asset": "CVX",
+        "spot": "6100.31247192",
+        "hedge": "-6106.6",
+        "net": "-6.28752808",
+        "net_usdt": -11.921153239679997,
+        "ledger_gap_usdt": -8.937707340843486,
+        "pending_qty": -1.5229999999986603
+      },
+      {
+        "asset": "MANTA",
+        "spot": "291090.764588",
+        "hedge": "-291215.3",
+        "net": "-124.535412",
+        "net_usdt": -7.18341551971452,
+        "ledger_gap_usdt": -7.183515655077067,
+        "pending_qty": 0.09999999999899956
+      },
+      {
+        "asset": "LUMIA",
+        "spot": "19039.996056",
+        "hedge": "-18962.3",
+        "net": "77.696056",
+        "net_usdt": 6.36168469275072,
+        "ledger_gap_usdt": -0.6373424848492072,
+        "pending_qty": 85.47999999999888
+      },
+      {
+        "asset": "BANANAS31",
+        "spot": "3621267.97996",
+        "hedge": "-3622339",
+        "net": "-1071.02004",
+        "net_usdt": -6.14979706968,
+        "ledger_gap_usdt": -6.1478960083204806,
+        "pending_qty": 0.0
+      },
+      {
+        "asset": "SYRUP",
+        "spot": "79284.371964",
+        "hedge": "-79318",
+        "net": "-33.628036",
+        "net_usdt": -5.305769980774121,
+        "ledger_gap_usdt": -5.329707453613835,
+        "pending_qty": 0.5000000000001137
+      }
+    ],
+    "ledger_gaps_over_10_usdt": [
+      {
+        "asset": "BEAMX",
+        "spot": "10954240.95056",
+        "hedge": "-10958573",
+        "net": "-4332.04944",
+        "net_usdt": -17.33252980944,
+        "ledger_gap_usdt": -18.69854546800008,
+        "pending_qty": 342.0000000000218
+      },
+      {
+        "asset": "GENIUS",
+        "spot": "97086.873668",
+        "hedge": "-97128",
+        "net": "-41.126332",
+        "net_usdt": -12.46990155403044,
+        "ledger_gap_usdt": -12.359761247822142,
+        "pending_qty": 0.599999999999568
+      }
+    ],
+    "exchange_vs_viz_over_1_usdt": [],
+    "unpriced_assets": [],
+    "unresolved_contracts": []
+  },
+  {
+    "env": "binance_fr_arb04",
+    "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+    "audit_utc": "2026-11-03T14:04:19Z",
+    "active": true,
+    "errors": [],
+    "equity": 3581492.40922054,
+    "total_exposure": 518.288485684838,
+    "exchange_abs_exposure_priced": 418.3343472382584,
+    "leverage": 1.6803208049346543,
+    "max_leverage": 1.7,
+    "futures_orders": 5,
+    "spot_orders": 40,
+    "top_exposures": [
+      {
+        "asset": "OPEN",
+        "spot": "1825655.884142",
+        "hedge": "-1823341",
+        "net": "2314.884142",
+        "net_usdt": 200.89717396578718,
+        "ledger_gap_usdt": -0.8955754314873225,
+        "pending_qty": 10.0
+      },
+      {
+        "asset": "CGPT",
+        "spot": "4468673.369299",
+        "hedge": "-4463237",
+        "net": "5436.369299",
+        "net_usdt": 99.55922097570145,
+        "ledger_gap_usdt": -0.09577986649712478,
+        "pending_qty": 0.8000000000120053
+      },
+      {
+        "asset": "AVA",
+        "spot": "32770.508207",
+        "hedge": "-32525.2",
+        "net": "245.308207",
+        "net_usdt": 71.26612587439274,
+        "ledger_gap_usdt": -100.90250023676914,
+        "pending_qty": 0.09999999999746478
+      },
+      {
+        "asset": "BIGTIME",
+        "spot": "1191660.71139",
+        "hedge": "-1190544",
+        "net": "1116.71139",
+        "net_usdt": 7.460748796590001,
+        "ledger_gap_usdt": -0.009844453500999478,
+        "pending_qty": 1119.0
+      },
+      {
+        "asset": "SOMI",
+        "spot": "913890.967972",
+        "hedge": "-913853",
+        "net": "37.967972",
+        "net_usdt": 6.2305442052,
+        "ledger_gap_usdt": -0.46509222000502476,
+        "pending_qty": 40.39999999999963
+      },
+      {
+        "asset": "AGLD",
+        "spot": "290734.779521",
+        "hedge": "-290705",
+        "net": "29.779521",
+        "net_usdt": 5.361995131755659,
+        "ledger_gap_usdt": -0.009822079889273371,
+        "pending_qty": 0.7000000000007276
+      },
+      {
+        "asset": "PARTI",
+        "spot": "117382.372575",
+        "hedge": "-117274",
+        "net": "108.372575",
+        "net_usdt": 4.85511411824075,
+        "ledger_gap_usdt": -0.6039516310090663,
+        "pending_qty": 121.09999999999854
+      },
+      {
+        "asset": "BROCCOLI714",
+        "spot": "5646292.70648",
+        "hedge": "-5646527",
+        "net": "-234.29352",
+        "net_usdt": -4.0363314456984,
+        "ledger_gap_usdt": -2.8957990503e-12,
+        "pending_qty": -234.0
+      }
+    ],
+    "ledger_gaps_over_10_usdt": [
+      {
+        "asset": "AVA",
+        "spot": "32770.508207",
+        "hedge": "-32525.2",
+        "net": "245.308207",
+        "net_usdt": 71.26612587439274,
+        "ledger_gap_usdt": -100.90250023676914,
+        "pending_qty": 0.09999999999746478
+      }
+    ],
+    "exchange_vs_viz_over_1_usdt": [
+      {
+        "asset": "AVA",
+        "exchange_vs_viz_usdt": -99.9670165541555
+      }
+    ],
+    "unpriced_assets": [],
+    "unresolved_contracts": []
+  },
+  {
+    "env": "bitget_fr_arb01",
+    "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+    "audit_utc": "2026-11-03T14:04:19Z",
+    "active": true,
+    "errors": [],
+    "equity": 254278.22464335,
+    "total_exposure": 49.602790423976984,
+    "exchange_abs_exposure_priced": 49.6052046542731,
+    "leverage": 2.68244944743717,
+    "max_leverage": 2.6,
+    "futures_orders": 0,
+    "spot_orders": 0,
+    "top_exposures": [
+      {
+        "asset": "ACH",
+        "spot": "4973760.22101",
+        "hedge": "-4971159",
+        "net": "2601.22101",
+        "net_usdt": 11.97602153004,
+        "ledger_gap_usdt": 0.12313190820198525,
+        "pending_qty": 1750.0
+      },
+      {
+        "asset": "NMR",
+        "spot": "32.5848081",
+        "hedge": "-32",
+        "net": "0.5848081",
+        "net_usdt": 5.586086971199999,
+        "ledger_gap_usdt": 0.8598299999813219,
+        "pending_qty": 0.06999999999998785
+      },
+      {
+        "asset": "CROSS",
+        "spot": "126737.3608776",
+        "hedge": "-126695",
+        "net": "42.3608776",
+        "net_usdt": 4.446197712896,
+        "ledger_gap_usdt": 0.06723412223981422,
+        "pending_qty": 14.460000000000036
+      },
+      {
+        "asset": "B2",
+        "spot": "19257.0146124",
+        "hedge": "-19246",
+        "net": "11.0146124",
+        "net_usdt": 4.33755436312,
+        "ledger_gap_usdt": 0.18128134067965973,
+        "pending_qty": 9.730000000000054
+      },
+      {
+        "asset": "SAPIEN",
+        "spot": "528689.3700658",
+        "hedge": "-528612",
+        "net": "77.3700658",
+        "net_usdt": 3.8862984051339997,
+        "ledger_gap_usdt": 0.4088404295256464,
+        "pending_qty": 0.4499999999970896
+      },
+      {
+        "asset": "TRIA",
+        "spot": "14716686.748384",
+        "hedge": "-14715203",
+        "net": "1483.748384",
+        "net_usdt": 3.7583346566720004,
+        "ledger_gap_usdt": 0.8244596601889742,
+        "pending_qty": 1157.5999999999767
+      },
+      {
+        "asset": "EDGE",
+        "spot": "145009.9103064",
+        "hedge": "-145001",
+        "net": "8.9103064",
+        "net_usdt": 2.98851676656,
+        "ledger_gap_usdt": 1.0668441770991737,
+        "pending_qty": 5.4099999999998545
+      },
+      {
+        "asset": "SSV",
+        "spot": "7190.81095483",
+        "hedge": "-7189.74",
+        "net": "1.07095483",
+        "net_usdt": 2.44820274138,
+        "ledger_gap_usdt": 0.45517351815080354,
+        "pending_qty": 0.005999999999875882
+      }
+    ],
+    "ledger_gaps_over_10_usdt": [],
+    "exchange_vs_viz_over_1_usdt": [],
+    "unpriced_assets": [],
+    "unresolved_contracts": []
+  },
+  {
+    "env": "bitget_fr_arb02",
+    "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+    "audit_utc": "2026-11-03T14:04:20Z",
+    "active": true,
+    "errors": [],
+    "equity": 323735.34025862,
+    "total_exposure": 41.204440525976736,
+    "exchange_abs_exposure_priced": 41.2076039336358,
+    "leverage": 2.6764226447496937,
+    "max_leverage": 2.6,
+    "futures_orders": 0,
+    "spot_orders": 0,
+    "top_exposures": [
+      {
+        "asset": "CROSS",
+        "spot": "412151.0891041",
+        "hedge": "-412085",
+        "net": "66.0891041",
+        "net_usdt": 6.936051475295001,
+        "ledger_gap_usdt": 0.26119924514947424,
+        "pending_qty": 62.97999999999956
+      },
+      {
+        "asset": "SXT",
+        "spot": "187488.4170323",
+        "hedge": "-186879",
+        "net": "609.4170323",
+        "net_usdt": 5.089241636737301,
+        "ledger_gap_usdt": 0.08104019174996159,
+        "pending_qty": 600.0
+      },
+      {
+        "asset": "TRIA",
+        "spot": "9665291.776053",
+        "hedge": "-9663336",
+        "net": "1955.776053",
+        "net_usdt": 4.9539807422490005,
+        "ledger_gap_usdt": 1.0420633095632714,
+        "pending_qty": 0.7999999999701686
+      },
+      {
+        "asset": "EDGE",
+        "spot": "195928.5140344",
+        "hedge": "-195914",
+        "net": "14.5140344",
+        "net_usdt": 4.8694585412,
+        "ledger_gap_usdt": 2.350366218754838,
+        "pending_qty": 6.749999999999545
+      },
+      {
+        "asset": "A",
+        "spot": "488264.8058287",
+        "hedge": "-488217",
+        "net": "47.8058287",
+        "net_usdt": 3.8364177531750006,
+        "ledger_gap_usdt": 0.5245713787503885,
+        "pending_qty": 40.78000000000111
+      },
+      {
+        "asset": "QNT",
+        "spot": "21.48897836",
+        "hedge": "-21.47",
+        "net": "0.01897836",
+        "net_usdt": 3.73399233,
+        "ledger_gap_usdt": 1.5253746204177419,
+        "pending_qty": 0.005500000000001171
+      },
+      {
+        "asset": "BICO",
+        "spot": "654947.4434109",
+        "hedge": "-654826",
+        "net": "121.4434109",
+        "net_usdt": 1.836224372808,
+        "ledger_gap_usdt": 0.423729510120072,
+        "pending_qty": 92.59000000000378
+      },
+      {
+        "asset": "GRASS",
+        "spot": "116007.0560091",
+        "hedge": "-116004",
+        "net": "3.0560091",
+        "net_usdt": 1.764875815341,
+        "ledger_gap_usdt": 1.1668819976486915,
+        "pending_qty": 0.4800000000000182
+      }
+    ],
+    "ledger_gaps_over_10_usdt": [],
+    "exchange_vs_viz_over_1_usdt": [],
+    "unpriced_assets": [],
+    "unresolved_contracts": []
+  },
+  {
+    "env": "bitget_fr_arb03",
+    "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+    "audit_utc": "2026-11-03T14:04:20Z",
+    "active": true,
+    "errors": [],
+    "equity": 303746.97287244,
+    "total_exposure": 43.98530579093587,
+    "exchange_abs_exposure_priced": 43.9927561071471,
+    "leverage": 2.679067065447292,
+    "max_leverage": 2.6,
+    "futures_orders": 0,
+    "spot_orders": 0,
+    "top_exposures": [
+      {
+        "asset": "YB",
+        "spot": "10740.9903629",
+        "hedge": "-10606",
+        "net": "134.9903629",
+        "net_usdt": 8.037326207066,
+        "ledger_gap_usdt": 0.00942327672,
+        "pending_qty": 133.11999999999998
+      },
+      {
+        "asset": "QNT",
+        "spot": "10.74478922",
+        "hedge": "-10.71",
+        "net": "0.03478922",
+        "net_usdt": 6.8451269272,
+        "ledger_gap_usdt": 1.0016789211701551,
+        "pending_qty": 0.011300000000000192
+      },
+      {
+        "asset": "NMR",
+        "spot": "63.1396784",
+        "hedge": "-62.7",
+        "net": "0.4396784",
+        "net_usdt": 4.1998080768,
+        "ledger_gap_usdt": 1.0811785295623348,
+        "pending_qty": 0.08999999999996255
+      },
+      {
+        "asset": "TRIA",
+        "spot": "9859300.764849",
+        "hedge": "-9857939",
+        "net": "1361.764849",
+        "net_usdt": 3.449350362517,
+        "ledger_gap_usdt": 1.0008635908919612,
+        "pending_qty": 0.4999999999854481
+      },
+      {
+        "asset": "EDGE",
+        "spot": "171530.0012593",
+        "hedge": "-171520",
+        "net": "10.0012593",
+        "net_usdt": 3.35442236922,
+        "ledger_gap_usdt": 1.3663406133005416,
+        "pending_qty": 5.229999999999563
+      },
+      {
+        "asset": "BICO",
+        "spot": "995103.946049",
+        "hedge": "-994890",
+        "net": "213.946049",
+        "net_usdt": 3.23486426088,
+        "ledger_gap_usdt": 0.37011056544060283,
+        "pending_qty": 86.08000000000175
+      },
+      {
+        "asset": "KMNO",
+        "spot": "76651.5234349",
+        "hedge": "-76550",
+        "net": "101.5234349",
+        "net_usdt": 3.1705768719269996,
+        "ledger_gap_usdt": 0.2803196836350824,
+        "pending_qty": 9.830000000001746
+      },
+      {
+        "asset": "SSV",
+        "spot": "6758.39887434",
+        "hedge": "-6757.48",
+        "net": "0.91887434",
+        "net_usdt": 2.10054674124,
+        "ledger_gap_usdt": 0.4297258518750258,
+        "pending_qty": 0.00999999999999801
+      }
+    ],
+    "ledger_gaps_over_10_usdt": [],
+    "exchange_vs_viz_over_1_usdt": [],
+    "unpriced_assets": [],
+    "unresolved_contracts": []
+  },
+  {
+    "env": "gate_fr_arb01",
+    "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+    "audit_utc": "2026-11-03T14:04:21Z",
+    "active": true,
+    "errors": [],
+    "equity": 752350.69,
+    "total_exposure": 102.774637967465,
+    "exchange_abs_exposure_priced": 102.7749119129915,
+    "leverage": 1.6117173251009715,
+    "max_leverage": 1.6,
+    "futures_orders": 0,
+    "spot_orders": 0,
+    "top_exposures": [
+      {
+        "asset": "AIN",
+        "spot": "10637.45529225",
+        "hedge": "-10600",
+        "net": "37.45529225",
+        "net_usdt": 9.9964429486025,
+        "ledger_gap_usdt": 3.7840374794626572,
+        "pending_qty": 23.259999999999422
+      },
+      {
+        "asset": "TAG",
+        "spot": "11701788.3085975",
+        "hedge": "-11690000",
+        "net": "11788.3085975",
+        "net_usdt": 9.22435147754375,
+        "ledger_gap_usdt": 2.7969657718305854,
+        "pending_qty": -84.79999999917345
+      },
+      {
+        "asset": "HANA",
+        "spot": "186200.73215",
+        "hedge": "-186700",
+        "net": "-499.26785",
+        "net_usdt": -7.179471682999999,
+        "ledger_gap_usdt": 0.39878831699999995,
+        "pending_qty": -527.0
+      },
+      {
+        "asset": "PTB",
+        "spot": "60186971.677025",
+        "hedge": "-60114800",
+        "net": "72171.677025",
+        "net_usdt": 6.423279255225001,
+        "ledger_gap_usdt": 0.1284478994250472,
+        "pending_qty": 70724.99999999953
+      },
+      {
+        "asset": "MYX",
+        "spot": "160518.606375",
+        "hedge": "-160628",
+        "net": "-109.393625",
+        "net_usdt": -6.3338908875,
+        "ledger_gap_usdt": 0.22808112749993514,
+        "pending_qty": -114.0
+      },
+      {
+        "asset": "CTK",
+        "spot": "11446.828803",
+        "hedge": "-11511",
+        "net": "-64.171197",
+        "net_usdt": -5.8267446876,
+        "ledger_gap_usdt": 0.006476310000041768,
+        "pending_qty": -65.0
+      },
+      {
+        "asset": "LAB",
+        "spot": "1837678.33877025",
+        "hedge": "-1837790.0",
+        "net": "-111.66122975",
+        "net_usdt": -5.2112295924325,
+        "ledger_gap_usdt": 0.24572250868633233,
+        "pending_qty": -124.0
+      },
+      {
+        "asset": "US",
+        "spot": "17845.621625",
+        "hedge": "-18900",
+        "net": "-1054.378375",
+        "net_usdt": -4.9228926328750005,
+        "ledger_gap_usdt": 1.0090170063752475,
+        "pending_qty": -1350.0
+      }
+    ],
+    "ledger_gaps_over_10_usdt": [],
+    "exchange_vs_viz_over_1_usdt": [],
+    "unpriced_assets": [
+      {
+        "asset": "SLVON",
+        "spot": "0.00911592",
+        "hedge": "0"
+      },
+      {
+        "asset": "TSLAX",
+        "spot": "0.0005043",
+        "hedge": "0"
+      }
+    ],
+    "unresolved_contracts": [],
+    "above_venue_risk_limit": [
+      {
+        "contract": "ARIA_USDT",
+        "value": "46908.9777",
+        "risk_limit": "20000",
+        "cross_leverage_limit": "5"
+      }
+    ]
+  },
+  {
+    "env": "gate_fr_arb02",
+    "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+    "audit_utc": "2026-11-03T14:04:21Z",
+    "active": true,
+    "errors": [],
+    "equity": 2891526.27,
+    "total_exposure": 124.003783649588,
+    "exchange_abs_exposure_priced": 124.00405627507749,
+    "leverage": 1.5209414268878256,
+    "max_leverage": 1.5,
+    "futures_orders": 0,
+    "spot_orders": 0,
+    "top_exposures": [
+      {
+        "asset": "AIN",
+        "spot": "45454.39",
+        "hedge": "-45400",
+        "net": "54.39",
+        "net_usdt": 14.516691,
+        "ledger_gap_usdt": 1.54802e-13,
+        "pending_qty": 0.0
+      },
+      {
+        "asset": "BEAT",
+        "spot": "1929247.211125",
+        "hedge": "-1929130",
+        "net": "117.211125",
+        "net_usdt": 12.014140312499999,
+        "ledger_gap_usdt": 10.720457062500113,
+        "pending_qty": 3.0
+      },
+      {
+        "asset": "KOMA",
+        "spot": "2938245.4948",
+        "hedge": "-2937660",
+        "net": "585.4948",
+        "net_usdt": 8.4697677768,
+        "ledger_gap_usdt": 1.2024283859999827,
+        "pending_qty": 495.0
+      },
+      {
+        "asset": "FLOW",
+        "spot": "45261.003075",
+        "hedge": "-44917.8",
+        "net": "343.203075",
+        "net_usdt": 7.7907098025,
+        "ledger_gap_usdt": 0.05000753250003632,
+        "pending_qty": 341.10000000000457
+      },
+      {
+        "asset": "INX",
+        "spot": "7130315.51555",
+        "hedge": "-7129000",
+        "net": "1315.51555",
+        "net_usdt": 6.04742498335,
+        "ledger_gap_usdt": 5.5482720353235475,
+        "pending_qty": 66.0
+      },
+      {
+        "asset": "ZEREBRO",
+        "spot": "1064678.42425",
+        "hedge": "-1064920",
+        "net": "-241.57575",
+        "net_usdt": -5.8968640575,
+        "ledger_gap_usdt": 0.43842800999927256,
+        "pending_qty": -260.0
+      },
+      {
+        "asset": "SAHARA",
+        "spot": "3007947.743725",
+        "hedge": "-3007100",
+        "net": "847.743725",
+        "net_usdt": 5.823999390749998,
+        "ledger_gap_usdt": 0.00546525675010717,
+        "pending_qty": 824.0
+      },
+      {
+        "asset": "US",
+        "spot": "13820126.043775",
+        "hedge": "-13818900",
+        "net": "1226.043775",
+        "net_usdt": 5.724398385475,
+        "ledger_gap_usdt": 5.4303006434239425,
+        "pending_qty": 37.0
+      }
+    ],
+    "ledger_gaps_over_10_usdt": [
+      {
+        "asset": "BEAT",
+        "spot": "1929247.211125",
+        "hedge": "-1929130",
+        "net": "117.211125",
+        "net_usdt": 12.014140312499999,
+        "ledger_gap_usdt": 10.720457062500113,
+        "pending_qty": 3.0
+      }
+    ],
+    "exchange_vs_viz_over_1_usdt": [],
+    "unpriced_assets": [
+      {
+        "asset": "ADA",
+        "spot": "0.00488866",
+        "hedge": "0"
+      },
+      {
+        "asset": "ATOM",
+        "spot": "0.00035098",
+        "hedge": "0"
+      },
+      {
+        "asset": "AVAX",
+        "spot": "0.000049792",
+        "hedge": "0"
+      },
+      {
+        "asset": "BCH",
+        "spot": "0.0000895",
+        "hedge": "0"
+      },
+      {
+        "asset": "BNB",
+        "spot": "0.000077269571",
+        "hedge": "0"
+      },
+      {
+        "asset": "BTC",
+        "spot": "0.000010884697",
+        "hedge": "0"
+      },
+      {
+        "asset": "CRCLX",
+        "spot": "0.00226875",
+        "hedge": "0"
+      },
+      {
+        "asset": "DOGE",
+        "spot": "0.001152460972",
+        "hedge": "0"
+      },
+      {
+        "asset": "DOT",
+        "spot": "0.000572246",
+        "hedge": "0"
+      },
+      {
+        "asset": "DYDX",
+        "spot": "0.193575508",
+        "hedge": "-0.1"
+      },
+      {
+        "asset": "ETC",
+        "spot": "0.000051021526",
+        "hedge": "0"
+      },
+      {
+        "asset": "ETH",
+        "spot": "0.000077639915",
+        "hedge": "0"
+      },
+      {
+        "asset": "FIL",
+        "spot": "0.080149562882",
+        "hedge": "-0.08"
+      },
+      {
+        "asset": "FTM",
+        "spot": "3.281E-9",
+        "hedge": "0"
+      },
+      {
+        "asset": "LINK",
+        "spot": "0.000417353222",
+        "hedge": "0"
+      },
+      {
+        "asset": "LTC",
+        "spot": "0.000073808",
+        "hedge": "0"
+      },
+      {
+        "asset": "MATIC",
+        "spot": "8.36E-9",
+        "hedge": "0"
+      },
+      {
+        "asset": "POL",
+        "spot": "0.00066233",
+        "hedge": "0"
+      },
+      {
+        "asset": "S",
+        "spot": "0.00088715",
+        "hedge": "0"
+      },
+      {
+        "asset": "SHIB",
+        "spot": "0.758924925622",
+        "hedge": "0"
+      },
+      {
+        "asset": "SKYAI",
+        "spot": "0.731125",
+        "hedge": "-10"
+      },
+      {
+        "asset": "SLVON",
+        "spot": "0.00666496",
+        "hedge": "0"
+      },
+      {
+        "asset": "SOL",
+        "spot": "0.000063604",
+        "hedge": "0"
+      },
+      {
+        "asset": "SUSHI",
+        "spot": "0.000233872192",
+        "hedge": "0"
+      },
+      {
+        "asset": "TRX",
+        "spot": "0.0075144",
+        "hedge": "0"
+      },
+      {
+        "asset": "TSLAX",
+        "spot": "0.00041095",
+        "hedge": "0"
+      },
+      {
+        "asset": "UNI",
+        "spot": "0.0007804",
+        "hedge": "0"
+      },
+      {
+        "asset": "XRP",
+        "spot": "0.000954708792",
+        "hedge": "0"
+      }
+    ],
+    "unresolved_contracts": [],
+    "above_venue_risk_limit": [
+      {
+        "contract": "MYX_USDT",
+        "value": "74348.0583",
+        "risk_limit": "70000",
+        "cross_leverage_limit": "5"
+      },
+      {
+        "contract": "AIN_USDT",
+        "value": "12117.26",
+        "risk_limit": "5000",
+        "cross_leverage_limit": "5"
+      },
+      {
+        "contract": "GRIFFAIN_USDT",
+        "value": "74557.812",
+        "risk_limit": "70000",
+        "cross_leverage_limit": "5"
+      },
+      {
+        "contract": "IDOL_USDT",
+        "value": "146816.926",
+        "risk_limit": "70000",
+        "cross_leverage_limit": "5"
+      },
+      {
+        "contract": "ARIA_USDT",
+        "value": "39748.8195",
+        "risk_limit": "20000",
+        "cross_leverage_limit": "5"
+      },
+      {
+        "contract": "TAG_USDT",
+        "value": "52763.975",
+        "risk_limit": "50000",
+        "cross_leverage_limit": "5"
+      }
+    ]
+  },
+  {
+    "env": "gate_fr_arb03",
+    "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+    "audit_utc": "2026-11-03T14:04:22Z",
+    "active": true,
+    "errors": [],
+    "equity": 19986.22,
+    "total_exposure": 57.17253886636974,
+    "exchange_abs_exposure_priced": 57.173054777186245,
+    "leverage": 1.6143508495563776,
+    "max_leverage": 1.6,
+    "futures_orders": 0,
+    "spot_orders": 0,
+    "top_exposures": [
+      {
+        "asset": "AIN",
+        "spot": "2881.4793175",
+        "hedge": "-2800",
+        "net": "81.4793175",
+        "net_usdt": 21.746015047574993,
+        "ledger_gap_usdt": 1.9094440211923314,
+        "pending_qty": 73.38000000000034
+      },
+      {
+        "asset": "TAG",
+        "spot": "18.7900825",
+        "hedge": "-10000",
+        "net": "-9981.2099175",
+        "net_usdt": -7.8102967604437525,
+        "ledger_gap_usdt": 0.12588889539365927,
+        "pending_qty": -2021.799999999872
+      },
+      {
+        "asset": "ASR",
+        "spot": "2616.1",
+        "hedge": "-2606",
+        "net": "10.1",
+        "net_usdt": 7.1003,
+        "ledger_gap_usdt": 6.5379e-14,
+        "pending_qty": 10.099999999999907
+      },
+      {
+        "asset": "O",
+        "spot": "0.2724",
+        "hedge": "-10",
+        "net": "-9.7276",
+        "net_usdt": -3.90271312,
+        "ledger_gap_usdt": 0.07874552999998115,
+        "pending_qty": -10.0
+      },
+      {
+        "asset": "SIGN",
+        "spot": "1234.574725",
+        "hedge": "-900",
+        "net": "334.574725",
+        "net_usdt": 3.2989067885,
+        "ledger_gap_usdt": 0.0015307649999997041,
+        "pending_qty": 334.0
+      },
+      {
+        "asset": "RAVE",
+        "spot": "11.1951675",
+        "hedge": "-34.0",
+        "net": "-22.8048325",
+        "net_usdt": -3.08549383725,
+        "ledger_gap_usdt": 0.012876162750005412,
+        "pending_qty": -22.90000000000004
+      },
+      {
+        "asset": "ZEREBRO",
+        "spot": "10890.27065",
+        "hedge": "-10840",
+        "net": "50.27065",
+        "net_usdt": 1.2271065665,
+        "ledger_gap_usdt": 0.5042398109999549,
+        "pending_qty": 22.00000000000182
+      },
+      {
+        "asset": "OPEN",
+        "spot": "2411.47885",
+        "hedge": "-2400",
+        "net": "11.47885",
+        "net_usdt": 0.992920525,
+        "ledger_gap_usdt": 0.15496042500009619,
+        "pending_qty": 8.99999999999909
+      }
+    ],
+    "ledger_gaps_over_10_usdt": [],
+    "exchange_vs_viz_over_1_usdt": [],
+    "unpriced_assets": [],
+    "unresolved_contracts": [],
+    "above_venue_risk_limit": []
+  },
+  {
+    "env": "gate_fr_arb05",
+    "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+    "audit_utc": "2026-11-03T14:04:22Z",
+    "active": false,
+    "errors": [],
+    "equity": null,
+    "total_exposure": null,
+    "exchange_abs_exposure_priced": 0,
+    "leverage": null,
+    "max_leverage": null,
+    "futures_orders": 0,
+    "spot_orders": 0,
+    "top_exposures": [],
+    "ledger_gaps_over_10_usdt": [],
+    "exchange_vs_viz_over_1_usdt": [],
+    "unpriced_assets": [],
+    "unresolved_contracts": [],
+    "above_venue_risk_limit": []
+  },
+  {
+    "env": "bybit_fr_arb01",
+    "host": "ip-172-31-7-123.ap-southeast-1.compute.internal",
+    "audit_utc": "2026-11-03T14:04:24Z",
+    "active": true,
+    "errors": [],
+    "equity": 54904.3736094,
+    "total_exposure": 24.868605833313953,
+    "exchange_abs_exposure_priced": 24.87714620065786,
+    "leverage": 1.6733625649453516,
+    "max_leverage": 1.6,
+    "futures_orders": 0,
+    "spot_orders": 0,
+    "top_exposures": [
+      {
+        "asset": "VELO",
+        "spot": "1789830.33423",
+        "hedge": "-1787720",
+        "net": "2110.33423",
+        "net_usdt": 6.87335858711,
+        "ledger_gap_usdt": 0.5795317871112159,
+        "pending_qty": 1932.3999999996267
+      },
+      {
+        "asset": "WOO",
+        "spot": "72187.2910725",
+        "hedge": "-71804",
+        "net": "383.2910725",
+        "net_usdt": 4.605242236087499,
+        "ledger_gap_usdt": 0.7508302360881206,
+        "pending_qty": 320.79999999994834
+      },
+      {
+        "asset": "BASED",
+        "spot": "200095.246315",
+        "hedge": "-200050",
+        "net": "45.246315",
+        "net_usdt": 2.23924012935,
+        "ledger_gap_usdt": 2.135311129349352,
+        "pending_qty": 2.1000000000130967
+      },
+      {
+        "asset": "H",
+        "spot": "38950.85058927",
+        "hedge": "-38910",
+        "net": "40.85058927",
+        "net_usdt": 2.1663067489881,
+        "ledger_gap_usdt": 1.8223950408002838,
+        "pending_qty": 6.399999999994634
+      },
+      {
+        "asset": "EDGE",
+        "spot": "30521.526075",
+        "hedge": "-30516",
+        "net": "5.526075",
+        "net_usdt": 1.8539981625,
+        "ledger_gap_usdt": 1.1485758625000206,
+        "pending_qty": 1.9999999999998863
+      },
+      {
+        "asset": "MERL",
+        "spot": "84903.1682915",
+        "hedge": "-84852.2",
+        "net": "50.9682915",
+        "net_usdt": 1.467377112285,
+        "ledger_gap_usdt": 1.4313958021345163,
+        "pending_qty": 0.02000000001225999
+      },
+      {
+        "asset": "BSB",
+        "spot": "66222.13837",
+        "hedge": "-66208",
+        "net": "14.13837",
+        "net_usdt": 1.2645358128000002,
+        "ledger_gap_usdt": 1.2377038128003601,
+        "pending_qty": 0.2999999999959755
+      },
+      {
+        "asset": "RECALL",
+        "spot": "3773.62439",
+        "hedge": "-3735",
+        "net": "38.62439",
+        "net_usdt": 1.2120333582,
+        "ledger_gap_usdt": 1.2026193581996232,
+        "pending_qty": 0.30000000001200533
+      }
+    ],
+    "ledger_gaps_over_10_usdt": [],
+    "exchange_vs_viz_over_1_usdt": [],
+    "unpriced_assets": [
+      {
+        "asset": "0G",
+        "spot": "0.4891025",
+        "hedge": "0"
+      },
+      {
+        "asset": "1INCH",
+        "spot": "5.23419237",
+        "hedge": "0"
+      },
+      {
+        "asset": "2Z",
+        "spot": "0.057935",
+        "hedge": "0"
+      },
+      {
+        "asset": "ADA",
+        "spot": "3.00254926",
+        "hedge": "0"
+      },
+      {
+        "asset": "ALT",
+        "spot": "0.26063942",
+        "hedge": "0"
+      },
+      {
+        "asset": "AR",
+        "spot": "0.00247861",
+        "hedge": "0"
+      },
+      {
+        "asset": "ARB",
+        "spot": "0.00911738",
+        "hedge": "0"
+      },
+      {
+        "asset": "ASTER",
+        "spot": "0.01906889",
+        "hedge": "0"
+      },
+      {
+        "asset": "ATH",
+        "spot": "0.03163777",
+        "hedge": "0"
+      },
+      {
+        "asset": "ATOM",
+        "spot": "0.00179935",
+        "hedge": "0"
+      },
+      {
+        "asset": "AXL",
+        "spot": "0.09509182",
+        "hedge": "0"
+      },
+      {
+        "asset": "AXS",
+        "spot": "0.03118567",
+        "hedge": "0"
+      },
+      {
+        "asset": "BCH",
+        "spot": "0.00078656",
+        "hedge": "0"
+      },
+      {
+        "asset": "BNB",
+        "spot": "0.00470667",
+        "hedge": "0"
+      },
+      {
+        "asset": "BOME",
+        "spot": "4.90822351",
+        "hedge": "0"
+      },
+      {
+        "asset": "BTC",
+        "spot": "0.00005266",
+        "hedge": "0"
+      },
+      {
+        "asset": "CATI",
+        "spot": "3.04119489",
+        "hedge": "0"
+      },
+      {
+        "asset": "CC",
+        "spot": "0.35828",
+        "hedge": "0"
+      },
+      {
+        "asset": "CGPT",
+        "spot": "10.18135704",
+        "hedge": "0"
+      },
+      {
+        "asset": "DOGE",
+        "spot": "38.3355919",
+        "hedge": "0"
+      },
+      {
+        "asset": "DOT",
+        "spot": "0.00041421",
+        "hedge": "0"
+      },
+      {
+        "asset": "DYM",
+        "spot": "1.8962003",
+        "hedge": "0"
+      },
+      {
+        "asset": "EIGEN",
+        "spot": "22.36949751",
+        "hedge": "0"
+      },
+      {
+        "asset": "ENA",
+        "spot": "0.22883195",
+        "hedge": "0"
+      },
+      {
+        "asset": "ETC",
+        "spot": "0.01405227",
+        "hedge": "0"
+      },
+      {
+        "asset": "ETH",
+        "spot": "0.00125439",
+        "hedge": "0"
+      },
+      {
+        "asset": "ETHFI",
+        "spot": "0.001747",
+        "hedge": "0"
+      },
+      {
+        "asset": "EUR",
+        "spot": "0.00485557",
+        "hedge": "0"
+      },
+      {
+        "asset": "FOGO",
+        "spot": "7.17103",
+        "hedge": "0"
+      },
+      {
+        "asset": "GALA",
+        "spot": "136.08826656",
+        "hedge": "0"
+      },
+      {
+        "asset": "GMT",
+        "spot": "167.31757218",
+        "hedge": "0"
+      },
+      {
+        "asset": "GPS",
+        "spot": "9.74507865",
+        "hedge": "0"
+      },
+      {
+        "asset": "HFT",
+        "spot": "20.15738603",
+        "hedge": "0"
+      },
+      {
+        "asset": "HMSTR",
+        "spot": "80.49633586",
+        "hedge": "0"
+      },
+      {
+        "asset": "HNT",
+        "spot": "0.02445795",
+        "hedge": "0"
+      },
+      {
+        "asset": "HOLO",
+        "spot": "0.59345",
+        "hedge": "0"
+      },
+      {
+        "asset": "HOME",
+        "spot": "0.03416492",
+        "hedge": "0"
+      },
+      {
+        "asset": "HUMA",
+        "spot": "0.33895",
+        "hedge": "0"
+      },
+      {
+        "asset": "HYPE",
+        "spot": "0.00545877",
+        "hedge": "0"
+      },
+      {
+        "asset": "ID",
+        "spot": "0.02401408",
+        "hedge": "0"
+      },
+      {
+        "asset": "IO",
+        "spot": "0.49218634",
+        "hedge": "0"
+      },
+      {
+        "asset": "JASMY",
+        "spot": "9.42739174",
+        "hedge": "0"
+      },
+      {
+        "asset": "JTO",
+        "spot": "10.91129139",
+        "hedge": "0"
+      },
+      {
+        "asset": "JUP",
+        "spot": "0.00684032",
+        "hedge": "0"
+      },
+      {
+        "asset": "KAS",
+        "spot": "0.2386978",
+        "hedge": "0"
+      },
+      {
+        "asset": "LDO",
+        "spot": "0.27432071",
+        "hedge": "0"
+      },
+      {
+        "asset": "LINEA",
+        "spot": "0.07014",
+        "hedge": "0"
+      },
+      {
+        "asset": "LINK",
+        "spot": "0.00561343",
+        "hedge": "0"
+      },
+      {
+        "asset": "LTC",
+        "spot": "0.00217093",
+        "hedge": "0"
+      },
+      {
+        "asset": "ME",
+        "spot": "0.00476305",
+        "hedge": "0"
+      },
+      {
+        "asset": "MMT",
+        "spot": "27.0465",
+        "hedge": "0"
+      },
+      {
+        "asset": "NEAR",
+        "spot": "0.06198174",
+        "hedge": "0"
+      },
+      {
+        "asset": "NIGHT",
+        "spot": "0.0065",
+        "hedge": "0"
+      },
+      {
+        "asset": "ORDI",
+        "spot": "0.81185142",
+        "hedge": "0"
+      },
+      {
+        "asset": "PARTI",
+        "spot": "1.05122426",
+        "hedge": "0"
+      },
+      {
+        "asset": "PENGU",
+        "spot": "3.58324769",
+        "hedge": "0"
+      },
+      {
+        "asset": "PLUME",
+        "spot": "0.05822921",
+        "hedge": "0"
+      },
+      {
+        "asset": "POPCAT",
+        "spot": "12.78056757",
+        "hedge": "0"
+      },
+      {
+        "asset": "RESOLV",
+        "spot": "0.13859592",
+        "hedge": "0"
+      },
+      {
+        "asset": "SAHARA",
+        "spot": "0.06400366",
+        "hedge": "0"
+      },
+      {
+        "asset": "SOL",
+        "spot": "0.01138257",
+        "hedge": "0"
+      },
+      {
+        "asset": "SPK",
+        "spot": "0.2363208",
+        "hedge": "0"
+      },
+      {
+        "asset": "SSV",
+        "spot": "0.663332",
+        "hedge": "0"
+      },
+      {
+        "asset": "STX",
+        "spot": "1.81023226",
+        "hedge": "0"
+      },
+      {
+        "asset": "SUI",
+        "spot": "0.12106938",
+        "hedge": "0"
+      },
+      {
+        "asset": "SUSHI",
+        "spot": "3.03006193",
+        "hedge": "0"
+      },
+      {
+        "asset": "SXT",
+        "spot": "4.00369889",
+        "hedge": "0"
+      },
+      {
+        "asset": "TAIKO",
+        "spot": "20.00877398",
+        "hedge": "0"
+      },
+      {
+        "asset": "TREE",
+        "spot": "0.270325",
+        "hedge": "0"
+      },
+      {
+        "asset": "TRUMP",
+        "spot": "0.00932313",
+        "hedge": "0"
+      },
+      {
+        "asset": "TRX",
+        "spot": "10.11460394",
+        "hedge": "0"
+      },
+      {
+        "asset": "UNI",
+        "spot": "0.0123289",
+        "hedge": "0"
+      },
+      {
+        "asset": "VANA",
+        "spot": "0.1704194",
+        "hedge": "0"
+      },
+      {
+        "asset": "WIF",
+        "spot": "0.69459091",
+        "hedge": "0"
+      },
+      {
+        "asset": "WLFI",
+        "spot": "0.03557099",
+        "hedge": "0"
+      },
+      {
+        "asset": "XLM",
+        "spot": "0.13520047",
+        "hedge": "0"
+      },
+      {
+        "asset": "XPL",
+        "spot": "0.4551709",
+        "hedge": "0"
+      },
+      {
+        "asset": "XRP",
+        "spot": "0.00372054",
+        "hedge": "0"
+      },
+      {
+        "asset": "ZEN",
+        "spot": "0.00112376",
+        "hedge": "0"
+      },
+      {
+        "asset": "ZK",
+        "spot": "7.41614327",
+        "hedge": "0"
+      },
+      {
+        "asset": "ZKC",
+        "spot": "35.573835",
+        "hedge": "0"
+      },
+      {
+        "asset": "ZORA",
+        "spot": "3.4877",
+        "hedge": "0"
+      },
+      {
+        "asset": "ZRO",
+        "spot": "2.62605679",
+        "hedge": "0"
+      }
+    ],
+    "unresolved_contracts": []
+  }
+]

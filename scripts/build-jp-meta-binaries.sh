@@ -9,7 +9,7 @@ usage() {
 Usage: scripts/build-jp-meta-binaries.sh --exchange <name>
 
 Options:
-  --exchange <name>   Exchange (binance, gate, okex, or okx)
+  --exchange <name>   Exchange (binance, gate, bitget, okex, or okx)
   -h, --help          Show this help
 
 Builds every release binary used by the JP Meta FR/MM base stack. Artifacts
@@ -41,9 +41,9 @@ if [[ "$EXCHANGE" == "okx" ]]; then
   EXCHANGE="okex"
 fi
 case "$EXCHANGE" in
-  binance|gate|okex) ;;
+  binance|gate|bitget|okex) ;;
   *)
-    echo "[ERROR] exchange must be binance, gate, okex, or okx: $EXCHANGE" >&2
+    echo "[ERROR] exchange must be binance, gate, bitget, okex, or okx: $EXCHANGE" >&2
     exit 2
     ;;
 esac

@@ -1,0 +1,17 @@
+{
+  "url": "http://13.115.227.29:4191/cta/binance-cta-spread-rx01/signals/",
+  "publication": "仓位发布关闭 · 仅观察",
+  "combinations": "5 / 57",
+  "history_ready": "0 / 57",
+  "spread_ready": "价差就绪 57 / 57",
+  "live_ready": "0 / 57",
+  "latest_model": "10-12 16:24",
+  "lag": "历史回放中 / 数据滞后 14.4 小时",
+  "chart_state": "信号时间为已闭合分钟的结束边界，标记在下一分钟；价格仅用于定位。0/361 条因子观测就绪 · 0 根 K 线待补",
+  "js_errors": [],
+  "failed_requests": [],
+  "desktop": true,
+  "mobile": true,
+  "factor_sign_switch": true,
+  "candles_visible": true
+}

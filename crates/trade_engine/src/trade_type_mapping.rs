@@ -16,25 +16,33 @@ impl TradeTypeMapping {
             | TradeRequestType::BinanceCancelAllUMConditionalOrders
             | TradeRequestType::BinanceCancelMarginOrder
             | TradeRequestType::BinanceModifyUMOrder
+            | TradeRequestType::BinanceStdModifyUMOrder
+            | TradeRequestType::BinanceStdBatchModifyUMOrders
             | TradeRequestType::BinanceUMSetLeverage
             | TradeRequestType::BinanceStdMainToUmTransfer
             | TradeRequestType::BinanceStdUmToMainTransfer
             | TradeRequestType::BinanceNewCmOrder
             | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceModifyCmOrder
             | TradeRequestType::BinanceCmSetLeverage => false,
             TradeRequestType::BinancePmNewCmOrder
             | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmModifyCmOrder
             | TradeRequestType::BinancePmCmSetLeverage => false,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsModifyUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
-            | TradeRequestType::BinanceWsCancelMarginOrder => true,
+            | TradeRequestType::BinanceWsCancelMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder
+            | TradeRequestType::BinanceLtpCancelSpotOrder => true,
 
             // OKEx 所有请求走 WebSocket
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
             | TradeRequestType::OkexCancelMarginOrder
-            | TradeRequestType::OkexCancelUMOrder => true,
+            | TradeRequestType::OkexCancelUMOrder
+            | TradeRequestType::OkexModifyUMOrder => true,
 
             // Gate 统一账户 / 合约走 WebSocket
             TradeRequestType::GateUnifiedNewOrder
@@ -52,7 +60,11 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetCancelUMOrder
             | TradeRequestType::BitgetCancelSpotOrder
             | TradeRequestType::BitgetNewCoinFuturesOrder
-            | TradeRequestType::BitgetCancelCoinFuturesOrder => true,
+            | TradeRequestType::BitgetCancelCoinFuturesOrder
+            | TradeRequestType::HyperliquidNewMarginOrder
+            | TradeRequestType::HyperliquidNewUMOrder
+            | TradeRequestType::HyperliquidCancelMarginOrder
+            | TradeRequestType::HyperliquidCancelUMOrder => true,
         }
     }
 
@@ -70,27 +82,33 @@ impl TradeTypeMapping {
             }
             TradeRequestType::BinanceCancelMarginOrder => "/papi/v1/margin/order",
             TradeRequestType::BinanceModifyUMOrder => "/papi/v1/um/order",
+            TradeRequestType::BinanceStdModifyUMOrder => "/fapi/v1/order",
+            TradeRequestType::BinanceStdBatchModifyUMOrders => "/fapi/v1/batchOrders",
             TradeRequestType::BinanceUMSetLeverage => "/papi/v1/um/leverage",
             TradeRequestType::BinanceStdMainToUmTransfer
             | TradeRequestType::BinanceStdUmToMainTransfer => "/sapi/v1/asset/transfer",
-            TradeRequestType::BinanceNewCmOrder | TradeRequestType::BinanceCancelCmOrder => {
-                "/dapi/v1/order"
-            }
+            TradeRequestType::BinanceNewCmOrder
+            | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceModifyCmOrder => "/dapi/v1/order",
             TradeRequestType::BinanceCmSetLeverage => "/dapi/v1/leverage",
-            TradeRequestType::BinancePmNewCmOrder | TradeRequestType::BinancePmCancelCmOrder => {
-                "/papi/v1/cm/order"
-            }
+            TradeRequestType::BinancePmNewCmOrder
+            | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmModifyCmOrder => "/papi/v1/cm/order",
             TradeRequestType::BinancePmCmSetLeverage => "/papi/v1/cm/leverage",
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsModifyUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
-            | TradeRequestType::BinanceWsCancelMarginOrder => {
+            | TradeRequestType::BinanceWsCancelMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder
+            | TradeRequestType::BinanceLtpCancelSpotOrder => {
                 unreachable!("Binance ws requests run via websocket; REST mapping not used")
             }
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
             | TradeRequestType::OkexCancelMarginOrder
-            | TradeRequestType::OkexCancelUMOrder => {
+            | TradeRequestType::OkexCancelUMOrder
+            | TradeRequestType::OkexModifyUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
             }
             TradeRequestType::GateUnifiedNewOrder
@@ -114,6 +132,12 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetNewCoinFuturesOrder
             | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::HyperliquidNewMarginOrder
+            | TradeRequestType::HyperliquidNewUMOrder
+            | TradeRequestType::HyperliquidCancelMarginOrder
+            | TradeRequestType::HyperliquidCancelUMOrder => {
+                unreachable!("Hyperliquid requests run via websocket; REST mapping not used")
             }
         }
     }
@@ -130,25 +154,34 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceCancelAllUMConditionalOrders => "DELETE",
             TradeRequestType::BinanceCancelMarginOrder => "DELETE",
             TradeRequestType::BinanceModifyUMOrder => "PUT",
+            TradeRequestType::BinanceStdModifyUMOrder
+            | TradeRequestType::BinanceStdBatchModifyUMOrders => "PUT",
             TradeRequestType::BinanceUMSetLeverage => "POST",
             TradeRequestType::BinanceStdMainToUmTransfer
             | TradeRequestType::BinanceStdUmToMainTransfer => "POST",
             TradeRequestType::BinanceNewCmOrder | TradeRequestType::BinanceCmSetLeverage => "POST",
             TradeRequestType::BinanceCancelCmOrder => "DELETE",
+            TradeRequestType::BinanceModifyCmOrder | TradeRequestType::BinancePmModifyCmOrder => {
+                "PUT"
+            }
             TradeRequestType::BinancePmNewCmOrder | TradeRequestType::BinancePmCmSetLeverage => {
                 "POST"
             }
             TradeRequestType::BinancePmCancelCmOrder => "DELETE",
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsModifyUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
-            | TradeRequestType::BinanceWsCancelMarginOrder => {
+            | TradeRequestType::BinanceWsCancelMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder
+            | TradeRequestType::BinanceLtpCancelSpotOrder => {
                 unreachable!("Binance ws requests run via websocket; REST mapping not used")
             }
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
             | TradeRequestType::OkexCancelMarginOrder
-            | TradeRequestType::OkexCancelUMOrder => {
+            | TradeRequestType::OkexCancelUMOrder
+            | TradeRequestType::OkexModifyUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
             }
             TradeRequestType::GateUnifiedNewOrder
@@ -172,6 +205,12 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetNewCoinFuturesOrder
             | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::HyperliquidNewMarginOrder
+            | TradeRequestType::HyperliquidNewUMOrder
+            | TradeRequestType::HyperliquidCancelMarginOrder
+            | TradeRequestType::HyperliquidCancelUMOrder => {
+                unreachable!("Hyperliquid requests run via websocket; REST mapping not used")
             }
         }
     }
@@ -188,25 +227,33 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceCancelAllUMConditionalOrders => 1,
             TradeRequestType::BinanceCancelMarginOrder => 2,
             TradeRequestType::BinanceModifyUMOrder => 1,
+            TradeRequestType::BinanceStdModifyUMOrder => 0,
+            TradeRequestType::BinanceStdBatchModifyUMOrders => 5,
             TradeRequestType::BinanceUMSetLeverage => 1,
             TradeRequestType::BinanceStdMainToUmTransfer
             | TradeRequestType::BinanceStdUmToMainTransfer => 900,
             TradeRequestType::BinanceNewCmOrder
             | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceModifyCmOrder
             | TradeRequestType::BinanceCmSetLeverage => 1,
             TradeRequestType::BinancePmNewCmOrder
             | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmModifyCmOrder
             | TradeRequestType::BinancePmCmSetLeverage => 1,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsModifyUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
-            | TradeRequestType::BinanceWsCancelMarginOrder => {
+            | TradeRequestType::BinanceWsCancelMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder
+            | TradeRequestType::BinanceLtpCancelSpotOrder => {
                 unreachable!("Binance ws requests run via websocket; REST mapping not used")
             }
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
             | TradeRequestType::OkexCancelMarginOrder
-            | TradeRequestType::OkexCancelUMOrder => {
+            | TradeRequestType::OkexCancelUMOrder
+            | TradeRequestType::OkexModifyUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
             }
             TradeRequestType::GateUnifiedNewOrder
@@ -230,6 +277,12 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetNewCoinFuturesOrder
             | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::HyperliquidNewMarginOrder
+            | TradeRequestType::HyperliquidNewUMOrder
+            | TradeRequestType::HyperliquidCancelMarginOrder
+            | TradeRequestType::HyperliquidCancelUMOrder => {
+                unreachable!("Hyperliquid requests run via websocket; REST mapping not used")
             }
         }
     }
@@ -246,25 +299,33 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceCancelAllUMConditionalOrders => true,
             TradeRequestType::BinanceCancelMarginOrder => true,
             TradeRequestType::BinanceModifyUMOrder => true,
+            TradeRequestType::BinanceStdModifyUMOrder
+            | TradeRequestType::BinanceStdBatchModifyUMOrders => true,
             TradeRequestType::BinanceUMSetLeverage => true,
             TradeRequestType::BinanceStdMainToUmTransfer
             | TradeRequestType::BinanceStdUmToMainTransfer => true,
             TradeRequestType::BinanceNewCmOrder
             | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceModifyCmOrder
             | TradeRequestType::BinanceCmSetLeverage => true,
             TradeRequestType::BinancePmNewCmOrder
             | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmModifyCmOrder
             | TradeRequestType::BinancePmCmSetLeverage => true,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsModifyUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
-            | TradeRequestType::BinanceWsCancelMarginOrder => {
+            | TradeRequestType::BinanceWsCancelMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder
+            | TradeRequestType::BinanceLtpCancelSpotOrder => {
                 unreachable!("Binance ws requests run via websocket; REST mapping not used")
             }
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
             | TradeRequestType::OkexCancelMarginOrder
-            | TradeRequestType::OkexCancelUMOrder => {
+            | TradeRequestType::OkexCancelUMOrder
+            | TradeRequestType::OkexModifyUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
             }
             TradeRequestType::GateUnifiedNewOrder
@@ -288,6 +349,12 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetNewCoinFuturesOrder
             | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::HyperliquidNewMarginOrder
+            | TradeRequestType::HyperliquidNewUMOrder
+            | TradeRequestType::HyperliquidCancelMarginOrder
+            | TradeRequestType::HyperliquidCancelUMOrder => {
+                unreachable!("Hyperliquid requests run via websocket; REST mapping not used")
             }
         }
     }
@@ -304,25 +371,33 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceCancelAllUMConditionalOrders => true,
             TradeRequestType::BinanceCancelMarginOrder => true,
             TradeRequestType::BinanceModifyUMOrder => true,
+            TradeRequestType::BinanceStdModifyUMOrder
+            | TradeRequestType::BinanceStdBatchModifyUMOrders => true,
             TradeRequestType::BinanceUMSetLeverage => true,
             TradeRequestType::BinanceStdMainToUmTransfer
             | TradeRequestType::BinanceStdUmToMainTransfer => true,
             TradeRequestType::BinanceNewCmOrder
             | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceModifyCmOrder
             | TradeRequestType::BinanceCmSetLeverage => true,
             TradeRequestType::BinancePmNewCmOrder
             | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmModifyCmOrder
             | TradeRequestType::BinancePmCmSetLeverage => true,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsModifyUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
-            | TradeRequestType::BinanceWsCancelMarginOrder => {
+            | TradeRequestType::BinanceWsCancelMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder
+            | TradeRequestType::BinanceLtpCancelSpotOrder => {
                 unreachable!("Binance ws requests run via websocket; REST mapping not used")
             }
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
             | TradeRequestType::OkexCancelMarginOrder
-            | TradeRequestType::OkexCancelUMOrder => {
+            | TradeRequestType::OkexCancelUMOrder
+            | TradeRequestType::OkexModifyUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
             }
             TradeRequestType::GateUnifiedNewOrder
@@ -346,6 +421,12 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetNewCoinFuturesOrder
             | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::HyperliquidNewMarginOrder
+            | TradeRequestType::HyperliquidNewUMOrder
+            | TradeRequestType::HyperliquidCancelMarginOrder
+            | TradeRequestType::HyperliquidCancelUMOrder => {
+                unreachable!("Hyperliquid requests run via websocket; REST mapping not used")
             }
         }
     }
@@ -381,6 +462,59 @@ mod tests {
             assert!(TradeTypeMapping::requires_api_key(req_type));
             assert!(!TradeTypeMapping::counts_toward_order_limit(req_type));
         }
+    }
+
+    #[test]
+    fn coin_modify_uses_signed_put_for_standard_and_portfolio_margin() {
+        for (kind, path) in [
+            (TradeRequestType::BinanceModifyCmOrder, "/dapi/v1/order"),
+            (
+                TradeRequestType::BinancePmModifyCmOrder,
+                "/papi/v1/cm/order",
+            ),
+        ] {
+            assert_eq!(TradeTypeMapping::get_endpoint(kind), path);
+            assert_eq!(TradeTypeMapping::get_method(kind), "PUT");
+            assert!(!TradeTypeMapping::is_websocket(kind));
+            assert!(TradeTypeMapping::requires_signature(kind));
+            assert!(TradeTypeMapping::requires_api_key(kind));
+            assert_eq!(TradeTypeMapping::get_weight(kind), 1);
+        }
+    }
+
+    #[test]
+    fn binance_um_modify_routes_cover_papi_fapi_batch_and_websocket() {
+        assert_eq!(
+            TradeTypeMapping::get_endpoint(TradeRequestType::BinanceModifyUMOrder),
+            "/papi/v1/um/order"
+        );
+        assert_eq!(
+            TradeTypeMapping::get_endpoint(TradeRequestType::BinanceStdModifyUMOrder),
+            "/fapi/v1/order"
+        );
+        assert_eq!(
+            TradeTypeMapping::get_endpoint(TradeRequestType::BinanceStdBatchModifyUMOrders),
+            "/fapi/v1/batchOrders"
+        );
+        assert_eq!(
+            TradeTypeMapping::get_method(TradeRequestType::BinanceStdModifyUMOrder),
+            "PUT"
+        );
+        assert_eq!(
+            TradeTypeMapping::get_method(TradeRequestType::BinanceStdBatchModifyUMOrders),
+            "PUT"
+        );
+        assert_eq!(
+            TradeTypeMapping::get_weight(TradeRequestType::BinanceStdModifyUMOrder),
+            0
+        );
+        assert_eq!(
+            TradeTypeMapping::get_weight(TradeRequestType::BinanceStdBatchModifyUMOrders),
+            5
+        );
+        assert!(TradeTypeMapping::is_websocket(
+            TradeRequestType::BinanceWsModifyUMOrder
+        ));
     }
 
     #[test]

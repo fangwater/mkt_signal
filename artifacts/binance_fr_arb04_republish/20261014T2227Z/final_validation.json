@@ -1,0 +1,336 @@
+{
+  "utc": "2026-10-14T22:47:14.165459+00:00",
+  "env": "binance_fr_arb04",
+  "host": "jp-meta-elvpn",
+  "read_only": true,
+  "processes": [
+    {
+      "pid": 3267729,
+      "name": "viz_server",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "cpu_mask": "0-5,48-95",
+      "sha256": "27d4bf40b3350eada29f2db6c41170b48350cbfce1741499a591b47dcd89dd2e"
+    },
+    {
+      "pid": 3280625,
+      "name": "persist_manager",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "cpu_mask": "15",
+      "sha256": "a3a6eefbdbe0db44b3a62496cb4d915dea6f49047f80ebf1006bc7c2ec8f3da3"
+    },
+    {
+      "pid": 3294825,
+      "name": "trade_engine",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "cpu_mask": "0-5,48-95",
+      "sha256": "3a644f27a3fca63427739c31c981a19f024d00ec8c8f9e596a70c6cdc8e4f748"
+    },
+    {
+      "pid": 3308938,
+      "name": "pre_trade",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "cpu_mask": "0-5,48-95",
+      "sha256": "52c0e508e19cdb2e9341a0f9d7e2b3a21f3304012b8b21460acc1c6764ed92ed"
+    },
+    {
+      "pid": 3323899,
+      "name": "account_monitor",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "cpu_mask": "0-5,48-95",
+      "sha256": "5f650961fd76c15be379854b5a6cd4dc9140de77a18384e73fea42e220047370"
+    },
+    {
+      "pid": 3341031,
+      "name": "trade_signal",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "cpu_mask": "0-5,48-95",
+      "sha256": "c25ccfaf31764a186a5ca426f0e22e2923847afa02a3cc7edd40ee7e8190a04b"
+    },
+    {
+      "pid": 3243019,
+      "name": "delist_risk_server",
+      "cwd": "/home/ubuntu/delist_risk_server",
+      "cpu_mask": "0-5,48-95",
+      "sha256": "8c31f9e3e3fe53b99efd640d2cdba2d8750b64ec666a0f5e1a0ccae6314aa702"
+    },
+    {
+      "pid": 3252075,
+      "name": "config_server",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "cpu_mask": "0-5,48-95"
+    }
+  ],
+  "errors": [],
+  "config_sha256": {
+    "env.sh": "3945c16579d06a8cfe27cd1bdf8ebd8decaed25d1543c607d4a0fcb6b505ff72",
+    "trade_engine.toml": "388bb370fe85036d2fbd5c4cc1bdd4583fe3f4fcaa92a09c0bf788bd9202f60b",
+    "config/viz.toml": "d85d0fe2f231769d0b3e77f4bb9ab1a61f61ec24b1a2fd092d51abfceed87b45"
+  },
+  "fr_health": {
+    "ok": true,
+    "ts": 1792018034317
+  },
+  "delist_health": {
+    "announcements": 87,
+    "degraded": false,
+    "events": 188,
+    "ok": true,
+    "postgres": true,
+    "updated_ms": 1792017343973
+  },
+  "snapshot": {
+    "ts_ms": 1792018034243,
+    "age_ms": 76,
+    "entries_n": 2,
+    "parti": [
+      {
+        "arb_due_hedge_qty": null,
+        "arb_hedge_is_taker": null,
+        "arb_hedge_net_qty": null,
+        "arb_hedge_offset": null,
+        "arb_hedge_ret_qtl": null,
+        "arb_hedge_score": null,
+        "arb_hedge_time_ms": null,
+        "arb_pending_hedge_qty": null,
+        "asset": "PARTI",
+        "hedge_is_taker": null,
+        "hedge_net_qty": null,
+        "hedge_offset_high": null,
+        "hedge_offset_low": null,
+        "hedge_qty": -583664.0,
+        "hedge_ret_qtl": null,
+        "hedge_time_ms": null,
+        "hedge_usdt": -20680.10852592,
+        "is_total": false,
+        "net_qty": 0.21457499999087304,
+        "net_usdt": 0.0076027205504942685,
+        "open_qty": 583664.214575,
+        "open_usdt": 20680.11612864055
+      }
+    ]
+  },
+  "delist_accounts": {
+    "nav_accounts_current": true,
+    "redis": {
+      "jp": true,
+      "sg": true
+    },
+    "arb04": [
+      {
+        "slug": "binance_fr_arb04",
+        "alias": "binance 外部资金",
+        "exchange": "binance",
+        "kind": "funding_rate",
+        "host": "jp",
+        "venues": [
+          "binance-margin",
+          "binance-futures"
+        ],
+        "universe_n": 47,
+        "redis_ok": true,
+        "tone": "risk",
+        "risk_n": 4,
+        "hits": [
+          {
+            "symbol": "HOTUSDT",
+            "listing": "delisted",
+            "tone": "risk",
+            "events": [
+              {
+                "venue": "binance-margin",
+                "action": "catalog_removed",
+                "utc": "",
+                "status": "delisted",
+                "listing": "delisted",
+                "title": "not in current exchange catalog",
+                "url": ""
+              }
+            ]
+          },
+          {
+            "symbol": "IOTXUSDT",
+            "listing": "delisted",
+            "tone": "risk",
+            "events": [
+              {
+                "venue": "binance-margin",
+                "action": "catalog_removed",
+                "utc": "",
+                "status": "delisted",
+                "listing": "delisted",
+                "title": "not in current exchange catalog",
+                "url": ""
+              }
+            ]
+          },
+          {
+            "symbol": "THEUSDT",
+            "listing": "delisted",
+            "tone": "risk",
+            "events": [
+              {
+                "venue": "binance-margin",
+                "action": "catalog_removed",
+                "utc": "",
+                "status": "delisted",
+                "listing": "delisted",
+                "title": "not in current exchange catalog",
+                "url": ""
+              }
+            ]
+          },
+          {
+            "symbol": "TSTUSDT",
+            "listing": "delisted",
+            "tone": "risk",
+            "events": [
+              {
+                "venue": "binance-margin",
+                "action": "catalog_removed",
+                "utc": "",
+                "status": "delisted",
+                "listing": "delisted",
+                "title": "not in current exchange catalog",
+                "url": ""
+              }
+            ]
+          }
+        ],
+        "symbols": [
+          "AEVOUSDT",
+          "AGLDUSDT",
+          "ALPINEUSDT",
+          "ASRUSDT",
+          "ATUSDT",
+          "AVAUSDT",
+          "AWEUSDT",
+          "BANKUSDT",
+          "BEAMXUSDT",
+          "BELUSDT",
+          "BICOUSDT",
+          "BIGTIMEUSDT",
+          "BREVUSDT",
+          "BROCCOLI714USDT",
+          "CATIUSDT",
+          "CETUSUSDT",
+          "CGPTUSDT",
+          "COTIUSDT",
+          "CTKUSDT",
+          "CTSIUSDT",
+          "CVXUSDT",
+          "DEXEUSDT",
+          "DIAUSDT",
+          "EULUSDT",
+          "GENIUSUSDT",
+          "GPSUSDT",
+          "HOTUSDT",
+          "HUMAUSDT",
+          "IOSTUSDT",
+          "IOTXUSDT",
+          "KAVAUSDT",
+          "KITEUSDT",
+          "LISTAUSDT",
+          "LUMIAUSDT",
+          "MANTAUSDT",
+          "MUBARAKUSDT",
+          "OPENUSDT",
+          "PARTIUSDT",
+          "SANTOSUSDT",
+          "SFPUSDT",
+          "SOMIUSDT",
+          "THEUSDT",
+          "TSTUSDT",
+          "TURTLEUSDT",
+          "TUTUSDT",
+          "VELODROMEUSDT",
+          "ZBTUSDT"
+        ],
+        "unimmr_close_n": 46,
+        "unimmr_empty": false,
+        "viz_url": "/fr/binance_fr_arb04/",
+        "config_url": "/fr/binance_fr_arb04/config"
+      }
+    ]
+  },
+  "parti_exchange": {
+    "cash": "583664.214575",
+    "um_position": "-583664.0",
+    "net_qty": "0.214575",
+    "positions": [
+      {
+        "symbol": "PARTIUSDT",
+        "positionSide": "BOTH",
+        "positionAmt": "-583664.0",
+        "leverage": "5",
+        "maxNotionalValue": "50000.0",
+        "markPrice": "0.03543153"
+      }
+    ],
+    "hedge_order": {
+      "orderId": 1978342835,
+      "clientOrderId": "ops_parti_1792017159245",
+      "symbol": "PARTIUSDT",
+      "side": "SELL",
+      "status": "FILLED",
+      "origQty": "2839",
+      "executedQty": "2839",
+      "avgPrice": "0.0352900",
+      "updateTime": 1792017163002
+    }
+  },
+  "pre_trade_startup_evidence": [
+    "[2026-10-14T22:41:51Z INFO  mkt_signal::pre_trade::binance_fr_position_limit_guard] Binance FR position-limit guard startup: env=binance_fr_arb04 limits=750 online_symbols=47 missing_online=0 symbol_config_rows=750 position_rows=44 bracket_rows=1060",
+    "[2026-10-14T22:41:44Z INFO  mkt_signal::pre_trade::leverage_guard] ArbOpen leverage guard Redis key loaded: binance_fr_arb04:fr_unimmr_close_symbols:binance-margin_binance-futures count=46",
+    "[2026-10-14T22:41:50Z INFO  mkt_signal::pre_trade::leverage_guard] ArbOpen leverage guard startup: env=binance_fr_arb04 mode=funding_arb online_symbols=47 targets=47 target_venues=[BinanceFutures] levels=[5]",
+    "[2026-10-14T22:41:50Z INFO  mkt_signal::pre_trade::leverage_guard] ArbOpen leverage guard initialized: targets=47 confirmed=47 failed=0 levels={5: 47}",
+    "[2026-10-14T22:41:50Z INFO  mkt_signal::pre_trade::leverage_guard] ArbOpen leverage guard background refresh task started (interval: 60s)",
+    "[2026-10-14T22:41:50Z INFO  pre_trade] ArbOpen leverage guard initialized"
+  ],
+  "signal_logs": [
+    {
+      "path": "/home/ubuntu/.pm2/logs/fr-ts-bn-arb04-error.log",
+      "size": 80603594,
+      "new_startup_seen": true,
+      "recent_panic_or_fatal": 0,
+      "recent_51023_count": 0
+    },
+    {
+      "path": "/home/ubuntu/.pm2/logs/fr-ts-bn-arb04-out.log",
+      "size": 0,
+      "new_startup_seen": false,
+      "recent_panic_or_fatal": 0,
+      "recent_51023_count": 0
+    }
+  ],
+  "process_followup_utc": "2026-10-14T22:47:59.096329+00:00",
+  "checks": {
+    "all_published_running_binary_sha256_match": true,
+    "configs_unchanged": true,
+    "hedge_confirmed_filled": true,
+    "parti_net_below_order_step": true,
+    "snapshot_fresh": true,
+    "fr_and_delist_health_ok": true,
+    "hot_the_margin_risks_visible": true,
+    "six_fr_binary_pids_stable_after_signal_resume": true
+  },
+  "stability_followup_utc": "2026-10-14T22:48:46.272610+00:00",
+  "position_limit_reject_sample": "[2026-10-14T22:48:42Z INFO  mkt_signal::pre_trade::binance_fr_position_limit_guard] Binance FR position-limit reject detail: symbol=TUTUSDT side=BUY mark_price=0.02013351 current_open_qty=9010682.79963000 add_open_qty=4975.00000000 next_open_qty=9015657.79963000 open_current_usdt=181416.6723 open_order_usdt=100.1642 open_next_usdt=181516.8365 current_futures_qty=-9010750.00000000 add_futures_qty=-4975.00000000 next_futures_qty=-9015725.00000000 futures_current_usdt=181418.0252 futures_order_usdt=100.1642 futures_next_usdt=181518.1894 exceeded_open=true exceeded_futures=true max_notional_value=180000.0000 buffer=3900.0000 buffer_multiplier=1.20 price_buffer_ratio=0.0150 cap=176100.0000 pending_limit_orders=10 amount_u=100.0000 leverage=Some(5.0) current_notional=Some(-181837.0251075) bracket_notional_cap=Some(15000000.0) raw_open_qty=4975.00000000 open_qty_multiplier=1.00000000",
+  "trade_engine_recent_business_errors": {
+    "lines_observed": 398,
+    "51023_count": 265,
+    "panic_or_fatal_count": 0
+  },
+  "known_limitations": [
+    {
+      "observed_utc": "2026-10-14T22:49:29Z",
+      "symbol": "HOTUSDT",
+      "request_type": "BinanceNewMarginOrder",
+      "method": "POST",
+      "endpoint": "/papi/v1/margin/order",
+      "http_status": 400,
+      "exchange_code": 51023,
+      "message": "Trading pair does not exist.",
+      "reason": "Margin catalog risk recognition is fixed; existing whole-pair removal still requires both legs to be inactive. Active futures legs prevent automatic Redis pair removal, so this release does not suppress every unsupported margin submission."
+    }
+  ]
+}

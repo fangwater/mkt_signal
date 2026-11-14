@@ -1,7 +1,7 @@
 use std::fmt;
 
 use anyhow::{Context, Result};
-use log::info;
+use log::debug;
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Commands};
 use serde::de::DeserializeOwned;
@@ -101,7 +101,7 @@ impl RedisClient {
             .await
             .with_context(|| format!("连接 Redis 失败: {}", url))?;
 
-        info!(
+        debug!(
             "Redis 已连接 host={} port={} db={} prefix={:?}",
             settings.host, settings.port, settings.db, settings.prefix
         );
@@ -131,6 +131,49 @@ impl RedisClient {
         Ok(())
     }
 
+    /// Compare-and-set a JSON document, optionally registering its strategy in
+    /// an existing JSON-array index. Concurrent configuration edits are retained.
+    pub async fn compare_and_set_indexed_json(
+        &mut self,
+        key: &str,
+        expected: Option<&str>,
+        value: &str,
+        index: &str,
+        member: &str,
+    ) -> Result<bool> {
+        const SCRIPT: &str = r#"
+local current = redis.call('GET', KEYS[1])
+if ARGV[1] == 'missing' then
+    if current then return 0 end
+elseif current ~= ARGV[2] then return 0 end
+redis.call('SET', KEYS[1], ARGV[3])
+if ARGV[4] ~= '' then
+    local names = cjson.decode(redis.call('GET', KEYS[2]) or '[]')
+    local found = false
+    for _, name in ipairs(names) do if name == ARGV[4] then found = true end end
+    if not found then table.insert(names, ARGV[4]); table.sort(names) end
+    redis.call('SET', KEYS[2], cjson.encode(names))
+end
+return 1
+"#;
+        let result: i64 = redis::cmd("EVAL")
+            .arg(SCRIPT)
+            .arg(2)
+            .arg(self.key(key))
+            .arg(self.key(index))
+            .arg(if expected.is_some() {
+                "present"
+            } else {
+                "missing"
+            })
+            .arg(expected.unwrap_or(""))
+            .arg(value)
+            .arg(member)
+            .query_async(&mut self.manager)
+            .await?;
+        Ok(result == 1)
+    }
+
     /// 获取 JSON，并反序列化
     pub async fn get_json<T>(&mut self, key: &str) -> Result<Option<T>>
     where
@@ -154,6 +197,68 @@ impl RedisClient {
         let text = serde_json::to_string(value)
             .with_context(|| format!("序列化 Redis JSON 失败: key={}", key))?;
         self.set_string(key, &text).await
+    }
+
+    /// Atomically write and delete a related set of namespaced keys.
+    pub async fn atomic_write(
+        &mut self,
+        values: &[(String, String)],
+        delete_keys: &[String],
+    ) -> Result<()> {
+        if values.is_empty() && delete_keys.is_empty() {
+            return Ok(());
+        }
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+        for (key, value) in values {
+            pipe.set(self.key(key), value);
+        }
+        for key in delete_keys {
+            pipe.del(self.key(key));
+        }
+        let _: () = pipe.query_async(&mut self.manager).await?;
+        Ok(())
+    }
+
+    /// Move one member between JSON-array indexes and write its state atomically.
+    pub async fn atomic_move_json_index_member(
+        &mut self,
+        source_key: &str,
+        destination_key: &str,
+        member: &str,
+        state_key: &str,
+        state_value: &str,
+    ) -> Result<()> {
+        const SCRIPT: &str = r#"
+local source = cjson.decode(redis.call('GET', KEYS[1]) or '[]')
+local destination = cjson.decode(redis.call('GET', KEYS[2]) or '[]')
+local next_source = {}
+for _, value in ipairs(source) do
+    if value ~= ARGV[1] then table.insert(next_source, value) end
+end
+local found = false
+for _, value in ipairs(destination) do
+    if value == ARGV[1] then found = true end
+end
+if not found then table.insert(destination, ARGV[1]) end
+table.sort(next_source)
+table.sort(destination)
+local source_json = #next_source == 0 and '[]' or cjson.encode(next_source)
+local destination_json = #destination == 0 and '[]' or cjson.encode(destination)
+redis.call('SET', KEYS[1], source_json)
+redis.call('SET', KEYS[2], destination_json)
+redis.call('SET', KEYS[3], ARGV[2])
+return 1
+"#;
+        let _: i32 = redis::Script::new(SCRIPT)
+            .key(self.key(source_key))
+            .key(self.key(destination_key))
+            .key(self.key(state_key))
+            .arg(member)
+            .arg(state_value)
+            .invoke_async(&mut self.manager)
+            .await?;
+        Ok(())
     }
 
     /// 获取哈希表的所有字段（值为字符串）
@@ -208,7 +313,7 @@ impl BlockingRedisClient {
             .get_connection()
             .with_context(|| format!("连接 Redis 失败: {}", url))?;
 
-        info!(
+        debug!(
             "Redis blocking connected host={} port={} db={} prefix={:?}",
             settings.host, settings.port, settings.db, settings.prefix
         );

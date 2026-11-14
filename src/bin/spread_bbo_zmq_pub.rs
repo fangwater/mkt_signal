@@ -134,7 +134,8 @@ fn main() -> Result<()> {
     let mut bbo_stats = ForwardStats::default();
     let mut derivatives_stats = ForwardStats::default();
     let mut stats_started = Instant::now();
-    let mut ingress_latency = LatencyKll::new("bbo-zmq-pub-colo-ingress");
+    let mut ingress_latency =
+        (args.venue != "binance-futures").then(|| LatencyKll::new("bbo-zmq-pub-colo-ingress"));
 
     loop {
         let mut received_any = false;
@@ -149,7 +150,9 @@ fn main() -> Result<()> {
                     Ok(meta) => {
                         let sent_ts_us = get_timestamp_us();
                         if meta.event_ts_us > 0 && is_latency_symbol(meta.symbol) {
-                            ingress_latency.push((sent_ts_us - meta.event_ts_us) as f64);
+                            if let Some(latency) = &mut ingress_latency {
+                                latency.push((sent_ts_us - meta.event_ts_us) as f64);
+                            }
                         }
                         forward_payload(
                             &socket,

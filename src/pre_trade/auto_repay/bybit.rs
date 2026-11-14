@@ -2,7 +2,8 @@
 //!
 //! - 状态查询：`GET /v5/account/wallet-balance?accountType=UNIFIED`
 //!   → `result.list[0].coin[].{walletBalance, borrowAmount, accruedInterest}`
-//! - 还款触发：`borrowAmount > 0 且 walletBalance > 0`（per-coin）。
+//! - 还款触发：仅 `USDT` 且 `borrowAmount > 0 且 walletBalance > 0`。
+//! - 非 USDT 是期现策略的持仓币，自动还款会绕开策略对冲状态，因此一律跳过。
 //! - 还款：`POST /v5/account/no-convert-repay {coin, repaymentType:"FLEXIBLE"}`。
 //!
 //! 关键设计选择：使用 **`no-convert-repay`** 而非 `quick-repayment`。
@@ -195,6 +196,7 @@ pub(crate) struct BorrowEntry {
 pub(crate) enum RepayAction {
     Repay,
     SkipNoWallet,
+    SkipPositionCoin,
 }
 
 impl RepayAction {
@@ -205,6 +207,7 @@ impl RepayAction {
         match self {
             RepayAction::Repay => "REPAY",
             RepayAction::SkipNoWallet => "SKIP_NO_WALLET",
+            RepayAction::SkipPositionCoin => "SKIP_POSITION_COIN",
         }
     }
 }
@@ -220,7 +223,9 @@ pub(crate) struct RepayDecision {
 
 impl RepayDecision {
     fn from_entry(e: &BorrowEntry) -> Self {
-        let action = if e.wallet_balance <= 0.0 {
+        let action = if !e.coin.eq_ignore_ascii_case("USDT") {
+            RepayAction::SkipPositionCoin
+        } else if e.wallet_balance <= 0.0 {
             RepayAction::SkipNoWallet
         } else {
             RepayAction::Repay
@@ -345,9 +350,9 @@ mod tests {
     }
 
     #[test]
-    fn decision_repays_when_wallet_positive() {
+    fn decision_repays_usdt_when_wallet_positive() {
         let e = BorrowEntry {
-            coin: "BTC".into(),
+            coin: "USDT".into(),
             wallet_balance: 0.5,
             borrow_amount: 0.4,
             accrued_interest: 0.0,
@@ -357,10 +362,24 @@ mod tests {
     }
 
     #[test]
+    fn decision_never_auto_repays_position_coin() {
+        for coin in ["BTC", "HOME", "home"] {
+            let e = BorrowEntry {
+                coin: coin.into(),
+                wallet_balance: 100.0,
+                borrow_amount: 50.0,
+                accrued_interest: 1.0,
+            };
+            let d = RepayDecision::from_entry(&e);
+            assert_eq!(d.action, RepayAction::SkipPositionCoin);
+        }
+    }
+
+    #[test]
     fn decision_skips_when_wallet_negative_or_zero() {
         for w in [0.0, -0.0001, -100.0] {
             let e = BorrowEntry {
-                coin: "ETH".into(),
+                coin: "USDT".into(),
                 wallet_balance: w,
                 borrow_amount: 1.0,
                 accrued_interest: 0.0,
@@ -425,7 +444,7 @@ mod tests {
     fn render_table_marks_skip_and_repay() {
         let entries = vec![
             BorrowEntry {
-                coin: "BTC".into(),
+                coin: "USDT".into(),
                 wallet_balance: 0.5,
                 borrow_amount: 0.4,
                 accrued_interest: 0.001,
@@ -439,10 +458,10 @@ mod tests {
         ];
         let decisions: Vec<_> = entries.iter().map(RepayDecision::from_entry).collect();
         let s = render_decisions_table(&decisions);
-        assert!(s.contains("BTC"));
+        assert!(s.contains("USDT"));
         assert!(s.contains("REPAY"));
         assert!(s.contains("ETH"));
-        assert!(s.contains("SKIP_NO_WALLET"));
+        assert!(s.contains("SKIP_POSITION_COIN"));
         assert!(s.matches("---").count() >= 3);
     }
 }

@@ -1,0 +1,14 @@
+# Build independent TAS zstd shards before replaying 2017 through 2019.
+data_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/future/normalised"
+output_root = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_zstd_shards"
+periods = [
+    "2017-01-01_2018-01-01",
+    "2018-01-01_2019-01-01",
+    "2019-01-01_2020-01-01",
+]
+
+# Each gzip part is sequential; process four independent parts concurrently.
+workers = 4
+rows_per_shard = 25000000
+zstd_level = 1
+progress_every = 10000000

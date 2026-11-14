@@ -1,0 +1,62 @@
+[
+  {
+    "symbol": "AAVEUSDT",
+    "files": 31,
+    "spec": true,
+    "bytes": 80816547
+  },
+  {
+    "symbol": "AVAXUSDT",
+    "files": 31,
+    "spec": true,
+    "bytes": 63966012
+  },
+  {
+    "symbol": "BCHUSDT",
+    "files": 31,
+    "spec": true,
+    "bytes": 39076117
+  },
+  {
+    "symbol": "ETHUSDT",
+    "files": 31,
+    "spec": true,
+    "bytes": 784072721
+  },
+  {
+    "symbol": "FILUSDT",
+    "files": 31,
+    "spec": true,
+    "bytes": 155678257
+  },
+  {
+    "symbol": "LINKUSDT",
+    "files": 31,
+    "spec": true,
+    "bytes": 65080212
+  },
+  {
+    "symbol": "LTCUSDT",
+    "files": 31,
+    "spec": true,
+    "bytes": 30579763
+  },
+  {
+    "symbol": "TRXUSDT",
+    "files": 31,
+    "spec": true,
+    "bytes": 31880796
+  },
+  {
+    "symbol": "UNIUSDT",
+    "files": 31,
+    "spec": true,
+    "bytes": 89560650
+  },
+  {
+    "symbol": "XRPUSDT",
+    "files": 31,
+    "spec": true,
+    "bytes": 139379781
+  }
+]

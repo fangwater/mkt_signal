@@ -1,0 +1,41 @@
+{
+  "samples": [
+    {
+      "cash": false,
+      "symbol": "BTCUSDT",
+      "ts_ms": 1793331885000,
+      "original_rounded_score": 0.00084663,
+      "candidate": 0.0008466330518436269,
+      "absolute_delta": 3.0518436268779994e-09,
+      "matched": true
+    },
+    {
+      "cash": false,
+      "symbol": "ETHUSDT",
+      "ts_ms": 1793331885000,
+      "original_rounded_score": 0.00094401,
+      "candidate": 0.0009440095522802178,
+      "absolute_delta": 4.4771978225527365e-10,
+      "matched": true
+    },
+    {
+      "cash": true,
+      "symbol": "BTCUSDT",
+      "ts_ms": 1793331885000,
+      "original_rounded_score": 0.0008366,
+      "candidate": 0.0008366007563517388,
+      "absolute_delta": 7.563517388353008e-10,
+      "matched": true
+    },
+    {
+      "cash": true,
+      "symbol": "ETHUSDT",
+      "ts_ms": 1793331885000,
+      "original_rounded_score": 0.00094007,
+      "candidate": 0.0009400687315434754,
+      "absolute_delta": 1.2684565246041599e-09,
+      "matched": true
+    }
+  ],
+  "all_matched": true
+}

@@ -10,7 +10,9 @@ pub use symbol_utils::TradingVenue;
 pub mod binance_basic_impl;
 pub mod bitget_basic_impl;
 pub mod bybit_basic_impl;
+pub mod external_futures_fill_impl;
 pub mod gate_basic_impl;
+pub mod hyperliquid_basic_impl;
 pub mod okex_basic_impl;
 pub mod order_update;
 pub mod query_engine_response;
@@ -26,8 +28,13 @@ pub use query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage}
 pub use query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 pub use trade_engine_response::{
     TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind,
+    HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_END, HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_LEN,
+    HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_OFFSET,
 };
-pub use trade_request_type::TradeRequestType;
+pub use trade_request_type::{
+    hyperliquid_client_order_id_from_cloid, hyperliquid_cloid_from_client_order_id,
+    TradeRequestType,
+};
 pub use trade_update::TradeUpdate;
 pub use trade_update_lite::TradeUpdateLite;
 
@@ -116,6 +123,26 @@ impl TimeInForce {
     }
 }
 
+/// Return the exact TIF used by this system for supported Hyperliquid orders.
+/// Hyperliquid represents both intents as limit actions: post-only limits use
+/// `Alo`, while client-side protected market orders use `Ioc`.
+pub fn hyperliquid_time_in_force(
+    venue: TradingVenue,
+    order_type: OrderType,
+) -> Option<TimeInForce> {
+    if !matches!(
+        venue,
+        TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
+    ) {
+        return None;
+    }
+    match order_type {
+        OrderType::Limit => Some(TimeInForce::GTX),
+        OrderType::Market => Some(TimeInForce::IOC),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExecutionType {
     New,
@@ -132,7 +159,7 @@ impl ExecutionType {
         match s.to_uppercase().as_str() {
             "NEW" => Some(ExecutionType::New),
             "CANCELED" | "CANCELLED" => Some(ExecutionType::Canceled),
-            "REPLACED" => Some(ExecutionType::Replaced),
+            "REPLACED" | "AMENDMENT" => Some(ExecutionType::Replaced),
             "REJECTED" => Some(ExecutionType::Rejected),
             "TRADE" => Some(ExecutionType::Trade),
             "EXPIRED" => Some(ExecutionType::Expired),
@@ -612,12 +639,16 @@ impl OrderManager {
 
     pub fn should_skip_idempotent_order_update(
         order: &Order,
+        incoming_execution_type: ExecutionType,
         incoming_status: OrderStatus,
         incoming_order_id: i64,
         incoming_cum_qty: f64,
         log_owner: &str,
         strategy_id: i32,
     ) -> Option<OrderUpdateSkipReason> {
+        if incoming_execution_type == ExecutionType::Replaced {
+            return None;
+        }
         let incoming_exec_status = Self::map_update_status(incoming_status)?;
 
         if order.status == incoming_exec_status {
@@ -1134,6 +1165,13 @@ impl OrderManager {
         self.orders.keys().cloned().collect()
     }
 
+    /// Orders whose remaining quantity may still execute, including unacknowledged submissions.
+    pub fn active_orders(&self) -> impl Iterator<Item = &Order> {
+        self.orders
+            .values()
+            .filter(|order| !order.status.is_terminal())
+    }
+
     /// 获取订单数量
     pub fn count(&self) -> usize {
         self.orders.len()
@@ -1397,6 +1435,22 @@ impl Order {
         self.bitget_spot_order = enabled;
     }
 
+    pub fn apply_replacement_fields(&mut self, update: &dyn OrderUpdate) {
+        if update.execution_type() != ExecutionType::Replaced {
+            return;
+        }
+        let price = update.price();
+        if price.is_finite() && price > 0.0 {
+            self.price = price;
+            self.price_qv = None;
+        }
+        let quantity = update.quantity();
+        if quantity.is_finite() && quantity > 0.0 {
+            self.quantity = quantity;
+            self.quantity_qv = None;
+        }
+    }
+
     /// 更新订单状态
     pub fn update_status(&mut self, status: OrderExecutionStatus) {
         // 增加订单状态检查
@@ -1488,6 +1542,31 @@ impl Order {
 mod tests {
     use super::*;
 
+    #[test]
+    fn hyperliquid_tif_is_exact_for_supported_order_intents() {
+        for venue in [
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ] {
+            assert_eq!(
+                hyperliquid_time_in_force(venue, OrderType::Limit),
+                Some(TimeInForce::GTX)
+            );
+            assert_eq!(
+                hyperliquid_time_in_force(venue, OrderType::Market),
+                Some(TimeInForce::IOC)
+            );
+        }
+        assert_eq!(
+            hyperliquid_time_in_force(TradingVenue::BinanceFutures, OrderType::Limit),
+            None
+        );
+        assert_eq!(
+            hyperliquid_time_in_force(TradingVenue::HyperliquidFutures, OrderType::StopLoss),
+            None
+        );
+    }
+
     fn insert_test_order(manager: &mut OrderManager, client_order_id: i64) {
         manager.create_order(
             TradingVenue::BinanceFutures,
@@ -1523,6 +1602,39 @@ mod tests {
         let order = manager.get(client_order_id).expect("order exists");
         assert_eq!(order.timestamp.create_t, 1_000);
         assert_eq!(order.timestamp.submit_t, 3_000);
+    }
+
+    #[test]
+    fn replacement_is_not_dropped_as_duplicate_new_status() {
+        let mut manager = OrderManager::new(None);
+        insert_test_order(&mut manager, 42);
+        manager.update(42, |order| order.status = OrderExecutionStatus::Create);
+        let order = manager.get(42).unwrap();
+
+        assert_eq!(
+            OrderManager::should_skip_idempotent_order_update(
+                &order,
+                ExecutionType::New,
+                OrderStatus::New,
+                100,
+                0.0,
+                "test",
+                1,
+            ),
+            Some(OrderUpdateSkipReason::DuplicateStatus)
+        );
+        assert_eq!(
+            OrderManager::should_skip_idempotent_order_update(
+                &order,
+                ExecutionType::Replaced,
+                OrderStatus::New,
+                100,
+                0.0,
+                "test",
+                1,
+            ),
+            None
+        );
     }
 
     #[test]

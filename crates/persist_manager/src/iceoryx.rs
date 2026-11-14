@@ -1,13 +1,39 @@
 use anyhow::{Context, Result};
 use bytes::{Buf, Bytes};
+use iceoryx2::port::publisher::Publisher;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 
 use crate::runtime_common::{build_service_name, SIGNAL_PAYLOAD};
-use persist_common::{OrderQueuePositionRecord, SIGNAL_BBO_BINARY_LEN};
+use persist_common::{FillLiquidity, OrderQueuePositionRecord, SIGNAL_BBO_BINARY_LEN};
 
 const NODE_PREFIX: &str = "persist_record_";
+
+pub fn create_sized_record_publisher<const PAYLOAD: usize>(
+    prefix: &str,
+    channel: &str,
+) -> Result<Publisher<ipc::Service, [u8; PAYLOAD], ()>> {
+    let node_name = format!("persist_ack_{}", sanitize_suffix(channel));
+    let service_name = build_service_name(&format!("{}/{}", prefix, channel));
+    let node = NodeBuilder::new()
+        .name(&NodeName::new(&node_name)?)
+        .create::<ipc::Service>()
+        .with_context(|| format!("failed to create iceoryx node {}", node_name))?;
+    let service = node
+        .service_builder(&ServiceName::new(&service_name)?)
+        .publish_subscribe::<[u8; PAYLOAD]>()
+        .max_publishers(1)
+        .max_subscribers(32)
+        .history_size(128)
+        .subscriber_max_buffer_size(256)
+        .open_or_create()
+        .with_context(|| format!("failed to open service {}", service_name))?;
+    service
+        .publisher_builder()
+        .create()
+        .with_context(|| format!("failed to create publisher {}", service_name))
+}
 
 pub fn create_record_subscriber(
     channel: &str,
@@ -15,10 +41,23 @@ pub fn create_record_subscriber(
     create_record_subscriber_with_max_publishers(channel, 1)
 }
 
+pub fn create_sized_record_subscriber<const PAYLOAD: usize>(
+    channel: &str,
+) -> Result<Subscriber<ipc::Service, [u8; PAYLOAD], ()>> {
+    create_sized_record_subscriber_with_max_publishers(channel, 1)
+}
+
 pub fn create_record_subscriber_with_max_publishers(
     channel: &str,
     max_publishers: usize,
 ) -> Result<Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()>> {
+    create_sized_record_subscriber_with_max_publishers(channel, max_publishers)
+}
+
+pub(crate) fn create_sized_record_subscriber_with_max_publishers<const PAYLOAD: usize>(
+    channel: &str,
+    max_publishers: usize,
+) -> Result<Subscriber<ipc::Service, [u8; PAYLOAD], ()>> {
     let node_name = format!("{}{}", NODE_PREFIX, sanitize_suffix(channel));
     let service_name = build_service_name(&format!("persist_pubs/{}", channel));
 
@@ -29,7 +68,7 @@ pub fn create_record_subscriber_with_max_publishers(
 
     let service = node
         .service_builder(&ServiceName::new(&service_name)?)
-        .publish_subscribe::<[u8; SIGNAL_PAYLOAD]>()
+        .publish_subscribe::<[u8; PAYLOAD]>()
         .max_publishers(max_publishers)
         .max_subscribers(32)
         .history_size(128)
@@ -156,6 +195,7 @@ fn uniform_order_used_len(payload: &[u8]) -> Option<usize> {
         return None;
     }
     cursor.advance(SIGNAL_BBO_BINARY_LEN);
+    FillLiquidity::from_u8(read_u8(&mut cursor)?)?;
 
     Some(payload.len().saturating_sub(cursor.remaining()))
 }
@@ -287,6 +327,7 @@ mod tests {
         buf.put_u8(0);
         buf.put_u32_le(0);
         buf.put_slice(&[0; SIGNAL_BBO_BINARY_LEN]);
+        buf.put_u8(FillLiquidity::Taker as u8);
         buf.to_vec()
     }
 
@@ -304,6 +345,14 @@ mod tests {
     fn uniform_trim_rejects_missing_signal_bbo_bytes() {
         let mut payload = uniform_payload();
         payload.pop();
+        assert!(trim_uniform_order_payload(&payload).is_none());
+    }
+
+    #[test]
+    fn uniform_trim_rejects_invalid_fill_role() {
+        let mut payload = uniform_payload();
+        *payload.last_mut().unwrap() = 3;
+        payload.extend_from_slice(&[0; 32]);
         assert!(trim_uniform_order_payload(&payload).is_none());
     }
 }

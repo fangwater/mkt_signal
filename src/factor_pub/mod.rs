@@ -2,13 +2,22 @@
 
 #[path = "futures_fusion_factor_pub.rs"]
 pub mod cn_features;
+pub(crate) mod cta_factor_universe;
+pub(crate) mod cta_nq;
+pub mod cta_perp_factor_model_1m_pub;
+pub mod cta_spread_factor_model_1m_pub;
+pub mod depth_book;
+pub mod exec_volatility_pub;
 pub mod factor_test;
 pub mod fusion_factor_pub;
 pub(crate) mod kline_factors;
+pub mod lseg_features;
+pub mod model_output_publisher;
 #[cfg(feature = "model-ort")]
 pub mod model_pub;
 pub mod pairmm_resample;
 pub mod rl_vol;
+pub mod tardis_input;
 pub mod trade_flow_feature_pub;
 pub mod trade_market_1s;
 pub mod trade_notional_kll;

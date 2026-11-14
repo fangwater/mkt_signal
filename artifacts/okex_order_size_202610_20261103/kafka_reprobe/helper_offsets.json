@@ -1,0 +1,14 @@
+{
+  "status": 1,
+  "elapsed_seconds": 10.036490559577942,
+  "command": [
+    "target/release/period_kafka_consumer",
+    "--config",
+    "artifacts/okex_order_size_202610_20261103/kafka_reprobe/consumer.toml",
+    "--print-offsets",
+    "--metadata-timeout-ms",
+    "10000",
+    "--watermark-timeout-ms",
+    "10000"
+  ]
+}

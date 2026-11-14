@@ -1,0 +1,22 @@
+{
+  "release_id": "20261014T035311Z",
+  "environment": "binance-cta-spread-rx01",
+  "binary": "cta_spread_signal",
+  "base_commit": "6ff0248e524a673c3ba8524bab8e9a6c6ddbb7e1",
+  "source_patch_sha256": "a68cb20831f18abb85a56c9d47a9f76dc35b4afcf02557bb1db1b54a251c7fe3",
+  "binary_sha256": "4069055ff3a20582f727d8cecdc6a14af7d619af7ca12ed625bad765add330b4",
+  "previous_binary_sha256": "47d9f08dbd301edc3bc8c7c55a6d0e6033e4067b9d383ec3c123c4f7c66f9785",
+  "publication_enabled": false,
+  "old_signal_pid": 3132535,
+  "validation": {
+    "spread_tests_passed": 33,
+    "cargo_check": true,
+    "cargo_fmt_check": true,
+    "release_build": true,
+    "library_tests": {
+      "passed": 1265,
+      "ignored": 3,
+      "unrelated_config_failures": 3
+    }
+  }
+}

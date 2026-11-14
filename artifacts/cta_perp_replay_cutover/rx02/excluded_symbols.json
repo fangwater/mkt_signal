@@ -1,0 +1,10 @@
+{
+  "ICXUSDT": {
+    "reason": "Binance perpetual status SETTLING; unavailable in Kafka",
+    "requested_factors": {
+      "TD_TI_017": -1.0,
+      "baseline_036": -1.0,
+      "baseline_200": -1.0
+    }
+  }
+}

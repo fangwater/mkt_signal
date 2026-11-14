@@ -296,7 +296,8 @@ impl GateAccountEventParser {
             .as_array()
             .and_then(|arr| arr.first())
             .unwrap_or(raw_result);
-        let timestamp_s = parse_i64_str_or_num(result.get("t"))
+        let refresh_time_s = parse_i64_str_or_num(result.get("t"));
+        let timestamp_s = refresh_time_s
             .or_else(|| parse_i64_str_or_num(json_value.get("time")))
             .unwrap_or(0);
         let timestamp = timestamp_s.saturating_mul(1_000);
@@ -319,7 +320,7 @@ impl GateAccountEventParser {
             0.0
         };
 
-        let msg = BasicAccountRiskMsg::create(
+        let mut msg = BasicAccountRiskMsg::create(
             timestamp,
             equity,
             equity,
@@ -329,6 +330,13 @@ impl GateAccountEventParser {
             liabilities,
             0.0,
         );
+        // Recovery needs the snapshot refresh time, not the transport timestamp.
+        // `unified.assets.a` is total_available_margin, not USDT wallet balance.
+        msg.available_margin_usd = refresh_time_s
+            .filter(|timestamp| *timestamp > 0)
+            .and_then(|_| parse_f64_str_or_num(result.get("a")))
+            .filter(|margin| margin.is_finite())
+            .unwrap_or(f64::NAN);
         let event = BasicAccountEventMsg::create(
             BasicAccountEventType::AccountRisk,
             BasicAccountScope::GateUnified,
@@ -617,6 +625,11 @@ impl GateAccountEventParser {
         for order in result {
             // 解析 client_order_id (text 字段，必须是 i64)
             let text = order.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            if text == "auto_deleveraging" {
+                // Native user trades provide the fill/trade identities.
+                // Do not count this cumulative order notification again.
+                continue;
+            }
             let client_order_id = match Self::parse_gate_client_order_id(text) {
                 Some(id) => id,
                 None => {
@@ -985,6 +998,16 @@ impl GateAccountEventParser {
         }
 
         for trade in result {
+            if trade["text"].as_str() == Some("auto_deleveraging") {
+                match crate::msg::external_futures_fill::ExternalFuturesFill::from_gate_adl(trade) {
+                    Some(fill) => count += usize::from(fill.emit(tx)),
+                    None => {
+                        warn!("Gate: malformed ADL user trade: {}", trade);
+                        incomplete = true;
+                    }
+                }
+                continue;
+            }
             let symbol = trade
                 .get("contract")
                 .and_then(|v| v.as_str())
@@ -1501,6 +1524,84 @@ mod tests {
         assert!((risk.maintenance_margin_usd - (675_222.27 / 0.1856)).abs() < 1e-6);
         assert!((risk.initial_margin_usd - (675_222.27 / 0.2010)).abs() < 1e-6);
         assert!((risk.borrowed_usd - 1_293_939.74).abs() < 1e-9);
+        assert_eq!(risk.available_margin_usd, -1_432_719.62);
+    }
+
+    #[test]
+    fn unified_assets_margin_uses_exchange_headroom_and_preserves_equity() {
+        let parser = GateAccountEventParser::new();
+        for available in [serde_json::json!("3496.19"), serde_json::json!(-50.0)] {
+            let sink = TestAccountEventSink::new();
+            let payload = serde_json::json!({
+                "time": 1791125187,
+                "channel": "unified.assets",
+                "event": "update",
+                "result": [{"t": 1791125187, "a": available, "b": "6412.73",
+                    "e": "19806.24", "r": "220.56", "R": "892.84"}]
+            });
+            assert_eq!(
+                parser
+                    .parse_with_report(Bytes::from(payload.to_string()), &sink)
+                    .emitted,
+                1
+            );
+            let wrapped = sink.recv().unwrap();
+            let (_, scope, body) = split_basic_account_event(&wrapped).unwrap();
+            let risk = BasicAccountRiskMsg::from_bytes(body).unwrap();
+            assert_eq!(scope, BasicAccountScope::GateUnified);
+            assert_eq!(risk.actual_equity_usd, 19_806.24);
+            assert_eq!(risk.adj_equity_usd, 19_806.24);
+            assert_eq!(
+                risk.available_margin_usd,
+                parse_f64_str_or_num(Some(&available)).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn unified_assets_invalid_margin_remains_unavailable() {
+        let parser = GateAccountEventParser::new();
+        for available in [
+            serde_json::Value::Null,
+            serde_json::json!("NaN"),
+            serde_json::json!("inf"),
+        ] {
+            let sink = TestAccountEventSink::new();
+            let payload = serde_json::json!({"channel": "unified.assets", "event": "update",
+                "result": {"t": 1791125187, "a": available, "e": "19806.24"}});
+            parser.parse_with_report(Bytes::from(payload.to_string()), &sink);
+            let wrapped = sink.recv().unwrap();
+            let (_, _, body) = split_basic_account_event(&wrapped).unwrap();
+            assert!(BasicAccountRiskMsg::from_bytes(body)
+                .unwrap()
+                .available_margin_usd
+                .is_nan());
+        }
+    }
+
+    #[test]
+    fn unified_assets_margin_requires_snapshot_refresh_time() {
+        let parser = GateAccountEventParser::new();
+        for refresh_time in [
+            None,
+            Some(serde_json::json!(0)),
+            Some(serde_json::json!(-1)),
+            Some(serde_json::json!("invalid")),
+        ] {
+            let sink = TestAccountEventSink::new();
+            let mut result = serde_json::json!({"a": "3496.19", "e": "19806.24"});
+            if let Some(refresh_time) = refresh_time {
+                result["t"] = refresh_time;
+            }
+            let payload = serde_json::json!({"channel": "unified.assets", "event": "update",
+                "time": 1791125187, "result": result});
+            parser.parse_with_report(Bytes::from(payload.to_string()), &sink);
+            let wrapped = sink.recv().unwrap();
+            let (_, _, body) = split_basic_account_event(&wrapped).unwrap();
+            let risk = BasicAccountRiskMsg::from_bytes(body).unwrap();
+            assert!(risk.available_margin_usd.is_nan());
+            assert_eq!(risk.actual_equity_usd, 19_806.24);
+        }
     }
 
     #[test]
@@ -1854,6 +1955,58 @@ mod tests {
         assert_eq!(trade.is_maker, 1);
         assert!((trade.last_executed_price - 40_000.4).abs() < 1e-9);
         assert!((trade.last_executed_quantity - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn futures_adl_trade_keeps_native_identity_and_decimal_contracts() {
+        let parser = GateAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let row = serde_json::json!({
+            "id":5395499,"order_id":"11540474397072413",
+            "create_time":1793355400.7977,"contract":"ALPINE_USDT",
+            "size":"4250.1","price":"0.4269","role":"taker",
+            "text":"auto_deleveraging"
+        });
+        let payload =
+            serde_json::json!({"channel":"futures.usertrades","event":"update","result":[row]});
+        let report = parser.parse_with_report(Bytes::from(payload.to_string()), &sink);
+        assert!(report.complete);
+        assert_eq!(report.emitted, 1);
+        let wrapped = sink.recv().unwrap();
+        let (kind, scope, body) = split_basic_account_event(&wrapped).unwrap();
+        assert_eq!(kind, BasicAccountEventType::ExternalFuturesFill);
+        assert_eq!(scope, BasicAccountScope::GateUnified);
+        let fill =
+            crate::msg::external_futures_fill::ExternalFuturesFill::from_bytes(body).unwrap();
+        assert_eq!(fill.symbol, "ALPINEUSDT");
+        assert_eq!(fill.order_id, "11540474397072413");
+        assert_eq!(fill.trade_id, "5395499");
+        assert_eq!(fill.reason.as_deref(), Some("adl"));
+        assert_eq!(fill.quantity, 4250.1);
+        assert_eq!(fill.timestamp_us, 1_793_355_400_797_700);
+        assert_eq!(fill.side, 1);
+        assert_eq!(fill.is_maker, Some(false));
+    }
+
+    #[test]
+    fn futures_adl_order_does_not_duplicate_user_trade_or_invent_a_fill() {
+        let parser = GateAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let order = serde_json::json!({"channel":"futures.orders","event":"update","result":[{
+            "id":"11540474397072413","text":"auto_deleveraging",
+            "contract":"ALPINE_USDT","size":"4250","left":"0","finish_as":"filled"
+        }]});
+        let report = parser.parse_with_report(Bytes::from(order.to_string()), &sink);
+        assert!(report.complete);
+        assert_eq!(report.emitted, 0);
+        assert!(sink.recv().is_none());
+        let missing_trade_id = serde_json::json!({"channel":"futures.usertrades","event":"update","result":[{
+            "order_id":"11540474397072413","text":"auto_deleveraging",
+            "contract":"ALPINE_USDT","size":"4250","price":"0.4269","create_time":1793355400
+        }]});
+        let report = parser.parse_with_report(Bytes::from(missing_trade_id.to_string()), &sink);
+        assert!(!report.complete);
+        assert_eq!(report.emitted, 0);
     }
 
     #[test]

@@ -1,0 +1,175 @@
+{
+  "as_of_ms": 1793719672675,
+  "managers": [
+    {
+      "site": "jp",
+      "ok": true,
+      "error": null
+    }
+  ],
+  "strategies": [
+    {
+      "slug": "binance-cta-perp-rx01",
+      "enabled": false,
+      "bar_interval": "15m",
+      "updated_ms": 1793677297704,
+      "stale": true,
+      "errors": [
+        "信号状态超过 3 分钟未更新，映射可能过期"
+      ],
+      "accounts": [],
+      "risk": {
+        "slug": "binance-cta-perp-rx01",
+        "alias": "binance-cta-perp-rx01",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 38,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "1INCHUSDT",
+          "AAVEUSDT",
+          "ADAUSDT",
+          "ALGOUSDT",
+          "ATOMUSDT",
+          "AXSUSDT",
+          "BELUSDT",
+          "BNBUSDT",
+          "CRVUSDT",
+          "DASHUSDT",
+          "DOTUSDT",
+          "EGLDUSDT",
+          "ENJUSDT",
+          "ETCUSDT",
+          "FILUSDT",
+          "IOSTUSDT",
+          "IOTAUSDT",
+          "KAVAUSDT",
+          "KNCUSDT",
+          "KSMUSDT",
+          "LTCUSDT",
+          "NEARUSDT",
+          "ONTUSDT",
+          "QTUMUSDT",
+          "RLCUSDT",
+          "RSRUSDT",
+          "RUNEUSDT",
+          "SKLUSDT",
+          "SNXUSDT",
+          "SOLUSDT",
+          "SUSHIUSDT",
+          "THETAUSDT",
+          "VETUSDT",
+          "XRPUSDT",
+          "YFIUSDT",
+          "ZENUSDT",
+          "ZILUSDT",
+          "ZRXUSDT"
+        ],
+        "unimmr_empty": false,
+        "viz_url": "/cta/binance-cta-perp-rx01/",
+        "config_url": "/cta/binance-cta-perp-rx01/config/"
+      }
+    },
+    {
+      "slug": "binance-cta-perp-rx03",
+      "enabled": false,
+      "bar_interval": "1m",
+      "updated_ms": 1793630751880,
+      "stale": true,
+      "errors": [
+        "信号状态超过 3 分钟未更新，映射可能过期"
+      ],
+      "accounts": [],
+      "risk": {
+        "slug": "binance-cta-perp-rx03",
+        "alias": "binance-cta-perp-rx03",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 16,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "ALGOUSDT",
+          "BELUSDT",
+          "DASHUSDT",
+          "DOGEUSDT",
+          "DOTUSDT",
+          "FILUSDT",
+          "LINKUSDT",
+          "NEARUSDT",
+          "RLCUSDT",
+          "SKLUSDT",
+          "TRBUSDT",
+          "VETUSDT",
+          "XTZUSDT",
+          "ZECUSDT",
+          "ZENUSDT",
+          "ZRXUSDT"
+        ],
+        "unimmr_empty": false,
+        "viz_url": "/cta/binance-cta-perp-rx03/",
+        "config_url": "/cta/binance-cta-perp-rx03/config/"
+      }
+    },
+    {
+      "slug": "binance-cta-perp-rx04",
+      "enabled": false,
+      "bar_interval": "5m",
+      "updated_ms": 1793630757901,
+      "stale": true,
+      "errors": [
+        "信号状态超过 3 分钟未更新，映射可能过期"
+      ],
+      "accounts": [],
+      "risk": {
+        "slug": "binance-cta-perp-rx04",
+        "alias": "binance-cta-perp-rx04",
+        "exchange": "binance",
+        "kind": "cta",
+        "host": "jp",
+        "venues": [
+          "binance-futures"
+        ],
+        "universe_n": 15,
+        "redis_ok": true,
+        "tone": "uncovered",
+        "risk_n": 0,
+        "hits": [],
+        "symbols": [
+          "BANDUSDT",
+          "BELUSDT",
+          "DASHUSDT",
+          "DOGEUSDT",
+          "DOTUSDT",
+          "ETCUSDT",
+          "IOTAUSDT",
+          "NEARUSDT",
+          "RUNEUSDT",
+          "SKLUSDT",
+          "SOLUSDT",
+          "VETUSDT",
+          "XLMUSDT",
+          "YFIUSDT",
+          "ZENUSDT"
+        ],
+        "unimmr_empty": false,
+        "viz_url": "/cta/binance-cta-perp-rx04/",
+        "config_url": "/cta/binance-cta-perp-rx04/config/"
+      }
+    }
+  ],
+  "errors": []
+}

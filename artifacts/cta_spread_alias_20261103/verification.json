@@ -1,0 +1,17 @@
+{
+  "account_id": "cta_cross_spread_rx01",
+  "display_alias": "okex_binace_cross_1min",
+  "public_accounts": 1,
+  "execution_sources": [
+    "okex_exec_trade01",
+    "binance_exec_spread01"
+  ],
+  "protected_processes_unchanged": 89,
+  "execution_configs_unchanged": true,
+  "snapshots_and_bindings_unchanged": true,
+  "native_aliases_unchanged": true,
+  "alias_endpoint_verified": true,
+  "prc_alias_write_forbidden": true,
+  "manager_pid": 3268950,
+  "trading_started": false
+}

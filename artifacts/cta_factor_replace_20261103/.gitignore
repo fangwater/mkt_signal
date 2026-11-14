@@ -1,0 +1,4 @@
+payload/
+payload.tar
+browser-profile-*/
+__pycache__/

@@ -1,13 +1,28 @@
 [workspace]
 members = [
     ".",
+    "crates/hyperliquid_l4",
     "crates/account_common",
     "crates/cme_tas_replay",
+    "crates/cme_roll_metadata",
+    "crates/cn_futures_trim",
+    "crates/cn_futures_l2",
+    "crates/cn_futures",
+    "crates/cn_futures_pbs",
+    "crates/cn_futures_state",
+    "crates/usstock_lseg_mbp_replay",
+    "crates/usstock_lseg_raw_replay",
+    "crates/usstock_lseg_rawll2_replay",
+    "crates/usstock_replay",
+    "crates/usstock_nasdaq_baseline",
+    "crates/usstock_aggregate_baseline",
     "crates/account_monitor_common",
     "crates/depth_pub",
     "crates/factor_engine",
+    "crates/fr_monitor",
     "crates/inpos_engine",
     "crates/ipc_common",
+    "crates/ltp_transfer_server",
     "crates/mkt_model_runtime",
     "crates/mkt_parsers",
     "crates/notification_server",
@@ -18,6 +33,7 @@ members = [
     "crates/persist_common",
     "crates/quote_plan",
     "crates/rolling_common",
+    "crates/tardis_order_size",
     "crates/runtime_common",
     "crates/signal_common",
     "crates/symbol_utils",
@@ -48,12 +64,28 @@ name = "mkt_signal"
 path = "src/lib.rs" 
 
 [[bin]]
+name = "crypto_tradfi_baseline"
+path = "src/bin/crypto_tradfi_baseline.rs"
+
+[[bin]]
+name = "cta_baseline_seed"
+path = "src/bin/cta_baseline_seed.rs"
+
+[[bin]]
+name = "cta-memory-replay"
+path = "src/bin/cta_memory_replay.rs"
+
+[[bin]]
 name = "dat_pbs"
 path = "src/bin/dat_pbs.rs"
 
 [[bin]]
 name = "spread_pbs"
 path = "src/bin/spread_pbs.rs"
+
+[[bin]]
+name = "binance_futures_ipc_proxy"
+path = "src/bin/binance_futures_ipc_proxy.rs"
 
 [[bin]]
 name = "spread_bbo_zmq_pub"
@@ -88,6 +120,38 @@ name = "bybit_account_monitor"
 path = "src/bin/bybit_account_monitor.rs"
 
 [[bin]]
+name = "hyperliquid_account_monitor"
+path = "src/bin/hyperliquid_account_monitor.rs"
+
+[[bin]]
+name = "rapidx_account_monitor"
+path = "src/bin/rapidx_account_monitor.rs"
+
+[[bin]]
+name = "rapidx_open_orders"
+path = "src/bin/rapidx_open_orders.rs"
+
+[[bin]]
+name = "rapidx_order_smoke"
+path = "src/bin/rapidx_order_smoke.rs"
+
+[[bin]]
+name = "rapidx_intra_signal_smoke"
+path = "src/bin/rapidx_intra_signal_smoke.rs"
+
+[[bin]]
+name = "rapidx_loan"
+path = "src/bin/rapidx_loan.rs"
+
+[[bin]]
+name = "rapidx_query_smoke"
+path = "src/bin/rapidx_query_smoke.rs"
+
+[[bin]]
+name = "rapidx_transfer"
+path = "src/bin/rapidx_transfer.rs"
+
+[[bin]]
 name = "trade_engine"
 path = "src/bin/trade_engine.rs"
 
@@ -98,6 +162,10 @@ path = "src/bin/pre_trade.rs"
 [[bin]]
 name = "exec-pre-trade"
 path = "src/bin/exec_pre_trade.rs"
+
+[[bin]]
+name = "binance_forced_close_repair"
+path = "src/bin/binance_forced_close_repair.rs"
 
 [[bin]]
 name = "fr_signal_dashboard"
@@ -125,6 +193,22 @@ name = "delist_schedule"
 path = "src/bin/delist_schedule.rs"
 
 [[bin]]
+name = "binance_delist_watch"
+path = "src/bin/binance_delist_watch.rs"
+
+[[bin]]
+name = "bitget_delist_watch"
+path = "src/bin/bitget_delist_watch.rs"
+
+[[bin]]
+name = "gate_delist_watch"
+path = "src/bin/gate_delist_watch.rs"
+
+[[bin]]
+name = "delist_risk_server"
+path = "src/bin/delist_risk_server.rs"
+
+[[bin]]
 name = "market_maker"
 path = "src/bin/market_maker.rs"
 
@@ -145,16 +229,16 @@ name = "tardis_ipc_replay"
 path = "src/bin/tardis_ipc_replay.rs"
 
 [[bin]]
-name = "cme_tas_census"
-path = "src/bin/cme_tas_census.rs"
-
-[[bin]]
-name = "tonglian_baseline_replay"
-path = "src/bin/tonglian_baseline_replay.rs"
-
-[[bin]]
 name = "cn_features_replay"
 path = "src/bin/futures_fusion_factor_replay.rs"
+
+[[bin]]
+name = "cn_features_1min_hfq"
+path = "src/bin/cn_features_1min_hfq.rs"
+
+[[bin]]
+name = "cme_features_1min_hfq"
+path = "src/bin/cme_features_1min_hfq.rs"
 
 [[bin]]
 name = "db_fusion_factor_replay"
@@ -191,6 +275,51 @@ path = "src/bin/fusion_factor_pub.rs"
 name = "fusion_factor_1m_pub"
 path = "src/bin/fusion_factor_1m_pub.rs"
 
+
+[[bin]]
+name = "cta-prep-binance-futures"
+path = "src/bin/cta_prep_binance_futures.rs"
+
+[[bin]]
+name = "cta-factor-config"
+path = "src/bin/cta_factor_config.rs"
+
+[[bin]]
+name = "cta-hourly-history"
+path = "src/bin/cta_hourly_history.rs"
+
+[[bin]]
+name = "cta-factor-spread"
+path = "src/bin/cta_factor_spread.rs"
+
+[[bin]]
+name = "cta-symbol-group-migrate"
+path = "src/bin/cta_symbol_group_migrate.rs"
+
+[[bin]]
+name = "cta_cross_spread_factor_model_1m_pub"
+path = "src/bin/cta_cross_spread_factor_model_1m_pub.rs"
+
+[[bin]]
+name = "cta_spread_factor_model_1m_pub"
+path = "src/bin/cta_spread_factor_model_1m_pub.rs"
+
+[[bin]]
+name = "cta_perp_factor_model_1m_pub"
+path = "src/bin/cta_perp_factor_model_1m_pub.rs"
+
+[[bin]]
+name = "cta_perp_factor_model_5m_pub"
+path = "src/bin/cta_perp_factor_model_5m_pub.rs"
+
+[[bin]]
+name = "cta_perp_factor_model_15m_pub"
+path = "src/bin/cta_perp_factor_model_15m_pub.rs"
+
+[[bin]]
+name = "exec_volatility_pub"
+path = "src/bin/exec_volatility_pub.rs"
+
 [[bin]]
 name = "factor_test"
 path = "src/bin/factor_test.rs"
@@ -220,6 +349,7 @@ name = "remote_ip_diag"
 path = "src/bin/remote_ip_diag.rs"
 
 [dependencies]
+cme_roll_metadata = { path = "crates/cme_roll_metadata" }
 account_common = { path = "crates/account_common" }
 account_monitor_common = { path = "crates/account_monitor_common" }
 persist_common = { path = "crates/persist_common" }
@@ -235,6 +365,8 @@ depth_pub_common = { package = "depth_pub", path = "crates/depth_pub" }
 factor_engine = { path = "crates/factor_engine" }
 mkt_parsers = { path = "crates/mkt_parsers" }
 rolling_common = { path = "crates/rolling_common" }
+period_pbs = { path = "crates/period_pbs" }
+rdkafka = "0.36"
 viz_common = { path = "crates/viz_common" }
 local-ip-address = "0.6"
 serde_yaml = "0.9"
@@ -263,7 +395,9 @@ uuid = { version = "1.17.0", features = ["v4"] }
 sonic-rs = "0.5.1"
 tokio-util = "0.7.15"
 reqwest = { version = "0.12.19", features = ["json", "blocking"] }
+scraper = "0.27"
 postgres = { version = "0.19", features = ["with-chrono-0_4"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1", "with-chrono-0_4"] }
 prettytable = "0.10.0"
 comfy-table = "=7.1.1"
 native-tls = "0.2"
@@ -286,6 +420,7 @@ prost = "0.13"
 tokio-stream = "0.1"
 crc32fast = "1.4"
 csv = "1.3"
+zstd = "0.13"
 zip = { version = "4.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = "0.4"
 tower = "0.4"
@@ -293,12 +428,14 @@ tower-http = { version = "0.4", features = ["cors"] }
 dashmap = "5.5"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
+hdrhistogram = { version = "7.5", default-features = false }
 rtrb = "0.3.4"
 libc = "0.2"
 zmq = "0.10"
 mkt_model_runtime = { path = "crates/mkt_model_runtime", optional = true }
 indexmap = "2"
 rayon = "1.10"
+polars = { version = "0.43.1", default-features = false, features = ["parquet"] }
 arc-swap = "1.7"
 
 

@@ -1,0 +1,17 @@
+{
+  "account_id": "cta_cross_spread_rx01",
+  "funding_mode": "estimated",
+  "actual_collectors_enabled": [
+    false,
+    false
+  ],
+  "actual_records": [
+    0,
+    0
+  ],
+  "estimate_income": 0,
+  "estimate_complete": true,
+  "aggregate_actual_switches_hidden": true,
+  "other_accounts_funding_ui_preserved": true,
+  "page_errors": []
+}

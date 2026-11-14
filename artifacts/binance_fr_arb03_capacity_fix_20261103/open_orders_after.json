@@ -1,0 +1,15 @@
+{
+  "utc": "2026-11-03T15:41:57Z",
+  "env": "binance_fr_arb03",
+  "mode": "GET only",
+  "orders": [
+    {
+      "path": "/papi/v1/um/openOrders",
+      "count": 0
+    },
+    {
+      "path": "/papi/v1/margin/openOrders",
+      "count": 0
+    }
+  ]
+}

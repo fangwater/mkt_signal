@@ -12,7 +12,7 @@ use std::time::Duration;
 use tokio_tungstenite_v030::tungstenite::Message;
 
 use crate::spread_pbs::adapter::{
-    BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
+    BboFrame, BinaryChannel, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
 
 const GATE_SBE_FUTURES_WS_URL: &str = "wss://fx-ws.gateio.ws/v4/ws/usdt/sbe?sbe_schema_id=1";
@@ -34,6 +34,18 @@ impl VenueAdapter for GateSbeAdapter {
 
     fn ws_url(&self) -> String {
         GATE_SBE_FUTURES_WS_URL.to_string()
+    }
+
+    fn binary_channel(&self, raw: &[u8]) -> Option<BinaryChannel> {
+        Some(binary_channel(raw, false))
+    }
+
+    fn parse_sbe_bbo<'a>(&self, raw: &'a [u8]) -> Result<Option<mkt_parsers::sbe::Bbo<'a>>> {
+        Ok(gate_codec::parse_sbe_bbo_view(raw, false))
+    }
+
+    fn normalize_sbe_symbol(&self, symbol: &str) -> String {
+        symbol.replace('_', "").to_ascii_uppercase()
     }
 
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value> {
@@ -134,6 +146,18 @@ impl VenueAdapter for GateSpotSbeAdapter {
         GATE_SBE_SPOT_WS_URL.to_string()
     }
 
+    fn binary_channel(&self, raw: &[u8]) -> Option<BinaryChannel> {
+        Some(binary_channel(raw, true))
+    }
+
+    fn parse_sbe_bbo<'a>(&self, raw: &'a [u8]) -> Result<Option<mkt_parsers::sbe::Bbo<'a>>> {
+        Ok(gate_codec::parse_sbe_bbo_view(raw, true))
+    }
+
+    fn normalize_sbe_symbol(&self, symbol: &str) -> String {
+        symbol.replace('_', "").to_ascii_uppercase()
+    }
+
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value> {
         build_spot_channel_subscribe(symbols, "book_ticker")
     }
@@ -197,6 +221,16 @@ impl VenueAdapter for GateSpotSbeAdapter {
             });
             Message::Text(body.to_string().into())
         }))
+    }
+}
+
+fn binary_channel(raw: &[u8], spot: bool) -> BinaryChannel {
+    match raw.get(2..4).map(|v| u16::from_le_bytes([v[0], v[1]])) {
+        Some(gate_codec::SBE_TEMPLATE_BBO) => BinaryChannel::Bbo,
+        Some(gate_codec::SBE_TEMPLATE_TRADE) => BinaryChannel::Trade,
+        Some(gate_codec::SBE_TEMPLATE_BOOK_UPDATE) => BinaryChannel::Incremental,
+        Some(gate_codec::SBE_TEMPLATE_TICKER) if !spot => BinaryChannel::Derivatives,
+        _ => BinaryChannel::Ignored,
     }
 }
 

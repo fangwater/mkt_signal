@@ -1,0 +1,25 @@
+{
+  "health": {
+    "ok": true,
+    "enabled": false,
+    "revision": "f9e576f297627f2b77e268c792d4372240f2e707e7f318becb3e10ab2ca3c4fd"
+  },
+  "execution": {
+    "factor_exit_quantile_long": 0.7,
+    "factor_exit_quantile_short": 0.3
+  },
+  "revision": "f9e576f297627f2b77e268c792d4372240f2e707e7f318becb3e10ab2ca3c4fd",
+  "import_preview": {
+    "symbols": 48,
+    "strategies": 57,
+    "combinations": 794
+  },
+  "preview_execution": {
+    "factor_exit_quantile_long": 0.7,
+    "factor_exit_quantile_short": 0.3
+  },
+  "max_pos_u": 100.0,
+  "installed_checksums_verified": 4,
+  "perp_config_unchanged": true,
+  "page_defaults_verified": true
+}

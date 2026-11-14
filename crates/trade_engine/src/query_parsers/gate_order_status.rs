@@ -176,6 +176,7 @@ pub fn parse_gate_spot_order_status_json(json: &str) -> Option<CompactOrderQuery
         update_time_ms,
         time_in_force_u8: tif_u8,
         response_price,
+        order_price,
     })
 }
 
@@ -291,5 +292,6 @@ pub fn parse_gate_futures_order_status_json(json: &str) -> Option<CompactOrderQu
         update_time_ms,
         time_in_force_u8: tif_u8,
         response_price,
+        order_price,
     })
 }

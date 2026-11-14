@@ -1,0 +1,94 @@
+{
+  "checked_at_ms": 1793674812226,
+  "source": "okex_exec_trade01",
+  "cache_key": "okex_exec_trade01:okex-futures:market_rules",
+  "cache_fetched_at_us": 1793674801055610,
+  "checks": [
+    {
+      "symbol": "BTCUSDT",
+      "base_per_contract": "0.01",
+      "contract_step": "0.01",
+      "minimum_contract_qty": "0.01",
+      "base_step": "0.0001",
+      "matches_exchange": true
+    },
+    {
+      "symbol": "ETHUSDT",
+      "base_per_contract": "0.1",
+      "contract_step": "0.01",
+      "minimum_contract_qty": "0.01",
+      "base_step": "0.001",
+      "matches_exchange": true
+    },
+    {
+      "symbol": "TRBUSDT",
+      "base_per_contract": "0.1",
+      "contract_step": "1",
+      "minimum_contract_qty": "1",
+      "base_step": "0.1",
+      "matches_exchange": true
+    },
+    {
+      "symbol": "DOTUSDT",
+      "base_per_contract": "1",
+      "contract_step": "1",
+      "minimum_contract_qty": "1",
+      "base_step": "1",
+      "matches_exchange": true
+    },
+    {
+      "symbol": "ADAUSDT",
+      "base_per_contract": "100",
+      "contract_step": "0.1",
+      "minimum_contract_qty": "0.1",
+      "base_step": "10.0",
+      "matches_exchange": true
+    },
+    {
+      "symbol": "NEARUSDT",
+      "base_per_contract": "10",
+      "contract_step": "0.1",
+      "minimum_contract_qty": "0.1",
+      "base_step": "1.0",
+      "matches_exchange": true
+    },
+    {
+      "symbol": "ATOMUSDT",
+      "base_per_contract": "1",
+      "contract_step": "1",
+      "minimum_contract_qty": "1",
+      "base_step": "1",
+      "matches_exchange": true
+    },
+    {
+      "symbol": "DOGEUSDT",
+      "base_per_contract": "1000",
+      "contract_step": "0.01",
+      "minimum_contract_qty": "0.01",
+      "base_step": "10.00",
+      "matches_exchange": true
+    },
+    {
+      "symbol": "ETCUSDT",
+      "base_per_contract": "10",
+      "contract_step": "0.01",
+      "minimum_contract_qty": "0.01",
+      "base_step": "0.10",
+      "matches_exchange": true
+    },
+    {
+      "symbol": "CRVUSDT",
+      "base_per_contract": "1",
+      "contract_step": "1",
+      "minimum_contract_qty": "1",
+      "base_step": "1",
+      "matches_exchange": true
+    }
+  ],
+  "installed_sha256": {
+    "exec-pre-trade": "4e770341cc0bfcf4af4ec6c0afac3d8b14772bc76e3d0586f09446e568cc0940",
+    "trade_engine": "bb263a467c7aab96bafb5bc1dbe7124c7eefbf7c6ff03ec7d2205497e93a2611",
+    "account_monitor": "6e236cd0470f575c9d896c2c504bcf6ed966328199f0c145e20eabb0faf14f37"
+  },
+  "orders_submitted": 0
+}

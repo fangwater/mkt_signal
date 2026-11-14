@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BatchExec Redis configuration server."""
+"""Exec Redis configuration server."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 STRATEGY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-SYMBOL_RE = re.compile(r"^[A-Z0-9]+$")
 ORDER_PARAMETER_FIELDS = (
     "single_order_usdt",
     "orders_per_batch",
@@ -29,8 +28,12 @@ ORDER_PARAMETER_FIELDS = (
     "maker_timeout_ms",
     "max_maker_requotes",
     "target_tolerance_usdt",
+    "algorithm",
+    "pov",
+    "grid",
 )
-CONFIG_FIELDS = set(ORDER_PARAMETER_FIELDS) | {"targets"}
+REQUIRED_CONFIG_FIELDS = set(ORDER_PARAMETER_FIELDS) - {"algorithm", "pov", "grid"} | {"targets"}
+CONFIG_FIELDS = set(ORDER_PARAMETER_FIELDS) | {"targets", "symbol_overrides"}
 OPTIONAL_CONFIG_FIELDS = {"updated_at_us"}
 ALLOWED_TARGET_SIGNALS = (-2, -1, 0, 1, 2)
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -44,6 +47,47 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "max_maker_requotes": 2,
     "target_tolerance_usdt": 10.0,
     "targets": {},
+    "algorithm": "batch",
+    "grid": {
+        "spot": {"orders_per_batch": 3, "maker_timeout_ms": 1000, "vol_multiplier": 1.0, "max_maker_requotes": 2},
+        "futures": {"orders_per_batch": 3, "maker_timeout_ms": 1000, "vol_multiplier": 1.0, "max_maker_requotes": None},
+    },
+    "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": None,
+    },
+}
+EXECUTION_FAMILIES = ("batch_exec", "chase_exec")
+CHASE_SYMBOL_OVERRIDE_FIELDS = (
+    "batch_floor_usdt",
+    "max_batch",
+    "max_open_batches",
+    "maker_recenter_trigger_bps",
+    "maker_amend_cooldown_ms",
+    "maker_timeout_sec",
+    "target_tolerance_usdt",
+)
+CHASE_ORDER_PARAMETER_FIELDS = CHASE_SYMBOL_OVERRIDE_FIELDS + (
+    "strategy_order_rate_limit_per_min",
+    "strategy_order_rate_limit_10s",
+)
+DEFAULT_CHASE_CONFIG: Dict[str, Any] = {
+    "batch_floor_usdt": 100.0,
+    "max_batch": 4,
+    "max_open_batches": 2,
+    "maker_recenter_trigger_bps": 5.0,
+    "maker_amend_cooldown_ms": 1000,
+    "maker_timeout_sec": 120,
+    "target_tolerance_usdt": 10.0,
+    "strategy_order_rate_limit_per_min": 0,
+    "strategy_order_rate_limit_10s": 0,
+    "targets": {},
 }
 POSITION_CLOSE_STRATEGY_NAME = "SYSTEM_POSITION_CLOSE"
 ORDER_PARAMETER_TOKEN_ENV = "CRYPTO_CTA_MANAGER_WRITE_TOKEN"
@@ -51,6 +95,13 @@ ORDER_PARAMETER_TOKEN_ENV = "CRYPTO_CTA_MANAGER_WRITE_TOKEN"
 
 class ConfigVersionConflict(ValueError):
     """Raised when an editor tries to overwrite a newer Redis value."""
+
+
+def normalize_execution_family(raw: Any) -> str:
+    family = str(raw or "batch_exec").strip()
+    if family not in EXECUTION_FAMILIES:
+        raise ValueError("execution_family must be batch_exec or chase_exec")
+    return family
 
 
 def validate_strategy_name(raw: Any) -> str:
@@ -68,7 +119,12 @@ def validate_strategy_name(raw: Any) -> str:
 
 def normalize_symbol(raw: Any) -> str:
     symbol = str(raw or "").strip().upper()
-    if not SYMBOL_RE.fullmatch(symbol):
+    # Perpetual targets use USD / USDC / USDT; Binance's PERP suffix is wire-only.
+    if re.fullmatch(r"[A-Z0-9]+USD_?PERP", symbol):
+        symbol = re.sub(r"_?PERP$", "", symbol)
+    if re.fullmatch(r".+USD_?[0-9]{6}", symbol):
+        raise ValueError(f"only perpetual contracts are supported: {raw}")
+    if not symbol or not all(char.isalnum() for char in symbol):
         raise ValueError(f"invalid symbol: {raw}")
     return symbol
 
@@ -102,6 +158,8 @@ def normalize_target_signal(raw: Any, field: str) -> int:
 
 
 def normalize_target_position(raw: Any, field: str) -> Dict[str, Any]:
+    if raw == "clear":
+        return {"qty": "clear", "signal": 0}
     if isinstance(raw, bool) or isinstance(raw, (int, float, str)):
         return {"qty": finite_float(raw, f"{field}.qty"), "signal": 0}
     if not isinstance(raw, dict):
@@ -112,7 +170,7 @@ def normalize_target_position(raw: Any, field: str) -> Dict[str, Any]:
     if "qty" not in raw:
         raise ValueError(f"{field}.qty is required")
     return {
-        "qty": finite_float(raw["qty"], f"{field}.qty"),
+        "qty": "clear" if raw["qty"] == "clear" else finite_float(raw["qty"], f"{field}.qty"),
         "signal": normalize_target_signal(raw.get("signal"), f"{field}.signal"),
     }
 
@@ -127,6 +185,32 @@ def normalize_targets(raw: Any) -> Dict[str, Dict[str, Any]]:
             raise ValueError(f"duplicate symbol: {symbol}")
         targets[symbol] = normalize_target_position(raw_target, f"targets.{symbol}")
     return dict(sorted(targets.items()))
+
+
+def normalize_order_parameter_override(raw: Any, field: str) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"{field} must be an object")
+    if not raw:
+        raise ValueError(f"{field} must override at least one parameter")
+    unknown = sorted(set(raw) - set(ORDER_PARAMETER_FIELDS))
+    if unknown:
+        raise ValueError(f"unknown {field} fields: {', '.join(unknown)}")
+    normalized = normalize_exec_config({**DEFAULT_CONFIG, **raw, "targets": {}})
+    return {name: normalized[name] for name in raw}
+
+
+def normalize_symbol_overrides(raw: Any) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        raise ValueError("symbol_overrides must be an object")
+    overrides: Dict[str, Dict[str, Any]] = {}
+    for raw_symbol, raw_override in raw.items():
+        symbol = normalize_symbol(raw_symbol)
+        if symbol in overrides:
+            raise ValueError(f"duplicate symbol override: {symbol}")
+        overrides[symbol] = normalize_order_parameter_override(
+            raw_override, f"symbol_overrides.{symbol}"
+        )
+    return dict(sorted(overrides.items()))
 
 
 def integer(raw: Any, field: str, *, positive: bool = False) -> int:
@@ -146,17 +230,81 @@ def integer(raw: Any, field: str, *, positive: bool = False) -> int:
     return value
 
 
+def normalize_pov(raw: Any) -> Dict[str, Any]:
+    defaults = DEFAULT_CONFIG["pov"]
+    if not isinstance(raw, dict):
+        raise ValueError("pov must be an object")
+    unknown = sorted(set(raw) - set(defaults))
+    if unknown:
+        raise ValueError(f"unknown pov fields: {', '.join(unknown)}")
+    value = {**defaults, **raw}
+    for name in ("participation_rate", "max_batch_usdt", "max_carry_usdt"):
+        if isinstance(value[name], bool):
+            raise ValueError(f"pov.{name} must be a number")
+        value[name] = finite_float(value[name], f"pov.{name}", positive=True)
+    if value["participation_rate"] > 1:
+        raise ValueError("pov.participation_rate must be in (0, 1]")
+    if value["max_carry_usdt"] < value["max_batch_usdt"]:
+        raise ValueError("pov.max_carry_usdt must be >= max_batch_usdt")
+    for name in ("volume_stale_ms", "quote_stale_ms", "duration_ms"):
+        value[name] = integer(value[name], f"pov.{name}", positive=True)
+    if value["liquidity"] not in ("maker_only", "taker_only", "maker_then_taker"):
+        raise ValueError("invalid pov.liquidity")
+    if value["limit_price"] is not None:
+        if isinstance(value["limit_price"], bool):
+            raise ValueError("pov.limit_price must be a number")
+        value["limit_price"] = finite_float(value["limit_price"], "pov.limit_price", positive=True)
+        if value["liquidity"] != "maker_only":
+            raise ValueError("pov.limit_price requires maker_only liquidity")
+    return value
+
+
+def normalize_grid(raw: Any) -> Dict[str, Any]:
+    defaults = DEFAULT_CONFIG["grid"]
+    if not isinstance(raw, dict):
+        raise ValueError("grid must be an object")
+    unknown = sorted(set(raw) - set(defaults))
+    if unknown:
+        raise ValueError(f"unknown grid fields: {', '.join(unknown)}")
+    value = {}
+    for market, settings in defaults.items():
+        selected = raw.get(market, {})
+        if not isinstance(selected, dict):
+            raise ValueError(f"grid.{market} must be an object")
+        unknown = sorted(set(selected) - set(settings))
+        if unknown:
+            raise ValueError(f"unknown grid.{market} fields: {', '.join(unknown)}")
+        normalized = {**settings, **selected}
+        for name in ("orders_per_batch", "maker_timeout_ms"):
+            normalized[name] = integer(normalized[name], f"grid.{market}.{name}", positive=True)
+        multiplier = normalized["vol_multiplier"]
+        if isinstance(multiplier, bool):
+            raise ValueError(f"grid.{market}.vol_multiplier must be a number")
+        normalized["vol_multiplier"] = finite_float(multiplier, f"grid.{market}.vol_multiplier", positive=True)
+        if normalized["max_maker_requotes"] is not None:
+            limit = integer(normalized["max_maker_requotes"], f"grid.{market}.max_maker_requotes")
+            if limit == 4_294_967_295:
+                raise ValueError(f"grid.{market}.max_maker_requotes must be less than uint32 max; use null for unlimited")
+            normalized["max_maker_requotes"] = limit
+        value[market] = normalized
+    return value
+
+
 def normalize_exec_config(raw: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("config must be an object")
     raw = {**raw}
     raw.setdefault("max_batch", DEFAULT_CONFIG["max_batch"])
     unknown = sorted(set(raw) - CONFIG_FIELDS - OPTIONAL_CONFIG_FIELDS)
-    missing = sorted(CONFIG_FIELDS - set(raw))
+    missing = sorted(REQUIRED_CONFIG_FIELDS - set(raw))
     if unknown:
         raise ValueError(f"unknown fields: {', '.join(unknown)}")
     if missing:
         raise ValueError(f"missing fields: {', '.join(missing)}")
+
+    algorithm = raw.get("algorithm", "batch")
+    if algorithm not in ("batch", "pov", "ctaker", "grid"):
+        raise ValueError("algorithm must be batch, pov, ctaker or grid")
 
     anchor = str(raw["maker_price_anchor"]).strip()
     if anchor not in {"own_best", "opposite_best_plus_one_tick"}:
@@ -169,6 +317,9 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
         raise ValueError("target_tolerance_usdt must be >= 0")
 
     normalized = {
+        "algorithm": algorithm,
+        "pov": normalize_pov(raw.get("pov", {})),
+        "grid": normalize_grid(raw.get("grid", {})),
         "single_order_usdt": finite_float(
             raw["single_order_usdt"], "single_order_usdt", positive=True
         ),
@@ -188,6 +339,10 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
         "target_tolerance_usdt": tolerance,
         "targets": targets,
     }
+    if "symbol_overrides" in raw:
+        symbol_overrides = normalize_symbol_overrides(raw["symbol_overrides"])
+        if symbol_overrides:
+            normalized["symbol_overrides"] = symbol_overrides
     updated_at_us = raw.get("updated_at_us")
     if updated_at_us is not None:
         if isinstance(updated_at_us, bool) or not isinstance(updated_at_us, int):
@@ -198,19 +353,125 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
     return normalized
 
 
-def normalize_order_parameters(raw: Any) -> Dict[str, Any]:
+def normalize_chase_config(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError("config must be an object")
+    raw = {**raw}
+    raw.setdefault("strategy_order_rate_limit_per_min", 0)
+    raw.setdefault("strategy_order_rate_limit_10s", 0)
+    allowed = set(CHASE_ORDER_PARAMETER_FIELDS) | {
+        "targets",
+        "symbol_overrides",
+        "updated_at_us",
+    }
+    unknown = sorted(set(raw) - allowed)
+    missing = sorted((set(CHASE_ORDER_PARAMETER_FIELDS) | {"targets"}) - set(raw))
+    if unknown:
+        raise ValueError(f"unknown fields: {', '.join(unknown)}")
+    if missing:
+        raise ValueError(f"missing fields: {', '.join(missing)}")
+
+    tolerance = finite_float(raw["target_tolerance_usdt"], "target_tolerance_usdt")
+    if tolerance < 0:
+        raise ValueError("target_tolerance_usdt must be >= 0")
+    recenter = finite_float(
+        raw["maker_recenter_trigger_bps"], "maker_recenter_trigger_bps"
+    )
+    if recenter < 0:
+        raise ValueError("maker_recenter_trigger_bps must be >= 0")
+    normalized = {
+        "batch_floor_usdt": finite_float(
+            raw["batch_floor_usdt"], "batch_floor_usdt", positive=True
+        ),
+        "max_batch": integer(raw["max_batch"], "max_batch", positive=True),
+        "max_open_batches": integer(
+            raw["max_open_batches"], "max_open_batches", positive=True
+        ),
+        "maker_recenter_trigger_bps": recenter,
+        "maker_amend_cooldown_ms": integer(
+            raw["maker_amend_cooldown_ms"], "maker_amend_cooldown_ms"
+        ),
+        "maker_timeout_sec": integer(
+            raw["maker_timeout_sec"], "maker_timeout_sec", positive=True
+        ),
+        "target_tolerance_usdt": tolerance,
+        "strategy_order_rate_limit_per_min": integer(
+            raw["strategy_order_rate_limit_per_min"],
+            "strategy_order_rate_limit_per_min",
+        ),
+        "strategy_order_rate_limit_10s": integer(
+            raw["strategy_order_rate_limit_10s"], "strategy_order_rate_limit_10s"
+        ),
+        "targets": normalize_targets(raw["targets"]),
+    }
+    if normalized["max_open_batches"] > normalized["max_batch"]:
+        raise ValueError("max_open_batches must be <= max_batch")
+    if "symbol_overrides" in raw:
+        overrides = normalize_chase_symbol_overrides(raw["symbol_overrides"])
+        if overrides:
+            normalized["symbol_overrides"] = overrides
+    updated_at_us = raw.get("updated_at_us")
+    if updated_at_us is not None:
+        if isinstance(updated_at_us, bool) or not isinstance(updated_at_us, int):
+            raise ValueError("updated_at_us must be an integer")
+        if updated_at_us <= 0 or updated_at_us > 9_223_372_036_854_775_807:
+            raise ValueError("updated_at_us must be a positive int64")
+        normalized["updated_at_us"] = updated_at_us
+    return normalized
+
+
+def normalize_chase_symbol_overrides(raw: Any) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        raise ValueError("symbol_overrides must be an object")
+    overrides: Dict[str, Dict[str, Any]] = {}
+    for raw_symbol, raw_override in raw.items():
+        symbol = normalize_symbol(raw_symbol)
+        if symbol in overrides:
+            raise ValueError(f"duplicate symbol override: {symbol}")
+        if not isinstance(raw_override, dict) or not raw_override:
+            raise ValueError(
+                f"symbol_overrides.{symbol} must override at least one parameter"
+            )
+        unknown = sorted(set(raw_override) - set(CHASE_SYMBOL_OVERRIDE_FIELDS))
+        if unknown:
+            raise ValueError(
+                f"unknown symbol_overrides.{symbol} fields: {', '.join(unknown)}"
+            )
+        normalized = normalize_chase_config(
+            {**DEFAULT_CHASE_CONFIG, **raw_override, "targets": {}}
+        )
+        overrides[symbol] = {name: normalized[name] for name in raw_override}
+    return dict(sorted(overrides.items()))
+
+
+def normalize_config(raw: Any, execution_family: str) -> Dict[str, Any]:
+    family = normalize_execution_family(execution_family)
+    if family == "chase_exec":
+        return normalize_chase_config(raw)
+    return normalize_exec_config(raw)
+
+
+def normalize_order_parameters(
+    raw: Any, execution_family: str = "batch_exec"
+) -> Dict[str, Any]:
+    family = normalize_execution_family(execution_family)
     if not isinstance(raw, dict):
         raise ValueError("order_parameters must be an object")
-    allowed = set(ORDER_PARAMETER_FIELDS)
+    fields = (
+        CHASE_ORDER_PARAMETER_FIELDS if family == "chase_exec" else ORDER_PARAMETER_FIELDS
+    )
+    allowed = set(fields)
     unknown = sorted(set(raw) - allowed)
-    missing = sorted(allowed - set(raw))
+    optional = {"algorithm", "pov", "grid"} if family == "batch_exec" else set()
+    missing = sorted(allowed - optional - set(raw))
     if unknown:
         raise ValueError(f"unknown order parameter fields: {', '.join(unknown)}")
     if missing:
         raise ValueError(f"missing order parameter fields: {', '.join(missing)}")
 
-    normalized = normalize_exec_config({**raw, "targets": {}})
-    return {field: normalized[field] for field in ORDER_PARAMETER_FIELDS}
+    defaults = DEFAULT_CHASE_CONFIG if family == "chase_exec" else DEFAULT_CONFIG
+    normalized = normalize_config({**defaults, **raw, "targets": {}}, family)
+    return {field: normalized[field] for field in fields}
 
 
 def normalize_expected_updated_at_us(raw: Any) -> Optional[int]:
@@ -238,23 +499,73 @@ def decode_strategy_names(raw: Any, label: str) -> List[str]:
     return sorted(names)
 
 
-def decode_stored_exec_config(raw: Any) -> Optional[Dict[str, Any]]:
+def decode_stored_exec_config(
+    raw: Any, execution_family: str = "batch_exec"
+) -> Optional[Dict[str, Any]]:
     if raw is None:
         return None
     try:
         decoded = json.loads(raw)
     except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError(f"Redis value is not valid JSON: {exc}") from exc
-    return normalize_exec_config(decoded)
+    return normalize_config(decoded, execution_family)
+
+
+def exec_markets(venue: str) -> List[str]:
+    if venue not in ("binance-futures", "binance-coin-futures", "okex-futures", "bybit-futures", "bitget-futures"):
+        return [venue]
+
+    def backend(raw: str) -> str:
+        value = raw.strip().lower()
+        if value in ("", "native", "exchange", "direct"):
+            return "native"
+        if value in ("ltp", "rapidx", "liquidity", "liquiditytech"):
+            return "ltp"
+        raise ValueError(f"invalid execution backend: {value}")
+
+    selected = backend(os.environ.get("TRADE_ENGINE_EXEC_BACKEND", ""))
+    mapping = os.environ.get("TRADE_ENGINE_EXEC_BACKEND_MAP", "")
+    if "\n" in mapping or "\r" in mapping:
+        raise ValueError("execution backend map must not contain newlines")
+    overrides = {}
+    for entry in mapping.split(","):
+        if not entry.strip():
+            continue
+        key, separator, value = entry.partition("=")
+        key = key.strip().lower()
+        if not separator or key not in ("*", "binance", "okex", "bybit", "bitget", "gate", "hyperliquid"):
+            raise ValueError("invalid execution backend mapping")
+        if key in overrides:
+            raise ValueError(f"duplicate execution backend mapping: {key}")
+        overrides[key] = backend(value)
+    selected = overrides.get(venue.split("-", 1)[0], overrides.get("*", selected))
+    if venue not in ("binance-futures", "okex-futures") and selected != "native":
+        raise ValueError("This Exec market requires its native backend")
+    if selected == "ltp" or venue == "okex-futures":
+        return [venue, "okex-margin" if venue == "okex-futures" else "binance-margin"]
+    return [venue]
+
+
+def validate_grid_account_config(venue: str, config: Dict[str, Any]) -> None:
+    algorithms = [config.get("algorithm")]
+    algorithms.extend(v.get("algorithm") for v in config.get("symbol_overrides", {}).values())
+    if "grid" not in algorithms:
+        return
+    markets = exec_markets(venue)
+    if len(markets) == 2:
+        return  # RapidX or native OKX unified; backend/market pair validated above.
+    if venue in ("okex-futures", "bybit-futures", "bitget-futures"):
+        return  # Native unified-account startup gates are enforced by Exec.
+    binance_mode = os.environ.get("BINANCE_ACCOUNT_MODE", "").strip().upper()
+    if venue == "binance-futures" and binance_mode in ("STANDARD", "UNIFIED"):
+        return
+    if venue == "binance-coin-futures" and binance_mode == "UNIFIED":
+        return
+    raise ValueError("grid requires RapidX, native Binance USD-M, or a supported native unified account")
 
 
 class ExecConfigStore:
-    def __init__(
-        self,
-        redis_url: str,
-        env_name: str,
-        venue: str,
-    ) -> None:
+    def __init__(self, redis_url: str, env_name: str, venue: str) -> None:
         try:
             import redis  # type: ignore
         except ImportError as exc:
@@ -265,145 +576,178 @@ class ExecConfigStore:
         self.venue = str(venue).strip()
         if not self.env_name or not self.venue:
             raise ValueError("env_name and venue are required")
-        if self.venue not in ("binance-futures", "okex-futures"):
-            raise ValueError("venue must be binance-futures or okex-futures")
-        self.prefix = f"{self.env_name}:{self.venue}:batch_exec:"
+        if self.venue not in ("binance-futures", "binance-coin-futures", "okex-futures", "bybit-futures", "bitget-futures"):
+            raise ValueError("unsupported Exec futures venue")
+        self.markets = exec_markets(self.venue)
+        self.prefix = self.family_prefix()
         self.index_key = f"{self.prefix}strategy_names"
         self.removed_index_key = f"{self.prefix}removed_strategy_names"
         self._save_lock = threading.Lock()
 
-    def key(self, strategy_name: str) -> str:
-        return f"{self.prefix}{validate_strategy_name(strategy_name)}"
+    def family_prefix(self, execution_family: str = "batch_exec", venue: Optional[str] = None) -> str:
+        family = normalize_execution_family(execution_family)
+        return f"{self.env_name}:{venue or self.venue}:{family}:"
 
-    def list_strategy_names(self) -> List[str]:
-        return decode_strategy_names(self.client.get(self.index_key), "strategy index")
+    def key(self, strategy_name: str, execution_family: str = "batch_exec", venue: Optional[str] = None) -> str:
+        return f"{self.family_prefix(execution_family, venue)}{validate_strategy_name(strategy_name)}"
 
-    def load(self, strategy_name: str) -> Optional[Dict[str, Any]]:
-        return decode_stored_exec_config(self.client.get(self.key(strategy_name)))
+    def _scopes(self, name: str, family: str):
+        return [(
+            venue,
+            f"{self.family_prefix(family, venue)}strategy_names",
+            f"{self.family_prefix(family, venue)}removed_strategy_names",
+            self.key(name, family, venue),
+        ) for venue in self.markets]
 
-    def list_removed_strategy_names(self) -> List[str]:
-        return decode_strategy_names(
-            self.client.get(self.removed_index_key), "removed strategy index"
-        )
+    def _symbol_market(self, symbol: str) -> str:
+        if self.venue in ("bybit-futures", "bitget-futures"):
+            if len(symbol) <= 4 or not symbol.endswith("USDT"):
+                raise ValueError(f"symbol {symbol} does not belong to USDT Exec market {self.venue}")
+            return self.venue
+        exchange = "okex" if self.venue == "okex-futures" else "binance"
+        if symbol.endswith(("USDT", "USDC")):
+            selected = f"{exchange}-futures"
+        elif symbol.endswith("USD"):
+            selected = "binance-coin-futures"
+        else:
+            selected = f"{exchange}-margin"
+        if selected not in self.markets:
+            raise ValueError(f"symbol {symbol} does not belong to Exec market {self.venue}; cash targets require RapidX or native OKX unified Exec")
+        return selected
 
-    def save(self, strategy_name: str, config: Any) -> Dict[str, Any]:
+    @staticmethod
+    def _merge(configs, family):
+        if not configs:
+            return None
+        fields = CHASE_ORDER_PARAMETER_FIELDS if family == "chase_exec" else ORDER_PARAMETER_FIELDS
+        merged = dict(configs[0])
+        merged["targets"] = {}
+        overrides = {}
+        for config in configs:
+            if any(config[field] != merged[field] for field in fields):
+                raise ValueError("strategy order parameters differ between Binance markets; republish from Manager")
+            for field, destination in (("targets", merged["targets"]), ("symbol_overrides", overrides)):
+                values = config.get(field, {})
+                if destination.keys() & values.keys():
+                    raise ValueError(f"duplicate {field} between Binance markets")
+                destination.update(values)
+        if overrides:
+            merged["symbol_overrides"] = overrides
+        else:
+            merged.pop("symbol_overrides", None)
+        versions = [config["updated_at_us"] for config in configs if config.get("updated_at_us") is not None]
+        if versions:
+            merged["updated_at_us"] = max(versions)
+        return merged
+
+    def _names(self, field: str, family: str) -> List[str]:
+        names = set()
+        for venue in self.markets:
+            names.update(decode_strategy_names(
+                self.client.get(f"{self.family_prefix(family, venue)}{field}"), field
+            ))
+        return sorted(names)
+
+    def list_strategy_names(self, execution_family: str = "batch_exec") -> List[str]:
+        return self._names("strategy_names", execution_family)
+
+    def list_removed_strategy_names(self, execution_family: str = "batch_exec") -> List[str]:
+        return self._names("removed_strategy_names", execution_family)
+
+    def load(self, strategy_name: str, execution_family: str = "batch_exec") -> Optional[Dict[str, Any]]:
+        configs = [decode_stored_exec_config(
+            self.client.get(self.key(strategy_name, execution_family, venue)), execution_family
+        ) for venue in self.markets]
+        return self._merge([config for config in configs if config is not None], execution_family)
+
+    def save(self, strategy_name: str, config: Any, execution_family: str = "batch_exec") -> Dict[str, Any]:
         name = validate_strategy_name(strategy_name)
-        normalized = normalize_exec_config(config)
+        family = normalize_execution_family(execution_family)
+        normalized = normalize_config(config, family)
+        validate_grid_account_config(self.venue, normalized)
+        routed = {symbol: self._symbol_market(symbol) for symbol in (
+            normalized["targets"].keys() | normalized.get("symbol_overrides", {}).keys()
+        )}
+        fields = CHASE_ORDER_PARAMETER_FIELDS if family == "chase_exec" else ORDER_PARAMETER_FIELDS
         with self._save_lock:
-            if name in self.list_removed_strategy_names():
+            if name in self.list_removed_strategy_names(family):
                 raise ValueError(f"strategy removal already requested: {name}")
-            strategy_names = self.list_strategy_names()
-            current = self.load(name) if name in strategy_names else None
+            current = self.load(name, family) if name in self.list_strategy_names(family) else None
             if current is not None:
-                # Existing strategy publishers own targets; the Config page owns order params.
-                for field in ORDER_PARAMETER_FIELDS:
+                for field in fields:
                     normalized[field] = current[field]
-            # Receipt time is authoritative even when a publisher repeats an unchanged target map.
-            next_version = time.time_ns() // 1_000
-            if current is not None and current.get("updated_at_us") is not None:
-                next_version = max(next_version, current["updated_at_us"] + 1)
-            normalized["updated_at_us"] = next_version
-            self.client.set(
-                self.key(name),
-                json.dumps(normalized, ensure_ascii=False, separators=(",", ":")),
-            )
-            if name not in strategy_names:
-                strategy_names.append(name)
-                self.client.set(
-                    self.index_key,
-                    json.dumps(sorted(strategy_names), ensure_ascii=False, separators=(",", ":")),
-                )
+            normalized["updated_at_us"] = max(time.time_ns() // 1_000, (current or {}).get("updated_at_us", 0) + 1)
+            with self.client.pipeline() as pipeline:
+                pipeline.multi()
+                for venue, index_key, _, config_key in self._scopes(name, family):
+                    scoped = dict(normalized)
+                    scoped["targets"] = {symbol: value for symbol, value in normalized["targets"].items() if routed[symbol] == venue}
+                    overrides = {symbol: value for symbol, value in normalized.get("symbol_overrides", {}).items() if routed[symbol] == venue}
+                    scoped.pop("symbol_overrides", None)
+                    if overrides:
+                        scoped["symbol_overrides"] = overrides
+                    names = decode_strategy_names(self.client.get(index_key), "strategy index")
+                    pipeline.set(config_key, json.dumps(scoped, ensure_ascii=False, separators=(",", ":")))
+                    pipeline.set(index_key, json.dumps(sorted(set(names) | {name}), separators=(",", ":")))
+                pipeline.execute()
         return normalized
 
-    def save_order_parameters(
-        self,
-        strategy_name: str,
-        order_parameters: Any,
-        expected_updated_at_us: Any,
-    ) -> Dict[str, Any]:
+    def save_order_parameters(self, strategy_name: str, order_parameters: Any, expected_updated_at_us: Any, execution_family: str = "batch_exec") -> Dict[str, Any]:
         name = validate_strategy_name(strategy_name)
-        normalized_parameters = normalize_order_parameters(order_parameters)
-        expected_version = normalize_expected_updated_at_us(expected_updated_at_us)
-        config_key = self.key(name)
+        family = normalize_execution_family(execution_family)
+        parameters = normalize_order_parameters(order_parameters, family)
+        validate_grid_account_config(self.venue, parameters)
+        expected = normalize_expected_updated_at_us(expected_updated_at_us)
+        scopes = self._scopes(name, family)
         with self._save_lock:
             try:
                 with self.client.pipeline() as pipeline:
-                    pipeline.watch(
-                        self.index_key,
-                        self.removed_index_key,
-                        config_key,
-                    )
-                    strategy_names = decode_strategy_names(
-                        pipeline.get(self.index_key), "strategy index"
-                    )
-                    removed_names = decode_strategy_names(
-                        pipeline.get(self.removed_index_key),
-                        "removed strategy index",
-                    )
-                    current = decode_stored_exec_config(pipeline.get(config_key))
-
-                    if name in removed_names:
-                        raise ValueError(f"strategy removal already requested: {name}")
-                    if name not in strategy_names:
+                    pipeline.watch(*(key for _, index, removed, config in scopes for key in (index, removed, config)))
+                    active = []
+                    for _, index_key, removed_key, config_key in scopes:
+                        if name in decode_strategy_names(pipeline.get(removed_key), "removed strategy index"):
+                            raise ValueError(f"strategy removal already requested: {name}")
+                        if name not in decode_strategy_names(pipeline.get(index_key), "strategy index"):
+                            continue
+                        current = decode_stored_exec_config(pipeline.get(config_key), family)
+                        if current is None:
+                            raise ValueError(f"strategy config is missing: {name}")
+                        active.append((config_key, current))
+                    if not active:
                         raise ValueError(f"strategy is not active: {name}")
-                    if current is None:
-                        raise ValueError(f"strategy config is missing: {name}")
-                    current_version = current.get("updated_at_us")
-                    if current_version != expected_version:
-                        raise ConfigVersionConflict(
-                            "strategy config changed after it was loaded; reload before saving"
-                        )
-
-                    updated = dict(current)
-                    updated.update(normalized_parameters)
-                    next_version = time.time_ns() // 1_000
-                    if current_version is not None:
-                        next_version = max(next_version, current_version + 1)
-                    updated["updated_at_us"] = next_version
+                    current = self._merge([config for _, config in active], family)
+                    if current.get("updated_at_us") != expected:
+                        raise ConfigVersionConflict("strategy config changed after it was loaded; reload before saving")
+                    next_version = max(time.time_ns() // 1_000, expected + 1)
+                    updated_configs = []
                     pipeline.multi()
-                    pipeline.set(
-                        config_key,
-                        json.dumps(
-                            updated,
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ),
-                    )
+                    for config_key, config in active:
+                        updated = {**config, **parameters, "updated_at_us": next_version}
+                        validate_grid_account_config(self.venue, updated)
+                        updated_configs.append(updated)
+                        pipeline.set(config_key, json.dumps(updated, ensure_ascii=False, separators=(",", ":")))
                     pipeline.execute()
             except self._watch_error as exc:
-                raise ConfigVersionConflict(
-                    "strategy config changed while it was being saved; reload before saving"
-                ) from exc
-        return updated
+                raise ConfigVersionConflict("strategy config changed while it was being saved; reload before saving") from exc
+        return self._merge(updated_configs, family)
 
-    def remove(self, strategy_name: str) -> bool:
+    def remove(self, strategy_name: str, execution_family: str = "batch_exec") -> bool:
         name = validate_strategy_name(strategy_name)
+        family = normalize_execution_family(execution_family)
+        found = False
         with self._save_lock:
-            strategy_names = self.list_strategy_names()
-            removed_names = self.list_removed_strategy_names()
-            if (
-                name not in strategy_names
-                and name not in removed_names
-                and self.client.get(self.key(name)) is None
-            ):
-                return False
-            if name not in removed_names:
-                removed_names.append(name)
-                self.client.set(
-                    self.removed_index_key,
-                    json.dumps(
-                        sorted(removed_names),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                )
-            if name in strategy_names:
-                strategy_names.remove(name)
-                self.client.set(
-                    self.index_key,
-                    json.dumps(strategy_names, ensure_ascii=False, separators=(",", ":")),
-                )
-        return True
+            with self.client.pipeline() as pipeline:
+                pipeline.multi()
+                for _, index_key, removed_key, config_key in self._scopes(name, family):
+                    names = decode_strategy_names(self.client.get(index_key), "strategy index")
+                    removed = decode_strategy_names(self.client.get(removed_key), "removed strategy index")
+                    if name not in names and name not in removed and self.client.get(config_key) is None:
+                        continue
+                    found = True
+                    pipeline.set(removed_key, json.dumps(sorted(set(removed) | {name}), separators=(",", ":")))
+                    pipeline.set(index_key, json.dumps([existing for existing in names if existing != name], separators=(",", ":")))
+                pipeline.execute()
+        return found
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -411,7 +755,7 @@ INDEX_HTML = r"""<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Exec Config</title>
+    <title>__EXEC_MARKET__ Exec Config</title>
     <style>
       :root {
         color-scheme: dark;
@@ -473,7 +817,7 @@ INDEX_HTML = r"""<!doctype html>
   </head>
   <body>
     <header>
-      <h1>Exec Config</h1>
+      <h1>__EXEC_MARKET__ Exec Config</h1>
       <select id="strategy"><option value="">Select strategy</option></select>
       <button id="reload" type="button">Reload</button>
       <a id="dashboard" class="command" href="../">Dashboard</a>
@@ -484,7 +828,7 @@ INDEX_HTML = r"""<!doctype html>
       <section>
         <div class="section-head"><h2>Order Parameters</h2></div>
         <div class="param-grid">
-          <div class="field"><label>Single Order USDT</label><input id="single_order_usdt" inputmode="decimal" disabled /></div>
+          <div class="field"><label>Single Order __NOTIONAL_CURRENCY__</label><input id="single_order_usdt" inputmode="decimal" disabled /></div>
           <div class="field"><label>Orders Per Batch</label><input id="orders_per_batch" inputmode="numeric" disabled /></div>
           <div class="field"><label>Max Batch</label><input id="max_batch" inputmode="numeric" disabled /></div>
           <div class="field"><label>Maker Price Anchor</label><select id="maker_price_anchor" disabled><option value="own_best">Own Best</option><option value="opposite_best_plus_one_tick">Opposite Best + 1 Tick</option></select></div>
@@ -492,7 +836,18 @@ INDEX_HTML = r"""<!doctype html>
           <div class="field"><label>Batch Interval ms</label><input id="batch_interval_ms" inputmode="numeric" disabled /></div>
           <div class="field"><label>Maker Timeout ms</label><input id="maker_timeout_ms" inputmode="numeric" disabled /></div>
           <div class="field"><label>Max Maker Requotes</label><input id="max_maker_requotes" inputmode="numeric" disabled /></div>
-          <div class="field"><label>Target Tolerance USDT</label><input id="target_tolerance_usdt" inputmode="decimal" disabled /></div>
+          <div class="field"><label>Target Tolerance __NOTIONAL_CURRENCY__</label><input id="target_tolerance_usdt" inputmode="decimal" disabled /></div>
+          <div class="field"><label>Algorithm</label><select id="algorithm" disabled><option value="batch">Batch</option><option value="pov">POV</option><option value="ctaker">CTaker</option><option value="grid">Grid</option></select></div>
+        </div>
+      </section>
+      <section id="grid-section" hidden>
+        <div class="section-head"><h2>Grid</h2><span class="readonly-state">Read only</span></div>
+        <p>Spot and futures independently configure Vol multipliers and Maker rounds. Finite rounds include the initial order and then fall back to Taker; Unlimited keeps requoting. Explicit signal ±1 retains taker execution.</p>
+        <div class="param-grid" id="grid-fields"></div>
+      </section>
+      <section id="pov-section" hidden>
+        <div class="section-head"><h2>POV</h2><span class="readonly-state">Read only</span></div>
+        <div class="param-grid" id="pov-fields">
         </div>
       </section>
       <section>
@@ -501,7 +856,7 @@ INDEX_HTML = r"""<!doctype html>
           <span class="readonly-state">Read only</span>
         </div>
         <div class="targets">
-          <table><thead><tr><th>Symbol</th><th>Target Qty</th><th>Signal</th></tr></thead><tbody id="target-rows"></tbody></table>
+          <table><thead><tr><th>Symbol</th><th>Target Qty (Base Coin)</th><th>Signal</th></tr></thead><tbody id="target-rows"></tbody></table>
           <div id="target-empty" class="empty">No non-zero target positions</div>
         </div>
       </section>
@@ -509,7 +864,8 @@ INDEX_HTML = r"""<!doctype html>
     <script>
       (() => {
         const DEFAULTS = __DEFAULTS__;
-        const fields = ["single_order_usdt", "orders_per_batch", "max_batch", "maker_price_anchor", "tick_spacing", "batch_interval_ms", "maker_timeout_ms", "max_maker_requotes", "target_tolerance_usdt"];
+        const fields = ["single_order_usdt", "orders_per_batch", "max_batch", "maker_price_anchor", "tick_spacing", "batch_interval_ms", "maker_timeout_ms", "max_maker_requotes", "target_tolerance_usdt", "algorithm"];
+        const povLabels = {participation_rate: "Participation Rate", max_batch_usdt: "Max Batch __NOTIONAL_CURRENCY__", max_carry_usdt: "Max Carry __NOTIONAL_CURRENCY__", volume_stale_ms: "Volume Stale ms", quote_stale_ms: "Quote Stale ms", duration_ms: "Duration ms", liquidity: "Liquidity", limit_price: "Limit Price"};
         const state = { bootstrap: null, names: [], name: "", config: null };
         const el = (id) => document.getElementById(id);
         function api(path) { return new URL(`api/${path}`, location.href).toString(); }
@@ -527,7 +883,7 @@ INDEX_HTML = r"""<!doctype html>
           select.innerHTML = '<option value="">Select strategy</option>' + state.names.map((name) => `<option value="${name}">${name}</option>`).join("");
           select.value = state.name;
         }
-        function targetQty(raw) { return raw && typeof raw === "object" ? Number(raw.qty) : Number(raw); }
+        function targetQty(raw) { const qty = raw && typeof raw === "object" ? raw.qty : raw; return qty === "clear" ? "clear" : Number(qty); }
         function targetSignal(raw) { return raw && typeof raw === "object" && raw.signal != null ? Number(raw.signal) : 0; }
         function renderTargets(targets) {
           const tbody = el("target-rows");
@@ -547,6 +903,33 @@ INDEX_HTML = r"""<!doctype html>
         function renderConfig(config) {
           state.config = structuredClone(config);
           fields.forEach((name) => { el(name).value = config[name]; el(name).disabled = true; });
+          el("pov-section").hidden = config.algorithm !== "pov";
+          el("pov-fields").replaceChildren();
+          Object.entries(povLabels).forEach(([name, label]) => {
+            const field = document.createElement("div"); field.className = "field";
+            const caption = document.createElement("label"); caption.textContent = label;
+            const input = document.createElement("input"); input.disabled = true;
+            input.value = (config.pov || DEFAULTS.pov)[name] ?? "";
+            field.append(caption, input); el("pov-fields").append(field);
+          });
+          el("grid-section").hidden = config.algorithm !== "grid";
+          el("grid-fields").replaceChildren();
+          const gridLabels = {vol_multiplier: "Vol Multiplier", orders_per_batch: "Orders per Batch", maker_timeout_ms: "Maker Timeout ms", max_maker_requotes: "Maker Rounds"};
+          ["spot", "futures"].forEach((market) => {
+            const settings = (config.grid || DEFAULTS.grid)[market];
+            Object.entries(gridLabels).forEach(([name, label]) => {
+              const field = document.createElement("div"); field.className = "field";
+              const caption = document.createElement("label"); caption.textContent = `${market === "spot" ? "Spot" : "Futures"} ${label}`;
+              const input = document.createElement("input"); input.disabled = true;
+              input.value = name === "max_maker_requotes"
+                ? (settings[name] === null ? "Unlimited" : `${settings[name] + 1} then Taker`)
+                : settings[name];
+              field.append(caption, input); el("grid-fields").append(field);
+            });
+          });
+          ["max_batch", "maker_price_anchor", "tick_spacing", "orders_per_batch", "maker_timeout_ms", "max_maker_requotes"].forEach((name) => {
+            el(name).parentElement.hidden = config.algorithm === "grid";
+          });
           renderTargets(config.targets);
           el("redis-key").textContent = state.bootstrap ? `${state.bootstrap.key_prefix}${state.name}` : "-";
         }
@@ -589,9 +972,13 @@ def make_handler(
     dashboard_url: str,
     order_parameter_token: Optional[str] = None,
 ):
-    html = INDEX_HTML.replace(
-        "__DEFAULTS__", json.dumps(DEFAULT_CONFIG, ensure_ascii=False)
-    ).encode("utf-8")
+    coin = store.venue == "binance-coin-futures"
+    html = (
+        INDEX_HTML.replace("__DEFAULTS__", json.dumps(DEFAULT_CONFIG, ensure_ascii=False))
+        .replace("__EXEC_MARKET__", "币本位" if coin else "U 本位")
+        .replace("__NOTIONAL_CURRENCY__", "USD" if coin else "USDT")
+        .encode("utf-8")
+    )
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "ExecConfigServer/1.0"
@@ -643,33 +1030,55 @@ def make_handler(
                             "env_name": store.env_name,
                             "venue": store.venue,
                             "key_prefix": store.prefix,
+                            "key_prefixes": {
+                                family: store.family_prefix(family)
+                                for family in EXECUTION_FAMILIES
+                            },
                             "dashboard_url": dashboard_url,
                             "defaults": DEFAULT_CONFIG,
+                            "defaults_by_execution_family": {
+                                "batch_exec": DEFAULT_CONFIG,
+                                "chase_exec": DEFAULT_CHASE_CONFIG,
+                            },
                         },
                     )
                     return
                 if parsed.path == "/api/strategies":
+                    query = parse_qs(parsed.query)
+                    family = normalize_execution_family(
+                        (query.get("execution_family") or ["batch_exec"])[0]
+                    )
                     self.send_json(
                         200,
                         {
                             "ok": True,
-                            "strategies": store.list_strategy_names(),
-                            "removed": store.list_removed_strategy_names(),
+                            "execution_family": family,
+                            "strategies": store.list_strategy_names(family),
+                            "removed": store.list_removed_strategy_names(family),
                         },
                     )
                     return
                 if parsed.path == "/api/strategy":
                     query = parse_qs(parsed.query)
                     name = validate_strategy_name((query.get("name") or [""])[0])
-                    config = store.load(name)
+                    family = normalize_execution_family(
+                        (query.get("execution_family") or ["batch_exec"])[0]
+                    )
+                    config = store.load(name, family)
                     self.send_json(
                         200,
                         {
                             "ok": True,
                             "strategy_name": name,
-                            "key": store.key(name),
+                            "execution_family": family,
+                            "key": store.key(name, family),
                             "exists": config is not None,
-                            "config": config or DEFAULT_CONFIG,
+                            "config": config
+                            or (
+                                DEFAULT_CHASE_CONFIG
+                                if family == "chase_exec"
+                                else DEFAULT_CONFIG
+                            ),
                         },
                     )
                     return
@@ -713,7 +1122,8 @@ def make_handler(
                         "expected_updated_at_us",
                         "order_parameters",
                     }
-                    unknown = sorted(set(payload) - required)
+                    allowed = required | {"execution_family"}
+                    unknown = sorted(set(payload) - allowed)
                     missing = sorted(required - set(payload))
                     if unknown:
                         raise ValueError(
@@ -724,29 +1134,42 @@ def make_handler(
                             f"missing request fields: {', '.join(missing)}"
                         )
                     name = validate_strategy_name(payload["strategy_name"])
+                    family = normalize_execution_family(
+                        payload.get("execution_family")
+                    )
                     config = store.save_order_parameters(
                         name,
                         payload["order_parameters"],
                         payload["expected_updated_at_us"],
+                        family,
+                    )
+                    fields = (
+                        CHASE_ORDER_PARAMETER_FIELDS
+                        if family == "chase_exec"
+                        else ORDER_PARAMETER_FIELDS
                     )
                     response = {
                         "ok": True,
                         "strategy_name": name,
-                        "key": store.key(name),
+                        "execution_family": family,
+                        "key": store.key(name, family),
                         "order_parameters": {
-                            field: config[field] for field in ORDER_PARAMETER_FIELDS
+                            field: config[field] for field in fields
                         },
+                        "symbol_overrides": config.get("symbol_overrides", {}),
                         "updated_at_us": config["updated_at_us"],
                     }
                     self.log_update_response(200, response)
                     self.send_json(200, response)
                     return
                 name = validate_strategy_name(payload.get("strategy_name"))
-                config = store.save(name, payload.get("config"))
+                family = normalize_execution_family(payload.get("execution_family"))
+                config = store.save(name, payload.get("config"), family)
                 response = {
                     "ok": True,
                     "strategy_name": name,
-                    "key": store.key(name),
+                    "execution_family": family,
+                    "key": store.key(name, family),
                     "config": config,
                 }
                 self.log_update_response(200, response)
@@ -774,7 +1197,10 @@ def make_handler(
                     return
                 query = parse_qs(parsed.query)
                 name = validate_strategy_name((query.get("name") or [""])[0])
-                if not store.remove(name):
+                family = normalize_execution_family(
+                    (query.get("execution_family") or ["batch_exec"])[0]
+                )
+                if not store.remove(name, family):
                     response = {"ok": False, "error": "strategy is unknown"}
                     self.log_update_response(404, response)
                     self.send_json(404, response)
@@ -782,6 +1208,7 @@ def make_handler(
                 response = {
                     "ok": True,
                     "strategy_name": name,
+                    "execution_family": family,
                     "state": "removal_requested",
                 }
                 self.log_update_response(202, response)
@@ -809,7 +1236,7 @@ def make_handler(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="BatchExec Redis config server")
+    parser = argparse.ArgumentParser(description="Exec Redis config server")
     parser.add_argument("--bind", default=os.environ.get("BIND", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "18161")))
     parser.add_argument("--redis-url", default=os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"))

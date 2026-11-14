@@ -1,0 +1,37 @@
+{
+  "source_commit": "36ce149121cad0346532ea50979f73528768538a",
+  "environment": "binance-cta-perp-rx01",
+  "files": {
+    "cta_perp_factor_model_15m_pub": {
+      "source": "target/release/cta_perp_factor_model_15m_pub",
+      "sha256": "cd292e883331f4b059aacb2ee17de0ae7c85e81c8c304aeb1fc0a91ee9189259",
+      "expected_previous_sha256": "6ce28eaaf5d5bd73d9466176715544eb9e6b5b38bb37cdb2db25b3a5e244ba34"
+    },
+    "cta_perp_15m_signal": {
+      "source": "target/release/cta_perp_15m_signal",
+      "sha256": "74ded7e8bff2d332e7198cc60f941206f5673683cf53c375768b5f5f8db91b6d",
+      "expected_previous_sha256": "820a8460ee900e7f2b7cd2a06cf140a4a13cea6a9fc10af0a4cb3001cadcb7a2"
+    },
+    "scripts/cta_perp_factor_config.py": {
+      "source": "git:36ce149121cad0346532ea50979f73528768538a:scripts/cta_perp_factor_config.py",
+      "sha256": "42b4415446faf7953e27dcac8fa873c8c33adaa79dc1e9ba94bca33dc8dc4202",
+      "expected_previous_sha256": "a8864a60d7e13a358386c85a094151fe77cc282369fe614fef605d82fad854a6"
+    },
+    "scripts/factor_validation_allowlist.txt": {
+      "source": "scripts/factor_validation_allowlist.txt",
+      "sha256": "f48f5bc48c64a112b5397865e1eb9a49d44da2eaf0e794d716b7fefb501e4dc0",
+      "expected_previous_sha256": "59d19566e4f2c81f611df634a97cd70c95ca4a48a0a65a1dd1b521860aa367f2"
+    },
+    "config/README.md": {
+      "source": "config/cta_perp_rx01/README.md",
+      "sha256": "c2cfccd4520692c67bf7c79d8b314085b207508627a2d6340c0647de7d277fbf",
+      "expected_previous_sha256": "eaa9bb966122acf2ffd6a8db19589764cb1328eac1f299c90769407b0dbc57ab"
+    }
+  },
+  "protected_hashes": {
+    "config/cta_perp.json": "975696bf0d009dc5ce483a2f88e2d9e2a3d908edf0873f71a59b85f0336b9931",
+    "config/cta_perp_symbol_factors.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "config/cta_perp_factor_model_15m_pub.toml": "1cb66cf29507ac9a838d54555059c54bb432a789794b249c31525f0ff9da82db",
+    "env.sh": "65979643607f0ba717d6f95911a0c3cd658d6d3c8d1f2730fdc15c5558cd0acd"
+  }
+}

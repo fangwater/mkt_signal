@@ -71,11 +71,14 @@ dir_lc="${dir_name,,}"
 
 EXCHANGE=""
 ENV_TAG="intra"
-if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+MODE="intra"
+if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
-  ENV_TAG="${BASH_REMATCH[2]//-/_}"
-elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra$ ]]; then
+  MODE="${BASH_REMATCH[2]}"
+  ENV_TAG="${BASH_REMATCH[3]//-/_}"
+elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
+  MODE="${BASH_REMATCH[2]}"
 fi
 if [[ "$EXCHANGE" == "okx" ]]; then
   EXCHANGE="okex"
@@ -85,10 +88,10 @@ if [[ -z "$EXCHANGE" ]]; then
   exit 1
 fi
 
-PROC_NAME="${PMDAEMON_NAME:-intra_pm_${EXCHANGE}_${ENV_TAG}}"
+PROC_NAME="${PMDAEMON_NAME:-${MODE}_pm_${EXCHANGE}_${ENV_TAG}}"
 RUST_LOG="${RUST_LOG:-info}"
 
-mkdir -p "${BASE_DIR}/data/persist_manager" >/dev/null 2>&1 || true
+mkdir -p "${BASE_DIR}/data" >/dev/null 2>&1 || true
 
 core_args=()
 if [[ -n "${PERSIST_MANAGER_CORE:-}" ]]; then

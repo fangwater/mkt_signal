@@ -1,0 +1,18 @@
+{
+  "account_id": "cta_cross_spread_rx01",
+  "alias": "okex_binace_cross_1min",
+  "ordinary_account_page": true,
+  "same_sections_as_rapidx": [
+    "估算费率",
+    "交易所合约杠杆",
+    "策略启用",
+    "配置入口"
+  ],
+  "special_exec_cards_removed": true,
+  "market_switch_keeps_account_scope": true,
+  "market_fees_independent": true,
+  "bindings_one_account": true,
+  "desktop": "passed",
+  "mobile_width": "passed",
+  "page_errors": []
+}

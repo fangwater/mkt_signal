@@ -1,0 +1,12 @@
+{
+  "observed_utc": "2026-10-19T06:47:14.402865+00:00",
+  "files_verified": 4,
+  "previous_strategies": 5,
+  "previous_combinations": 46,
+  "previous_active": 12,
+  "strategies": 57,
+  "combinations": 873,
+  "enabled": false,
+  "backup": "/home/ubuntu/binance-cta-spread-rx01/run/corr50_warmup_20261019T064500Z/backup",
+  "state_sha256": "dccaa2da4bc0ab63f16fd6249c5ea1feb0e8e00aed091bfed808f3cb667f137b"
+}

@@ -1,0 +1,7 @@
+exchange,symbol,source_month,apply_month,medium_quantile,large_quantile,medium_notional_threshold,large_notional_threshold,sample_count,nonempty_hours
+binance-futures,BNBUSDT,2026-09,2026-10,0.5,0.9,14.544200000000002,696.87,36347991,720
+binance-futures,CRVUSDT,2026-09,2026-10,0.5,0.9,16.50227,260.9145,13262919,720
+binance-futures,FILUSDT,2026-09,2026-10,0.5,0.9,16.556639999999998,315.19936000000007,30938849,720
+binance-futures,THETAUSDT,2026-09,2026-10,0.5,0.9,16.53136,174.68927999999997,2231879,720
+binance-futures,XRPUSDT,2026-09,2026-10,0.5,0.9,9.12145,838.8913,79532267,720
+binance-futures,ZILUSDT,2026-09,2026-10,0.5,0.9,25.490304000000002,137.159781,3273234,720

@@ -2,6 +2,7 @@
 
 use crate::common::amount_threshold::AmountThreshold;
 use crate::depth_pub::orderbook::OrderBook;
+use crate::factor_pub::depth_book::{DepthBookBar, DepthBookFlow};
 use anyhow::Result;
 use bytes::Bytes;
 use mkt_parsers::msg::mkt_msg::Level;
@@ -23,13 +24,13 @@ pub struct BaselineStats {
     pub late_trades: u64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BaselineDepth20 {
     pub bids: [(f64, f64); BASELINE_DEPTH_LEVELS],
     pub asks: [(f64, f64); BASELINE_DEPTH_LEVELS],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BaselineBar {
     pub start_ms: i64,
     pub has_trade: bool,
@@ -67,6 +68,8 @@ pub struct BaselineBar {
     pub net_buy_small: f64,
     /// Latest book at the right edge of this bar, padded with zero levels when needed.
     pub depth20: BaselineDepth20,
+    /// Optional full-book stock and per-bar flow, retained in process for Kafka factors.
+    pub full_depth: Option<DepthBookBar>,
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +195,7 @@ impl BaselineBar {
                 bids: [(0.0, 0.0); BASELINE_DEPTH_LEVELS],
                 asks: [(0.0, 0.0); BASELINE_DEPTH_LEVELS],
             },
+            full_depth: None,
         }
     }
 
@@ -290,6 +294,14 @@ impl BaselineBar {
         self.medium_sell += source.medium_sell;
         self.small_buy += source.small_buy;
         self.small_sell += source.small_sell;
+        // A resampled bar represents the right edge of its final 5-second
+        // source bar. Preserve that bar's book exactly as we preserve its
+        // closing trade price above.
+        self.depth20 = source.depth20.clone();
+        match (&mut self.full_depth, &source.full_depth) {
+            (Some(target), Some(value)) => target.merge(value),
+            (target, value) => *target = value.clone(),
+        }
     }
 
     fn finalize(
@@ -402,6 +414,47 @@ impl BaselineBar {
     }
 }
 
+/// Aggregate completed minute bars with the same volume/notional/depth contract.
+/// Discard the first bucket if input begins partway through it.
+pub struct MultiMinuteBaseline {
+    state: BarState,
+    first_complete_start: Option<i64>,
+}
+
+impl Default for MultiMinuteBaseline {
+    fn default() -> Self {
+        Self::new(300_000)
+    }
+}
+
+impl MultiMinuteBaseline {
+    pub fn new(bar_ms: i64) -> Self {
+        assert!(bar_ms >= 60_000 && bar_ms % 60_000 == 0);
+        Self {
+            state: BarState::new(bar_ms),
+            first_complete_start: None,
+        }
+    }
+}
+
+impl MultiMinuteBaseline {
+    pub fn push(&mut self, minute: &BaselineBar) -> Vec<BaselineBar> {
+        let first = *self.first_complete_start.get_or_insert_with(|| {
+            let start = align(minute.start_ms, self.state.bar_ms);
+            if start == minute.start_ms {
+                start
+            } else {
+                start + self.state.bar_ms
+            }
+        });
+        consume_sub_bar(&mut self.state, minute, 60_000)
+            .into_iter()
+            .flatten()
+            .filter(|bar| bar.start_ms >= first)
+            .collect()
+    }
+}
+
 struct BarState {
     bar_ms: i64,
     current: Option<BaselineBar>,
@@ -469,6 +522,9 @@ pub struct LocalBaselineAggregator {
     orderbook: OrderBook,
     book_initialized: bool,
     next_book_update_id: i64,
+    depth_flow: Option<DepthBookFlow>,
+    /// Present for native bars finalized by a completed Kafka period watermark.
+    period_watermark_ms: Option<i64>,
 }
 
 impl Default for LocalBaselineAggregator {
@@ -488,7 +544,45 @@ impl LocalBaselineAggregator {
             orderbook: OrderBook::new(),
             book_initialized: false,
             next_book_update_id: 1,
+            depth_flow: None,
+            period_watermark_ms: None,
         }
+    }
+
+    /// Aggregate one native bar directly from period events. Empty intervals
+    /// are skipped, and the caller closes bars only after the period completes.
+    pub fn for_completed_periods(bar_ms: i64) -> Self {
+        assert!(bar_ms >= 60_000 && bar_ms % 60_000 == 0);
+        let mut aggregator = Self::new();
+        aggregator.base = BarState::new(bar_ms);
+        aggregator.period_watermark_ms = Some(0);
+        aggregator.enable_full_depth();
+        aggregator
+    }
+
+    pub fn close_completed_period(&mut self, end_ms: i64) -> Vec<BaselineBar> {
+        let Some(previous) = self.period_watermark_ms else {
+            return Vec::new();
+        };
+        let watermark = align(end_ms, self.base.bar_ms);
+        if watermark <= previous {
+            return Vec::new();
+        }
+        let mut completed = Vec::new();
+        if self
+            .base
+            .current
+            .as_ref()
+            .is_some_and(|bar| bar.start_ms.saturating_add(self.base.bar_ms) <= watermark)
+        {
+            self.finish_base_current(&mut completed);
+        }
+        self.period_watermark_ms = Some(watermark);
+        completed
+    }
+
+    pub fn enable_full_depth(&mut self) {
+        self.depth_flow.get_or_insert_with(DepthBookFlow::default);
     }
 
     /// Applies an L2 snapshot or delta. A book is only usable after a snapshot.
@@ -509,6 +603,7 @@ impl LocalBaselineAggregator {
         if !self.book_initialized && !is_snapshot {
             return completed;
         }
+        self.start_depth_bar(timestamp_us);
 
         let bid_updates: Vec<(f64, f64)> = bids
             .iter()
@@ -520,6 +615,11 @@ impl LocalBaselineAggregator {
             .collect();
         let update_id = self.next_book_update_id;
         self.next_book_update_id = self.next_book_update_id.saturating_add(1);
+        if self.book_initialized && !is_snapshot {
+            if let Some(flow) = &mut self.depth_flow {
+                flow.observe(&self.orderbook, bids, asks);
+            }
+        }
         if is_snapshot {
             self.orderbook
                 .apply_snapshot(&bid_updates, &ask_updates, update_id, timestamp_us);
@@ -532,6 +632,83 @@ impl LocalBaselineAggregator {
             self.orderbook.prune_crossed_by_best_update_id();
         }
         completed
+    }
+
+    /// Replays retained Kafka L2 deltas without requiring a complete snapshot.
+    ///
+    /// Kafka retention can begin in the middle of a book sequence. Keep the
+    /// partial-book behavior, but use the same crossed-book repair as
+    /// `depth_pub`: retain the newer BBO side and remove crossed levels from
+    /// the older side.
+    pub fn on_retained_incremental_book(
+        &mut self,
+        timestamp_us: i64,
+        bids: &[Level],
+        asks: &[Level],
+    ) -> Vec<BaselineBar> {
+        self.on_retained_book(timestamp_us, false, bids, asks)
+    }
+
+    /// Reconstruct retained book state without opening a bar or counting event flow.
+    /// Used for Kafka records overlapping already-seeded hourly inputs.
+    pub fn restore_retained_book(&mut self, timestamp_us: i64, bids: &[Level], asks: &[Level]) {
+        let bids = bids.iter().map(|p| (p.price, p.amount)).collect::<Vec<_>>();
+        let asks = asks.iter().map(|p| (p.price, p.amount)).collect::<Vec<_>>();
+        let update_id = self.next_book_update_id;
+        self.next_book_update_id = self.next_book_update_id.saturating_add(1);
+        self.orderbook
+            .apply_update(&bids, &asks, update_id, timestamp_us);
+        if !self.orderbook.is_valid() {
+            self.orderbook.prune_crossed_by_best_update_id();
+        }
+        self.book_initialized = true;
+    }
+
+    /// Kafka snapshots use depth_pub's merge semantics and do not count as event flow.
+    pub fn on_retained_book(
+        &mut self,
+        timestamp_us: i64,
+        is_snapshot: bool,
+        bids: &[Level],
+        asks: &[Level],
+    ) -> Vec<BaselineBar> {
+        let mut completed = Vec::new();
+        if !self.advance_to(timestamp_us, &mut completed) {
+            return completed;
+        }
+        self.start_depth_bar(timestamp_us);
+
+        let bid_updates: Vec<(f64, f64)> = bids
+            .iter()
+            .map(|level| (level.price, level.amount))
+            .collect();
+        let ask_updates: Vec<(f64, f64)> = asks
+            .iter()
+            .map(|level| (level.price, level.amount))
+            .collect();
+        let update_id = self.next_book_update_id;
+        self.next_book_update_id = self.next_book_update_id.saturating_add(1);
+        if self.book_initialized && !is_snapshot {
+            if let Some(flow) = &mut self.depth_flow {
+                flow.observe(&self.orderbook, bids, asks);
+            }
+        }
+        self.orderbook
+            .apply_update(&bid_updates, &ask_updates, update_id, timestamp_us);
+        if !self.orderbook.is_valid() {
+            self.orderbook.prune_crossed_by_best_update_id();
+        }
+        self.book_initialized = true;
+        completed
+    }
+
+    fn start_depth_bar(&mut self, timestamp_us: i64) {
+        if self.depth_flow.is_some() && self.base.current.is_none() {
+            self.base.current = Some(BaselineBar::new(align(
+                timestamp_us.div_euclid(1_000),
+                self.base.bar_ms,
+            )));
+        }
     }
 
     /// Applies a trade and returns every bar closed before the containing time bucket.
@@ -572,7 +749,7 @@ impl LocalBaselineAggregator {
             return completed;
         }
         let timestamp_ms = timestamp_us.div_euclid(1_000);
-        let target_start = align(timestamp_ms, BASELINE_BAR_MS);
+        let target_start = align(timestamp_ms, self.base.bar_ms);
         if self.base.current.is_none() {
             let mut bar = BaselineBar::new(target_start);
             bar.update_trade(is_buy, price, amount, threshold);
@@ -632,12 +809,25 @@ impl LocalBaselineAggregator {
 
     fn advance_to(&mut self, timestamp_us: i64, completed: &mut Vec<BaselineBar>) -> bool {
         let timestamp_ms = timestamp_us.div_euclid(1_000);
-        let target_start = align(timestamp_ms, BASELINE_BAR_MS);
+        if self
+            .period_watermark_ms
+            .is_some_and(|end| timestamp_ms < end)
+        {
+            return false;
+        }
+        let target_start = align(timestamp_ms, self.base.bar_ms);
         let Some(mut current_start) = self.base.current.as_ref().map(|bar| bar.start_ms) else {
             return true;
         };
         if target_start < current_start {
             return false;
+        }
+
+        if self.period_watermark_ms.is_some() {
+            if current_start < target_start {
+                self.finish_base_current(completed);
+            }
+            return true;
         }
 
         while current_start < target_start {
@@ -654,6 +844,12 @@ impl LocalBaselineAggregator {
         };
         let (depth20, is_complete) = self.depth20();
         bar.depth20 = depth20;
+        if let Some(flow) = &mut self.depth_flow {
+            bar.full_depth = Some(DepthBookBar::from_book(
+                &self.orderbook,
+                std::mem::take(flow),
+            ));
+        }
         if is_complete {
             self.base.stats.depth20_bars = self.base.stats.depth20_bars.saturating_add(1);
         } else {
@@ -665,6 +861,15 @@ impl LocalBaselineAggregator {
     }
 
     fn depth20(&self) -> (BaselineDepth20, bool) {
+        if !self.orderbook.is_valid() {
+            return (
+                BaselineDepth20 {
+                    bids: [(0.0, 0.0); BASELINE_DEPTH_LEVELS],
+                    asks: [(0.0, 0.0); BASELINE_DEPTH_LEVELS],
+                },
+                false,
+            );
+        }
         let (bids, asks) = self.orderbook.get_depth(BASELINE_DEPTH_LEVELS);
         let mut depth20 = BaselineDepth20 {
             bids: [(0.0, 0.0); BASELINE_DEPTH_LEVELS],
@@ -684,6 +889,9 @@ impl LocalBaselineAggregator {
     }
 
     fn consume_base_bar(&mut self, bar: &BaselineBar) {
+        if self.period_watermark_ms.is_some() {
+            return;
+        }
         for completed in consume_sub_bar(&mut self.ten_seconds, bar, BASELINE_BAR_MS)
             .into_iter()
             .flatten()
@@ -733,10 +941,140 @@ fn align(timestamp_ms: i64, bar_ms: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn full_depth_bars_close_before_updates_and_exclude_snapshots_from_flow() {
+        let mut agg = super::LocalBaselineAggregator::new();
+        agg.enable_full_depth();
+        let level = |p, q| mkt_parsers::msg::mkt_msg::Level::from_values(p, q);
+        agg.on_retained_book(1, true, &[level(99.0, 2.0)], &[level(101.0, 3.0)]);
+        agg.on_retained_book(1_000_000, false, &[level(99.0, 4.0)], &[]);
+        // A partial snapshot merges, preserving the omitted far side, without flow.
+        agg.on_retained_book(2_000_000, true, &[level(99.0, 7.0)], &[]);
+        let closed = agg.on_retained_book(5_000_000, false, &[level(99.0, 8.0)], &[]);
+        assert_eq!(closed.len(), 1);
+        let row = closed[0].full_depth.as_ref().unwrap();
+        assert_eq!(row.depth_bid_notional_all, 693.0);
+        assert_eq!(row.depth_ask_notional_all, 303.0);
+        assert_eq!(row.depth_bid_add_notional, 198.0);
+        let closed = agg.on_retained_book(10_000_000, false, &[], &[]);
+        assert_eq!(
+            closed[0]
+                .full_depth
+                .as_ref()
+                .unwrap()
+                .depth_bid_add_notional,
+            99.0
+        );
+        // Late input cannot change either the book or the next bar's flows.
+        agg.on_retained_book(6_000_000, false, &[level(99.0, 100.0)], &[]);
+        let closed = agg.on_retained_book(15_000_000, false, &[], &[]);
+        let row = closed[0].full_depth.as_ref().unwrap();
+        assert_eq!(row.depth_bid_add_notional, 0.0);
+        assert_eq!(row.depth_bid_notional_all, 792.0);
+    }
+
+    #[test]
+    fn full_depth_fifteen_minute_bar_uses_last_stock_and_sums_all_flows_without_trades() {
+        let mut agg = super::LocalBaselineAggregator::new();
+        agg.enable_full_depth();
+        let level = |p, q| mkt_parsers::msg::mkt_msg::Level::from_values(p, q);
+        agg.on_retained_book(1, true, &[level(99.0, 1.0)], &[level(101.0, 1.0)]);
+        let mut resampler = super::MultiMinuteBaseline::new(900_000);
+        let mut bars = Vec::new();
+        for second in (5..=900).step_by(5) {
+            agg.on_retained_book(
+                second * 1_000_000,
+                false,
+                &[level(99.0, 1.0 + second as f64 / 5.0)],
+                &[],
+            );
+            // Match the production consumer, which drains both queues.
+            agg.drain_ten_second_bars();
+            for minute in agg.drain_sixty_second_bars() {
+                bars.extend(resampler.push(&minute));
+            }
+        }
+        assert_eq!(bars.len(), 1);
+        assert!(!bars[0].has_trade);
+        let row = bars[0].full_depth.as_ref().unwrap();
+        assert_eq!(row.depth_bid_notional_all, 180.0 * 99.0);
+        assert_eq!(row.depth_bid_add_notional, 179.0 * 99.0);
+        assert_eq!(row.depth_touch_bid_add_notional, 179.0 * 99.0);
+        assert_eq!(row.depth_ask_add_notional, 0.0);
+    }
+
     use super::{HourlyNotionalKll, LocalBaselineAggregator, HOUR_MS};
     use crate::common::amount_threshold::AmountThreshold;
     use mkt_parsers::msg::mkt_msg::Level;
     use mkt_parsers::msg::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
+
+    #[test]
+    fn five_minute_bars_merge_notional_and_final_depth_without_future_data() {
+        let mut resampler = super::MultiMinuteBaseline::default();
+        for minute in 0..5 {
+            let mut bar = super::BaselineBar::new(minute * 60_000);
+            bar.update_trade(true, 100.0 + minute as f64, 1.0, None);
+            bar.update_trade(false, 110.0 + minute as f64, 2.0, None);
+            bar.depth20.bids[0] = (99.0 + minute as f64, 3.0);
+            let rows = resampler.push(&bar);
+            if minute < 4 {
+                assert!(rows.is_empty());
+                continue;
+            }
+            assert_eq!(rows.len(), 1);
+            let closed = &rows[0];
+            assert_eq!(closed.start_ms, 0);
+            assert_eq!(closed.open, 100.0);
+            assert_eq!(closed.close, 114.0);
+            assert_eq!(closed.low, 100.0);
+            assert_eq!(closed.high, 114.0);
+            assert_eq!(closed.count, 10);
+            assert_eq!(closed.volume, 15.0);
+            assert_eq!(closed.amount, 1630.0);
+            assert_eq!(closed.vwap, 1630.0 / 15.0);
+            assert_eq!(closed.buy_vwap, 102.0);
+            assert_eq!(closed.sell_vwap, 112.0);
+            assert_eq!(closed.depth20.bids[0], (103.0, 3.0));
+        }
+        let mut partial = super::MultiMinuteBaseline::default();
+        for minute in 2..5 {
+            assert!(partial
+                .push(&super::BaselineBar::new(minute * 60_000))
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn fifteen_minute_bars_use_all_fifteen_minutes_and_discard_partial_start() {
+        let mut resampler = super::MultiMinuteBaseline::new(900_000);
+        // Start in the middle of the first bucket; it must never be published.
+        for minute in 2..30 {
+            let offset = minute % 15;
+            let mut bar = super::BaselineBar::new(minute * 60_000);
+            bar.update_trade(true, 100.0 + offset as f64, 1.0, None);
+            bar.update_trade(false, 110.0 + offset as f64, 2.0, None);
+            bar.depth20.bids[0] = (99.0 + offset as f64, 3.0);
+            let rows = resampler.push(&bar);
+            if minute != 29 {
+                assert!(rows.is_empty());
+                continue;
+            }
+            assert_eq!(rows.len(), 1);
+            let closed = &rows[0];
+            assert_eq!(closed.start_ms, 900_000);
+            assert_eq!(
+                (closed.open, closed.high, closed.low, closed.close),
+                (100.0, 124.0, 100.0, 124.0)
+            );
+            assert_eq!(closed.count, 30);
+            assert_eq!(closed.volume, 45.0);
+            assert_eq!(closed.amount, 5115.0);
+            assert_eq!(closed.vwap, 5115.0 / 45.0);
+            assert_eq!(closed.buy_vwap, 107.0);
+            assert_eq!(closed.sell_vwap, 117.0);
+            assert_eq!(closed.depth20.bids[0], (113.0, 3.0));
+        }
+    }
 
     #[test]
     fn resamples_only_finalized_five_second_bars() {
@@ -783,6 +1121,35 @@ mod tests {
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].start_ms, 0);
         assert!(completed[0].has_trade);
+    }
+
+    #[test]
+    fn sixty_second_bar_keeps_the_latest_five_second_depth20() {
+        let mut agg = LocalBaselineAggregator::new();
+        let initial_bids: Vec<Level> = (0..20)
+            .map(|i| Level::from_values(100.0 - i as f64, 1.0))
+            .collect();
+        let initial_asks: Vec<Level> = (0..20)
+            .map(|i| Level::from_values(101.0 + i as f64, 1.0))
+            .collect();
+        agg.on_book(1, true, &initial_bids, &initial_asks);
+
+        for second in (0..=60).step_by(5) {
+            if second == 55 {
+                agg.on_book(
+                    second * 1_000_000 + 1,
+                    false,
+                    &[Level::from_values(105.0, 2.0)],
+                    &[Level::from_values(106.0, 3.0)],
+                );
+            }
+            agg.on_trade(second * 1_000_000 + 2, true, 100.0, 1.0);
+        }
+
+        let completed = agg.drain_sixty_second_bars();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].depth20.bids[0], (105.0, 2.0));
+        assert_eq!(completed[0].depth20.asks[0], (106.0, 3.0));
     }
 
     #[test]
@@ -926,6 +1293,45 @@ mod tests {
         assert_eq!(depth.asks[0], (101.0, 2.0));
         assert_eq!(depth.asks[19], (120.0, 21.0));
         assert_eq!(agg.stats()[0].depth20_bars, 1);
+    }
+
+    #[test]
+    fn retained_kafka_deltas_prune_the_older_crossed_bbo_side() {
+        let mut agg = LocalBaselineAggregator::new();
+        agg.on_retained_incremental_book(
+            100,
+            &[
+                Level::from_values(100.0, 1.0),
+                Level::from_values(99.0, 1.0),
+            ],
+            &[
+                Level::from_values(101.0, 1.0),
+                Level::from_values(103.0, 1.0),
+            ],
+        );
+        agg.on_retained_incremental_book(200, &[Level::from_values(102.0, 1.0)], &[]);
+        agg.on_trade(1_000, true, 100.5, 1.0);
+        let closed = agg.on_retained_incremental_book(5_001_000, &[], &[]);
+
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].depth20.bids[0], (102.0, 1.0));
+        assert_eq!(closed[0].depth20.asks[0], (103.0, 1.0));
+    }
+
+    #[test]
+    fn does_not_attach_depth20_when_a_same_update_cross_cannot_be_pruned() {
+        let mut agg = LocalBaselineAggregator::new();
+        agg.on_retained_incremental_book(
+            100,
+            &[Level::from_values(101.0, 1.0)],
+            &[Level::from_values(100.0, 1.0)],
+        );
+        agg.on_trade(1_000, true, 100.5, 1.0);
+        let closed = agg.on_retained_incremental_book(5_001_000, &[], &[]);
+
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].depth20.bids[0], (0.0, 0.0));
+        assert_eq!(closed[0].depth20.asks[0], (0.0, 0.0));
     }
 
     #[test]

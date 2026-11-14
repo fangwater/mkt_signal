@@ -1,4 +1,5 @@
 use crate::kll_quantile::segmented_quantiles_linear;
+use log::Level;
 use std::time::{Duration, Instant};
 
 /// 累积延迟样本（µs），按样本数或时间窗口 flush。
@@ -10,6 +11,7 @@ pub struct LatencyKll {
     label: String,
     buffer: Vec<f64>,
     capacity: usize,
+    log_level: Level,
     max_window: Duration,
     window_start: Instant,
 }
@@ -23,10 +25,19 @@ impl LatencyKll {
     }
 
     pub fn with_capacity(label: impl Into<String>, capacity: usize) -> Self {
+        Self::with_capacity_and_log_level(label, capacity, Level::Info)
+    }
+
+    pub fn with_capacity_and_log_level(
+        label: impl Into<String>,
+        capacity: usize,
+        log_level: Level,
+    ) -> Self {
         Self {
             label: label.into(),
             buffer: Vec::with_capacity(capacity),
             capacity,
+            log_level,
             max_window: Self::DEFAULT_MAX_WINDOW,
             window_start: Instant::now(),
         }
@@ -55,7 +66,8 @@ impl LatencyKll {
         let p90 = results.get(1).and_then(|v| *v).unwrap_or(f64::NAN);
         let p95 = results.get(2).and_then(|v| *v).unwrap_or(f64::NAN);
         let p99 = results.get(3).and_then(|v| *v).unwrap_or(f64::NAN);
-        log::info!(
+        log::log!(
+            self.log_level,
             "[{}] latency_us n={} p50={:.0} p90={:.0} p95={:.0} p99={:.0}",
             self.label,
             n,

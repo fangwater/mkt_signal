@@ -16,6 +16,7 @@ hmac = "0.12"
 iceoryx2 = "0.8.1"
 log = "0.4"
 mkt_parsers = { path = "../mkt_parsers" }
+order_common = { path = "../order_common" }
 reqwest = { version = "0.12.19", features = ["json"] }
 runtime_common = { path = "../runtime_common" }
 serde = { version = "1.0", features = ["derive"] }

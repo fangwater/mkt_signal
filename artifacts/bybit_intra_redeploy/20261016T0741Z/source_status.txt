@@ -1,0 +1,58 @@
+ M Cargo.lock
+ M crates/trade_engine/Cargo.toml
+ M crates/trade_engine/src/ltp_init_leverage.rs
+ M crates/trade_engine/src/ltp_journal.rs
+ M crates/trade_engine/src/trade_request.rs
+ M docs/cn_features_replay.md
+ M docs/core_allocation.md
+ M docs/cta_signal_families.md
+ M docs/jp-meta-elvpn_ip_binding.md
+ M docs/rapidx_integration.md
+ M scripts/cta_perp_config_server.py
+ M scripts/cta_perp_dashboard.py
+ M scripts/cta_perp_position_replay.py
+ M scripts/start_cta_perp_factor_model_1m_pub.sh
+ M scripts/stop_cta_perp_factor_model_1m_pub.sh
+ M scripts/tests/cta_perp_config_browser.py
+ M scripts/tests/cta_perp_panel_browser.py
+ M scripts/tests/test_cta_perp_position_replay.py
+ M scripts/tests/test_cta_perp_servers.py
+ M scripts/tests/test_cta_perp_signal_history.py
+ M src/bin/binance_account_monitor.rs
+ M src/bin/cn_features_1min_hfq.rs
+ M src/bin/pre_trade.rs
+ M src/cta_perp/config.rs
+ M src/cta_perp/factor_channel.rs
+ M src/cta_perp/factors.rs
+ M src/cta_perp/mod.rs
+ M src/cta_perp/positions.rs
+ M src/cta_perp/signal.rs
+ M src/cta_spread/positions.rs
+ M src/cta_spread/signal.rs
+ M src/factor_pub/cta_perp_factor_model_1m_pub/app.rs
+ M src/pre_trade/leverage_guard.rs
+ M src/pre_trade/order_manager.rs
+ M web/cta_perp/index.html
+ M web/cta_perp_config/index.html
+ M web/cta_perp_signals/index.html
+ M web/cta_perp_signals/panel.js
+?? artifacts/binance_fr_arb04_republish/20261014T2227Z/before_start_trade_engine.sh
+?? artifacts/binance_fr_arb04_republish/20261014T2227Z/final_process_followup.json
+?? artifacts/binance_fr_arb04_republish/20261014T2227Z/source_worktree.patch
+?? artifacts/binance_fr_arb04_republish/20261014T2227Z/startup_and_stability.json
+?? artifacts/cta_perp_replay_cutover/
+?? artifacts/cta_perp_rx02_replacement/
+?? artifacts/cta_perp_rx03_activation/
+?? artifacts/cta_perp_rx03_deployment/
+?? artifacts/cta_spread_rx01_absolute_target_deploy/
+?? artifacts/cta_spread_rx01_live_enable/
+?? artifacts/rapidx_cash_market_buy_fix/
+?? config/cta_perp_rx03/
+?? examples/
+?? scripts/build_cn_hfq_5min.py
+?? scripts/rebuild_cn_hfq_ylabels.py
+?? scripts/verify_publish_cn_hfq_5min.py
+?? src/cta_perp/model_service.rs
+?? src/cta_perp/recovery.rs
+?? tests/scripts/test_cn_hfq_5min.py
+?? tests/scripts/test_cn_hfq_ylabels.py

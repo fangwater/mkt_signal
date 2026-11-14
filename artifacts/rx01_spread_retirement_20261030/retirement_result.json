@@ -1,0 +1,56 @@
+{
+  "retired_env": "/home/ubuntu/binance-cta-spread-rx01",
+  "archive": "/home/ubuntu/retired_data/rx01_spread_20261030T033029Z/binance-cta-spread-rx01",
+  "files_preserved": 364,
+  "bytes_preserved": 11778713327,
+  "data_files_preserved": 40,
+  "data_bytes_preserved": 10444961622,
+  "archive_method": "same_filesystem_rename_inode_size_mtime_verified",
+  "old_processes": [],
+  "old_registered_processes": [],
+  "protected_processes_unchanged": 80,
+  "publisher_status": {
+    "caught_up": true,
+    "decode_errors": 0,
+    "fresh_ready": [
+      522,
+      360
+    ],
+    "pid": 2865016,
+    "publish_failed": 0,
+    "published": 2646,
+    "publishing": true,
+    "records": 127211,
+    "samples": [
+      {
+        "cash": false,
+        "symbol": "ETHUSDT",
+        "ts_ms": 1793331960000,
+        "value": 0.0009410957566290434
+      },
+      {
+        "cash": false,
+        "symbol": "BTCUSDT",
+        "ts_ms": 1793331960000,
+        "value": 0.0008448084523357684
+      },
+      {
+        "cash": true,
+        "symbol": "BTCUSDT",
+        "ts_ms": 1793331960000,
+        "value": 0.0008349072325464416
+      },
+      {
+        "cash": true,
+        "symbol": "ETHUSDT",
+        "ts_ms": 1793331960000,
+        "value": 0.0009363419653736594
+      }
+    ],
+    "symbols": [
+      522,
+      360
+    ],
+    "updated_ms": 1793331966626
+  }
+}

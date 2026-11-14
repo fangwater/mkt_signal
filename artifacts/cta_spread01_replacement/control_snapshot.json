@@ -1,0 +1,219 @@
+{
+  "fetched_at_ms": 1794280212699,
+  "source_host": "jp-meta-elvpn",
+  "amount_thresholds": {
+    "binance-futures:RUNEUSDT": [
+      16.835,
+      152.37199999999999
+    ],
+    "binance-futures:BCHUSDT": [
+      30.114050000000002,
+      400.8759999999999
+    ],
+    "binance-futures:IOSTUSDT": [
+      18.1376,
+      150.1133931
+    ],
+    "binance-futures:ETHUSDT": [
+      34.666380000000004,
+      3713.4946
+    ],
+    "binance-futures:KNCUSDT": [
+      16.906499999999998,
+      99.9966
+    ],
+    "binance-futures:SKLUSDT": [
+      19.816703999999998,
+      121.999932
+    ],
+    "binance-futures:1INCHUSDT": [
+      10.86488,
+      89.09208000000001
+    ],
+    "binance-futures:ZENUSDT": [
+      17.0184,
+      155.4075
+    ],
+    "binance-futures:NEARUSDT": [
+      29.418,
+      1076.715
+    ],
+    "binance-futures:CRVUSDT": [
+      16.5039,
+      247.04955
+    ],
+    "binance-futures:KAVAUSDT": [
+      16.506456,
+      126.77643
+    ],
+    "binance-futures:DASHUSDT": [
+      16.54113,
+      280.4232
+    ],
+    "binance-futures:XLMUSDT": [
+      16.5555,
+      356.18705
+    ],
+    "binance-futures:BELUSDT": [
+      9.81344,
+      61.192249999999994
+    ],
+    "binance-futures:BNBUSDT": [
+      16.0288,
+      758.5538
+    ],
+    "binance-futures:ONTUSDT": [
+      16.497087999999998,
+      126.86681800000001
+    ],
+    "binance-futures:SUSHIUSDT": [
+      16.6148,
+      127.7666
+    ],
+    "binance-futures:ATOMUSDT": [
+      19.40732,
+      401.625
+    ],
+    "binance-futures:KSMUSDT": [
+      15.352599999999999,
+      104.05079999999998
+    ],
+    "binance-futures:AVAXUSDT": [
+      21.906,
+      566.852
+    ],
+    "binance-futures:ZILUSDT": [
+      19.963376,
+      142.772448
+    ],
+    "binance-futures:BATUSDT": [
+      15.030311999999999,
+      126.72428599999999
+    ],
+    "binance-futures:SOLUSDT": [
+      22.624799999999997,
+      1680.8
+    ],
+    "binance-futures:ZECUSDT": [
+      16.494,
+      905.01125
+    ],
+    "binance-futures:YFIUSDT": [
+      18.696,
+      160.132
+    ],
+    "binance-futures:EGLDUSDT": [
+      16.5378,
+      129.2895
+    ],
+    "binance-futures:XTZUSDT": [
+      14.97648,
+      120.399
+    ],
+    "binance-futures:DOGEUSDT": [
+      16.07112,
+      700.1651999999999
+    ],
+    "binance-futures:IOTAUSDT": [
+      16.50762,
+      132.080762
+    ],
+    "binance-futures:QTUMUSDT": [
+      12.72816,
+      74.31426000000002
+    ],
+    "binance-futures:TRBUSDT": [
+      16.852500000000003,
+      106.9796
+    ],
+    "binance-futures:VETUSDT": [
+      16.490901,
+      103.31685
+    ],
+    "binance-futures:ALGOUSDT": [
+      16.502292,
+      144.970345
+    ],
+    "binance-futures:LTCUSDT": [
+      36.051,
+      601.38192
+    ],
+    "binance-futures:LINKUSDT": [
+      38.448919999999994,
+      621.8947
+    ],
+    "binance-futures:FILUSDT": [
+      16.59735,
+      363.71999999999997
+    ],
+    "binance-futures:AAVEUSDT": [
+      27.246,
+      431.976
+    ],
+    "binance-futures:BANDUSDT": [
+      13.2363,
+      117.36509
+    ],
+    "binance-futures:XRPUSDT": [
+      14.80128,
+      760.59114
+    ],
+    "binance-futures:RSRUSDT": [
+      37.569158,
+      261.04832
+    ],
+    "binance-futures:RLCUSDT": [
+      24.9375,
+      184.92432
+    ],
+    "binance-futures:DOTUSDT": [
+      16.55175,
+      219.55552000000003
+    ],
+    "binance-futures:ADAUSDT": [
+      20.1195,
+      750.7305
+    ],
+    "binance-futures:UNIUSDT": [
+      22.716,
+      718.382
+    ],
+    "binance-futures:SNXUSDT": [
+      16.51351,
+      111.13601999999999
+    ],
+    "binance-futures:ZRXUSDT": [
+      15.732,
+      122.17557
+    ],
+    "binance-futures:AXSUSDT": [
+      17.2242,
+      156.88260000000002
+    ],
+    "binance-futures:ETCUSDT": [
+      30.0934,
+      317.37834000000004
+    ],
+    "binance-futures:BTCUSDT": [
+      163.802,
+      6819.224700000001
+    ],
+    "binance-futures:THETAUSDT": [
+      16.51482,
+      140.06216
+    ],
+    "binance-futures:ENJUSDT": [
+      21.52,
+      150.5205
+    ]
+  },
+  "threshold_metadata": {
+    "medium_quantile": "0.5",
+    "apply_month": "2026-11",
+    "csv_sha256_history": "[\"59eb3dd17a35901589327d2ffebd7c15f4b07cb5fa5393c518684e3b7ad81efc\"]",
+    "large_quantile": "0.9",
+    "source_month": "2026-10",
+    "csv_sha256": "59eb3dd17a35901589327d2ffebd7c15f4b07cb5fa5393c518684e3b7ad81efc",
+    "unit": "USDT"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "hostname": "cloud",
+  "ipv4_addresses": [
+    "103.27.186.73"
+  ],
+  "expected_jp_env_exists": false,
+  "checked_utc": "2026-10-18T06:50:03.015648+00:00"
+}

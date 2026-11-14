@@ -1,0 +1,46 @@
+{
+  "execute": true,
+  "mode": "backfill",
+  "source_month": "2026-10",
+  "apply_month": "2026-11",
+  "csv_sha256": "0bf7e53c93f8e9918ce8767ab70e80959d842bac1462052bb88486c25fcf10ef",
+  "units": {
+    "okex-futures": "price_x_contracts"
+  },
+  "changes": {
+    "okex-futures:amount-thresholds": {
+      "before": 9,
+      "after": 19,
+      "added": [
+        "AAVE-USDT-SWAP",
+        "AVAX-USDT-SWAP",
+        "BCH-USDT-SWAP",
+        "ETH-USDT-SWAP",
+        "FIL-USDT-SWAP",
+        "LINK-USDT-SWAP",
+        "LTC-USDT-SWAP",
+        "TRX-USDT-SWAP",
+        "UNI-USDT-SWAP",
+        "XRP-USDT-SWAP"
+      ],
+      "removed": [],
+      "updated": []
+    },
+    "okex-futures:factor-plan": {
+      "before": 0,
+      "after": 0,
+      "added": [],
+      "removed": [],
+      "updated": []
+    },
+    "okex-futures:factor-plan-1m": {
+      "before": 0,
+      "after": 0,
+      "added": [],
+      "removed": [],
+      "updated": []
+    }
+  },
+  "verified": true,
+  "backup": "/home/ubuntu/cta-factor-spread/run/spread02_20261112T055433Z/threshold_before.json"
+}

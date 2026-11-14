@@ -1,6 +1,7 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use iceoryx2::prelude::ZeroCopySend;
 use log::debug;
+use mkt_parsers::msg::hyperliquid_account_msg::HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN;
 use order_common::{OrderType, Side};
 use signal_common::tick_math::QuantizedValue;
 use std::fmt::Write as _;
@@ -492,6 +493,16 @@ where
     Some(buf.freeze())
 }
 
+fn trade_request_bytes_from_header(header: &TradeRequestHeader, params: &Bytes) -> Bytes {
+    let mut buf = BytesMut::with_capacity(TRADE_REQ_HEADER_LEN + params.len());
+    buf.put_u32_le(header.msg_type);
+    buf.put_u32_le(params.len() as u32);
+    buf.put_i64_le(header.create_time);
+    buf.put_i64_le(header.client_order_id);
+    buf.put_slice(params);
+    buf.freeze()
+}
+
 fn write_string(buf: &mut BytesMut, value: &str) -> Option<()> {
     let bytes = value.as_bytes();
     if bytes.len() > u16::MAX as usize {
@@ -690,6 +701,7 @@ pub struct BinanceNewOrderParams {
     pub side: Side,
     pub order_type: OrderType,
     pub quantity_qv: QuantizedValue,
+    pub quote_order_qty_qv: QuantizedValue,
     pub price_qv: QuantizedValue,
     pub reduce_only: bool,
     pub margin_buy: bool,
@@ -704,6 +716,7 @@ pub struct BinanceNewOrderParamsRef<'a> {
     pub side: Side,
     pub order_type: OrderType,
     pub quantity_qv: QuantizedValue,
+    pub quote_order_qty_qv: QuantizedValue,
     pub price_qv: QuantizedValue,
     pub reduce_only: bool,
     pub margin_buy: bool,
@@ -713,13 +726,14 @@ pub struct BinanceNewOrderParamsRef<'a> {
 }
 
 impl BinanceNewOrderParams {
-    const FIXED_LEN: usize = 1 + 1 + 20 + 20 + 1 + 1 + 1 + 1 + 1 + 2;
+    const FIXED_LEN: usize = 1 + 1 + 20 + 20 + 20 + 1 + 1 + 1 + 1 + 1 + 2;
 
     pub fn to_bytes(&self) -> Option<Bytes> {
         let mut buf = BytesMut::with_capacity(Self::FIXED_LEN + self.symbol.len());
         buf.put_u8(self.side.to_u8());
         buf.put_u8(self.order_type.to_u8());
         write_qv(&mut buf, self.quantity_qv);
+        write_qv(&mut buf, self.quote_order_qty_qv);
         write_qv(&mut buf, self.price_qv);
         buf.put_u8(self.reduce_only as u8);
         buf.put_u8(self.margin_buy as u8);
@@ -737,6 +751,7 @@ impl BinanceNewOrderParams {
             side: params.side,
             order_type: params.order_type,
             quantity_qv: params.quantity_qv,
+            quote_order_qty_qv: params.quote_order_qty_qv,
             price_qv: params.price_qv,
             reduce_only: params.reduce_only,
             margin_buy: params.margin_buy,
@@ -762,7 +777,7 @@ impl BinanceNewOrderParams {
         ws_um_response_result: bool,
         ws_margin_limit_maker: bool,
     ) -> Option<Bytes> {
-        Self::prepared_request_from_parts(
+        Self::request_bytes_from_parts_with_quote_order_qty(
             req_type,
             create_time,
             client_order_id,
@@ -776,6 +791,42 @@ impl BinanceNewOrderParams {
             ws_response_full,
             ws_um_response_result,
             ws_margin_limit_maker,
+            QuantizedValue::zero(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_bytes_from_parts_with_quote_order_qty(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        symbol: &str,
+        side: Side,
+        order_type: OrderType,
+        quantity_qv: QuantizedValue,
+        price_qv: QuantizedValue,
+        reduce_only: bool,
+        margin_buy: bool,
+        ws_response_full: bool,
+        ws_um_response_result: bool,
+        ws_margin_limit_maker: bool,
+        quote_order_qty_qv: QuantizedValue,
+    ) -> Option<Bytes> {
+        Self::prepared_request_from_parts_with_quote_order_qty(
+            req_type,
+            create_time,
+            client_order_id,
+            symbol,
+            side,
+            order_type,
+            quantity_qv,
+            price_qv,
+            reduce_only,
+            margin_buy,
+            ws_response_full,
+            ws_um_response_result,
+            ws_margin_limit_maker,
+            quote_order_qty_qv,
         )
         .map(|request| request.to_bytes())
     }
@@ -796,6 +847,41 @@ impl BinanceNewOrderParams {
         ws_um_response_result: bool,
         ws_margin_limit_maker: bool,
     ) -> Option<PreparedTradeRequest> {
+        Self::prepared_request_from_parts_with_quote_order_qty(
+            req_type,
+            create_time,
+            client_order_id,
+            symbol,
+            side,
+            order_type,
+            quantity_qv,
+            price_qv,
+            reduce_only,
+            margin_buy,
+            ws_response_full,
+            ws_um_response_result,
+            ws_margin_limit_maker,
+            QuantizedValue::zero(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepared_request_from_parts_with_quote_order_qty(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        symbol: &str,
+        side: Side,
+        order_type: OrderType,
+        quantity_qv: QuantizedValue,
+        price_qv: QuantizedValue,
+        reduce_only: bool,
+        margin_buy: bool,
+        ws_response_full: bool,
+        ws_um_response_result: bool,
+        ws_margin_limit_maker: bool,
+        quote_order_qty_qv: QuantizedValue,
+    ) -> Option<PreparedTradeRequest> {
         if symbol.len() > u16::MAX as usize {
             return None;
         }
@@ -810,6 +896,7 @@ impl BinanceNewOrderParams {
                 write_u8_at(out, &mut offset, side.to_u8())?;
                 write_u8_at(out, &mut offset, order_type.to_u8())?;
                 write_qv_at(out, &mut offset, quantity_qv)?;
+                write_qv_at(out, &mut offset, quote_order_qty_qv)?;
                 write_qv_at(out, &mut offset, price_qv)?;
                 write_u8_at(out, &mut offset, reduce_only as u8)?;
                 write_u8_at(out, &mut offset, margin_buy as u8)?;
@@ -897,6 +984,7 @@ impl<'a> BinanceNewOrderParamsRef<'a> {
         let order_type = OrderType::from_u8(raw[offset])?;
         offset += 1;
         let quantity_qv = read_qv(raw, &mut offset)?;
+        let quote_order_qty_qv = read_qv(raw, &mut offset)?;
         let price_qv = read_qv(raw, &mut offset)?;
         if raw.len() < offset + 5 {
             return None;
@@ -917,6 +1005,7 @@ impl<'a> BinanceNewOrderParamsRef<'a> {
             side,
             order_type,
             quantity_qv,
+            quote_order_qty_qv,
             price_qv,
             reduce_only,
             margin_buy,
@@ -1497,38 +1586,485 @@ impl BinanceCancelMarginOrderRequest {
     }
 }
 
-// 币安UM合约修改订单请求
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinancePriceMatch {
+    None = 0,
+    Opponent = 1,
+    Opponent5 = 2,
+    Opponent10 = 3,
+    Opponent20 = 4,
+    Queue = 5,
+    Queue5 = 6,
+    Queue10 = 7,
+    Queue20 = 8,
+}
+
+impl BinancePriceMatch {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::None),
+            1 => Some(Self::Opponent),
+            2 => Some(Self::Opponent5),
+            3 => Some(Self::Opponent10),
+            4 => Some(Self::Opponent20),
+            5 => Some(Self::Queue),
+            6 => Some(Self::Queue5),
+            7 => Some(Self::Queue10),
+            8 => Some(Self::Queue20),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Opponent => Some("OPPONENT"),
+            Self::Opponent5 => Some("OPPONENT_5"),
+            Self::Opponent10 => Some("OPPONENT_10"),
+            Self::Opponent20 => Some("OPPONENT_20"),
+            Self::Queue => Some("QUEUE"),
+            Self::Queue5 => Some("QUEUE_5"),
+            Self::Queue10 => Some("QUEUE_10"),
+            Self::Queue20 => Some("QUEUE_20"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceModifyOrderParams {
+    pub symbol: String,
+    pub side: Side,
+    pub quantity_qv: QuantizedValue,
+    pub price_qv: QuantizedValue,
+    pub price_match: BinancePriceMatch,
+    pub order_id: i64,
+    pub orig_client_order_id: i64,
+    pub modify_id: Option<i64>,
+    /// Internal correlation id used to fan out batch acknowledgements; never sent to Binance.
+    pub response_client_order_id: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BinanceModifyOrderParamsRef<'a> {
+    pub symbol: &'a str,
+    pub side: Side,
+    pub quantity_qv: QuantizedValue,
+    pub price_qv: QuantizedValue,
+    pub price_match: BinancePriceMatch,
+    pub order_id: i64,
+    pub orig_client_order_id: i64,
+    pub modify_id: Option<i64>,
+    pub response_client_order_id: i64,
+}
+
+impl BinanceModifyOrderParams {
+    const FIXED_LEN: usize = 1 + 20 + 20 + 1 + 8 + 8 + 1 + 8 + 8 + 2;
+
+    pub fn with_price(
+        symbol: impl Into<String>,
+        side: Side,
+        quantity_qv: QuantizedValue,
+        price_qv: QuantizedValue,
+        order_id: i64,
+        orig_client_order_id: i64,
+        modify_id: Option<i64>,
+    ) -> Self {
+        Self {
+            symbol: symbol.into(),
+            side,
+            quantity_qv,
+            price_qv,
+            price_match: BinancePriceMatch::None,
+            order_id,
+            orig_client_order_id,
+            modify_id,
+            response_client_order_id: orig_client_order_id,
+        }
+    }
+
+    /// Build a maker-side best-price modify: BUY -> bid0, SELL -> ask0.
+    pub fn at_best_price(
+        symbol: impl Into<String>,
+        side: Side,
+        quantity_qv: QuantizedValue,
+        order_id: i64,
+        orig_client_order_id: i64,
+        modify_id: Option<i64>,
+    ) -> Self {
+        Self {
+            symbol: symbol.into(),
+            side,
+            quantity_qv,
+            price_qv: QuantizedValue::zero(),
+            price_match: BinancePriceMatch::Queue,
+            order_id,
+            orig_client_order_id,
+            modify_id,
+            response_client_order_id: orig_client_order_id,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        let quantity = self.quantity_qv.get_val();
+        let price = self.price_qv.get_val();
+        !self.symbol.is_empty()
+            && quantity.is_finite()
+            && quantity > 0.0
+            && (self.order_id > 0 || self.orig_client_order_id > 0)
+            && self.response_client_order_id >= 0
+            && match self.price_match {
+                BinancePriceMatch::None => price.is_finite() && price > 0.0,
+                _ => self.price_qv.is_zero(),
+            }
+    }
+
+    pub fn to_bytes(&self) -> Option<Bytes> {
+        if !self.is_valid() {
+            return None;
+        }
+        let mut buf = BytesMut::with_capacity(Self::FIXED_LEN + self.symbol.len());
+        buf.put_u8(self.side.to_u8());
+        write_qv(&mut buf, self.quantity_qv);
+        write_qv(&mut buf, self.price_qv);
+        buf.put_u8(self.price_match as u8);
+        buf.put_i64_le(self.order_id);
+        buf.put_i64_le(self.orig_client_order_id);
+        buf.put_u8(self.modify_id.is_some() as u8);
+        buf.put_i64_le(self.modify_id.unwrap_or(0));
+        buf.put_i64_le(self.response_client_order_id);
+        write_string(&mut buf, &self.symbol)?;
+        Some(buf.freeze())
+    }
+
+    pub fn from_bytes(raw: &[u8]) -> Option<Self> {
+        let params = BinanceModifyOrderParamsRef::from_bytes(raw)?;
+        let params = Self {
+            symbol: params.symbol.to_string(),
+            side: params.side,
+            quantity_qv: params.quantity_qv,
+            price_qv: params.price_qv,
+            price_match: params.price_match,
+            order_id: params.order_id,
+            orig_client_order_id: params.orig_client_order_id,
+            modify_id: params.modify_id,
+            response_client_order_id: params.response_client_order_id,
+        };
+        params.is_valid().then_some(params)
+    }
+
+    fn is_single_request_type(req_type: TradeRequestType) -> bool {
+        matches!(
+            req_type,
+            TradeRequestType::BinanceModifyUMOrder
+                | TradeRequestType::BinanceStdModifyUMOrder
+                | TradeRequestType::BinanceWsModifyUMOrder
+                | TradeRequestType::BinanceModifyCmOrder
+                | TradeRequestType::BinancePmModifyCmOrder
+        )
+    }
+
+    pub fn request_bytes(
+        &self,
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+    ) -> Option<Bytes> {
+        if !Self::is_single_request_type(req_type) {
+            return None;
+        }
+        let params = self.to_bytes()?;
+        trade_request_bytes_with_params(
+            req_type,
+            create_time,
+            client_order_id,
+            params.len(),
+            |buf| {
+                buf.put_slice(&params);
+                Some(())
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn best_price_request_bytes_from_parts(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        symbol: &str,
+        side: Side,
+        quantity_qv: QuantizedValue,
+        order_id: i64,
+        orig_client_order_id: i64,
+        modify_id: Option<i64>,
+    ) -> Option<Bytes> {
+        Self::at_best_price(
+            symbol,
+            side,
+            quantity_qv,
+            order_id,
+            orig_client_order_id,
+            modify_id,
+        )
+        .request_bytes(req_type, create_time, client_order_id)
+    }
+}
+
+impl<'a> BinanceModifyOrderParamsRef<'a> {
+    pub fn from_bytes(raw: &'a [u8]) -> Option<Self> {
+        let mut offset = 0usize;
+        let side = Side::from_u8(*raw.get(offset)?)?;
+        offset += 1;
+        let quantity_qv = read_qv(raw, &mut offset)?;
+        let price_qv = read_qv(raw, &mut offset)?;
+        let price_match = BinancePriceMatch::from_u8(*raw.get(offset)?)?;
+        offset += 1;
+        let order_id = i64::from_le_bytes(raw.get(offset..offset + 8)?.try_into().ok()?);
+        offset += 8;
+        let orig_client_order_id =
+            i64::from_le_bytes(raw.get(offset..offset + 8)?.try_into().ok()?);
+        offset += 8;
+        let modify_id_present = *raw.get(offset)?;
+        if modify_id_present > 1 {
+            return None;
+        }
+        offset += 1;
+        let modify_id_value = i64::from_le_bytes(raw.get(offset..offset + 8)?.try_into().ok()?);
+        offset += 8;
+        let modify_id = (modify_id_present == 1).then_some(modify_id_value);
+        let response_client_order_id =
+            i64::from_le_bytes(raw.get(offset..offset + 8)?.try_into().ok()?);
+        offset += 8;
+        let symbol = read_str(raw, &mut offset)?;
+        (offset == raw.len()).then_some(Self {
+            symbol,
+            side,
+            quantity_qv,
+            price_qv,
+            price_match,
+            order_id,
+            orig_client_order_id,
+            modify_id,
+            response_client_order_id,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceBatchModifyOrdersParams {
+    pub orders: Vec<BinanceModifyOrderParams>,
+}
+
+impl BinanceBatchModifyOrdersParams {
+    pub const MAX_ORDERS: usize = 5;
+
+    pub fn to_bytes(&self) -> Option<Bytes> {
+        if self.orders.is_empty() || self.orders.len() > Self::MAX_ORDERS {
+            return None;
+        }
+        if self
+            .orders
+            .iter()
+            .any(|order| order.response_client_order_id <= 0)
+        {
+            return None;
+        }
+        let mut response_ids = self
+            .orders
+            .iter()
+            .map(|order| order.response_client_order_id)
+            .collect::<Vec<_>>();
+        response_ids.sort_unstable();
+        if response_ids.windows(2).any(|ids| ids[0] == ids[1]) {
+            return None;
+        }
+        let encoded = self
+            .orders
+            .iter()
+            .map(BinanceModifyOrderParams::to_bytes)
+            .collect::<Option<Vec<_>>>()?;
+        let total_len = encoded.iter().try_fold(1usize, |total, params| {
+            total.checked_add(2)?.checked_add(params.len())
+        })?;
+        if total_len > TRADE_REQ_PARAMS_CAP {
+            return None;
+        }
+        let mut buf = BytesMut::with_capacity(total_len);
+        buf.put_u8(encoded.len() as u8);
+        for params in encoded {
+            let len = u16::try_from(params.len()).ok()?;
+            buf.put_u16_le(len);
+            buf.put_slice(&params);
+        }
+        Some(buf.freeze())
+    }
+
+    pub fn from_bytes(raw: &[u8]) -> Option<Self> {
+        let count = usize::from(*raw.first()?);
+        if count == 0 || count > Self::MAX_ORDERS {
+            return None;
+        }
+        let mut offset = 1usize;
+        let mut orders = Vec::with_capacity(count);
+        for _ in 0..count {
+            let len = u16::from_le_bytes(raw.get(offset..offset + 2)?.try_into().ok()?) as usize;
+            offset += 2;
+            let end = offset.checked_add(len)?;
+            orders.push(BinanceModifyOrderParams::from_bytes(raw.get(offset..end)?)?);
+            offset = end;
+        }
+        (offset == raw.len()).then_some(Self { orders })
+    }
+
+    pub fn request_bytes(&self, create_time: i64, client_order_id: i64) -> Option<Bytes> {
+        let params = self.to_bytes()?;
+        trade_request_bytes_with_params(
+            TradeRequestType::BinanceStdBatchModifyUMOrders,
+            create_time,
+            client_order_id,
+            params.len(),
+            |buf| {
+                buf.put_slice(&params);
+                Some(())
+            },
+        )
+    }
+}
+
+// Binance Portfolio Margin UM single-order modify request.
 #[repr(C, align(8))]
 #[derive(Debug, Clone)]
 pub struct BinanceModifyUMOrderRequest {
     pub header: TradeRequestHeader,
-    pub params: Bytes, // 额外的请求参数（JSON或其他格式）
+    pub params: Bytes,
 }
 
 impl BinanceModifyUMOrderRequest {
-    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
-        let header = TradeRequestHeader {
-            msg_type: TradeRequestType::BinanceModifyUMOrder as u32,
-            params_length: params.len() as u32,
-            create_time,
-            client_order_id,
-        };
-
-        Self { header, params }
+    pub fn create_typed(
+        create_time: i64,
+        client_order_id: i64,
+        params: BinanceModifyOrderParams,
+    ) -> Option<Self> {
+        let params = params.to_bytes()?;
+        Some(Self {
+            header: TradeRequestHeader {
+                msg_type: TradeRequestType::BinanceModifyUMOrder as u32,
+                params_length: params.len() as u32,
+                create_time,
+                client_order_id,
+            },
+            params,
+        })
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 4 + 8 + 8 + self.params.len();
+        trade_request_bytes_from_header(&self.header, &self.params)
+    }
 
-        let mut buf = BytesMut::with_capacity(total_size);
+    pub fn params_struct(&self) -> Option<BinanceModifyOrderParams> {
+        BinanceModifyOrderParams::from_bytes(&self.params)
+    }
+}
 
-        buf.put_u32_le(self.header.msg_type);
-        buf.put_u32_le(self.header.params_length);
-        buf.put_i64_le(self.header.create_time);
-        buf.put_i64_le(self.header.client_order_id);
-        buf.put(self.params.clone());
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct BinanceStdModifyUMOrderRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes,
+}
 
-        buf.freeze()
+impl BinanceStdModifyUMOrderRequest {
+    pub fn create_typed(
+        create_time: i64,
+        client_order_id: i64,
+        params: BinanceModifyOrderParams,
+    ) -> Option<Self> {
+        let params = params.to_bytes()?;
+        Some(Self {
+            header: TradeRequestHeader {
+                msg_type: TradeRequestType::BinanceStdModifyUMOrder as u32,
+                params_length: params.len() as u32,
+                create_time,
+                client_order_id,
+            },
+            params,
+        })
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        trade_request_bytes_from_header(&self.header, &self.params)
+    }
+
+    pub fn params_struct(&self) -> Option<BinanceModifyOrderParams> {
+        BinanceModifyOrderParams::from_bytes(&self.params)
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct BinanceWsModifyUMOrderRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes,
+}
+
+impl BinanceWsModifyUMOrderRequest {
+    pub fn create_typed(
+        create_time: i64,
+        client_order_id: i64,
+        params: BinanceModifyOrderParams,
+    ) -> Option<Self> {
+        let params = params.to_bytes()?;
+        Some(Self {
+            header: TradeRequestHeader {
+                msg_type: TradeRequestType::BinanceWsModifyUMOrder as u32,
+                params_length: params.len() as u32,
+                create_time,
+                client_order_id,
+            },
+            params,
+        })
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        trade_request_bytes_from_header(&self.header, &self.params)
+    }
+
+    pub fn params_struct(&self) -> Option<BinanceModifyOrderParams> {
+        BinanceModifyOrderParams::from_bytes(&self.params)
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct BinanceStdBatchModifyUMOrdersRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes,
+}
+
+impl BinanceStdBatchModifyUMOrdersRequest {
+    pub fn create_typed(
+        create_time: i64,
+        client_order_id: i64,
+        params: BinanceBatchModifyOrdersParams,
+    ) -> Option<Self> {
+        let params = params.to_bytes()?;
+        Some(Self {
+            header: TradeRequestHeader {
+                msg_type: TradeRequestType::BinanceStdBatchModifyUMOrders as u32,
+                params_length: params.len() as u32,
+                create_time,
+                client_order_id,
+            },
+            params,
+        })
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        trade_request_bytes_from_header(&self.header, &self.params)
+    }
+
+    pub fn params_struct(&self) -> Option<BinanceBatchModifyOrdersParams> {
+        BinanceBatchModifyOrdersParams::from_bytes(&self.params)
     }
 }
 
@@ -2328,13 +2864,213 @@ impl BitgetUmCancelOrderRequest {
     }
 }
 
+/// Compact IPC params for Hyperliquid spot/perpetual orders. Asset IDs are
+/// deliberately resolved by trade_engine from current exchange metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HyperliquidNewOrderParams {
+    pub account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+    pub symbol: String,
+    pub side: Side,
+    pub order_type: OrderType,
+    pub quantity_qv: QuantizedValue,
+    pub price_qv: QuantizedValue,
+    pub reduce_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HyperliquidNewOrderParamsRef<'a> {
+    pub account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+    pub symbol: &'a str,
+    pub side: Side,
+    pub order_type: OrderType,
+    pub quantity_qv: QuantizedValue,
+    pub price_qv: QuantizedValue,
+    pub reduce_only: bool,
+}
+
+impl HyperliquidNewOrderParams {
+    const FIXED_LEN: usize = HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN + 1 + 1 + 20 + 20 + 1 + 2;
+
+    pub fn to_bytes(&self) -> Option<Bytes> {
+        let mut buf = BytesMut::with_capacity(Self::FIXED_LEN + self.symbol.len());
+        buf.put_slice(&self.account_hash);
+        buf.put_u8(self.side.to_u8());
+        buf.put_u8(self.order_type.to_u8());
+        write_qv(&mut buf, self.quantity_qv);
+        write_qv(&mut buf, self.price_qv);
+        buf.put_u8(self.reduce_only as u8);
+        write_string(&mut buf, &self.symbol)?;
+        Some(buf.freeze())
+    }
+
+    pub fn from_bytes(raw: &[u8]) -> Option<Self> {
+        let params = HyperliquidNewOrderParamsRef::from_bytes(raw)?;
+        Some(Self {
+            account_hash: params.account_hash,
+            symbol: params.symbol.to_string(),
+            side: params.side,
+            order_type: params.order_type,
+            quantity_qv: params.quantity_qv,
+            price_qv: params.price_qv,
+            reduce_only: params.reduce_only,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepared_request_from_parts(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+        symbol: &str,
+        side: Side,
+        order_type: OrderType,
+        quantity_qv: QuantizedValue,
+        price_qv: QuantizedValue,
+        reduce_only: bool,
+    ) -> Option<PreparedTradeRequest> {
+        if symbol.len() > u16::MAX as usize {
+            return None;
+        }
+        let params_len = Self::FIXED_LEN + symbol.len();
+        PreparedTradeRequest::with_params(
+            req_type,
+            create_time,
+            client_order_id,
+            params_len,
+            |out| {
+                let mut offset = 0usize;
+                let hash_end = offset.checked_add(HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN)?;
+                out.get_mut(offset..hash_end)?
+                    .copy_from_slice(&account_hash);
+                offset = hash_end;
+                write_u8_at(out, &mut offset, side.to_u8())?;
+                write_u8_at(out, &mut offset, order_type.to_u8())?;
+                write_qv_at(out, &mut offset, quantity_qv)?;
+                write_qv_at(out, &mut offset, price_qv)?;
+                write_u8_at(out, &mut offset, reduce_only as u8)?;
+                write_string_at(out, &mut offset, symbol)?;
+                (offset == params_len).then_some(())
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_bytes_from_parts(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+        symbol: &str,
+        side: Side,
+        order_type: OrderType,
+        quantity_qv: QuantizedValue,
+        price_qv: QuantizedValue,
+        reduce_only: bool,
+    ) -> Option<Bytes> {
+        Self::prepared_request_from_parts(
+            req_type,
+            create_time,
+            client_order_id,
+            account_hash,
+            symbol,
+            side,
+            order_type,
+            quantity_qv,
+            price_qv,
+            reduce_only,
+        )
+        .map(|request| request.to_bytes())
+    }
+}
+
+impl<'a> HyperliquidNewOrderParamsRef<'a> {
+    pub fn from_bytes(raw: &'a [u8]) -> Option<Self> {
+        let mut offset = 0usize;
+        let hash_end = offset.checked_add(HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN)?;
+        let account_hash = raw.get(offset..hash_end)?.try_into().ok()?;
+        offset = hash_end;
+        let side = Side::from_u8(*raw.get(offset)?)?;
+        offset += 1;
+        let order_type = OrderType::from_u8(*raw.get(offset)?)?;
+        offset += 1;
+        let quantity_qv = read_qv(raw, &mut offset)?;
+        let price_qv = read_qv(raw, &mut offset)?;
+        let reduce_only = *raw.get(offset)? != 0;
+        offset += 1;
+        let symbol = read_str(raw, &mut offset)?;
+        if offset != raw.len() {
+            return None;
+        }
+        Some(Self {
+            account_hash,
+            symbol,
+            side,
+            order_type,
+            quantity_qv,
+            price_qv,
+            reduce_only,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HyperliquidCancelOrderParams {
+    pub account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+    pub symbol: String,
+}
+
+impl HyperliquidCancelOrderParams {
+    pub fn to_bytes(&self) -> Option<Bytes> {
+        let mut buf =
+            BytesMut::with_capacity(HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN + 2 + self.symbol.len());
+        buf.put_slice(&self.account_hash);
+        write_string(&mut buf, &self.symbol)?;
+        Some(buf.freeze())
+    }
+
+    pub fn from_bytes(raw: &[u8]) -> Option<Self> {
+        let mut offset = HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN;
+        let account_hash = raw.get(..offset)?.try_into().ok()?;
+        let symbol = read_str(raw, &mut offset)?.to_string();
+        (offset == raw.len()).then_some(Self {
+            account_hash,
+            symbol,
+        })
+    }
+
+    pub fn request_bytes_from_parts(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+        symbol: &str,
+    ) -> Option<Bytes> {
+        if symbol.len() > u16::MAX as usize {
+            return None;
+        }
+        trade_request_bytes_with_params(
+            req_type,
+            create_time,
+            client_order_id,
+            HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN + 2 + symbol.len(),
+            |buf| {
+                buf.put_slice(&account_hash);
+                write_string(buf, symbol)
+            },
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        BinanceCancelOrderParams, BinanceNewOrderParams, BitgetCancelOrderParams,
-        BitgetNewOrderParams, GateCancelOrderParams, GateFuturesCancelOrderRequest,
-        GateFuturesNewOrderRequest, GateNewOrderParams, PreparedTradeRequest,
-        TradeRequestIpcPayload, TradeRequestMsg, TradeRequestType, TRADE_REQ_PAYLOAD,
+        BinanceBatchModifyOrdersParams, BinanceCancelOrderParams, BinanceModifyOrderParams,
+        BinanceNewOrderParams, BinancePriceMatch, BitgetCancelOrderParams, BitgetNewOrderParams,
+        GateCancelOrderParams, GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest,
+        GateNewOrderParams, HyperliquidCancelOrderParams, HyperliquidNewOrderParams,
+        PreparedTradeRequest, TradeRequestIpcPayload, TradeRequestMsg, TradeRequestType,
+        HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN, TRADE_REQ_PAYLOAD,
     };
     use bytes::Bytes;
     use order_common::{OrderType, Side};
@@ -2358,6 +3094,7 @@ mod tests {
             side: Side::Sell,
             order_type: OrderType::Limit,
             quantity_qv: QuantizedValue::from_parts(1, -3, 300),
+            quote_order_qty_qv: QuantizedValue::zero(),
             price_qv: QuantizedValue::from_parts(1, -2, 12345),
             reduce_only: true,
             margin_buy: false,
@@ -2386,6 +3123,7 @@ mod tests {
             side: Side::Buy,
             order_type: OrderType::Market,
             quantity_qv: QuantizedValue::from_parts(1, -2, 125),
+            quote_order_qty_qv: QuantizedValue::zero(),
             price_qv: QuantizedValue::from_parts(1, 0, 0),
             reduce_only: false,
             margin_buy: false,
@@ -2402,6 +3140,95 @@ mod tests {
         assert!(query.contains("newOrderRespType=RESULT"));
         assert!(!query.contains("timeInForce="));
         assert!(!query.contains("price="));
+    }
+
+    #[test]
+    fn binance_modify_params_roundtrip_explicit_and_best_price() {
+        let explicit = BinanceModifyOrderParams::with_price(
+            "BTCUSDT",
+            Side::Buy,
+            QuantizedValue::from_decimal(0.25).unwrap(),
+            QuantizedValue::from_decimal(65000.5).unwrap(),
+            9988,
+            42,
+            Some(7),
+        );
+        let encoded = explicit.to_bytes().expect("explicit modify params");
+        assert_eq!(
+            BinanceModifyOrderParams::from_bytes(&encoded),
+            Some(explicit)
+        );
+
+        let best = BinanceModifyOrderParams::at_best_price(
+            "ETHUSDT",
+            Side::Sell,
+            QuantizedValue::from_decimal(1.5).unwrap(),
+            0,
+            43,
+            Some(0),
+        );
+        let encoded = best.to_bytes().expect("best-price modify params");
+        let decoded = BinanceModifyOrderParams::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.price_match, BinancePriceMatch::Queue);
+        assert!(decoded.price_qv.is_zero());
+        assert_eq!(decoded.modify_id, Some(0));
+
+        let request = best
+            .request_bytes(TradeRequestType::BinanceWsModifyUMOrder, 11, 43)
+            .expect("best-price request");
+        let parsed = TradeRequestMsg::parse(&request).expect("trade request");
+        assert_eq!(parsed.req_type, TradeRequestType::BinanceWsModifyUMOrder);
+        assert_eq!(parsed.client_order_id, 43);
+    }
+
+    #[test]
+    fn binance_modify_rejects_price_and_price_match_together() {
+        let mut params = BinanceModifyOrderParams::at_best_price(
+            "BTCUSDT",
+            Side::Buy,
+            QuantizedValue::from_decimal(0.25).unwrap(),
+            0,
+            42,
+            None,
+        );
+        params.price_qv = QuantizedValue::from_decimal(65000.0).unwrap();
+        assert!(params.to_bytes().is_none());
+    }
+
+    #[test]
+    fn binance_batch_modify_enforces_limit_and_response_correlation() {
+        let order = |client_order_id| {
+            BinanceModifyOrderParams::at_best_price(
+                "BTCUSDT",
+                Side::Buy,
+                QuantizedValue::from_decimal(0.01).unwrap(),
+                0,
+                client_order_id,
+                None,
+            )
+        };
+        let params = BinanceBatchModifyOrdersParams {
+            orders: (1..=5).map(order).collect(),
+        };
+        let encoded = params.to_bytes().expect("five batch orders");
+        assert_eq!(
+            BinanceBatchModifyOrdersParams::from_bytes(&encoded),
+            Some(params)
+        );
+
+        assert!(BinanceBatchModifyOrdersParams {
+            orders: (1..=6).map(order).collect(),
+        }
+        .to_bytes()
+        .is_none());
+
+        let mut duplicate = order(1);
+        duplicate.orig_client_order_id = 2;
+        assert!(BinanceBatchModifyOrdersParams {
+            orders: vec![order(1), duplicate],
+        }
+        .to_bytes()
+        .is_none());
     }
 
     #[test]
@@ -2607,5 +3434,49 @@ mod tests {
             .expect("gate cancel typed params should decode");
         assert_eq!(decoded.symbol, "SOL_USDT");
         assert_eq!(decoded.order_id, "t-45");
+    }
+
+    #[test]
+    fn hyperliquid_new_order_prepared_request_roundtrips() {
+        let account_hash = [7; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN];
+        let request = HyperliquidNewOrderParams::prepared_request_from_parts(
+            TradeRequestType::HyperliquidNewUMOrder,
+            11,
+            45,
+            account_hash,
+            "HYPEUSDC",
+            Side::Sell,
+            OrderType::Limit,
+            QuantizedValue::from_parts(1, -3, 1250),
+            QuantizedValue::from_parts(1, -3, 39100),
+            true,
+        )
+        .expect("Hyperliquid prepared request");
+        let msg = TradeRequestMsg::parse(&request.to_bytes()).expect("trade request");
+        let decoded = HyperliquidNewOrderParams::from_bytes(&msg.params).expect("order params");
+        assert_eq!(msg.req_type, TradeRequestType::HyperliquidNewUMOrder);
+        assert_eq!(decoded.account_hash, account_hash);
+        assert_eq!(decoded.symbol, "HYPEUSDC");
+        assert_eq!(decoded.side, Side::Sell);
+        assert_eq!(decoded.quantity_qv.decimal_string(), "1.250");
+        assert_eq!(decoded.price_qv.decimal_string(), "39.100");
+        assert!(decoded.reduce_only);
+    }
+
+    #[test]
+    fn hyperliquid_cancel_request_roundtrips() {
+        let account_hash = [8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN];
+        let raw = HyperliquidCancelOrderParams::request_bytes_from_parts(
+            TradeRequestType::HyperliquidCancelMarginOrder,
+            12,
+            46,
+            account_hash,
+            "HYPEUSDC",
+        )
+        .expect("Hyperliquid cancel request");
+        let msg = TradeRequestMsg::parse(&raw).expect("trade request");
+        let decoded = HyperliquidCancelOrderParams::from_bytes(&msg.params).expect("cancel params");
+        assert_eq!(decoded.account_hash, account_hash);
+        assert_eq!(decoded.symbol, "HYPEUSDC");
     }
 }

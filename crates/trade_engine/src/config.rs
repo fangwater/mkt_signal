@@ -25,8 +25,10 @@ impl LimitConstants {
     pub const ACCOUNT_PER_MIN: u32 = 1200;
     pub const IP_WEIGHT_PER_MIN: u32 = 6000;
     pub const WARN_RATIO: f32 = 0.8;
-    pub const COOLDOWN_MS_429: u64 = 90_000;
-    pub const BAN_BACKOFF_MS_418: u64 = 120_000;
+    pub const WS_REQUEST_WEIGHT_COOL_THRESHOLD: u32 = 2100;
+    pub const WS_REQUEST_WEIGHT_PROACTIVE_COOL_MS: u64 = 60_000;
+    pub const COOLDOWN_MS_429: u64 = 300_000;
+    pub const BAN_BACKOFF_MS_418: u64 = 300_000;
 }
 
 /// 硬编码的 WebSocket 配置常量
@@ -38,7 +40,7 @@ impl WsConstants {
     pub const MAX_INFLIGHT: usize = 128;
 
     /// OKX 交易 WebSocket URL（下单/撤单需走 private 频道；business 频道会返回 60012 Illegal request）
-    pub const OKEX_BUSINESS_WS_URL: &'static str = "wss://ws.okx.com:8443/ws/v5/private";
+    pub const OKEX_BUSINESS_WS_URL: &'static str = "wss://ws.okx.com/ws/v5/private";
 
     /// Gate 现货/统一账户交易 WebSocket URL
     pub const GATE_SPOT_WS_URL: &'static str = "wss://api.gateio.ws/ws/v4/";

@@ -1,0 +1,11 @@
+{
+  "account_id": "cta_cross_spread_rx01",
+  "public_account_entries": 1,
+  "execution_legs": 2,
+  "desktop": "passed",
+  "mobile_width": "passed",
+  "ordinary_nav_scope": "passed",
+  "trading_nav": 0,
+  "fills": 0,
+  "page_errors": []
+}

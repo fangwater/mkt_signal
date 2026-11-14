@@ -1,0 +1,79 @@
+{
+  "ts_ms": 1793333426534,
+  "unimmr": 9.149130832570906,
+  "risk": {
+    "accountIMRate": "0.1396",
+    "totalMaintenanceMarginByMp": "4615.57759357",
+    "totalInitialMargin": "5897.66345403",
+    "accountType": "UNIFIED",
+    "accountMMRate": "0.1093",
+    "accountMMRateByMp": "0.1093",
+    "accountIMRateByMp": "0.1396",
+    "totalInitialMarginByMp": "5897.66345403",
+    "totalMaintenanceMargin": "4615.57759357",
+    "totalEquity": "54943.98450019",
+    "totalMarginBalance": "42223.37363914",
+    "totalAvailableBalance": "36325.7101851",
+    "totalPerpUPL": "1457.15800923",
+    "totalWalletBalance": "40766.21562991",
+    "accountLTV": "0"
+  },
+  "coins": [
+    {
+      "coin": "RECALL",
+      "usdValue": "1738.39890043",
+      "collateralSwitch": true,
+      "marginCollateral": true,
+      "spotHedgingQty": "0"
+    },
+    {
+      "coin": "WET",
+      "usdValue": "3769.04356382",
+      "collateralSwitch": true,
+      "marginCollateral": true,
+      "spotHedgingQty": "0"
+    },
+    {
+      "coin": "BSB",
+      "usdValue": "4551.29972116",
+      "collateralSwitch": true,
+      "marginCollateral": true,
+      "spotHedgingQty": "0"
+    },
+    {
+      "coin": "BASED",
+      "usdValue": "8176.71996751",
+      "collateralSwitch": true,
+      "marginCollateral": true,
+      "spotHedgingQty": "0"
+    },
+    {
+      "coin": "EDGE",
+      "usdValue": "4955.169042",
+      "collateralSwitch": true,
+      "marginCollateral": true,
+      "spotHedgingQty": "0"
+    },
+    {
+      "coin": "BILL",
+      "usdValue": "41.89314132",
+      "collateralSwitch": true,
+      "marginCollateral": true,
+      "spotHedgingQty": "0"
+    },
+    {
+      "coin": "QTUM",
+      "usdValue": "2257.3266243",
+      "collateralSwitch": true,
+      "marginCollateral": true,
+      "spotHedgingQty": "0"
+    },
+    {
+      "coin": "VELO",
+      "usdValue": "3708.70988733",
+      "collateralSwitch": true,
+      "marginCollateral": true,
+      "spotHedgingQty": "0"
+    }
+  ]
+}

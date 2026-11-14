@@ -1,0 +1,6 @@
+{
+  "tests": 10,
+  "skipped": 0,
+  "failures": 0,
+  "isolated_redis": true
+}

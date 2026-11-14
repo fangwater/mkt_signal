@@ -1,0 +1,11 @@
+{
+  "virtual_alias": "lgq_cta",
+  "virtual_id": "virtual02",
+  "factor_bindings": 5,
+  "shares_per_factor": 1,
+  "follower": "trade05",
+  "order_template_algorithm": "ctaker",
+  "exec_gateway_authenticated": true,
+  "exec_position_ready": true,
+  "javascript_errors": []
+}

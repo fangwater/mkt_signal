@@ -4369,13 +4369,13 @@ def TP_VPI_005(df: pd.DataFrame) -> np.ndarray:
 #     obv = df['volume'].where(df['close'].diff() > 0).fillna(-df['volume'].where(df['close'].diff() < 0).fillna(0)).cumsum()
 #     return obv.rolling(window=timeperiod).mean().values
 
-def TP_VPI_006(df, timeperiod=14):
+def TP_VPI_006(df, timeperiod=14, min_periods=360):
     """
-    计算 OBV 的滚动平均值，用于平滑趋势。
+    计算 OBV 的滚动平均值，用于平滑趋势。CTA 5min 使用 min_periods=280。
     """
     price_diff = df['close'].diff().fillna(0)
     obv_delta = np.where(price_diff > 0, df['volume'],np.where(price_diff < 0, -df['volume'], 0))
-    obv = pd.Series(obv_delta, index=df.index).rolling(360).sum()
+    obv = pd.Series(obv_delta, index=df.index).rolling(360, min_periods=min_periods).sum()
     return obv.rolling(window=timeperiod).mean().to_numpy()
 
 

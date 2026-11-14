@@ -291,6 +291,24 @@ pub fn parse_derivatives_v2_json(value: &Value) -> Vec<Derivative> {
 }
 
 pub fn parse_sbe_books1(raw: &[u8]) -> Result<Vec<Bbo>, DecodeError> {
+    let Some(view) = parse_sbe_books1_view(raw)? else {
+        return Ok(Vec::new());
+    };
+    let Some([bid_price, bid_amount, ask_price, ask_amount]) = view.prices() else {
+        return Ok(Vec::new());
+    };
+    Ok(vec![Bbo {
+        symbol: view.symbol.to_ascii_uppercase(),
+        timestamp_us: view.timestamp_us,
+        seq_id: view.seq_id,
+        bid_price,
+        bid_amount,
+        ask_price,
+        ask_amount,
+    }])
+}
+
+pub fn parse_sbe_books1_view(raw: &[u8]) -> Result<Option<crate::sbe::Bbo<'_>>, DecodeError> {
     if raw.len() < SBE_HEADER_SIZE {
         return Err(DecodeError::new(format!(
             "Bitget SBE frame too short: {} bytes",
@@ -307,7 +325,7 @@ pub fn parse_sbe_books1(raw: &[u8]) -> Result<Vec<Bbo>, DecodeError> {
         )));
     }
     if template_id != SBE_TEMPLATE_BOOKS1 {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let body_off = SBE_HEADER_SIZE;
     if raw.len() < body_off + block_length {
@@ -346,26 +364,19 @@ pub fn parse_sbe_books1(raw: &[u8]) -> Result<Vec<Bbo>, DecodeError> {
         )));
     }
     let symbol = std::str::from_utf8(&raw[sym_off + 1..sym_off + 1 + sym_len])
-        .map_err(|e| DecodeError::new(format!("Bitget SBE symbol not utf-8: {}", e)))?
-        .to_ascii_uppercase();
+        .map_err(|e| DecodeError::new(format!("Bitget SBE symbol not utf-8: {}", e)))?;
 
-    let bid_price = mantissa_to_f64(bid_px_m, px_exp);
-    let ask_price = mantissa_to_f64(ask_px_m, px_exp);
-    let bid_amount = mantissa_to_f64(bid_sz_m, sz_exp);
-    let ask_amount = mantissa_to_f64(ask_sz_m, sz_exp);
-    if bid_price <= 0.0 || ask_price <= 0.0 || bid_amount <= 0.0 || ask_amount <= 0.0 {
-        return Ok(Vec::new());
-    }
-
-    Ok(vec![Bbo {
+    Ok(Some(crate::sbe::Bbo {
         symbol,
         timestamp_us,
         seq_id,
-        bid_price,
-        bid_amount,
-        ask_price,
-        ask_amount,
-    }])
+        price_exponent: px_exp,
+        size_exponent: sz_exp,
+        bid_price: bid_px_m,
+        bid_amount: bid_sz_m,
+        ask_price: ask_px_m,
+        ask_amount: ask_sz_m,
+    }))
 }
 
 /// SBE `books50` (templateId=1001) 固定 50 档整图。v2 root 无 sts；v3 起有 sts/category。

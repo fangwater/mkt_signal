@@ -1,0 +1,27 @@
+{
+  "local_only": true,
+  "results": [
+    {
+      "worker": "cta-prep-binance-futures",
+      "groups": [
+        "prep01",
+        "prep03"
+      ],
+      "shared_calculations": 385,
+      "copy_disabled": true,
+      "independent_save_and_delete": true
+    },
+    {
+      "worker": "cta-factor-spread",
+      "groups": [
+        "spread01",
+        "spread02"
+      ],
+      "shared_calculations": 50,
+      "copy_disabled": true,
+      "independent_save_and_delete": true
+    }
+  ],
+  "script_errors": [],
+  "mobile_width": 390
+}

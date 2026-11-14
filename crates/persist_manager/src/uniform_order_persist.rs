@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, Bytes};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{debug, warn};
 use tokio::time::Instant;
 
 use crate::bbo_spread::BboSpreadStore;
@@ -14,7 +14,8 @@ use crate::iceoryx::{create_record_subscriber, trim_uniform_order_payload};
 use crate::polling::{PollStats, MAX_DRAIN_PER_CHANNEL};
 use crate::storage::RocksDbStore;
 use crate::sync::persist_with_outbox;
-use persist_common::{SIGNAL_BBO_BINARY_LEN, UNIFORM_ORDER_RECORD_CHANNEL};
+use persist_common::native_codec::append_bbo_spread;
+use persist_common::UNIFORM_ORDER_RECORD_CHANNEL;
 
 pub(crate) const CF_UNIFORM_ORDER: &str = "uniform_orders";
 
@@ -70,7 +71,7 @@ impl UniformOrderPersistor {
                     stats.record_received();
                     let Some(payload) = trim_uniform_order_payload(sample.payload()) else {
                         warn!(
-                            "uniform order payload has invalid base or signal_bbo length: {}",
+                            "uniform order payload has invalid base, signal_bbo or fill_liquidity: {}",
                             sample.payload().len()
                         );
                         stats.record_error();
@@ -108,7 +109,7 @@ impl UniformOrderPersistor {
                 .map(|store| store.format_spread_for_symbol(&order.symbol, order.update_ts))
                 .unwrap_or_default();
             let payload = append_bbo_spread(order.payload, &bbo_spread);
-            info!(
+            debug!(
                 "persist uniform order: key={} payload_len={} bbo_spread_len={}",
                 order.key,
                 payload.len(),
@@ -206,18 +207,6 @@ fn skip(cursor: &mut Bytes, len: usize, field: &str) -> Result<()> {
     Ok(())
 }
 
-fn append_bbo_spread(payload: Bytes, bbo_spread: &str) -> Bytes {
-    let bbo_bytes = bbo_spread.as_bytes();
-    let len = bbo_bytes.len().min(u16::MAX as usize);
-    let signal_start = payload.len().saturating_sub(SIGNAL_BBO_BINARY_LEN);
-    let mut out = BytesMut::with_capacity(payload.len() + 2 + len);
-    out.extend_from_slice(&payload[..signal_start]);
-    out.put_u16_le(len as u16);
-    out.extend_from_slice(&bbo_bytes[..len]);
-    out.extend_from_slice(&payload[signal_start..]);
-    out.freeze()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,12 +214,14 @@ mod tests {
     #[test]
     fn append_bbo_spread_uses_u16_length_prefix() {
         let mut raw = vec![1, 2, 3];
-        raw.extend_from_slice(&[7; SIGNAL_BBO_BINARY_LEN]);
+        let mut tail = persist_common::SignalBbo::encode_optional(None).to_vec();
+        tail.push(persist_common::FillLiquidity::Taker as u8);
+        raw.extend_from_slice(&tail);
         let payload = Bytes::from(raw);
         let out = append_bbo_spread(payload, "1,2,3");
         assert_eq!(&out[..3], &[1, 2, 3]);
         assert_eq!(u16::from_le_bytes([out[3], out[4]]), 5);
         assert_eq!(&out[5..10], b"1,2,3");
-        assert_eq!(&out[10..], &[7; SIGNAL_BBO_BINARY_LEN]);
+        assert_eq!(&out[10..], tail.as_slice());
     }
 }

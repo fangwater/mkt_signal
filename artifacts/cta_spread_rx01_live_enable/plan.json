@@ -1,0 +1,1739 @@
+{
+  "prepared_at_us": 1791950892913537,
+  "config_revision": "e3e222c72d11fb9d12f90d56fa6237d01eba8a2ac35a77ac0418f55dcdf2a867",
+  "state_sha256": "b2ec38bef7190f7f95270f6e695d9b731b903c986710ac9c9b55cf5bb93743b4",
+  "before": {
+    "TD_TI_024": {
+      "AAVEUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -3.735603854741987,
+        "perpetual_qty": 3.735603854741987,
+        "entry_notional": 0.0
+      },
+      "DASHUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -5.930968145598065,
+        "perpetual_qty": 5.930968145598065,
+        "entry_notional": 0.0
+      },
+      "DOTUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 4.2914034467478785,
+        "perpetual_qty": -4.2914034467478785,
+        "entry_notional": 0.0
+      },
+      "FILUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -606.7385005758568,
+        "perpetual_qty": 606.7385005758568,
+        "entry_notional": 0.0
+      },
+      "NEARUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -57.269693405891886,
+        "perpetual_qty": 57.269693405891886,
+        "entry_notional": 0.0
+      }
+    },
+    "TD_TI_027": {
+      "AAVEUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -10.613891120027558,
+        "perpetual_qty": 10.613891120027558,
+        "entry_notional": 0.0
+      },
+      "ADAUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -5067.969570463934,
+        "perpetual_qty": 5067.969570463934,
+        "entry_notional": 0.0
+      },
+      "DASHUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -9.947080131501204,
+        "perpetual_qty": 9.947080131501204,
+        "entry_notional": 0.0
+      },
+      "DOTUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -173.55452912555518,
+        "perpetual_qty": 173.55452912555518,
+        "entry_notional": 0.0
+      },
+      "FILUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1725.97165941409,
+        "perpetual_qty": 1725.97165941409,
+        "entry_notional": 0.0
+      },
+      "NEARUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -116.05683898304898,
+        "perpetual_qty": 116.05683898304898,
+        "entry_notional": 0.0
+      },
+      "UNIUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -39.30834868871372,
+        "perpetual_qty": 39.30834868871372,
+        "entry_notional": 0.0
+      },
+      "ZECUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.8040465262534575,
+        "perpetual_qty": 1.8040465262534575,
+        "entry_notional": 0.0
+      }
+    },
+    "baseline_141": {
+      "AAVEUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -3.741664387105021,
+        "perpetual_qty": 3.741664387105021,
+        "entry_notional": 0.0
+      },
+      "ADAUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -2534.3622854505197,
+        "perpetual_qty": 2534.3622854505197,
+        "entry_notional": 0.0
+      },
+      "AVAXUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -29.206660420345685,
+        "perpetual_qty": 29.206660420345685,
+        "entry_notional": 0.0
+      },
+      "BCHUSDT": {
+        "flag": -1,
+        "qty": -0.3585514521333811,
+        "cash_qty": -2.9058800017169557,
+        "perpetual_qty": 2.5473285495835745,
+        "entry_notional": 100.0
+      },
+      "DASHUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -9.947518702496051,
+        "perpetual_qty": 9.947518702496051,
+        "entry_notional": 0.0
+      },
+      "DOGEUSDT": {
+        "flag": -1,
+        "qty": -1177.5788977861516,
+        "cash_qty": -4715.318582291822,
+        "perpetual_qty": 3537.739684505671,
+        "entry_notional": 100.0
+      },
+      "DOTUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -171.60122088978935,
+        "perpetual_qty": 171.60122088978935,
+        "entry_notional": 0.0
+      },
+      "FILUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -778.0681867462716,
+        "perpetual_qty": 778.0681867462716,
+        "entry_notional": 0.0
+      },
+      "LTCUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -8.11326085697901,
+        "perpetual_qty": 8.11326085697901,
+        "entry_notional": 0.0
+      },
+      "NEARUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -116.9837605798514,
+        "perpetual_qty": 116.9837605798514,
+        "entry_notional": 0.0
+      },
+      "SOLUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.9304056568663938,
+        "perpetual_qty": 0.9304056568663938,
+        "entry_notional": 0.0
+      },
+      "UNIUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -39.401131286734994,
+        "perpetual_qty": 39.401131286734994,
+        "entry_notional": 0.0
+      },
+      "XLMUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -520.026510335929,
+        "perpetual_qty": 520.026510335929,
+        "entry_notional": 0.0
+      },
+      "XRPUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -364.01933517349937,
+        "perpetual_qty": 364.01933517349937,
+        "entry_notional": 0.0
+      },
+      "ZECUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.9807350033174256,
+        "perpetual_qty": 0.9807350033174256,
+        "entry_notional": 0.0
+      }
+    },
+    "baseline_164": {
+      "AAVEUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -7.4799556805531235,
+        "perpetual_qty": 7.4799556805531235,
+        "entry_notional": 0.0
+      },
+      "ADAUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -2953.930789119834,
+        "perpetual_qty": 2953.930789119834,
+        "entry_notional": 0.0
+      },
+      "AVAXUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -9.72666658681272,
+        "perpetual_qty": 9.72666658681272,
+        "entry_notional": 0.0
+      },
+      "BCHUSDT": {
+        "flag": -1,
+        "qty": -0.35816618911174786,
+        "cash_qty": -3.9907217649129128,
+        "perpetual_qty": 3.632555575801165,
+        "entry_notional": 100.0
+      },
+      "DASHUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -9.937085257488526,
+        "perpetual_qty": 9.937085257488526,
+        "entry_notional": 0.0
+      },
+      "DOTUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -83.50415760529391,
+        "perpetual_qty": 83.50415760529391,
+        "entry_notional": 0.0
+      },
+      "FILUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1205.4779173724023,
+        "perpetual_qty": 1205.4779173724023,
+        "entry_notional": 0.0
+      },
+      "LINKUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -7.647264108590377,
+        "perpetual_qty": 7.647264108590377,
+        "entry_notional": 0.0
+      },
+      "LTCUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -14.60897789878982,
+        "perpetual_qty": 14.60897789878982,
+        "entry_notional": 0.0
+      },
+      "NEARUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -136.3307519247242,
+        "perpetual_qty": 136.3307519247242,
+        "entry_notional": 0.0
+      },
+      "SOLUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -2.77571112078512,
+        "perpetual_qty": 2.77571112078512,
+        "entry_notional": 0.0
+      },
+      "UNIUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -39.26836641170448,
+        "perpetual_qty": 39.26836641170448,
+        "entry_notional": 0.0
+      },
+      "XLMUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -3127.513008984088,
+        "perpetual_qty": 3127.513008984088,
+        "entry_notional": 0.0
+      },
+      "XRPUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -728.7297984189881,
+        "perpetual_qty": 728.7297984189881,
+        "entry_notional": 0.0
+      },
+      "ZECUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.3115306961024686,
+        "perpetual_qty": 1.3115306961024686,
+        "entry_notional": 0.0
+      }
+    },
+    "factor_052": {
+      "DASHUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 1.984126984126984,
+        "perpetual_qty": -1.984126984126984,
+        "entry_notional": 0.0
+      },
+      "DOTUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 342.1746735951101,
+        "perpetual_qty": -342.1746735951101,
+        "entry_notional": 0.0
+      },
+      "NEARUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.14777551188659288,
+        "perpetual_qty": 0.14777551188659288,
+        "entry_notional": 0.0
+      }
+    }
+  },
+  "after": {
+    "TD_TI_024": {
+      "AAVEUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.6153088850603002,
+        "perpetual_qty": 0.6153088850603002,
+        "entry_notional": 0.0
+      },
+      "DASHUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.9642506383814573,
+        "perpetual_qty": 1.9642506383814573,
+        "entry_notional": 0.0
+      },
+      "DOTUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -84.88964346349746,
+        "perpetual_qty": 84.88964346349746,
+        "entry_notional": 0.0
+      },
+      "FILUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -84.9762066621346,
+        "perpetual_qty": 84.9762066621346,
+        "entry_notional": 0.0
+      },
+      "NEARUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -19.451468585878235,
+        "perpetual_qty": 19.451468585878235,
+        "entry_notional": 0.0
+      }
+    },
+    "TD_TI_027": {
+      "AAVEUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.6181233774261342,
+        "perpetual_qty": 0.6181233774261342,
+        "entry_notional": 0.0
+      },
+      "ADAUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -424.26813746287655,
+        "perpetual_qty": 424.26813746287655,
+        "entry_notional": 0.0
+      },
+      "DASHUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.9696671262556626,
+        "perpetual_qty": 1.9696671262556626,
+        "entry_notional": 0.0
+      },
+      "DOTUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -85.5431993156544,
+        "perpetual_qty": 85.5431993156544,
+        "entry_notional": 0.0
+      },
+      "FILUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -85.20790729379686,
+        "perpetual_qty": 85.20790729379686,
+        "entry_notional": 0.0
+      },
+      "NEARUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -19.425019425019425,
+        "perpetual_qty": 19.425019425019425,
+        "entry_notional": 0.0
+      },
+      "UNIUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 13.365410318096766,
+        "perpetual_qty": -13.365410318096766,
+        "entry_notional": 0.0
+      },
+      "ZECUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.07813171444421005,
+        "perpetual_qty": 0.07813171444421005,
+        "entry_notional": 0.0
+      }
+    },
+    "baseline_141": {
+      "AAVEUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 0.6200781298443604,
+        "perpetual_qty": -0.6200781298443604,
+        "entry_notional": 0.0
+      },
+      "ADAUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -423.54934349851754,
+        "perpetual_qty": 423.54934349851754,
+        "entry_notional": 0.0
+      },
+      "AVAXUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -9.760858955588091,
+        "perpetual_qty": 9.760858955588091,
+        "entry_notional": 0.0
+      },
+      "BCHUSDT": {
+        "flag": -1,
+        "qty": -0.3585514521333811,
+        "cash_qty": -0.3585514521333811,
+        "perpetual_qty": 0.0,
+        "entry_notional": 100.0
+      },
+      "DASHUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.96347928529354,
+        "perpetual_qty": 1.96347928529354,
+        "entry_notional": 0.0
+      },
+      "DOGEUSDT": {
+        "flag": -1,
+        "qty": -1177.5788977861516,
+        "cash_qty": -1177.5788977861516,
+        "perpetual_qty": 0.0,
+        "entry_notional": 100.0
+      },
+      "DOTUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -85.39709649871904,
+        "perpetual_qty": 85.39709649871904,
+        "entry_notional": 0.0
+      },
+      "FILUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -85.20790729379686,
+        "perpetual_qty": 85.20790729379686,
+        "entry_notional": 0.0
+      },
+      "LTCUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.6170763260025873,
+        "perpetual_qty": 1.6170763260025873,
+        "entry_notional": 0.0
+      },
+      "NEARUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -19.342359767891683,
+        "perpetual_qty": 19.342359767891683,
+        "entry_notional": 0.0
+      },
+      "SOLUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.9304056568663938,
+        "perpetual_qty": 0.9304056568663938,
+        "entry_notional": 0.0
+      },
+      "UNIUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 13.231013495633766,
+        "perpetual_qty": -13.231013495633766,
+        "entry_notional": 0.0
+      },
+      "XLMUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -525.4860746190226,
+        "perpetual_qty": 525.4860746190226,
+        "entry_notional": 0.0
+      },
+      "XRPUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 73.17430118542367,
+        "perpetual_qty": -73.17430118542367,
+        "entry_notional": 0.0
+      },
+      "ZECUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.07803233660028716,
+        "perpetual_qty": 0.07803233660028716,
+        "entry_notional": 0.0
+      }
+    },
+    "baseline_164": {
+      "AAVEUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.6181233774261342,
+        "perpetual_qty": 0.6181233774261342,
+        "entry_notional": 0.0
+      },
+      "ADAUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 421.94092827004215,
+        "perpetual_qty": -421.94092827004215,
+        "entry_notional": 0.0
+      },
+      "AVAXUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -9.761811792268645,
+        "perpetual_qty": 9.761811792268645,
+        "entry_notional": 0.0
+      },
+      "BCHUSDT": {
+        "flag": -1,
+        "qty": -0.35816618911174786,
+        "cash_qty": -0.35816618911174786,
+        "perpetual_qty": 0.0,
+        "entry_notional": 100.0
+      },
+      "DASHUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.9661816751867873,
+        "perpetual_qty": 1.9661816751867873,
+        "entry_notional": 0.0
+      },
+      "DOTUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -85.83690987124463,
+        "perpetual_qty": 85.83690987124463,
+        "entry_notional": 0.0
+      },
+      "FILUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -85.20790729379686,
+        "perpetual_qty": 85.20790729379686,
+        "entry_notional": 0.0
+      },
+      "LINKUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -7.692899453804139,
+        "perpetual_qty": 7.692899453804139,
+        "entry_notional": 0.0
+      },
+      "LTCUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.6155088852988693,
+        "perpetual_qty": 1.6155088852988693,
+        "entry_notional": 0.0
+      },
+      "NEARUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -19.305019305019307,
+        "perpetual_qty": 19.305019305019307,
+        "entry_notional": 0.0
+      },
+      "SOLUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 0.9324009324009324,
+        "perpetual_qty": -0.9324009324009324,
+        "entry_notional": 0.0
+      },
+      "UNIUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 13.365410318096766,
+        "perpetual_qty": -13.365410318096766,
+        "entry_notional": 0.0
+      },
+      "XLMUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -524.3838489774515,
+        "perpetual_qty": 524.3838489774515,
+        "entry_notional": 0.0
+      },
+      "XRPUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -73.16359379572725,
+        "perpetual_qty": 73.16359379572725,
+        "entry_notional": 0.0
+      },
+      "ZECUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 0.0790382624228389,
+        "perpetual_qty": -0.0790382624228389,
+        "entry_notional": 0.0
+      }
+    },
+    "factor_052": {
+      "DASHUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 1.9841269841269842,
+        "perpetual_qty": -1.9841269841269842,
+        "entry_notional": 0.0
+      },
+      "DOTUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 85.68980291345329,
+        "perpetual_qty": -85.68980291345329,
+        "entry_notional": 0.0
+      },
+      "NEARUSDT": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 19.64636542239686,
+        "perpetual_qty": -19.64636542239686,
+        "entry_notional": 0.0
+      }
+    }
+  },
+  "rows": [
+    {
+      "factor": "TD_TI_024",
+      "symbol": "AAVEUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -3.735603854741987,
+        "perpetual_qty": 3.735603854741987,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.6153088850603002,
+        "perpetual_qty": 0.6153088850603002,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791938346583023,
+      "last_entry_qty": -0.6153088850603002,
+      "mark": 161.595,
+      "old_gross_usdt": 1207.3098098140629,
+      "new_gross_usdt": 198.86167856263845
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "DASHUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -5.930968145598065,
+        "perpetual_qty": 5.930968145598065,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.9642506383814573,
+        "perpetual_qty": 1.9642506383814573,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791946148969633,
+      "last_entry_qty": -1.9642506383814573,
+      "mark": 50.735,
+      "old_gross_usdt": 601.8153377338357,
+      "new_gross_usdt": 199.31251227656648
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "DOTUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 4.2914034467478785,
+        "perpetual_qty": -4.2914034467478785,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -84.88964346349746,
+        "perpetual_qty": 84.88964346349746,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791938524726153,
+      "last_entry_qty": -84.88964346349746,
+      "mark": 1.16175,
+      "old_gross_usdt": 9.971075908518696,
+      "new_gross_usdt": 197.24108658743637
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "FILUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -606.7385005758568,
+        "perpetual_qty": 606.7385005758568,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -84.9762066621346,
+        "perpetual_qty": 84.9762066621346,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791948008987803,
+      "last_entry_qty": -84.9762066621346,
+      "mark": 1.17375,
+      "old_gross_usdt": 1424.318630101824,
+      "new_gross_usdt": 199.48164513936098
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "NEARUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -57.269693405891886,
+        "perpetual_qty": 57.269693405891886,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -19.451468585878235,
+        "perpetual_qty": 19.451468585878235,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791945664455612,
+      "last_entry_qty": -19.451468585878235,
+      "mark": 5.0895,
+      "old_gross_usdt": 582.9482091785735,
+      "new_gross_usdt": 197.99649873565457
+    },
+    {
+      "factor": "TD_TI_027",
+      "symbol": "AAVEUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -10.613891120027558,
+        "perpetual_qty": 10.613891120027558,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.6181233774261342,
+        "perpetual_qty": 0.6181233774261342,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791946564851771,
+      "last_entry_qty": -0.6181233774261342,
+      "mark": 161.595,
+      "old_gross_usdt": 3430.3034710817064,
+      "new_gross_usdt": 199.77129435035232
+    },
+    {
+      "factor": "TD_TI_027",
+      "symbol": "ADAUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -5067.969570463934,
+        "perpetual_qty": 5067.969570463934,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -424.26813746287655,
+        "perpetual_qty": 424.26813746287655,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791934325725530,
+      "last_entry_qty": -424.26813746287655,
+      "mark": 0.23645,
+      "old_gross_usdt": 2396.6428098723945,
+      "new_gross_usdt": 200.6364022061943
+    },
+    {
+      "factor": "TD_TI_027",
+      "symbol": "DASHUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -9.947080131501204,
+        "perpetual_qty": 9.947080131501204,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.9696671262556626,
+        "perpetual_qty": 1.9696671262556626,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791945968129022,
+      "last_entry_qty": -1.9696671262556626,
+      "mark": 50.735,
+      "old_gross_usdt": 1009.3302209434272,
+      "new_gross_usdt": 199.8621233011621
+    },
+    {
+      "factor": "TD_TI_027",
+      "symbol": "DOTUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -173.55452912555518,
+        "perpetual_qty": 173.55452912555518,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -85.5431993156544,
+        "perpetual_qty": 85.5431993156544,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791947830244902,
+      "last_entry_qty": -85.5431993156544,
+      "mark": 1.16175,
+      "old_gross_usdt": 403.2539484232275,
+      "new_gross_usdt": 198.759623609923
+    },
+    {
+      "factor": "TD_TI_027",
+      "symbol": "FILUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1725.97165941409,
+        "perpetual_qty": 1725.97165941409,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -85.20790729379686,
+        "perpetual_qty": 85.20790729379686,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791947829751127,
+      "last_entry_qty": -85.20790729379686,
+      "mark": 1.17375,
+      "old_gross_usdt": 4051.7184704745764,
+      "new_gross_usdt": 200.02556237218815
+    },
+    {
+      "factor": "TD_TI_027",
+      "symbol": "NEARUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -116.05683898304898,
+        "perpetual_qty": 116.05683898304898,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -19.425019425019425,
+        "perpetual_qty": 19.425019425019425,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791942666118091,
+      "last_entry_qty": -19.425019425019425,
+      "mark": 5.0895,
+      "old_gross_usdt": 1181.3425640084556,
+      "new_gross_usdt": 197.72727272727272
+    },
+    {
+      "factor": "TD_TI_027",
+      "symbol": "UNIUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -39.30834868871372,
+        "perpetual_qty": 39.30834868871372,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 13.365410318096766,
+        "perpetual_qty": -13.365410318096766,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791942011888061,
+      "last_entry_qty": 13.365410318096766,
+      "mark": 7.4755,
+      "old_gross_usdt": 587.6991212449589,
+      "new_gross_usdt": 199.82624966586474
+    },
+    {
+      "factor": "TD_TI_027",
+      "symbol": "ZECUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.8040465262534575,
+        "perpetual_qty": 1.8040465262534575,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.07813171444421005,
+        "perpetual_qty": 0.07813171444421005,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791943625723009,
+      "last_entry_qty": -0.07813171444421005,
+      "mark": 1266.3249999999998,
+      "old_gross_usdt": 4569.018434715818,
+      "new_gross_usdt": 197.88028658712855
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "AAVEUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -3.741664387105021,
+        "perpetual_qty": 3.741664387105021,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 0.6200781298443604,
+        "perpetual_qty": -0.6200781298443604,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791941584965064,
+      "last_entry_qty": 0.6200781298443604,
+      "mark": 161.595,
+      "old_gross_usdt": 1209.2685132684717,
+      "new_gross_usdt": 200.40305078439883
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "ADAUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -2534.3622854505197,
+        "perpetual_qty": 2534.3622854505197,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -423.54934349851754,
+        "perpetual_qty": 423.54934349851754,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791936364691617,
+      "last_entry_qty": -423.54934349851754,
+      "mark": 0.23645,
+      "old_gross_usdt": 1198.4999247895507,
+      "new_gross_usdt": 200.29648454044894
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "AVAXUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -29.206660420345685,
+        "perpetual_qty": 29.206660420345685,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -9.760858955588091,
+        "perpetual_qty": 9.760858955588091,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791936425547869,
+      "last_entry_qty": -9.760858955588091,
+      "mark": 10.2805,
+      "old_gross_usdt": 600.5181449027276,
+      "new_gross_usdt": 200.69302098584674
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "BCHUSDT",
+      "before": {
+        "flag": -1,
+        "qty": -0.3585514521333811,
+        "cash_qty": -2.9058800017169557,
+        "perpetual_qty": 2.5473285495835745,
+        "entry_notional": 100.0
+      },
+      "after": {
+        "flag": -1,
+        "qty": -0.3585514521333811,
+        "cash_qty": -0.3585514521333811,
+        "perpetual_qty": 0.0,
+        "entry_notional": 100.0
+      },
+      "last_entry_ts_us": 1791947707935321,
+      "last_entry_qty": -0.3585514521333811,
+      "mark": 279.115,
+      "old_gross_usdt": 1522.0723047962476,
+      "new_gross_usdt": 100.07708856220866
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "DASHUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -9.947518702496051,
+        "perpetual_qty": 9.947518702496051,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.96347928529354,
+        "perpetual_qty": 1.96347928529354,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791946624484715,
+      "last_entry_qty": -1.96347928529354,
+      "mark": 50.735,
+      "old_gross_usdt": 1009.3747227422743,
+      "new_gross_usdt": 199.23424307873552
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "DOGEUSDT",
+      "before": {
+        "flag": -1,
+        "qty": -1177.5788977861516,
+        "cash_qty": -4715.318582291822,
+        "perpetual_qty": 3537.739684505671,
+        "entry_notional": 100.0
+      },
+      "after": {
+        "flag": -1,
+        "qty": -1177.5788977861516,
+        "cash_qty": -1177.5788977861516,
+        "perpetual_qty": 0.0,
+        "entry_notional": 100.0
+      },
+      "last_entry_ts_us": 1791948544865467,
+      "last_entry_qty": -1177.5788977861516,
+      "mark": 0.084785,
+      "old_gross_usdt": 699.7355451504254,
+      "new_gross_usdt": 99.84102684879886
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "DOTUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -171.60122088978935,
+        "perpetual_qty": 171.60122088978935,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -85.39709649871904,
+        "perpetual_qty": 85.39709649871904,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791938344983123,
+      "last_entry_qty": -85.39709649871904,
+      "mark": 1.16175,
+      "old_gross_usdt": 398.7154367374256,
+      "new_gross_usdt": 198.4201537147737
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "FILUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -778.0681867462716,
+        "perpetual_qty": 778.0681867462716,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -85.20790729379686,
+        "perpetual_qty": 85.20790729379686,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791947829762440,
+      "last_entry_qty": -85.20790729379686,
+      "mark": 1.17375,
+      "old_gross_usdt": 1826.5150683868728,
+      "new_gross_usdt": 200.02556237218815
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "LTCUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -8.11326085697901,
+        "perpetual_qty": 8.11326085697901,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.6170763260025873,
+        "perpetual_qty": 1.6170763260025873,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791946448208246,
+      "last_entry_qty": -1.6170763260025873,
+      "mark": 62.035,
+      "old_gross_usdt": 1006.6122745253858,
+      "new_gross_usdt": 200.630659767141
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "NEARUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -116.9837605798514,
+        "perpetual_qty": 116.9837605798514,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -19.342359767891683,
+        "perpetual_qty": 19.342359767891683,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791947109456535,
+      "last_entry_qty": -19.342359767891683,
+      "mark": 5.0895,
+      "old_gross_usdt": 1190.7776989423076,
+      "new_gross_usdt": 196.88588007736945
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "SOLUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.9304056568663938,
+        "perpetual_qty": 0.9304056568663938,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.9304056568663938,
+        "perpetual_qty": 0.9304056568663938,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791900368069498,
+      "last_entry_qty": -0.9304056568663938,
+      "mark": 107.655,
+      "old_gross_usdt": 200.32564197990325,
+      "new_gross_usdt": 200.32564197990325
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "UNIUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -39.401131286734994,
+        "perpetual_qty": 39.401131286734994,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 13.231013495633766,
+        "perpetual_qty": -13.231013495633766,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791939665802114,
+      "last_entry_qty": 13.231013495633766,
+      "mark": 7.4755,
+      "old_gross_usdt": 589.0863138679749,
+      "new_gross_usdt": 197.81688277322044
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "XLMUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -520.026510335929,
+        "perpetual_qty": 520.026510335929,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -525.4860746190226,
+        "perpetual_qty": 525.4860746190226,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791946746583094,
+      "last_entry_qty": -525.4860746190226,
+      "mark": 0.189975,
+      "old_gross_usdt": 197.58407260213622,
+      "new_gross_usdt": 199.65843405149764
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "XRPUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -364.01933517349937,
+        "perpetual_qty": 364.01933517349937,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 73.17430118542367,
+        "perpetual_qty": -73.17430118542367,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791942007972392,
+      "last_entry_qty": 73.17430118542367,
+      "mark": 1.3714499999999998,
+      "old_gross_usdt": 998.4686344473913,
+      "new_gross_usdt": 200.70979072149856
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "ZECUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.9807350033174256,
+        "perpetual_qty": 0.9807350033174256,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.07803233660028716,
+        "perpetual_qty": 0.07803233660028716,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791942666201794,
+      "last_entry_qty": -0.07803233660028716,
+      "mark": 1266.3249999999998,
+      "old_gross_usdt": 2483.8585061518775,
+      "new_gross_usdt": 197.62859729071724
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "AAVEUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -7.4799556805531235,
+        "perpetual_qty": 7.4799556805531235,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.6181233774261342,
+        "perpetual_qty": 0.6181233774261342,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791946564874539,
+      "last_entry_qty": -0.6181233774261342,
+      "mark": 161.595,
+      "old_gross_usdt": 2417.446876397964,
+      "new_gross_usdt": 199.77129435035232
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "ADAUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -2953.930789119834,
+        "perpetual_qty": 2953.930789119834,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 421.94092827004215,
+        "perpetual_qty": -421.94092827004215,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791940085743160,
+      "last_entry_qty": 421.94092827004215,
+      "mark": 0.23645,
+      "old_gross_usdt": 1396.9138701747695,
+      "new_gross_usdt": 199.53586497890294
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "AVAXUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -9.72666658681272,
+        "perpetual_qty": 9.72666658681272,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -9.761811792268645,
+        "perpetual_qty": 9.761811792268645,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791934746922368,
+      "last_entry_qty": -9.761811792268645,
+      "mark": 10.2805,
+      "old_gross_usdt": 199.9899916914563,
+      "new_gross_usdt": 200.7126122608356
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "BCHUSDT",
+      "before": {
+        "flag": -1,
+        "qty": -0.35816618911174786,
+        "cash_qty": -3.9907217649129128,
+        "perpetual_qty": 3.632555575801165,
+        "entry_notional": 100.0
+      },
+      "after": {
+        "flag": -1,
+        "qty": -0.35816618911174786,
+        "cash_qty": -0.35816618911174786,
+        "perpetual_qty": 0.0,
+        "entry_notional": 100.0
+      },
+      "last_entry_ts_us": 1791948130181969,
+      "last_entry_qty": -0.35816618911174786,
+      "mark": 279.115,
+      "old_gross_usdt": 2127.77105495341,
+      "new_gross_usdt": 99.9695558739255
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "DASHUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -9.937085257488526,
+        "perpetual_qty": 9.937085257488526,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.9661816751867873,
+        "perpetual_qty": 1.9661816751867873,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791946085190819,
+      "last_entry_qty": -1.9661816751867873,
+      "mark": 50.735,
+      "old_gross_usdt": 1008.3160410773608,
+      "new_gross_usdt": 199.5084545812033
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "DOTUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -83.50415760529391,
+        "perpetual_qty": 83.50415760529391,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -85.83690987124463,
+        "perpetual_qty": 85.83690987124463,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791908467339532,
+      "last_entry_qty": -85.83690987124463,
+      "mark": 1.16175,
+      "old_gross_usdt": 194.0219101959004,
+      "new_gross_usdt": 199.4420600858369
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "FILUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1205.4779173724023,
+        "perpetual_qty": 1205.4779173724023,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -85.20790729379686,
+        "perpetual_qty": 85.20790729379686,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791947829773788,
+      "last_entry_qty": -85.20790729379686,
+      "mark": 1.17375,
+      "old_gross_usdt": 2829.8594110317144,
+      "new_gross_usdt": 200.02556237218815
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "LINKUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -7.647264108590377,
+        "perpetual_qty": 7.647264108590377,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -7.692899453804139,
+        "perpetual_qty": 7.692899453804139,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791946507626966,
+      "last_entry_qty": -7.692899453804139,
+      "mark": 12.9875,
+      "old_gross_usdt": 198.63768522063506,
+      "new_gross_usdt": 199.8230633125625
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "LTCUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -14.60897789878982,
+        "perpetual_qty": 14.60897789878982,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.6155088852988693,
+        "perpetual_qty": 1.6155088852988693,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791947225443117,
+      "last_entry_qty": -1.6155088852988693,
+      "mark": 62.035,
+      "old_gross_usdt": 1812.535887902853,
+      "new_gross_usdt": 200.4361873990307
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "NEARUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -136.3307519247242,
+        "perpetual_qty": 136.3307519247242,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -19.305019305019307,
+        "perpetual_qty": 19.305019305019307,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791946446783769,
+      "last_entry_qty": -19.305019305019307,
+      "mark": 5.0895,
+      "old_gross_usdt": 1387.7107238417677,
+      "new_gross_usdt": 196.50579150579154
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "SOLUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -2.77571112078512,
+        "perpetual_qty": 2.77571112078512,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 0.9324009324009324,
+        "perpetual_qty": -0.9324009324009324,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791939905365006,
+      "last_entry_qty": 0.9324009324009324,
+      "mark": 107.655,
+      "old_gross_usdt": 597.6383614162442,
+      "new_gross_usdt": 200.75524475524475
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "UNIUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -39.26836641170448,
+        "perpetual_qty": 39.26836641170448,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 13.365410318096766,
+        "perpetual_qty": -13.365410318096766,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791942012270645,
+      "last_entry_qty": 13.365410318096766,
+      "mark": 7.4755,
+      "old_gross_usdt": 587.1013462213937,
+      "new_gross_usdt": 199.82624966586474
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "XLMUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -3127.513008984088,
+        "perpetual_qty": 3127.513008984088,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -524.3838489774515,
+        "perpetual_qty": 524.3838489774515,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791942666051370,
+      "last_entry_qty": -524.3838489774515,
+      "mark": 0.189975,
+      "old_gross_usdt": 1188.2985677635043,
+      "new_gross_usdt": 199.23964341898272
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "XRPUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -728.7297984189881,
+        "perpetual_qty": 728.7297984189881,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -73.16359379572725,
+        "perpetual_qty": 73.16359379572725,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791935107004586,
+      "last_entry_qty": -73.16359379572725,
+      "mark": 1.3714499999999998,
+      "old_gross_usdt": 1998.8329640834422,
+      "new_gross_usdt": 200.68042142230024
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "ZECUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -1.3115306961024686,
+        "perpetual_qty": 1.3115306961024686,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 0.0790382624228389,
+        "perpetual_qty": -0.0790382624228389,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791942846863587,
+      "last_entry_qty": 0.0790382624228389,
+      "mark": 1266.3249999999998,
+      "old_gross_usdt": 3321.6482174839166,
+      "new_gross_usdt": 200.1762553252029
+    },
+    {
+      "factor": "factor_052",
+      "symbol": "DASHUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 1.984126984126984,
+        "perpetual_qty": -1.984126984126984,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 1.9841269841269842,
+        "perpetual_qty": -1.9841269841269842,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791939125694914,
+      "last_entry_qty": 1.9841269841269842,
+      "mark": 50.735,
+      "old_gross_usdt": 201.32936507936506,
+      "new_gross_usdt": 201.3293650793651
+    },
+    {
+      "factor": "factor_052",
+      "symbol": "DOTUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 342.1746735951101,
+        "perpetual_qty": -342.1746735951101,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 85.68980291345329,
+        "perpetual_qty": -85.68980291345329,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791943985957626,
+      "last_entry_qty": 85.68980291345329,
+      "mark": 1.16175,
+      "old_gross_usdt": 795.0428540982384,
+      "new_gross_usdt": 199.10025706940874
+    },
+    {
+      "factor": "factor_052",
+      "symbol": "NEARUSDT",
+      "before": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": -0.14777551188659288,
+        "perpetual_qty": 0.14777551188659288,
+        "entry_notional": 0.0
+      },
+      "after": {
+        "flag": 0,
+        "qty": 0.0,
+        "cash_qty": 19.64636542239686,
+        "perpetual_qty": -19.64636542239686,
+        "entry_notional": 0.0
+      },
+      "last_entry_ts_us": 1791941645937526,
+      "last_entry_qty": 19.64636542239686,
+      "mark": 5.0895,
+      "old_gross_usdt": 1.504206935493629,
+      "new_gross_usdt": 199.98035363457763
+    }
+  ],
+  "summary": {
+    "combinations": 46,
+    "entries_found": 46,
+    "old_gross_usdt": 58851.68424236178,
+    "new_gross_usdt": 8876.846990762066
+  }
+}

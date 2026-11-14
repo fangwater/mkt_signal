@@ -956,7 +956,11 @@ impl TradeFlowFeaturePubApp {
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
 
-        let service_name = format!("dat_pbs/{}/{}", venue, FIXED_TRADE_CHANNEL);
+        let service_name = format!(
+            "dat_pbs/{}/{}",
+            runtime_common::symbol_util::market_data_pub_slug(venue),
+            FIXED_TRADE_CHANNEL
+        );
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; TRADE_MAX_BYTES]>()
@@ -1037,6 +1041,9 @@ impl TradeFlowFeaturePubApp {
                 has_message = true;
                 self.recv_trade_raw_count = self.recv_trade_raw_count.saturating_add(1);
                 if let Some(trade) = parse_trade(sample.payload(), self.venue) {
+                    if self.venue.market_data_venue_for_symbol(&trade.symbol) != self.venue {
+                        continue;
+                    }
                     self.recv_trade_parse_ok_count =
                         self.recv_trade_parse_ok_count.saturating_add(1);
                     self.handle_trade(trade);

@@ -12,7 +12,7 @@ use log::info;
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::okex_query::okex_rest_get;
+use crate::okex_query::{okex_rest_get_with_base, OKEX_REST_BASE};
 use account_common::okex_auth::OkexCredentials;
 
 const ACCOUNT_CONFIG_PATH: &str = "/api/v5/account/config";
@@ -21,7 +21,7 @@ const ACCOUNT_CONFIG_PATH: &str = "/api/v5/account/config";
 const MIN_ACCT_LV: i64 = 3;
 
 pub async fn ensure_unified_margin_mode(client: &Client, creds: &OkexCredentials) -> Result<()> {
-    let acct_lv = fetch_acct_lv(client, creds).await?;
+    let acct_lv = fetch_acct_lv(client, creds, OKEX_REST_BASE).await?;
     if acct_lv < MIN_ACCT_LV {
         bail!(
             "okex precheck failed: acctLv={} (need >= {} for tdMode=cross auto-borrow); \
@@ -34,8 +34,12 @@ pub async fn ensure_unified_margin_mode(client: &Client, creds: &OkexCredentials
     Ok(())
 }
 
-async fn fetch_acct_lv(client: &Client, creds: &OkexCredentials) -> Result<i64> {
-    let (status, body) = okex_rest_get(client, creds, ACCOUNT_CONFIG_PATH)
+pub async fn fetch_acct_lv(
+    client: &Client,
+    creds: &OkexCredentials,
+    base_url: &str,
+) -> Result<i64> {
+    let (status, body) = okex_rest_get_with_base(client, creds, base_url, ACCOUNT_CONFIG_PATH)
         .await
         .with_context(|| format!("okex precheck: GET {ACCOUNT_CONFIG_PATH} failed"))?;
     if status != 200 {

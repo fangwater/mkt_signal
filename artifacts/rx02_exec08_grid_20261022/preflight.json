@@ -1,0 +1,868 @@
+{
+  "at": "2026-10-22T14:28:50.668892+00:00",
+  "env": "binance_exec_trade08",
+  "source_ip": "172.31.35.228",
+  "account": {
+    "canTrade": true,
+    "totalWalletBalance": "20000.00000000",
+    "availableBalance": "20000.00000000",
+    "totalUnrealizedProfit": "0.00000000"
+  },
+  "position_mode": {
+    "dualSidePosition": false
+  },
+  "nonzero_positions": [],
+  "open_order_count": 0,
+  "symbols": [
+    {
+      "symbol": "SUSHIUSDT",
+      "positionAmt": "0",
+      "positionSide": "BOTH",
+      "leverage": "5",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "SKLUSDT",
+      "positionAmt": "0",
+      "positionSide": "BOTH",
+      "leverage": "4",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "ZECUSDT",
+      "positionAmt": "0.000",
+      "positionSide": "BOTH",
+      "leverage": "5",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "QTUMUSDT",
+      "positionAmt": "0.0",
+      "positionSide": "BOTH",
+      "leverage": "5",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "IOTAUSDT",
+      "positionAmt": "0.0",
+      "positionSide": "BOTH",
+      "leverage": "5",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "EGLDUSDT",
+      "positionAmt": "0.0",
+      "positionSide": "BOTH",
+      "leverage": "10",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "COMPUSDT",
+      "positionAmt": "0.000",
+      "positionSide": "BOTH",
+      "leverage": "10",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "XTZUSDT",
+      "positionAmt": "0.0",
+      "positionSide": "BOTH",
+      "leverage": "10",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "ETCUSDT",
+      "positionAmt": "0.00",
+      "positionSide": "BOTH",
+      "leverage": "40",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "DASHUSDT",
+      "positionAmt": "0.000",
+      "positionSide": "BOTH",
+      "leverage": "10",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "KAVAUSDT",
+      "positionAmt": "0.0",
+      "positionSide": "BOTH",
+      "leverage": "4",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "ATOMUSDT",
+      "positionAmt": "0.00",
+      "positionSide": "BOTH",
+      "leverage": "75",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "BELUSDT",
+      "positionAmt": "0",
+      "positionSide": "BOTH",
+      "leverage": "3",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "RLCUSDT",
+      "positionAmt": "0.0",
+      "positionSide": "BOTH",
+      "leverage": "4",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "NEARUSDT",
+      "positionAmt": "0",
+      "positionSide": "BOTH",
+      "leverage": "75",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "RSRUSDT",
+      "positionAmt": "0",
+      "positionSide": "BOTH",
+      "leverage": "5",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "AXSUSDT",
+      "positionAmt": "0",
+      "positionSide": "BOTH",
+      "leverage": "5",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "ZRXUSDT",
+      "positionAmt": "0.0",
+      "positionSide": "BOTH",
+      "leverage": "5",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "DOGEUSDT",
+      "positionAmt": "0",
+      "positionSide": "BOTH",
+      "leverage": "20",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "KNCUSDT",
+      "positionAmt": "0",
+      "positionSide": "BOTH",
+      "leverage": "4",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "ALGOUSDT",
+      "positionAmt": "0.0",
+      "positionSide": "BOTH",
+      "leverage": "20",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "1INCHUSDT",
+      "positionAmt": "0",
+      "positionSide": "BOTH",
+      "leverage": "5",
+      "marginType": "cross"
+    },
+    {
+      "symbol": "ZENUSDT",
+      "positionAmt": "0.0",
+      "positionSide": "BOTH",
+      "leverage": "10",
+      "marginType": "cross"
+    }
+  ],
+  "manager": {
+    "source_id": "binance_exec_trade08",
+    "estimated_fee_rate": 0.000146,
+    "maker_fee_rate": -5e-05,
+    "taker_fee_rate": 0.000146,
+    "theoretical_twap_fee_rate": 4.8e-05,
+    "quote_fee_rates": {},
+    "bindings": [],
+    "configuration": {
+      "mode": "independent"
+    },
+    "pending_publishes": []
+  },
+  "virtual02": {
+    "virtual_id": "virtual02",
+    "name": "lgq_cta",
+    "bindings": [
+      {
+        "binding_name": "lgq_cta_symbol_mean",
+        "position_strategy_name": "lgq_cta_symbol_mean",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      }
+    ],
+    "updated_at_us": 1792676585330680,
+    "followers": [],
+    "created_by_user_id": 1,
+    "owner_username": "prc",
+    "managers": [],
+    "can_configure": true,
+    "can_manage_grants": true
+  },
+  "grid": {
+    "strategy_name": "lgq_grid_prep",
+    "order_parameters": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "chase": {
+        "batch_floor_usdt": 100.0,
+        "max_batch": 4,
+        "max_open_batches": 2,
+        "maker_recenter_trigger_bps": 5.0,
+        "maker_amend_cooldown_ms": 1000,
+        "maker_timeout_sec": 120,
+        "target_tolerance_usdt": 10.0,
+        "strategy_order_rate_limit_per_min": 0,
+        "strategy_order_rate_limit_10s": 0
+      },
+      "signal_execution_enabled": true,
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0
+    },
+    "updated_at_us": 1792656083005658,
+    "owner": "lgq",
+    "can_configure": true
+  },
+  "protected_pids": {
+    "/home/ubuntu/binance-intra-arb01": [],
+    "/home/ubuntu/binance_fr_arb02": [
+      {
+        "pid": 43876,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 43996,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 44293,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 44350,
+        "comm": "python3"
+      },
+      {
+        "pid": 47756,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 60856,
+        "comm": "fr_signal_dashb"
+      },
+      {
+        "pid": 99911,
+        "comm": "pre_trade"
+      },
+      {
+        "pid": 149220,
+        "comm": "trade_signal"
+      }
+    ],
+    "/home/ubuntu/binance_exec_trade04": [
+      {
+        "pid": 91219,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 91622,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 91888,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 92076,
+        "comm": "exec-pre-trade"
+      },
+      {
+        "pid": 92209,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 94386,
+        "comm": "python3"
+      }
+    ],
+    "/home/ubuntu/bitget_fr_arb02": [
+      {
+        "pid": 64192,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 64315,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 64572,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 64734,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 64795,
+        "comm": "python3"
+      },
+      {
+        "pid": 64843,
+        "comm": "fr_signal_dashb"
+      },
+      {
+        "pid": 142765,
+        "comm": "pre_trade"
+      },
+      {
+        "pid": 149857,
+        "comm": "trade_signal"
+      }
+    ],
+    "/home/ubuntu/binance-cta-special-rx03": [],
+    "/home/ubuntu/binance_exec_trade02": [
+      {
+        "pid": 85925,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 86311,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 86546,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 87496,
+        "comm": "exec-pre-trade"
+      },
+      {
+        "pid": 88791,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 89027,
+        "comm": "python3"
+      }
+    ],
+    "/home/ubuntu/binance_fr_arb03": [
+      {
+        "pid": 44461,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 44581,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 44889,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 44946,
+        "comm": "python3"
+      },
+      {
+        "pid": 47920,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 61245,
+        "comm": "fr_signal_dashb"
+      },
+      {
+        "pid": 147066,
+        "comm": "pre_trade"
+      },
+      {
+        "pid": 149309,
+        "comm": "trade_signal"
+      }
+    ],
+    "/home/ubuntu/bitget_fr_arb03": [
+      {
+        "pid": 64965,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 65088,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 65382,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 65577,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 65640,
+        "comm": "python3"
+      },
+      {
+        "pid": 65688,
+        "comm": "fr_signal_dashb"
+      },
+      {
+        "pid": 129512,
+        "comm": "pre_trade"
+      },
+      {
+        "pid": 149949,
+        "comm": "trade_signal"
+      }
+    ],
+    "/home/ubuntu/binance_exec_trade08": [
+      {
+        "pid": 157817,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 162464,
+        "comm": "python3"
+      },
+      {
+        "pid": 3919545,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 3919789,
+        "comm": "viz_server"
+      }
+    ],
+    "/home/ubuntu/okex-intra-arb01": [],
+    "/home/ubuntu/binance_fr_arb04": [
+      {
+        "pid": 45056,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 45178,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 45486,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 45543,
+        "comm": "python3"
+      },
+      {
+        "pid": 48089,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 61528,
+        "comm": "fr_signal_dashb"
+      },
+      {
+        "pid": 144946,
+        "comm": "pre_trade"
+      },
+      {
+        "pid": 149403,
+        "comm": "trade_signal"
+      }
+    ],
+    "/home/ubuntu/gate_fr_arb03": [
+      {
+        "pid": 62577,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 62705,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 62997,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 63195,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 63265,
+        "comm": "python3"
+      },
+      {
+        "pid": 63312,
+        "comm": "fr_signal_dashb"
+      },
+      {
+        "pid": 120900,
+        "comm": "pre_trade"
+      },
+      {
+        "pid": 149679,
+        "comm": "trade_signal"
+      }
+    ],
+    "/home/ubuntu/binance_exec_trade05": [],
+    "/home/ubuntu/binance_fix_demo": [],
+    "/home/ubuntu/binance_mm_alpha": [],
+    "/home/ubuntu/binance_exec_trade01": [
+      {
+        "pid": 84400,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 85012,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 85308,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 85514,
+        "comm": "python3"
+      },
+      {
+        "pid": 4064693,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 4066760,
+        "comm": "exec-pre-trade"
+      }
+    ],
+    "/home/ubuntu/binance-cta-perp-rx02": [
+      {
+        "pid": 160373,
+        "comm": "cta_perp_factor"
+      },
+      {
+        "pid": 168550,
+        "comm": "python3"
+      },
+      {
+        "pid": 168607,
+        "comm": "python3"
+      },
+      {
+        "pid": 177222,
+        "comm": "cta_perp_signal"
+      }
+    ],
+    "/home/ubuntu/gate_fr_arb02": [
+      {
+        "pid": 61805,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 61932,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 62192,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 62350,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 62407,
+        "comm": "python3"
+      },
+      {
+        "pid": 62454,
+        "comm": "fr_signal_dashb"
+      },
+      {
+        "pid": 116154,
+        "comm": "pre_trade"
+      },
+      {
+        "pid": 149584,
+        "comm": "trade_signal"
+      }
+    ],
+    "/home/ubuntu/binance-cta-perp-rx03": [
+      {
+        "pid": 100495,
+        "comm": "python3"
+      },
+      {
+        "pid": 100556,
+        "comm": "python3"
+      },
+      {
+        "pid": 100626,
+        "comm": "cta_perp_signal"
+      },
+      {
+        "pid": 106578,
+        "comm": "cta_perp_factor"
+      }
+    ],
+    "/home/ubuntu/binance-cta-spread-rx01": [
+      {
+        "pid": 2879569,
+        "comm": "python3"
+      },
+      {
+        "pid": 2879622,
+        "comm": "cta_spread_sign"
+      },
+      {
+        "pid": 3207816,
+        "comm": "python3"
+      },
+      {
+        "pid": 3973994,
+        "comm": "cta_spread_fact"
+      }
+    ],
+    "/home/ubuntu/binance-cta-perp-rx04": [
+      {
+        "pid": 620503,
+        "comm": "python3"
+      },
+      {
+        "pid": 620577,
+        "comm": "python3"
+      },
+      {
+        "pid": 620641,
+        "comm": "cta_perp_5m_sig"
+      },
+      {
+        "pid": 705737,
+        "comm": "cta_perp_factor"
+      }
+    ],
+    "/home/ubuntu/local_binance_ed25519_test": [],
+    "/home/ubuntu/gate_fr_arb01": [
+      {
+        "pid": 60648,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 60809,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 61143,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 61465,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 61632,
+        "comm": "python3"
+      },
+      {
+        "pid": 61710,
+        "comm": "fr_signal_dashb"
+      },
+      {
+        "pid": 123262,
+        "comm": "pre_trade"
+      },
+      {
+        "pid": 149496,
+        "comm": "trade_signal"
+      }
+    ],
+    "/home/ubuntu/ed25519_demo": [],
+    "/home/ubuntu/bitget-gate-cross-arb01": [],
+    "/home/ubuntu/binance_exec_trade03": [
+      {
+        "pid": 89461,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 89855,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 90108,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 90287,
+        "comm": "exec-pre-trade"
+      },
+      {
+        "pid": 90416,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 90639,
+        "comm": "python3"
+      }
+    ],
+    "/home/ubuntu/binance_exec_trade07": [
+      {
+        "pid": 105323,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 105844,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 106116,
+        "comm": "rapidx_account_"
+      },
+      {
+        "pid": 106434,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 166080,
+        "comm": "python3"
+      },
+      {
+        "pid": 384621,
+        "comm": "exec-pre-trade"
+      }
+    ],
+    "/home/ubuntu/binance-cta-rx01": [],
+    "/home/ubuntu/okex_mm_alpha": [
+      {
+        "pid": 100976,
+        "comm": "python3"
+      },
+      {
+        "pid": 101151,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 101408,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 101876,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 102229,
+        "comm": "pre_trade"
+      },
+      {
+        "pid": 102472,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 121148,
+        "comm": "trade_signal"
+      }
+    ],
+    "/home/ubuntu/binance-cta-special-rx02": [],
+    "/home/ubuntu/bitget_fr_arb01": [
+      {
+        "pid": 63432,
+        "comm": "account_monitor"
+      },
+      {
+        "pid": 63556,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 63801,
+        "comm": "trade_engine"
+      },
+      {
+        "pid": 63990,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 64049,
+        "comm": "python3"
+      },
+      {
+        "pid": 64097,
+        "comm": "fr_signal_dashb"
+      },
+      {
+        "pid": 142609,
+        "comm": "pre_trade"
+      },
+      {
+        "pid": 149767,
+        "comm": "trade_signal"
+      }
+    ],
+    "/home/ubuntu/binance_exec_trade06": [
+      {
+        "pid": 163885,
+        "comm": "python3"
+      },
+      {
+        "pid": 502412,
+        "comm": "exec-pre-trade"
+      },
+      {
+        "pid": 502880,
+        "comm": "viz_server"
+      },
+      {
+        "pid": 3199097,
+        "comm": "persist_manager"
+      },
+      {
+        "pid": 3199439,
+        "comm": "rapidx_account_"
+      },
+      {
+        "pid": 3207923,
+        "comm": "trade_engine"
+      }
+    ],
+    "/home/ubuntu/binance_fr_arb01": []
+  },
+  "files_sha256": {
+    "/home/ubuntu/binance_exec_trade08/trade_engine.toml": "aab1b4a75f872872f74268ccbf44ecf2000469a6a7f22b9295e37ba8fbfac42f",
+    "/home/ubuntu/binance_exec_trade08/scripts/exec_config_server.py": "09d98758b26fbe77451f3f9016580003328f67672e4e377ab9ff3924ad23a1ca",
+    "/home/ubuntu/binance_exec_trade08/exec-pre-trade": "0a2df6eadcd0e7a6470ed1e73e7835da8c27cccafd50030d79fb75e39841f306",
+    "/home/ubuntu/crypto_cta_manager/bin/cta_web": "ccb2fb93b137e9363d4e235ce764dd37d39c97b67b861987a1355beacdce1269",
+    "/home/ubuntu/crypto_cta_manager/config/cta-manager.toml": "3bd462b2d8e50972af792be9232bd557c1b10f93b7e58847757a1ad3e9615ed4"
+  }
+}

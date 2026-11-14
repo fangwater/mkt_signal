@@ -1,0 +1,3 @@
+# CTP runs only on an explicitly authorized external host, never here/intranet.
+service_root = "cn_futures_pbs/ctp"
+ctp_config = "/home/operator/cn_futures_env/config/ctp_market_data.toml"

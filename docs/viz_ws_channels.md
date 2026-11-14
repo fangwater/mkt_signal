@@ -163,4 +163,8 @@
 - `entry` 包含账户净值、long/short notional、net/gross notional 和杠杆率。
 
 Exec 频道必须通过 `[servers.exec_pre_trade].namespace` 显式订阅，不继承普通
-pre-trade 的 `servers.namespaces`。
+pre-trade 的 `servers.namespaces`。同时必须配置 `venue`，且一个 Exec Viz 只订阅
+一个市场。JSON 外层的 `venue` 标明该市场；另一市场的仓位或风险样本会被拒绝。
+U 本位和币本位分别使用独立页面，币本位数量按结算币展示，`*_usdt` 金额字段在
+币本位中表示 USD 等值。统一账户的权益与风险包含共享抵押资产，仓位名义价值
+仅包含该实例所属市场。

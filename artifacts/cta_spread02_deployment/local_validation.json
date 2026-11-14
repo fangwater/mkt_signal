@@ -1,0 +1,31 @@
+{
+  "rules_exact": 319,
+  "symbols": 18,
+  "frequencies": {
+    "1min": 48,
+    "5min": 79,
+    "15min": 64,
+    "1h": 128
+  },
+  "spread02_calculations": 341,
+  "merged_calculations": 532,
+  "lib_tests": {
+    "passed": 1539,
+    "ignored": 3
+  },
+  "config_server_tests": 4,
+  "editor_round_trips": 8,
+  "disabled": true,
+  "hourly_history_tests": 3,
+  "delist_tests": {
+    "passed": 70,
+    "failed": 4,
+    "new_dual_source_eight_table_backup_test": "passed",
+    "failures": [
+      "backup::tests::mm_archives_restore_scoped_and_shared_parameters_without_running_processes: redis-server executable absent",
+      "cta_factors::tests::unified_catalog_has_both_groups_without_claiming_a_live_process: pre-existing Prep count 596 vs 404",
+      "cta_mapping::tests::current_groups_replace_retired_signals_and_use_the_worker_heartbeat: pre-existing Prep combinations 13 vs 12",
+      "cta_mapping::tests::current_spread_and_prep_are_discovered_without_legacy_signal_directories: pre-existing Spread01 first table factor count 35 vs 50"
+    ]
+  }
+}

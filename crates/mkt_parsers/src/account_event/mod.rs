@@ -127,6 +127,7 @@ pub fn account_risk_dedup_key(account_scope: BasicAccountScope, msg: &BasicAccou
             msg.adj_equity_usd.to_bits(),
             msg.maintenance_margin_usd.to_bits(),
             msg.margin_ratio.to_bits(),
+            msg.available_margin_usd.to_bits(),
         ]),
     )
 }
@@ -149,6 +150,8 @@ pub fn binance_order_dedup_key(
             msg.trade_id as u64,
             msg.trade_time as u64,
             msg.cumulative_filled_quantity.to_bits(),
+            msg.amend_result as i64 as u64,
+            msg.price.to_bits(),
         ]),
     )
 }
@@ -164,6 +167,8 @@ pub fn okex_order_dedup_key(account_scope: BasicAccountScope, msg: &OkexOrderMsg
             msg.update_time as u64,
             msg.state as u64,
             msg.cumulative_filled_quantity.to_bits(),
+            msg.amend_result as i64 as u64,
+            msg.price.to_bits(),
         ]),
     )
 }
@@ -268,6 +273,19 @@ pub(crate) mod test_sink {
 mod tests {
     use super::binance_order_dedup_key;
     use crate::msg::basic_account_msg::{BasicAccountScope, BinanceBasicOrderMsg};
+
+    #[test]
+    fn account_risk_dedup_retains_margin_only_updates() {
+        let mut msg =
+            super::BasicAccountRiskMsg::create(123, 100.0, 99.0, 20.0, 40.0, 5.0, 3.0, 200.0);
+        msg.available_margin_usd = 1_999.0;
+        let locked = super::account_risk_dedup_key(BasicAccountScope::GateUnified, &msg);
+        msg.available_margin_usd = 2_001.0;
+        assert_ne!(
+            locked,
+            super::account_risk_dedup_key(BasicAccountScope::GateUnified, &msg)
+        );
+    }
 
     fn sample_order(event_time: i64, trade_time: i64, trade_id: i64) -> BinanceBasicOrderMsg {
         BinanceBasicOrderMsg::create(

@@ -1,0 +1,70 @@
+{
+  "strategy_group": "prep02",
+  "input_groups": 18,
+  "input_expanded_rows": 102,
+  "unique_rows": 99,
+  "exact_duplicates_removed": [
+    {
+      "interval": "15min",
+      "标的": "SOLUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "baseline_104"
+    },
+    {
+      "interval": "15min",
+      "标的": "BTCUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "baseline_022"
+    },
+    {
+      "interval": "15min",
+      "标的": "XRPUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "baseline_022"
+    }
+  ],
+  "profiles": {
+    "1min": {
+      "path": "config/cta_prep_binance_futures/prep02_binance-futures_1min.json",
+      "rules": 59,
+      "symbols": 37,
+      "max_pos_u": 100.0,
+      "enabled": false
+    },
+    "5min": {
+      "path": "config/cta_prep_binance_futures/prep02_binance-futures_5min.json",
+      "rules": 7,
+      "symbols": 6,
+      "max_pos_u": 200,
+      "enabled": false
+    },
+    "15min": {
+      "path": "config/cta_prep_binance_futures/prep02_binance-futures_15min.json",
+      "rules": 33,
+      "symbols": 24,
+      "max_pos_u": 200.0,
+      "enabled": false,
+      "status": "validated"
+    }
+  },
+  "local_only": false,
+  "validation": {
+    "known_factor_rows": 99,
+    "pending_factor_rows": 0,
+    "related_tests_passed": 30,
+    "worker_check_passed_for_loaded_catalog": true,
+    "browser_group_check_passed": true
+  },
+  "factor_name_correction": {
+    "from": "TD_MI_040",
+    "to": "TD_MT_040",
+    "rows": 2,
+    "user_confirmed": true
+  },
+  "deployed": true,
+  "deployment_commit": "fa63d6e495d7e968fa3559ef122eb5c59fa3f929",
+  "deployment_receipt": "artifacts/cta_prep02_deploy_20261103/verified.json"
+}

@@ -1,0 +1,54 @@
+{
+  "operator_approved": true,
+  "reason": "Markets absent from RapidX current symbol info and online amount thresholds",
+  "rules": [
+    {
+      "标的": "ICX",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "baseline_013"
+    },
+    {
+      "标的": "ICX",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "factor_032"
+    },
+    {
+      "标的": "ICX",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "baseline_104"
+    },
+    {
+      "标的": "ICX",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "baseline_040"
+    },
+    {
+      "标的": "ICX",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "TD_PT_001"
+    },
+    {
+      "标的": "STORJ",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "factor_128"
+    },
+    {
+      "标的": "STORJ",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_120"
+    },
+    {
+      "标的": "STORJ",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_040"
+    }
+  ]
+}

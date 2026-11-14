@@ -546,7 +546,7 @@ fn open_channel_sub(
     let service_name = format!(
         "{}/{}/{}",
         clean_root(root)?,
-        args.venue,
+        runtime_common::symbol_util::market_data_pub_slug(&args.venue),
         channel.service_channel()
     );
     let subscriber = wait_open_subscriber(node, &service_name, channel, args.open_timeout_secs)

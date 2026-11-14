@@ -23,8 +23,12 @@ import re
 import sys
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import parameter_audit
 
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 MODEL_RE = r"[a-zA-Z0-9][a-zA-Z0-9._-]*"
@@ -1929,7 +1933,7 @@ class MMConfigStore:
     def redis(self):
         if self._redis_mod is None:
             raise RuntimeError("redis package is not installed. Please run: pip install redis")
-        return self._redis_mod.Redis(host="127.0.0.1", port=6379, db=0, password=None)
+        return parameter_audit.wrap_redis(self._redis_mod.Redis(host="127.0.0.1", port=6379, db=0, password=None))
 
     def _replace_hash(self, key: str, mapping: Dict[str, str]) -> Dict[str, Any]:
         redis = self.redis()
@@ -2428,6 +2432,7 @@ def build_handler(config: AppConfig):
             except Exception as exc:
                 self._handle_exception(exc, status=500)
 
+        @parameter_audit.audit_post("market_making", lambda handler: config.env_name)
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
             try:
@@ -2436,6 +2441,12 @@ def build_handler(config: AppConfig):
                 venue = default_venue_for_exchange(exchange)
 
                 if parsed.path == "/api/symbol-list":
+                    if payload.get("symbols") is None:
+                        # 缺省字段不写入：避免空 body / 缺字段请求把线上
+                        # mm_trade_symbols 清成 []；显式 [] 仍是合法清空。
+                        raise ValueError(
+                            "missing required field 'symbols'（缺省不写入，保持线上原值）"
+                        )
                     result = store.write_symbols(venue, payload.get("symbols"))
                     self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
                     return
@@ -2499,7 +2510,7 @@ def build_handler(config: AppConfig):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MM config server")
-    parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
+    parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "18131")))
     parser.add_argument(
         "--default-exchange",

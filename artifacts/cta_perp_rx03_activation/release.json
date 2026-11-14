@@ -1,0 +1,18 @@
+{
+  "branch": "arbmm",
+  "base_commit": "6ff0248e524a673c3ba8524bab8e9a6c6ddbb7e1",
+  "built_on": "/home/fanghaizhou/mkt_signal",
+  "files": {
+    "exec-pre-trade": "1647def5d9162dc8385aa203c8ac22f58c225f7a04b2ae1f98716cc8cba36fda",
+    "trade_engine": "7c282c66b1843a95d88d2235f75062fba2a9edacf79fd408799b11bc9c9e019f",
+    "rapidx_account_monitor": "cf49d717c1d9b3a7d4d3725e00bf8d883e1887dbf2de7bf622c75bc3aed116ad",
+    "trade_signal": "c25ccfaf31764a186a5ca426f0e22e2923847afa02a3cc7edd40ee7e8190a04b",
+    "viz_server": "27d4bf40b3350eada29f2db6c41170b48350cbfce1741499a591b47dcd89dd2e",
+    "persist_manager": "a3a6eefbdbe0db44b3a62496cb4d915dea6f49047f80ebf1006bc7c2ec8f3da3"
+  },
+  "source_patch": "build_source.patch",
+  "tests": "52 Exec Python checks passed",
+  "untracked_source_files": {
+    "src/cta_perp/model_service.rs": "cb259d7524ca7128c45fd4f46581b0d061a9a1173e3eadb05dcc34aabdfc8f9e"
+  }
+}

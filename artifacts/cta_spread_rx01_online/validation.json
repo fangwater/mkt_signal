@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "ready": 57,
+  "latest_model_ms": 1791880560000,
+  "enabled": false,
+  "markers": {
+    "\u73b0\u8d27 B": 2,
+    "\u73b0\u8d27 S": 2,
+    "\u5408\u7ea6\u5bf9\u51b2 B": 2,
+    "\u5408\u7ea6\u5bf9\u51b2 S": 2
+  },
+  "inspector": "\u5408\u7ea6 B \u00b7 \u5bf9\u51b2\u9000\u51fa",
+  "browser_errors": [],
+  "mobile_overflow": false
+}

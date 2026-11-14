@@ -1,0 +1,150 @@
+{
+  "publication_paused_by_user": true,
+  "new_exception_guard_published": false,
+  "bitget_fr_arb01": {
+    "env": "bitget_fr_arb01",
+    "processes": [
+      {
+        "pid": 2623085,
+        "kind": "persist_manager",
+        "comm": "persist_manager",
+        "cpus": "0-5,48-95",
+        "sha256": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf"
+      },
+      {
+        "pid": 2623439,
+        "kind": "account_monitor",
+        "comm": "account_monitor",
+        "cpus": "0-5,48-95",
+        "sha256": "0341b13079b9a437da910a50e21a1b2204d724c5b72a139bc12ec90211ae2e61"
+      },
+      {
+        "pid": 2623612,
+        "kind": "trade_engine",
+        "comm": "trade_engine",
+        "cpus": "0-5,48-95",
+        "sha256": "99557009f4053e68fee895ebee4512a4c325133574698370bbe844a5b21bb02d"
+      },
+      {
+        "pid": 2624360,
+        "kind": "pre_trade",
+        "comm": "pre_trade",
+        "cpus": "0-5,48-95",
+        "sha256": "c441024da1b4630d50942c97830a73d1d2a302b4aa7a8891eb15df8d8a35959a"
+      },
+      {
+        "pid": 2625861,
+        "kind": "viz_server",
+        "comm": "viz_server",
+        "cpus": "0-5,48-95",
+        "sha256": "069a4483143829ec50aee0cadf148d74897b6abcffafbf1a036ab9e4fc1193ae"
+      },
+      {
+        "pid": 2625919,
+        "kind": "fr_config_server.py",
+        "comm": "python3",
+        "cpus": "0-5,48-95",
+        "sha256": null
+      },
+      {
+        "pid": 2625976,
+        "kind": "fr_signal_dashboard",
+        "comm": "fr_signal_dashb",
+        "cpus": "0-5,48-95",
+        "sha256": "31cc401ddd204c9d44e143cfbbaa53b7267d068777dc34110487283d7830726b"
+      },
+      {
+        "pid": 2626086,
+        "kind": "trade_signal",
+        "comm": "trade_signal",
+        "cpus": "0-5,48-95",
+        "sha256": "cc9e5bbcdc3b5ca2b0fac97d09649a7125d1e6e923c4ad930988a4ac47e3f8b1"
+      }
+    ],
+    "config_preserved": true,
+    "local_ips": [
+      "172.31.35.231",
+      "172.31.35.231"
+    ],
+    "source_commit": "05425d6e4284f2347e047a304f3e773b2e84eb65",
+    "time": 1794479889.501209,
+    "viz_port": 20151,
+    "snapshot_ages": {
+      "pre_trade_exposure": 1.817814826965332,
+      "pre_trade_risk": 1.8178176879882812
+    }
+  },
+  "bitget_fr_arb02": {
+    "env": "bitget_fr_arb02",
+    "publication_cancelled": true,
+    "original_binaries_restored_running": true,
+    "processes": [
+      {
+        "pid": 64843,
+        "kind": "fr_signal_dashboard",
+        "comm": "fr_signal_dashb",
+        "cpus": "0-5,48-95",
+        "sha256": "b96cd9d953c6dee0e7b575238a8190dac965d50a7c561aeb1c9c3af8d5217a82"
+      },
+      {
+        "pid": 599427,
+        "kind": "fr_config_server.py",
+        "comm": "python3",
+        "cpus": "0-5",
+        "sha256": null
+      },
+      {
+        "pid": 2630712,
+        "kind": "account_monitor",
+        "comm": "account_monitor",
+        "cpus": "0-5,48-95",
+        "sha256": "9faa8118f797d396c4c0bb9bb7644cdf118ec8e8046bc2cbf3b42bf4532cf0a2"
+      },
+      {
+        "pid": 2632069,
+        "kind": "trade_engine",
+        "comm": "trade_engine",
+        "cpus": "0-5,48-95",
+        "sha256": "2c43f9dd91492a596821e60b1ef1a2dfdb6a4a6198d3bc19248a66caf2b0a796"
+      },
+      {
+        "pid": 2633430,
+        "kind": "pre_trade",
+        "comm": "pre_trade",
+        "cpus": "0-5,48-95",
+        "sha256": "a4786154427bcfee7a4a22486874b12731fefedbc92fa26d472f6a6777576c2a"
+      },
+      {
+        "pid": 2638506,
+        "kind": "trade_signal",
+        "comm": "trade_signal",
+        "cpus": "0-5,48-95",
+        "sha256": "6f86bf3b76740bf5bf6b730c6b7157ad0fcdd737275ae3b6e294cd2f89304d9b"
+      },
+      {
+        "pid": 2996936,
+        "kind": "viz_server",
+        "comm": "viz_server",
+        "cpus": "0-5,48-95",
+        "sha256": "bed95325407447614e93733ff711d0bbb6ee3ab13d1762b8057bdc0e42ebb7de"
+      },
+      {
+        "pid": 2999246,
+        "kind": "persist_manager",
+        "comm": "persist_manager",
+        "cpus": "15",
+        "sha256": "12cbefb582c388014d75740f708b4391984071a479a72fac3deaf60eb1aab002"
+      }
+    ],
+    "time": 1794480205.5435796,
+    "viz_port": 20152,
+    "snapshot_ages": {
+      "pre_trade_exposure": 0.5255253314971924,
+      "pre_trade_risk": 0.5255265235900879
+    }
+  },
+  "bitget_fr_arb03": {
+    "publication_attempted": false,
+    "processes_binaries_and_config_unchanged": true
+  }
+}

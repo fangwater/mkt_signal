@@ -1,0 +1,663 @@
+{
+  "order_strategies": [
+    {
+      "strategy_name": "lgq_cta_ctaker",
+      "single_order_usdt": 100,
+      "orders_per_batch": 1,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 0,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 0,
+      "target_tolerance_usdt": 0,
+      "max_batch": 1,
+      "algorithm": "ctaker",
+      "pov": {
+        "liquidity": "maker_then_taker",
+        "duration_ms": 3600000,
+        "limit_price": null,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "quote_stale_ms": 1000,
+        "volume_stale_ms": 5000,
+        "participation_rate": 0.1
+      },
+      "chase": {
+        "max_batch": 4,
+        "batch_floor_usdt": 100.0,
+        "max_open_batches": 2,
+        "maker_timeout_sec": 120,
+        "target_tolerance_usdt": 10.0,
+        "maker_amend_cooldown_ms": 1000,
+        "maker_recenter_trigger_bps": 5.0,
+        "strategy_order_rate_limit_10s": 0,
+        "strategy_order_rate_limit_per_min": 0
+      },
+      "signal_execution_enabled": false
+    }
+  ],
+  "bindings": [
+    {
+      "binding_name": "lgq_cta_TD_TI_002",
+      "position_strategy_name": "lgq_cta_TD_TI_002",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_TD_TI_024",
+      "position_strategy_name": "lgq_cta_TD_TI_024",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_baseline_004",
+      "position_strategy_name": "lgq_cta_baseline_004",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_baseline_141",
+      "position_strategy_name": "lgq_cta_baseline_141",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_baseline_164",
+      "position_strategy_name": "lgq_cta_baseline_164",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_baseline_200",
+      "position_strategy_name": "lgq_cta_baseline_200",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_factor_036",
+      "position_strategy_name": "lgq_cta_factor_036",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_factor_051",
+      "position_strategy_name": "lgq_cta_factor_051",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_factor_170",
+      "position_strategy_name": "lgq_cta_factor_170",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_symbol_mean",
+      "position_strategy_name": "lgq_cta_symbol_mean",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    }
+  ],
+  "follow": {
+    "virtual_id": "virtual02",
+    "multiplier": 1
+  },
+  "virtual": {
+    "virtual_id": "virtual02",
+    "name": "lgq_cta"
+  },
+  "virtual_bindings": [
+    {
+      "binding_name": "lgq_cta_TD_TI_002",
+      "position_strategy_name": "lgq_cta_TD_TI_002",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_TD_TI_024",
+      "position_strategy_name": "lgq_cta_TD_TI_024",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_baseline_004",
+      "position_strategy_name": "lgq_cta_baseline_004",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_baseline_141",
+      "position_strategy_name": "lgq_cta_baseline_141",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_baseline_164",
+      "position_strategy_name": "lgq_cta_baseline_164",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_baseline_200",
+      "position_strategy_name": "lgq_cta_baseline_200",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_factor_036",
+      "position_strategy_name": "lgq_cta_factor_036",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_factor_051",
+      "position_strategy_name": "lgq_cta_factor_051",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_factor_170",
+      "position_strategy_name": "lgq_cta_factor_170",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_symbol_mean",
+      "position_strategy_name": "lgq_cta_symbol_mean",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    }
+  ],
+  "position_strategies": [
+    {
+      "strategy_name": "lgq_cta_TD_TI_002",
+      "targets": {
+        "BNBUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SOLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XRPUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LINKUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "symbol_order_strategy_overrides": {},
+      "open_visibility": false
+    },
+    {
+      "strategy_name": "lgq_cta_TD_TI_024",
+      "targets": {
+        "XLMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "symbol_order_strategy_overrides": {},
+      "open_visibility": false
+    },
+    {
+      "strategy_name": "lgq_cta_baseline_004",
+      "targets": {
+        "ETHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "symbol_order_strategy_overrides": {},
+      "open_visibility": false
+    },
+    {
+      "strategy_name": "lgq_cta_baseline_141",
+      "targets": {
+        "ETHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SOLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XLMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XRPUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "symbol_order_strategy_overrides": {},
+      "open_visibility": false
+    },
+    {
+      "strategy_name": "lgq_cta_baseline_164",
+      "targets": {
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "symbol_order_strategy_overrides": {},
+      "open_visibility": false
+    },
+    {
+      "strategy_name": "lgq_cta_baseline_200",
+      "targets": {
+        "SOLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XLMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "symbol_order_strategy_overrides": {},
+      "open_visibility": false
+    },
+    {
+      "strategy_name": "lgq_cta_factor_036",
+      "targets": {
+        "FILUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LTCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "UNIUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XLMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AVAXUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LINKUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "symbol_order_strategy_overrides": {},
+      "open_visibility": false
+    },
+    {
+      "strategy_name": "lgq_cta_factor_051",
+      "targets": {
+        "BNBUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "FILUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LTCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SOLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LINKUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "symbol_order_strategy_overrides": {},
+      "open_visibility": false
+    },
+    {
+      "strategy_name": "lgq_cta_factor_170",
+      "targets": {
+        "DOTUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LTCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "UNIUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XRPUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LINKUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "symbol_order_strategy_overrides": {},
+      "open_visibility": false
+    },
+    {
+      "strategy_name": "lgq_cta_symbol_mean",
+      "targets": {
+        "ADAUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AXSUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "BELUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "BTCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "CRVUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOTUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ENJUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ETCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ETHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "GRTUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "KNCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "KSMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LTCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEOUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ONTUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "RLCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "RSRUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SKLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SNXUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SOLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "TRBUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "UNIUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "VETUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XLMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XTZUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "YFIUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZENUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZILUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZRXUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ALGOUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ATOMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AVAXUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "BANDUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "COMPUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "EGLDUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "IOSTUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "IOTAUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "KAVAUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "QTUMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "1INCHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SUSHIUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "THETAUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "symbol_order_strategy_overrides": {},
+      "open_visibility": false
+    }
+  ],
+  "risk_params": {
+    "max_pending_limit_orders": "10",
+    "exec_max_pending_limit_buy_orders": "10",
+    "exec_max_pending_limit_sell_orders": "10",
+    "exec_order_rate_limit_per_min": "400",
+    "exec_order_rate_limit_10s": "200"
+  },
+  "max_pos_u": null,
+  "source_id": "bybit_exec_trade02",
+  "alias": "bybit-02",
+  "trading_started": false,
+  "live_rx02_publication_connected": false
+}

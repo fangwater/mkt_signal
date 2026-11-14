@@ -61,3 +61,30 @@ pub async fn bitget_rest_get(
     let body = resp.text().await.unwrap_or_default();
     Ok((status, body))
 }
+
+/// Signed UTA POST; body bytes are included verbatim in the signature.
+pub async fn bitget_rest_post(
+    client: &Client,
+    credentials: &BitgetCredentials,
+    path: &str,
+    body: &str,
+) -> Result<(u16, String)> {
+    let timestamp_ms = Utc::now().timestamp_millis();
+    let sign = build_bitget_sign(
+        timestamp_ms,
+        "POST",
+        &format!("{path}{body}"),
+        &credentials.secret_key,
+    );
+    let response = client
+        .post(format!("{BITGET_REST_BASE}{path}"))
+        .header("ACCESS-KEY", &credentials.api_key)
+        .header("ACCESS-SIGN", sign)
+        .header("ACCESS-TIMESTAMP", timestamp_ms.to_string())
+        .header("ACCESS-PASSPHRASE", &credentials.passphrase)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body.to_owned())
+        .send()
+        .await?;
+    Ok((response.status().as_u16(), response.text().await?))
+}
