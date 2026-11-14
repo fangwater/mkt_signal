@@ -2966,9 +2966,9 @@ impl BasicAccountListener {
                 }
                 MONITOR_FAST_POLL_LOW_WEIGHT
             }
-            BasicAccountEventType::HyperliquidFactReplayControl | BasicAccountEventType::Error => {
-                MONITOR_FAST_POLL_LOW_WEIGHT
-            }
+            BasicAccountEventType::HyperliquidFactReplayControl
+            | BasicAccountEventType::RapidXFinancial
+            | BasicAccountEventType::Error => MONITOR_FAST_POLL_LOW_WEIGHT,
         };
         weight
     }

@@ -45,6 +45,8 @@ pub enum BasicAccountEventType {
     HyperliquidNativeEvent = 4018,
     /// Factual exchange-owned UTA futures fill, without a CTA strategy identity.
     ExternalFuturesFill = 4019,
+    /// RapidX live financial readiness, frozen margin and durable-delivery backlog (JSON).
+    RapidXFinancial = 4020,
     /// 错误
     Error = 4999,
 }
@@ -1760,6 +1762,7 @@ pub fn get_basic_event_type(data: &[u8]) -> BasicAccountEventType {
         4017 => BasicAccountEventType::HyperliquidTwapHistory,
         4018 => BasicAccountEventType::HyperliquidNativeEvent,
         4019 => BasicAccountEventType::ExternalFuturesFill,
+        4020 => BasicAccountEventType::RapidXFinancial,
         _ => BasicAccountEventType::Error,
     }
 }

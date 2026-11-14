@@ -5,7 +5,11 @@ use futures_util::{SinkExt, StreamExt};
 use mkt_parsers::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
 };
-use persist_common::rapidx_statement::StatementRecord;
+use persist_common::{
+    rapidx_execution::{ExecutionEvidence, ExecutionRecord},
+    rapidx_role::ExecutionRoleRecord,
+    rapidx_statement::StatementRecord,
+};
 use runtime_common::exchange::Exchange;
 use runtime_common::execution_backend::{account_stream_slug, ExecBackend};
 use runtime_common::ws_connection::WsConnector;
@@ -14,9 +18,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 use trade_engine::ltp_account::{parse_account_push, parse_order_push, PositionSnapshotState};
+use trade_engine::ltp_delivery::Delivery;
 use trade_engine::ltp_finance::PortfolioFinancialSnapshot;
-use trade_engine::ltp_journal::{write_snapshot, AccountJournal};
-use trade_engine::ltp_persist::{ExecutionPublisher, StatementPublisher};
+use trade_engine::ltp_outbox::{DeliveryStore, Fact, Identity};
 use trade_engine::ltp_rest::LtpRestClient;
 use trade_engine::ltp_snapshot::{AccountSnapshotState, RecoveryReadiness};
 use trade_engine::ltp_statement::STATEMENT_REQUEST_INTERVAL;
@@ -28,17 +32,20 @@ struct Args {
     exchange: String,
     #[arg(long)]
     local_ip: Option<String>,
-    #[arg(long, default_value = "data/rapidx_account")]
-    journal_dir: PathBuf,
+    #[arg(long, default_value = "data/rapidx_delivery")]
+    delivery_dir: PathBuf,
+    /// Import legacy facts without exchange access; rerun after stopping the old monitor to finalize its tail.
+    #[arg(long)]
+    import_legacy: Option<PathBuf>,
+    #[arg(long, requires = "import_legacy")]
+    dry_run: bool,
     #[arg(long)]
     core: Option<usize>,
 }
 
 struct Forwarder {
     ipc: PmForwarder,
-    journal: AccountJournal,
-    executions: ExecutionPublisher,
-    statements: StatementPublisher,
+    delivery: Delivery,
     portfolio: String,
     exchange: &'static str,
     scope: BasicAccountScope,
@@ -46,7 +53,6 @@ struct Forwarder {
     assets: AccountSnapshotState,
     readiness: RecoveryReadiness,
     financial: PortfolioFinancialSnapshot,
-    financial_path: PathBuf,
     last_risk_timestamp: i64,
 }
 
@@ -66,27 +72,7 @@ fn decode_private_push(payload: &str) -> Result<Option<Value>> {
 }
 
 impl Forwarder {
-    fn poll_fact_delivery(&mut self) -> Result<()> {
-        self.executions.poll()?;
-        self.statements.poll()?;
-        while self.executions.has_capacity() {
-            let Some(record) = self.journal.next_execution_record()? else {
-                break;
-            };
-            self.executions.enqueue(&record)?;
-            self.journal.execution_record_enqueued();
-        }
-        while self.statements.has_capacity() {
-            let Some(record) = self.journal.next_statement_record()? else {
-                break;
-            };
-            self.statements.enqueue(&record)?;
-            self.journal.statement_record_enqueued();
-        }
-        Ok(())
-    }
-
-    fn process(
+    async fn process(
         &mut self,
         payload: &str,
         source: &str,
@@ -98,7 +84,6 @@ impl Forwarder {
         let Some(channel) = value.get("channel").and_then(Value::as_str) else {
             return Ok(());
         };
-        self.journal.record_message(&value, source)?;
         if matches!(channel, "Orders" | "Trades")
             && value["data"]["exchangeType"]
                 .as_str()
@@ -107,7 +92,21 @@ impl Forwarder {
             return Ok(());
         }
         if channel == "Trades" {
-            self.journal.record_execution(&value["data"], false)?;
+            let record = ExecutionRecord {
+                portfolio: self.portfolio.clone(),
+                exchange: self.exchange.into(),
+                execution: ExecutionEvidence::parse(
+                    &value["data"],
+                    &self.portfolio,
+                    self.exchange,
+                    false,
+                )?,
+            };
+            let mut facts = vec![Fact::Execution(record.clone())];
+            if let Some(role) = ExecutionRoleRecord::from_row(record, &value["data"])? {
+                facts.push(Fact::Role(role));
+            }
+            self.delivery.save(facts, vec![], None).await?;
             return Ok(());
         }
         let observed_ms = chrono::Utc::now().timestamp_millis();
@@ -123,6 +122,14 @@ impl Forwarder {
         } else {
             parse_account_push(payload, &self.portfolio, self.exchange)?
         };
+        let identities = events
+            .iter()
+            .map(|e| Identity::from_event(e))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        self.delivery.save(vec![], identities, None).await?;
         self.positions.reconcile(
             &mut events,
             source == "rest_snapshot" && channel == "Positions",
@@ -169,28 +176,42 @@ impl Forwarder {
                 bail!("RapidX account IPC delivery failed");
             }
         }
-        self.write_financial()?;
+        if source == "ws" && matches!(channel, "Accounts" | "MarginCall") {
+            self.publish_financial()?;
+        }
         Ok(())
     }
 
     fn invalidate(&mut self) -> Result<()> {
         self.readiness = RecoveryReadiness::default();
         self.publish_invalid_risk()?;
-        self.write_financial()?;
-        self.journal.ensure_healthy()
+        self.publish_financial()?;
+        Ok(())
     }
 
-    fn write_financial(&self) -> Result<()> {
-        write_snapshot(
-            &self.financial_path,
-            &json!({
-                "recovery_ready":self.readiness.is_ready(),
-                "execution_persistence_pending":self.journal.execution_delivery_pending() + self.executions.pending_count(),
-                "statement_history_end_ms":self.journal.statement_history_end_ms,
-                "statement_persistence_pending":self.journal.statement_delivery_pending() + self.statements.pending_count(),
-                "financial":self.financial
-            }),
+    fn publish_financial(&mut self) -> Result<()> {
+        let pending = &self.delivery.store.state().pending;
+        let body = serde_json::to_vec(&json!({
+            "portfolio":self.portfolio,"exchange":self.exchange,
+            "published_ms":chrono::Utc::now().timestamp_millis(),
+            "recovery_ready":self.readiness.is_ready(),
+            "accounts_observed_ms":self.financial.source_observed_ms.get("Accounts"),
+            "frozen_margin":self.financial.frozen_margin,
+            "execution_persistence_pending":pending.values().filter(|f| matches!(f, Fact::Execution(_) | Fact::Role(_))).count(),
+            "statement_persistence_pending":pending.values().filter(|f| matches!(f, Fact::Statement(_))).count(),
+            "statement_history_end_ms":self.delivery.store.state().statement_history_end_ms,
+            "execution_history_end_ms":self.delivery.store.state().execution_history_end_ms,
+        }))?;
+        let event = BasicAccountEventMsg::create(
+            BasicAccountEventType::RapidXFinancial,
+            self.scope,
+            body.into(),
         )
+        .to_bytes();
+        if !self.ipc.send_raw(&event) {
+            bail!("RapidX financial IPC delivery failed");
+        }
+        Ok(())
     }
 
     fn publish_invalid_risk(&mut self) -> Result<()> {
@@ -207,16 +228,13 @@ impl Forwarder {
         Ok(())
     }
 
-    fn apply_refresh(&mut self, refresh: Refresh) -> Result<()> {
+    async fn apply_refresh(&mut self, refresh: Refresh) -> Result<()> {
         match refresh {
             Refresh::Account(payload, started_ms) => {
-                self.process(&payload, "rest_snapshot", Some(started_ms))?
+                self.process(&payload, "rest_snapshot", Some(started_ms))
+                    .await?
             }
             Refresh::Financial(channel, response) => {
-                self.journal.record_message(
-                    &json!({"channel":channel,"data":response}),
-                    "rest_financial",
-                )?;
                 let now = chrono::Utc::now().timestamp_millis();
                 if channel == "LoanInfo" {
                     self.financial.apply_loan_info(&response, now)?;
@@ -228,15 +246,49 @@ impl Forwarder {
                 }
                 self.readiness.mark_complete(channel);
             }
+            Refresh::Executions(end, rows) => {
+                for chunk in rows.chunks(64) {
+                    let mut facts = vec![];
+                    for row in chunk {
+                        let record = ExecutionRecord {
+                            portfolio: self.portfolio.clone(),
+                            exchange: self.exchange.into(),
+                            execution: ExecutionEvidence::parse(
+                                row,
+                                &self.portfolio,
+                                self.exchange,
+                                true,
+                            )?,
+                        };
+                        facts.push(Fact::Execution(record.clone()));
+                        if let Some(role) = ExecutionRoleRecord::from_row(record, row)? {
+                            facts.push(Fact::Role(role));
+                        }
+                    }
+                    self.delivery.save(facts, vec![], None).await?;
+                }
+                self.delivery.store.execution_checkpoint(end).await?;
+                if chrono::Utc::now().timestamp_millis() - end < 60_000 {
+                    self.readiness.mark_complete("Executions");
+                }
+            }
             Refresh::Statements(end, rows) => {
-                self.journal.record_statements(&rows)?;
-                self.journal.complete_statement_history(end)?;
+                for chunk in rows.chunks(128) {
+                    self.delivery
+                        .save(
+                            chunk.iter().cloned().map(Fact::Statement).collect(),
+                            vec![],
+                            None,
+                        )
+                        .await?;
+                }
+                self.delivery.save(vec![], vec![], Some(end)).await?;
                 if chrono::Utc::now().timestamp_millis() - end < 60_000 {
                     self.readiness.mark_complete("Statements");
                 }
             }
         }
-        self.write_financial()
+        self.publish_financial()
     }
 }
 
@@ -244,6 +296,7 @@ enum Refresh {
     Account(String, i64),
     Financial(&'static str, Value),
     Statements(i64, Vec<StatementRecord>),
+    Executions(i64, Vec<Value>),
 }
 
 async fn refresh_accounts(
@@ -315,6 +368,34 @@ async fn refresh_statements(
     }
 }
 
+async fn refresh_executions(
+    rest: LtpRestClient,
+    exchange: &'static str,
+    start_ms: i64,
+    tx: tokio::sync::mpsc::Sender<Result<Refresh>>,
+) {
+    let mut begin = start_ms;
+    loop {
+        let now = chrono::Utc::now().timestamp_millis();
+        let end = (begin + 3_600_000).min(now);
+        let result = rest
+            .fetch_transaction_history(exchange, begin, end)
+            .await
+            .map(|rows| Refresh::Executions(end, rows));
+        let failed = result.is_err();
+        if tx.send(result).await.is_err() || failed {
+            return;
+        }
+        begin = (end - 60_000).max(start_ms);
+        tokio::time::sleep(if end == now {
+            Duration::from_secs(30)
+        } else {
+            STATEMENT_REQUEST_INTERVAL
+        })
+        .await;
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -338,8 +419,7 @@ async fn main() -> Result<()> {
     ))?;
     let credentials = LtpCredentials::from_env()?;
     let slug = account_stream_slug(exchange)?;
-    let dir = args.journal_dir.join(&slug);
-    std::fs::create_dir_all(&dir).context("create RapidX account journal directory")?;
+    let dir = args.delivery_dir.join(&slug);
     let wire_exchange = if exchange == Exchange::Binance {
         "BINANCE"
     } else {
@@ -347,28 +427,36 @@ async fn main() -> Result<()> {
     };
     let mut positions = PositionSnapshotState::default();
     let mut assets = AccountSnapshotState::default();
-    // Restore identities, not readiness or balances. Only fresh REST snapshots
-    // may clear an absent balance/position and make this session ready.
-    let journal = AccountJournal::open(&dir, rest.portfolio_id(), wire_exchange, |message| {
-        let channel = message.get("channel").and_then(Value::as_str);
-        if matches!(channel, Some("Assets" | "Positions")) {
-            let mut events =
-                parse_account_push(&message.to_string(), rest.portfolio_id(), wire_exchange)?;
-            if channel == Some("Assets") {
-                for event in events {
-                    assets.observe(&event)?;
-                }
-            } else {
-                positions.reconcile(&mut events, false, 0)?;
-            }
-        }
-        Ok(())
-    })?;
+    if args.dry_run {
+        trade_engine::ltp_legacy::validate(
+            args.import_legacy
+                .as_deref()
+                .context("missing legacy import directory")?,
+            rest.portfolio_id(),
+            wire_exchange,
+        )?;
+        return Ok(());
+    }
+    let mut delivery = Delivery::new(DeliveryStore::open(
+        &dir,
+        rest.portfolio_id(),
+        wire_exchange,
+    )?)?;
+    if let Some(legacy) = args.import_legacy {
+        trade_engine::ltp_legacy::import(&legacy, &mut delivery).await?;
+        delivery.drain(Duration::from_secs(120)).await?;
+        log::info!("RapidX legacy import acknowledged; original archives retained");
+        return Ok(());
+    }
+    // Recover only identities. Fresh complete REST snapshots supply all values.
+    for identity in &delivery.store.state().identities {
+        let event = identity.event()?;
+        assets.observe(&event)?;
+        positions.reconcile(&mut vec![event], false, 0)?;
+    }
     let mut forwarder = Forwarder {
         ipc: PmForwarder::new_non_overflowing(&slug)?,
-        journal,
-        executions: ExecutionPublisher::new()?,
-        statements: StatementPublisher::new()?,
+        delivery,
         portfolio: rest.portfolio_id().to_string(),
         exchange: wire_exchange,
         scope: if exchange == Exchange::Binance {
@@ -383,12 +471,13 @@ async fn main() -> Result<()> {
             rest.portfolio_id().into(),
             wire_exchange.into(),
         )?,
-        financial_path: dir.join("latest_financial.json"),
         last_risk_timestamp: 0,
     };
     let url = std::env::var("LTP_WS_URL").unwrap_or_else(|_| DEFAULT_WS_URL.to_string());
     let mut persist_tick = tokio::time::interval(Duration::from_millis(25));
     persist_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut financial_tick = tokio::time::interval(Duration::from_secs(5));
+    financial_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut shutdown = false;
     loop {
         forwarder.invalidate()?;
@@ -400,7 +489,8 @@ async fn main() -> Result<()> {
         let connection = loop {
             tokio::select! {
                 result = &mut connect => break Some(result),
-                _ = persist_tick.tick() => forwarder.poll_fact_delivery()?,
+                _ = persist_tick.tick() => forwarder.delivery.poll().await?,
+                _ = financial_tick.tick() => forwarder.publish_financial()?,
                 _ = tokio::signal::ctrl_c() => break None,
             }
         };
@@ -419,34 +509,37 @@ async fn main() -> Result<()> {
                 log::info!("RapidX account websocket login successful exchange={wire_exchange}");
                 let (tx, mut rx) = tokio::sync::mpsc::channel(8);
                 workers.push(tokio::spawn(refresh_accounts(rest.clone(), wire_exchange, tx.clone())));
-                let statement_begin = forwarder.journal.statement_history_end_ms
+                let statement_begin = forwarder.delivery.store.state().statement_history_end_ms
                     .map(|end| end - 60_000)
                     .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
-                workers.push(tokio::spawn(refresh_statements(rest.clone(), wire_exchange, statement_begin, tx)));
+                workers.push(tokio::spawn(refresh_statements(rest.clone(), wire_exchange, statement_begin, tx.clone())));
+                let execution_begin = forwarder.delivery.store.state().execution_history_end_ms.saturating_sub(60_000);
+                workers.push(tokio::spawn(refresh_executions(rest.clone(), wire_exchange, execution_begin, tx)));
                 let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
                 heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 let mut waiting_pong = false;
                 loop {
                     tokio::select! {
                         _ = tokio::signal::ctrl_c() => { return Ok(()); }
-                        message = ws.next() => {
+                        message = ws.next(), if forwarder.delivery.store.has_capacity() => {
                             match message.context("RapidX account disconnected")?? {
                                 Message::Text(text) => {
                                     if trade_engine::ltp_ws::is_text_pong(&text) { waiting_pong = false; }
-                                    else { forwarder.process(&text, "ws", None)?; }
+                                    else { forwarder.process(&text, "ws", None).await?; }
                                 }
                                 Message::Binary(bytes) => {
                                     let text = std::str::from_utf8(&bytes)?;
                                     if trade_engine::ltp_ws::is_text_pong(text) { waiting_pong = false; }
-                                    else { forwarder.process(text, "ws", None)?; }
+                                    else { forwarder.process(text, "ws", None).await?; }
                                 },
                                 Message::Ping(bytes) => ws.send(Message::Pong(bytes)).await?,
                                 Message::Close(_) => bail!("RapidX account websocket closed"),
                                 _ => {}
                             }
                         }
-                        update = rx.recv() => forwarder.apply_refresh(update.context("RapidX recovery worker stopped")??)?,
-                        _ = persist_tick.tick() => forwarder.poll_fact_delivery()?,
+                        update = rx.recv() => forwarder.apply_refresh(update.context("RapidX recovery worker stopped")??).await?,
+                        _ = persist_tick.tick() => forwarder.delivery.poll().await?,
+                _ = financial_tick.tick() => forwarder.publish_financial()?,
                         _ = heartbeat.tick() => {
                             if waiting_pong { bail!("RapidX account heartbeat expired"); }
                             ws.send(Message::Text("ping".into())).await?;
@@ -477,12 +570,16 @@ async fn main() -> Result<()> {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => { shutdown = true; break; },
                 _ = &mut backoff => break,
-                _ = persist_tick.tick() => forwarder.poll_fact_delivery()?,
+                _ = persist_tick.tick() => forwarder.delivery.poll().await?,
+                _ = financial_tick.tick() => forwarder.publish_financial()?,
             }
         }
         if shutdown {
             break;
         }
+    }
+    if let Err(error) = forwarder.delivery.drain(Duration::from_secs(5)).await {
+        log::warn!("RapidX shutdown retains pending facts: {error:#}");
     }
     Ok(())
 }

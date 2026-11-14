@@ -18,7 +18,9 @@ use crate::runtime_common::get_timestamp_us;
 use super::hyperliquid_account_fact::CF_HYPERLIQUID_ACCOUNT_FACT;
 use super::order_queue_position::CF_ORDER_QUEUE_POSITION;
 use super::order_update::CF_ORDER_UPDATE_UNMATCHED;
-use super::rapidx_execution::{CF_RAPIDX_EXECUTION, CF_RAPIDX_STATEMENT};
+use super::rapidx_execution::{
+    CF_RAPIDX_EXECUTION, CF_RAPIDX_ROLE, CF_RAPIDX_STATEMENT, CF_RAPIDX_STATEMENT_OBSERVATIONS,
+};
 use super::storage::RocksDbStore;
 use super::trade_update::CF_TRADE_UPDATE_UNMATCHED;
 use super::uniform_order_persist::CF_UNIFORM_ORDER;
@@ -133,6 +135,8 @@ pub fn persist_sync_column_families() -> &'static [&'static str] {
         CF_HYPERLIQUID_ACCOUNT_FACT,
         CF_RAPIDX_EXECUTION,
         CF_RAPIDX_STATEMENT,
+        CF_RAPIDX_ROLE,
+        CF_RAPIDX_STATEMENT_OBSERVATIONS,
     ]
 }
 
@@ -2226,7 +2230,9 @@ mod tests {
         MultiCollectorSource, SyncOutboxRecord, CF_SYNC_META, CF_SYNC_OUTBOX, META_NEXT_SEQ_KEY,
     };
     use crate::hyperliquid_account_fact::CF_HYPERLIQUID_ACCOUNT_FACT;
-    use crate::rapidx_execution::{CF_RAPIDX_EXECUTION, CF_RAPIDX_STATEMENT};
+    use crate::rapidx_execution::{
+        CF_RAPIDX_EXECUTION, CF_RAPIDX_ROLE, CF_RAPIDX_STATEMENT, CF_RAPIDX_STATEMENT_OBSERVATIONS,
+    };
     use crate::storage::RocksDbStore;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2306,6 +2312,9 @@ mod tests {
         assert!(persist_sync_column_families().contains(&CF_RAPIDX_EXECUTION));
         assert!(!order_export_sync_column_families().contains(&CF_RAPIDX_EXECUTION));
         assert!(persist_sync_column_families().contains(&CF_RAPIDX_STATEMENT));
+        assert!(persist_sync_column_families().contains(&CF_RAPIDX_ROLE));
+        assert!(persist_sync_column_families().contains(&CF_RAPIDX_STATEMENT_OBSERVATIONS));
+        assert!(!order_export_sync_column_families().contains(&CF_RAPIDX_ROLE));
         assert!(!order_export_sync_column_families().contains(&CF_RAPIDX_STATEMENT));
     }
 

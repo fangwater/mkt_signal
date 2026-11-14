@@ -156,14 +156,14 @@ readiness. Starting Exec is a separate live action and does not start
   is normalized to the documented no-requirement sentinel `999999` for internal
   risk messages. A zero ratio with nonzero maintenance margin, liquidation, or
   monitor invalidation remains zero and therefore fail-closed.
-- Private messages are journaled before conversion, including original Trades,
-  signed fees, rebates and financial fields. Journals are permission `0600`
-  under `data/rapidx_account/<source>/` by default.
+- Live balances, positions and financial state stay in memory and the account
+  IPC stream. There is no raw private-message journal or financial snapshot file.
+  Only unacknowledged facts and small recovery metadata use the monitor outbox.
 - Settlement recovery accepts the observed `TRANSFER` statement type as ledger
   evidence; it is not converted into a fill.
 - Bounded REST snapshots refresh Assets, Positions and Accounts in rotation.
   Complete asset/position snapshots clear previously observed missing identities;
-  journal recovery restores both kinds of identity across monitor restarts.
+  compact recovery metadata restores both kinds of identity across restarts.
   Older snapshots cannot rewind newer updates. Omission clearing uses the
   request-start boundary, not response-arrival time.
   Disconnect/snapshot failure publishes an invalid account risk value.
@@ -171,94 +171,115 @@ readiness. Starting Exec is a separate live action and does not start
   private WS receive loop. Full account snapshots have a 20-second deadline;
   private heartbeats are not blocked by REST pagination.
 - Reported account risk stays gated until fresh Assets, Positions, Accounts,
-  LoanInfo, LoanCapacity and recent execution recovery have completed. Abnormal
+  LoanInfo, LoanCapacity, Statements and recent execution recovery have completed. Abnormal
   or unknown account/loan status cannot reopen the gate. This is a monitor-side
   recovery gate, not an atomic consumer-acknowledged account snapshot contract.
 
 ## Finance And Recovery
 
-`latest_financial.json` in the source journal directory is atomically replaced
-with permission `0600`. It exposes separate gross/net equity, margin values,
-available margin, frozen/maintenance margin, asset debts, explicit loans and
-per-currency `max_borrow_capacity`. Decimal values retain string precision;
-unreported metrics stay `null`. Raw financial evidence and per-source observation
-times are retained. `recovery_ready=false` marks incomplete/disconnected state.
-These inspection fields do not silently become strategy borrowing permissions.
+Live account risk, balances and positions use the existing account IPC contract.
+Event `RapidXFinancial` (4020), on the same source-scoped PM stream, carries
+portfolio/exchange, `published_ms`, recovery readiness, the independent Accounts
+observation timestamp, frozen margin (decimal string or null), execution/statement
+pending counts and their recovery checkpoints. Manager consumes it in memory.
+Periodic emission never refreshes an older Accounts observation. Disconnect
+publishes invalid risk and `recovery_ready=false`. Other consumers ignore this
+financial event. Loan status and portfolio borrowing capacity still use the
+read-only bound `rapidxLoan/loan/info` and `rapidxLoan/loan/maxLoan` endpoints;
+they do not grant strategy borrowing permissions.
 
-Loan status and portfolio borrowing capacity use the read-only
-`rapidxLoan/loan/info` and `rapidxLoan/loan/maxLoan` endpoints. Explicit portfolio
-loan capacity is not margin-order automatic-borrow capacity. Unknown accrued
-interest is not fabricated as zero.
+Live Trades and recent REST execution observations feed the same durable owner.
+Execution and statement recovery run independently of account REST refreshes and
+WS reception, in bounded one-hour windows with a one-minute overlap. A new outbox
+anchors execution recovery at its creation time, rather than pretending to own
+older account history. New statement collection begins at the current time;
+existing collection resumes its durable checkpoint. Execution REST recovery runs
+on reconnect and every 30 seconds, covering monitor downtime and bounded-outbox
+backpressure. The venue's existing 90-day history limit still applies; an expired
+or incomplete recovery window fails closed without advancing its checkpoint.
 
-The account monitor records executions from the live WebSocket `Trades` channel.
-It does not query recent/archive execution-history endpoints on startup or
-reconnect, and has no execution lookback option. An empty journal starts with no
-historical fills. Reopening an existing journal still replays its already
-received durable observations to persistence. Executions missed while disconnected
-are not automatically backfilled.
+Every page is checked for scope, time, duplicate IDs and stable pagination. Each
+window has a 100-page bound with 2.1-second inter-page spacing. Facts are saved
+before their progress checkpoint; neither incomplete pagination nor a malformed
+record can skip an unprocessed interval. WS signed fees and REST split fees and
+rebates remain separate observations of the same fill.
 
-Account snapshots, loan queries and statement collection remain active. A new
-journal starts statement collection at the current session time; later sessions
-resume its durable statement checkpoint with a one-minute overlap. Account
-readiness requires complete current account/loan snapshots and a current statement
-checkpoint; it does not wait for an execution-history request.
+## Durable Delivery And Fact Ownership
 
-Every page is checked for scope, timestamps, duplicate IDs and stable pagination;
-an incomplete window never advances the checkpoint. Each endpoint/window has a
-100-page bound and 2.1-second inter-page spacing. Execution observations preserve
-string order/client/transaction IDs. WS signed fees and REST split fee/rebate
-currencies are retained separately, not added together or apportioned from
-ambiguous cumulative fields. Repeated same-source evidence is idempotent;
-conflicting records fail recovery. Journal writes precede progress checkpoints.
-Only an unterminated final journal line is ignored on restart; complete corrupt
-records fail recovery. Journal write/sync failure stops further processing.
+`data/rapidx_delivery/<source>/delivery.wal` is a bounded, ACK-pruned outbox,
+not an account-history archive. Files are mode 0600 and an exclusive lock prevents
+concurrent monitor/import writers. It stores at most 4096 pending facts, known
+asset/position identities, recovery checkpoints and explicit legacy-import cursors.
+It stores no account balances, margin snapshots or raw pushes. Known identities
+are synchronized only when first seen, before publication. On restart they carry
+zero timestamps and no recovered amounts; fresh complete snapshots clear omitted
+identities and supply current values.
 
-## Execution Persistence
+Outbox filesystem work runs on a blocking worker. Accepted facts are synchronized
+before IPC delivery. The sender has independent 128-record retry windows and
+exact-content ACKs, with a one-second retry delay. Only the matching durable ACK
+retires a fact. ACK cleanup need not synchronously flush: losing cleanup on crash
+only causes idempotent replay. Compaction after 128 retired records or 8 MiB of
+new log entries removes acknowledged history. A full queue applies backpressure;
+it never evicts facts. Write failures stop processing and require restart.
+Only an unterminated terminal WAL append is recoverable; complete corrupt records
+fail recovery. Graceful shutdown tries to drain for five seconds, leaving any
+remaining facts durable for restart.
 
-The monitor now forwards durable execution observations directly to
-`persist_manager` in the same `IPC_NAMESPACE`, without passing incremental fills
-through the cumulative order-update path. Run that consumer to drain the outbox;
-its absence does not discard the journal or block the WS reader.
+The sole durable fact owner is the source's Exec `persist_manager`:
 
-The shared `persist_common::rapidx_execution` contract retains string identities,
-decimal strings and separate fee currencies. The RocksDB `rapidx_executions` CF
-uses a stable key over portfolio, exchange, transaction ID and observation source.
-WS and REST observations occupy separate records because their fee semantics
-differ. They are evidence of the same execution, not two additive fills. Neither
-observation increases `uniform_orders.amount_update` or assigns a strategy owner.
-Conflicting same-source records are rejected without overwriting existing facts.
+- `rapidx_executions`: unchanged execution/fee contract and stable scoped key.
+- `rapidx_execution_roles`: immutable `ExecutionRoleRecord { record, role }`,
+  containing the validated execution observation and `MAKER`/`TAKER`. Unknown
+  venue roles remain unknown and never prevent retaining a valid execution.
+- `rapidx_statements`: the original settlement fact by scoped statement ID.
+- `rapidx_statement_observations`: exact subsequent statement observations whose
+  only difference is the already-supported equal before/after available-balance
+  rounding shift of at most 1e-18. The original fact is never rewritten; the
+  differing observation is durably saved before its exact-content ACK.
 
-The receiver acknowledges the exact key and canonical content only after a
-synchronous RocksDB write. With persist sync enabled, the fact and replication
-outbox share that durable write. Lost ACKs and IPC sends retry with a bounded
-128-record in-flight window; duplicate receipts do not append more outbox rows.
-The journal remains intact, and monitor restart replays all retained executions.
-Delivery also runs during connection attempts and reconnect backoff.
-`latest_financial.json.execution_persistence_pending` reports journal backlog plus
-in-flight records; `recovery_ready` still describes account/statement readiness, not
-central persistence completion. A persist ACK means local durable storage, not
-that the remote sync collector has received the record.
+All participate in generic persistence sync, never the timestamp-keyed order
+export repair sweep or order parquet schema. With replication enabled, each
+insert and its replication outbox share one synchronized RocksDB batch. Duplicate
+receipts do not append duplicate replication rows. A local ACK does not certify
+remote replication; enabling sync later does not backfill earlier acknowledged
+facts. WS/REST deduplication, strategy attribution and `uniform_orders` quantities
+are unchanged. Manager only reads these CFs; it never writes the Exec database.
 
-The new CF participates in generic persist sync replication, but not the
-timestamp-keyed order-export repair sweep or existing order parquet schema.
-Replication must be enabled when facts are first inserted; enabling it later
-does not backfill facts previously acknowledged with replication disabled.
-Use the read-only JSONL exporter for inspection (timestamps are microseconds,
-the requested interval is half-open):
+## Replacing The Legacy Monitor
+
+Build the monitor and persistence owner locally on synchronized `arbmm`:
 
 ```bash
-cargo run -p persist_manager --features runtime --bin rapidx_execution_export -- \
-  --db-path data/persist_manager --portfolio 123 --exchange OKX \
-  --start-us 1788652800000000 --end-us 1788739200000000 --observation rest
+cargo build --release --bin rapidx_account_monitor
+cargo build --release -p persist_manager --features runtime --bin persist_manager
 ```
 
-Replace the example portfolio with the intended identity. `--observation ws`
-selects signed WS fees; `all` retains both observations and must not be summed as
-fills or fees. `--source-id` reads the corresponding source CF in a sync-center
-database. JSONL is written to stdout, diagnostics to stderr. The exporter never
-writes to the database; an error can leave partial stdout output and must not be
-treated as a complete export. Export rows preserve the venue's millisecond
-timestamp inside the execution evidence.
+Publish checksum-verified artifacts atomically. Before stopping a live process,
+preserve its logs; use only its environment-local stop/start scripts. Upgrade
+`persist_manager` first, without restarting trading, then source the intended
+host-only env in a private shell and run the new monitor binary in import mode:
+
+```bash
+./rapidx_account_monitor --exchange binance --import-legacy data/rapidx_account/<source> --dry-run
+./rapidx_account_monitor --exchange binance --import-legacy data/rapidx_account/<source>
+```
+
+Import mode makes no exchange requests or account-state publications. The first
+pass may run beside the old monitor: it pins each file's observed length, validates
+scoped facts, sends them through the owning persistence IPC, and checkpoints its
+byte offset only after saving corresponding pending facts. It retains at most a
+small batch in memory. After a successful first pass and full ACK drain, stop
+only the old account monitor, rerun import to consume its final appended tail,
+and start the new monitor using its existing environment-local wrapper. Retain
+all old journals and snapshots as historical evidence; do not delete or overwrite
+them. If import fails, keep the old monitor and Manager generation running and
+resolve the explicit conflict before cutover. Deploy the updated Manager only
+after required role evidence has been imported and verified.
+
+The read-only execution/statement exporters remain available; select one fee
+observation source or reconcile both before summing. Exporting does not alter
+source facts, and a failed partial stdout export is not a complete report.
 
 ## Execution Reconciliation
 

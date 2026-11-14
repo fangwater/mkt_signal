@@ -23,6 +23,7 @@ impl RecoveryReadiness {
             "LoanInfo",
             "LoanCapacity",
             "Statements",
+            "Executions",
         ]
         .iter()
         .all(|channel| self.complete.contains(*channel))
@@ -197,6 +198,8 @@ mod tests {
             assert!(!readiness.is_ready());
         }
         readiness.mark_complete("Statements");
+        assert!(!readiness.is_ready());
+        readiness.mark_complete("Executions");
         assert!(readiness.is_ready());
     }
 

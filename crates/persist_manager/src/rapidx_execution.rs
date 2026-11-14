@@ -7,6 +7,7 @@ use iceoryx2::service::ipc;
 use log::warn;
 use persist_common::rapidx_execution::ExecutionRecord;
 use persist_common::rapidx_fact::{RapidXFact, ACK_BYTES, MAX_BYTES};
+use persist_common::rapidx_role::ExecutionRoleRecord;
 use persist_common::rapidx_statement::StatementRecord;
 use std::marker::PhantomData;
 
@@ -20,9 +21,16 @@ use crate::sync::persist_with_outbox_sync;
 
 pub const CF_RAPIDX_EXECUTION: &str = ExecutionRecord::COLUMN_FAMILY;
 pub const CF_RAPIDX_STATEMENT: &str = StatementRecord::COLUMN_FAMILY;
+pub const CF_RAPIDX_ROLE: &str = ExecutionRoleRecord::COLUMN_FAMILY;
+pub const CF_RAPIDX_STATEMENT_OBSERVATIONS: &str = "rapidx_statement_observations";
 
 pub fn required_column_families() -> &'static [&'static str] {
-    &[CF_RAPIDX_EXECUTION, CF_RAPIDX_STATEMENT]
+    &[
+        CF_RAPIDX_EXECUTION,
+        CF_RAPIDX_STATEMENT,
+        CF_RAPIDX_ROLE,
+        CF_RAPIDX_STATEMENT_OBSERVATIONS,
+    ]
 }
 
 #[cfg(test)]
@@ -66,7 +74,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let mut cfs = vec![CF_RAPIDX_EXECUTION, CF_RAPIDX_STATEMENT];
+        let mut cfs = required_column_families().to_vec();
         if with_outbox {
             cfs.extend([CF_SYNC_OUTBOX, CF_SYNC_META]);
         }
@@ -100,6 +108,8 @@ mod tests {
             &[
                 CF_RAPIDX_EXECUTION,
                 CF_RAPIDX_STATEMENT,
+                CF_RAPIDX_ROLE,
+                CF_RAPIDX_STATEMENT_OBSERVATIONS,
                 CF_SYNC_OUTBOX,
                 CF_SYNC_META,
             ],
@@ -204,6 +214,8 @@ mod tests {
             &[
                 CF_RAPIDX_EXECUTION,
                 CF_RAPIDX_STATEMENT,
+                CF_RAPIDX_ROLE,
+                CF_RAPIDX_STATEMENT_OBSERVATIONS,
                 CF_SYNC_OUTBOX,
                 CF_SYNC_META,
             ],
@@ -226,6 +238,62 @@ mod tests {
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }
+
+    #[test]
+    fn role_conflicts_never_overwrite_and_roundoff_ack_retains_exact_observation() {
+        let (store, path) = open_store(true);
+        let role = ExecutionRoleRecord {
+            record: record(false),
+            role: persist_common::rapidx_role::ExecutionRole::Maker,
+        };
+        persist_record(&store, &role, true).unwrap();
+        let mut conflict = role.clone();
+        conflict.role = persist_common::rapidx_role::ExecutionRole::Taker;
+        assert!(persist_record(&store, &conflict, true).is_err());
+        assert_eq!(
+            store
+                .get(CF_RAPIDX_ROLE, &role.stable_key().unwrap())
+                .unwrap()
+                .unwrap(),
+            role.to_json_bytes().unwrap()
+        );
+        let original = StatementRecord::parse(&serde_json::json!({"portfolioId":123,"exchangeType":"BINANCE",
+            "statementId":"s","requestId":"r","coin":"USDT","sym":"","statementType":"DEDUCT_INTEREST",
+            "businessType":"SPOT","createAt":1000,"beforeAvailable":"10","afterAvailable":"10",
+            "beforeOverdraw":"0","afterOverdraw":"0.1","beforeBorrow":"0","afterBorrow":"0","deltaAmount":"0"}),"123","BINANCE").unwrap();
+        persist_record(&store, &original, true).unwrap();
+        let mut repeated = original.clone();
+        repeated.before_available = "10.00000000000000000001".into();
+        repeated
+            .after_available
+            .clone_from(&repeated.before_available);
+        let ack = persist_record(&store, &repeated, true).unwrap();
+        assert_eq!(ack, repeated.ack().unwrap());
+        assert_eq!(
+            store
+                .get(CF_RAPIDX_STATEMENT, &original.stable_key().unwrap())
+                .unwrap()
+                .unwrap(),
+            original.to_json_bytes().unwrap()
+        );
+        assert_eq!(
+            store
+                .get(CF_RAPIDX_STATEMENT_OBSERVATIONS, &ack)
+                .unwrap()
+                .unwrap(),
+            repeated.to_json_bytes().unwrap()
+        );
+        let writes = store.scan(CF_SYNC_OUTBOX, None, false, None).unwrap().len();
+        persist_record(&store, &repeated, true).unwrap();
+        assert_eq!(
+            store.scan(CF_SYNC_OUTBOX, None, false, None).unwrap().len(),
+            writes
+        );
+        repeated.delta_amount = "0.01".into();
+        assert!(persist_record(&store, &repeated, true).is_err());
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }
 
 pub struct RapidXFactPersistor<R> {
@@ -238,6 +306,7 @@ pub struct RapidXFactPersistor<R> {
 
 pub type RapidXExecutionPersistor = RapidXFactPersistor<ExecutionRecord>;
 pub type RapidXStatementPersistor = RapidXFactPersistor<StatementRecord>;
+pub type RapidXRolePersistor = RapidXFactPersistor<ExecutionRoleRecord>;
 
 impl<R: RapidXFact> RapidXFactPersistor<R> {
     pub fn new(store: Arc<RocksDbStore>, sync_enabled: bool) -> Result<Self> {
@@ -290,6 +359,23 @@ fn persist_record<R: RapidXFact>(
         .context("canonicalize RapidX fact record")?;
     match store.get(R::COLUMN_FAMILY, &key)? {
         Some(existing) if existing == canonical => record.ack(),
+        Some(existing) if record.accepts_existing(&existing)? => {
+            let cf = R::OBSERVATIONS_CF.context("equivalent fact has no observation store")?;
+            let ack = record.ack()?;
+            match store.get(cf, &ack)? {
+                Some(bytes) if bytes == canonical => {}
+                Some(_) => return Err(anyhow!("RapidX observation conflict")),
+                None => persist_with_outbox_sync(
+                    store,
+                    cf,
+                    &ack,
+                    &canonical,
+                    get_timestamp_us(),
+                    sync_enabled,
+                )?,
+            }
+            Ok(ack)
+        }
         Some(_) => Err(anyhow!("RapidX {} stable-key conflict", R::COLUMN_FAMILY)),
         None => {
             persist_with_outbox_sync(

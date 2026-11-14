@@ -3,6 +3,7 @@ pub mod native_codec;
 pub mod order_queue_position;
 pub mod rapidx_execution;
 pub mod rapidx_fact;
+pub mod rapidx_role;
 pub mod rapidx_statement;
 pub mod unified_order;
 

@@ -9,8 +9,14 @@ pub trait RapidXFact: Serialize + DeserializeOwned {
     const RECORD_CHANNEL: &'static str;
     const ACK_CHANNEL: &'static str;
     const COLUMN_FAMILY: &'static str;
+    /// Immutable equivalent observations retain their exact bytes here before ACK.
+    const OBSERVATIONS_CF: Option<&'static str> = None;
     fn validate(&self) -> Result<()>;
     fn stable_key(&self) -> Result<[u8; 32]>;
+
+    fn accepts_existing(&self, existing: &[u8]) -> Result<bool> {
+        Ok(self.to_json_bytes()? == existing)
+    }
 
     fn to_json_bytes(&self) -> Result<Vec<u8>> {
         self.validate()?;

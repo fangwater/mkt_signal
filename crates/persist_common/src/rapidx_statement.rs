@@ -1,8 +1,10 @@
 use crate::rapidx_fact::{RapidXFact, ACK_BYTES, MAX_BYTES};
 use anyhow::{ensure, Context, Result};
+use bigdecimal::BigDecimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::str::FromStr;
 
 /// Settlement ledger evidence, never a trade fill or an invented balance delta.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -149,8 +151,13 @@ impl RapidXFact for StatementRecord {
     const RECORD_CHANNEL: &'static str = "rapidx_statement_record";
     const ACK_CHANNEL: &'static str = "rapidx_statement_ack";
     const COLUMN_FAMILY: &'static str = "rapidx_statements";
+    const OBSERVATIONS_CF: Option<&'static str> = Some("rapidx_statement_observations");
     fn validate(&self) -> Result<()> {
         self.validate()
+    }
+    fn accepts_existing(&self, existing: &[u8]) -> Result<bool> {
+        let old: Self = serde_json::from_slice(existing)?;
+        Ok(old == *self || available_balance_roundoff_only(&old, self)?)
     }
     fn stable_key(&self) -> Result<[u8; 32]> {
         self.validate()?;
@@ -162,6 +169,42 @@ impl RapidXFact for StatementRecord {
         }
         Ok(hash.finalize().into())
     }
+}
+
+/// RapidX may revise both available-balance context fields by the same tiny
+/// amount on an overlapping REST read (observed: 1e-20 USDT). Accept at most
+/// 1e-18 in absolute terms, using exact decimals, only if the available change
+/// and every other field (including settlement/debt) are unchanged.
+pub fn available_balance_roundoff_only(
+    old: &StatementRecord,
+    new: &StatementRecord,
+) -> Result<bool> {
+    let mut comparable = new.clone();
+    comparable
+        .before_available
+        .clone_from(&old.before_available);
+    comparable.after_available.clone_from(&old.after_available);
+    if old != &comparable {
+        return Ok(false);
+    }
+    // Limit scale before decimal subtraction; an extreme exponent must not
+    // allocate unbounded memory while comparing untrusted exchange fields.
+    if [
+        &old.before_available,
+        &old.after_available,
+        &new.before_available,
+        &new.after_available,
+    ]
+    .iter()
+    .any(|value| value.contains(['e', 'E']))
+    {
+        return Ok(false);
+    }
+    let before_shift =
+        BigDecimal::from_str(&new.before_available)? - BigDecimal::from_str(&old.before_available)?;
+    let after_shift =
+        BigDecimal::from_str(&new.after_available)? - BigDecimal::from_str(&old.after_available)?;
+    Ok(before_shift == after_shift && before_shift.abs() <= BigDecimal::new(1.into(), 18))
 }
 
 #[cfg(test)]

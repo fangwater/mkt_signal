@@ -4,6 +4,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use persist_common::rapidx_execution::ExecutionRecord;
 use persist_common::rapidx_fact::{RapidXFact, ACK_BYTES, MAX_BYTES};
+use persist_common::rapidx_role::ExecutionRoleRecord;
 use persist_common::rapidx_statement::StatementRecord;
 use runtime_common::ipc_service_name::build_service_name;
 use std::collections::VecDeque;
@@ -19,8 +20,7 @@ struct Pending {
     next_send: Instant,
 }
 
-/// The journal is the durable outbox. This bounded window only owns in-flight
-/// copies; restart replays the journal and the receiver deduplicates by identity.
+/// Bounded retry window. The owner retains the durable outbox until exact ACK.
 pub struct FactPublisher<R> {
     publisher: Publisher<ipc::Service, [u8; MAX_BYTES], ()>,
     subscriber: Subscriber<ipc::Service, [u8; ACK_BYTES], ()>,
@@ -30,6 +30,7 @@ pub struct FactPublisher<R> {
 
 pub type ExecutionPublisher = FactPublisher<ExecutionRecord>;
 pub type StatementPublisher = FactPublisher<StatementRecord>;
+pub type RolePublisher = FactPublisher<ExecutionRoleRecord>;
 
 impl<R: RapidXFact> FactPublisher<R> {
     pub fn new() -> Result<Self> {
@@ -90,7 +91,8 @@ impl<R: RapidXFact> FactPublisher<R> {
         Ok(())
     }
 
-    pub fn poll(&mut self) -> Result<()> {
+    pub fn poll(&mut self) -> Result<Vec<[u8; ACK_BYTES]>> {
+        let mut confirmed = Vec::new();
         for _ in 0..256 {
             let Some(sample) = self
                 .subscriber
@@ -99,7 +101,14 @@ impl<R: RapidXFact> FactPublisher<R> {
             else {
                 break;
             };
-            acknowledge(&mut self.pending, sample.payload());
+            if self
+                .pending
+                .iter()
+                .any(|item| &item.ack == sample.payload())
+            {
+                confirmed.push(*sample.payload());
+                acknowledge(&mut self.pending, sample.payload());
+            }
         }
         send_due(&mut self.pending, Instant::now(), |payload| {
             let sample = self
@@ -112,7 +121,7 @@ impl<R: RapidXFact> FactPublisher<R> {
                 .context("send RapidX fact")?;
             Ok(())
         })?;
-        Ok(())
+        Ok(confirmed)
     }
 }
 

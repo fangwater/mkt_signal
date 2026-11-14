@@ -3803,6 +3803,7 @@ name = "persist_common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bigdecimal",
  "bytes",
  "order_common",
  "serde",
