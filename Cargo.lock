@@ -2282,6 +2282,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperliquid_l4"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "chrono",
+ "clap",
+ "env_logger 0.10.2",
+ "futures-util",
+ "getrandom 0.3.3",
+ "iceoryx2",
+ "log",
+ "serde",
+ "serde_json",
+ "sonic-rs",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+]
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"

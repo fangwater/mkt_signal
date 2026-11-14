@@ -6,6 +6,16 @@ tests. Configure production credentials only in the environment's `env.sh`.
 
 ## Venues And Market Data
 
+Node-side order-level data is also supported by the independent
+`hyperliquid_l4_pbs` binary (`cargo build -p hyperliquid_l4 --release --features ipc`).
+It receives `l4Book` from a configured node-side service and publishes compact L3
+snapshots/mutations on `dat_pbs/hyperliquid-futures/l4`, preserving oid, exact e8
+price/size, queue priority and complete-batch recovery. Source setup, performance
+validation, standalone process sharding and consumer requirements are documented
+in [Hyperliquid order-level feed](hyperliquid_l4.md). The public API path described
+below continues to use price-aggregated L2; spot L4 is not exposed by the reference
+node-side service.
+
 `spread_pbs` accepts `hyperliquid-margin`, `hyperliquid-futures`, and
 `hyperliquid-both`. The latter runs both publishers in one process. Deployment
 wrappers require an explicit `SPREAD_PBS_CORE`; there is no default live CPU pin.
@@ -17,7 +27,7 @@ wrappers require an explicit `SPREAD_PBS_CORE`; there is no default live CPU pin
 | `l2Book` | Full book snapshots on the existing incremental IPC channel |
 | Perpetual `activeAssetCtx` | Mark price, oracle/index price, funding rate, open interest in base-asset units |
 
-Hyperliquid books are snapshots, not exchange-sequenced deltas. Do not apply
+Public API Hyperliquid books are snapshots, not exchange-sequenced deltas. Do not apply
 Binance-style sequence-gap rules. Different books/trades within the same
 millisecond remain distinct. Context messages without venue timestamps use
 second-quantized local receipt time; that is not an exchange event timestamp.

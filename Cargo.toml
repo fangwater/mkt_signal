@@ -1,6 +1,7 @@
 [workspace]
 members = [
     ".",
+    "crates/hyperliquid_l4",
     "crates/account_common",
     "crates/cme_tas_replay",
     "crates/cme_roll_metadata",
