@@ -190,6 +190,8 @@ struct ChaseExecLeverageInitScope {
     venue: String,
     backend: String,
     rapidx_portfolio_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    binance_um_leverage_overrides: BTreeMap<String, u8>,
 }
 
 impl ChaseExecLeverageInitState {
@@ -250,6 +252,13 @@ impl ChaseExecLeverageInitState {
 }
 
 impl ChaseExecLeverageInitScope {
+    fn symbol_leverage(&self, symbol: &str) -> u8 {
+        self.binance_um_leverage_overrides
+            .get(symbol)
+            .copied()
+            .unwrap_or_else(|| self.default_leverage())
+    }
+
     fn default_leverage(&self) -> u8 {
         if self.backend == runtime_common::execution_backend::ExecBackend::Ltp.as_str() {
             crate::pre_trade::leverage_guard::RAPIDX_EXEC_DEFAULT_LEVERAGE
@@ -283,6 +292,8 @@ impl ChaseExecLeverageInitScope {
             venue: venue.data_pub_slug().to_string(),
             backend: backend.as_str().to_string(),
             rapidx_portfolio_id,
+            binance_um_leverage_overrides:
+                crate::pre_trade::leverage_guard::binance_um_leverage_overrides(venue, backend)?,
         })
     }
 }
@@ -831,7 +842,9 @@ impl ChaseExecConfigReloader {
                 Ok(crate::pre_trade::leverage_guard::LeverageInitOutcome::Set) => {
                     info!(
                         "ChaseExec default leverage set: symbol={} venue={:?} leverage={}",
-                        symbol, self.venue, self.leverage_init.leverage
+                        symbol,
+                        self.venue,
+                        self.leverage_init.scope.symbol_leverage(symbol)
                     );
                     newly_initialized.insert(symbol.clone());
                     self.leverage_confirmed_symbols.insert(symbol.clone());
@@ -844,7 +857,7 @@ impl ChaseExecConfigReloader {
                 Err(err) => {
                     warn!(
                         "ChaseExec symbol activation blocked by leverage initialization: symbol={} venue={:?} leverage={} err={:#}",
-                        symbol, self.venue, self.leverage_init.leverage, err
+                        symbol, self.venue, self.leverage_init.scope.symbol_leverage(symbol), err
                     );
                     blocked.insert(symbol.clone());
                 }
@@ -2364,9 +2377,36 @@ mod tests {
                 venue: "okex-futures".into(),
                 backend: "native".into(),
                 rapidx_portfolio_id: None,
+                binance_um_leverage_overrides: BTreeMap::new(),
             });
         state.symbols.insert("BTCUSDT".into());
         assert!(state.confirmed_on_startup().is_empty());
+    }
+
+    #[test]
+    fn binance_um_leverage_overrides_invalidate_saved_confirmations() {
+        let scope = ChaseExecLeverageInitScope {
+            venue: "binance-futures".into(),
+            backend: "native".into(),
+            rapidx_portfolio_id: None,
+            binance_um_leverage_overrides: BTreeMap::new(),
+        };
+        let mut previous = ChaseExecLeverageInitState::empty().with_scope(scope.clone());
+        previous.symbols.insert("哈基米USDT".into());
+        let mut lowered = scope.clone();
+        lowered
+            .binance_um_leverage_overrides
+            .insert("哈基米USDT".into(), 3);
+        let mut next = previous.with_scope(lowered.clone());
+        assert!(next.symbols.is_empty());
+        assert_eq!(next.scope.symbol_leverage("哈基米USDT"), 3);
+        assert_eq!(next.scope.symbol_leverage("BTCUSDT"), 5);
+        next.symbols.insert("哈基米USDT".into());
+        let stored = serde_json::to_vec(&next).unwrap();
+        let restored: ChaseExecLeverageInitState = serde_json::from_slice(&stored).unwrap();
+        assert_eq!(restored.scope, lowered);
+        assert_eq!(restored.clone().with_scope(lowered).symbols, next.symbols);
+        assert!(restored.with_scope(scope).symbols.is_empty());
     }
 
     #[test]
@@ -2375,6 +2415,7 @@ mod tests {
             venue: "binance-futures".into(),
             backend: "ltp".into(),
             rapidx_portfolio_id: Some("portfolio".into()),
+            binance_um_leverage_overrides: BTreeMap::new(),
         };
         let mut state = ChaseExecLeverageInitState::empty();
         state.scope = scope.clone();
@@ -2389,6 +2430,7 @@ mod tests {
             venue: "binance-futures".into(),
             backend: "native".into(),
             rapidx_portfolio_id: None,
+            binance_um_leverage_overrides: BTreeMap::new(),
         });
         assert_eq!(native.leverage, 5);
         native.validate().unwrap();

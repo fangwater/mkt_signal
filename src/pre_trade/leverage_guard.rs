@@ -29,6 +29,7 @@ type HmacSha512 = Hmac<Sha512>;
 const TARGET_LEVERAGES: [u8; 1] = [5];
 pub const BATCH_EXEC_DEFAULT_LEVERAGE: u8 = 5;
 pub const RAPIDX_EXEC_DEFAULT_LEVERAGE: u8 = 4;
+const BINANCE_UM_LEVERAGE_OVERRIDES_ENV: &str = "EXEC_BINANCE_UM_LEVERAGE_OVERRIDES";
 const BLOCK_SUMMARY_INTERVAL_US: i64 = 60_000_000;
 const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_REQUEST_SLEEP_MS: u64 = 120;
@@ -268,6 +269,64 @@ type OkxLeverageModeCache =
     tokio::sync::Mutex<HashMap<(String, String), Arc<tokio::sync::OnceCell<i64>>>>;
 static OKX_LEVERAGE_MODES: OnceLock<OkxLeverageModeCache> = OnceLock::new();
 
+/// Lower leverage requires an explicit setting in this native USD-M environment.
+pub(crate) fn binance_um_leverage_overrides(
+    venue: TradingVenue,
+    backend: ExecBackend,
+) -> Result<BTreeMap<String, u8>> {
+    if venue != TradingVenue::BinanceFutures || backend != ExecBackend::Native {
+        return Ok(BTreeMap::new());
+    }
+    match std::env::var(BINANCE_UM_LEVERAGE_OVERRIDES_ENV) {
+        Ok(raw) => parse_binance_um_leverage_overrides(&raw),
+        Err(std::env::VarError::NotPresent) => Ok(BTreeMap::new()),
+        Err(error) => Err(error).context("invalid Binance USD-M leverage override environment"),
+    }
+}
+
+fn parse_binance_um_leverage_overrides(raw: &str) -> Result<BTreeMap<String, u8>> {
+    if raw.trim().is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let overrides: BTreeMap<String, u8> = serde_json::from_str(raw)
+        .context("EXEC_BINANCE_UM_LEVERAGE_OVERRIDES must map symbols to integers in JSON")?;
+    for (symbol, leverage) in &overrides {
+        runtime_common::exec_market::validate_symbol(TradingVenue::BinanceFutures, symbol)?;
+        anyhow::ensure!(
+            symbol_for_venue(symbol, TradingVenue::BinanceFutures) == *symbol,
+            "Binance USD-M leverage override symbol must be normalized: {symbol}"
+        );
+        anyhow::ensure!(
+            (1..=BATCH_EXEC_DEFAULT_LEVERAGE).contains(leverage),
+            "Binance USD-M leverage override must be between 1 and {BATCH_EXEC_DEFAULT_LEVERAGE}: {symbol}"
+        );
+    }
+    Ok(overrides)
+}
+
+fn binance_exec_leverage_local_ip() -> Result<IpAddr> {
+    let (raw, _) = runtime_common::mkt_cfg::load_primary_local_ip_from_trade_engine_sync()?;
+    let configured: IpAddr = raw.parse().context("invalid Binance leverage source IP")?;
+    if !configured.is_unspecified() {
+        return Ok(configured);
+    }
+    // Route selection does not transmit a packet.
+    let destination: IpAddr = if configured.is_ipv4() {
+        "192.0.2.1"
+    } else {
+        "2001:db8::1"
+    }
+    .parse()?;
+    let socket = std::net::UdpSocket::bind((configured, 0))?;
+    socket.connect((destination, 443))?;
+    let local = socket.local_addr()?.ip();
+    anyhow::ensure!(
+        !local.is_unspecified(),
+        "Binance leverage source IP is unspecified"
+    );
+    Ok(local)
+}
+
 pub async fn set_batch_exec_default_leverage(
     venue: TradingVenue,
     symbol: &str,
@@ -305,21 +364,30 @@ pub async fn set_batch_exec_default_leverage(
         .map(|()| LeverageInitOutcome::Set);
     }
 
-    let client = Client::builder()
+    let overrides = binance_um_leverage_overrides(venue, backend)?;
+    let symbol = symbol_for_venue(symbol, venue);
+    let leverage = overrides
+        .get(&symbol)
+        .copied()
+        .unwrap_or(BATCH_EXEC_DEFAULT_LEVERAGE);
+    let mut client = Client::builder()
         .timeout(Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS))
+        .no_proxy();
+    if matches!(
+        venue,
+        TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
+    ) {
+        client = client.local_address(binance_exec_leverage_local_ip()?);
+    }
+    let client = client
         .build()
         .context("build BatchExec leverage REST client")?;
-    let symbol = symbol_for_venue(symbol, venue);
     match venue {
-        TradingVenue::BinanceFutures => set_binance_leverage(
-            &client,
-            &symbol,
-            BATCH_EXEC_DEFAULT_LEVERAGE,
-            binance_account_mode,
-            false,
-        )
-        .await
-        .map(|()| LeverageInitOutcome::Set),
+        TradingVenue::BinanceFutures => {
+            set_binance_leverage(&client, &symbol, leverage, binance_account_mode, false)
+                .await
+                .map(|()| LeverageInitOutcome::Set)
+        }
         TradingVenue::BinanceCoinFutures => set_binance_leverage(
             &client,
             &symbol,
@@ -1719,6 +1787,41 @@ fn truncate(value: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binance_um_leverage_overrides_require_explicit_safe_symbols_and_levels() {
+        let configured = parse_binance_um_leverage_overrides(r#"{"哈基米USDT":3}"#).unwrap();
+        assert_eq!(configured.get("哈基米USDT"), Some(&3));
+        assert!(!configured.contains_key("BTCUSDT"));
+        assert!(parse_binance_um_leverage_overrides("").unwrap().is_empty());
+        for invalid in [
+            r#"{"BTCUSDT":0}"#,
+            r#"{"BTCUSDT":6}"#,
+            r#"{"BTCUSDT":3.5}"#,
+            r#"{"btc-usdt":3}"#,
+            r#"{"BTC":3}"#,
+            r#"{"BTCUSDT":"3"}"#,
+            "not-json",
+        ] {
+            assert!(
+                parse_binance_um_leverage_overrides(invalid).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn binance_um_leverage_overrides_do_not_apply_to_other_markets_or_backends() {
+        for (venue, backend) in [
+            (TradingVenue::BinanceCoinFutures, ExecBackend::Native),
+            (TradingVenue::OkexFutures, ExecBackend::Native),
+            (TradingVenue::BinanceFutures, ExecBackend::Ltp),
+        ] {
+            assert!(binance_um_leverage_overrides(venue, backend)
+                .unwrap()
+                .is_empty());
+        }
+    }
 
     async fn okx_leverage_fixture(responses: Vec<(u16, Value)>) -> Result<LeverageInitOutcome> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
