@@ -214,27 +214,24 @@
       .status.error { color:var(--red); border-color:#8c3e50; }
       .positions-wrap { max-height:62vh; }
       .table-note { margin-top:8px; font-size:11px; }
-      .account-label { font-size:11px; font-weight:400; }
       .retained td { color:var(--muted); }
       .group-label { max-width:520px; }
-      .group-label .account-label { overflow:hidden; text-overflow:ellipsis; }
       .contract-code { color:var(--muted); margin-left:6px; font-weight:400; }
       @media(max-width:560px) { .toolbar select,.toolbar input { max-width:none; flex:1 1 130px; } }
 </style></head>
 <body>
   <header>
     <h1>国内期货 Exec 执行监控</h1>
-    <div class="connection"><span id="conn-dot" class="dot"></span><span id="connection">连接中</span><span id="mode" class="status wait">账户持仓</span><span id="updated">--</span></div>
+    <div class="connection"><span id="conn-dot" class="dot"></span><span id="connection">连接中</span><span id="mode" class="status wait">持仓观察</span><span id="updated">--</span></div>
     <div class="toolbar">
-      <select id="counter" aria-label="账户筛选"><option value="">全部账户</option></select>
-      <select id="venue" aria-label="交易所筛选"><option value="">全部交易所</option><option>CFFEX</option><option>SHFE</option><option>INE</option><option>CZCE</option><option>DCE</option><option>GFEX</option></select>
+      <select id="venue" aria-label="交易所筛选"><option value="">全部交易所</option><option value="CFFEX">中金所</option><option value="SHFE">上期所</option><option value="INE">上期能源</option><option value="CZCE">郑商所</option><option value="DCE">大商所</option><option value="GFEX">广期所</option></select>
       <input id="symbol" placeholder="中文名称 / 合约代码" aria-label="合约筛选">
       <button id="refresh" type="button">重新连接</button>
     </div>
-    <div id="account-updates" class="strategy-updates" aria-label="账户状态和更新时间"></div>
+    <div id="source-updates" class="strategy-updates" aria-label="运行状态和更新时间"></div>
   </header>
   <main>
-    <section class="risk-band" aria-label="账户与持仓概览">
+    <section class="risk-band" aria-label="持仓概览">
       <div class="metric"><label>本地预算 · 人民币元 <span title="执行端本地保守预算，不是账户权益">ⓘ</span></label><strong id="budget">--</strong></div>
       <div class="metric"><label>持仓合约数</label><strong id="contract-count">--</strong></div>
       <div class="metric"><label>多头持仓 · 手</label><strong id="long-lots">--</strong></div>
@@ -245,7 +242,7 @@
     <div id="notice" class="meta" role="status" hidden></div>
     <section class="section">
       <div class="section-head">
-        <h2>账户实际持仓</h2>
+        <h2>实际持仓</h2>
         <div class="view-switch" role="group" aria-label="持仓分组方式"><button data-position-view="symbol" aria-pressed="true">按合约</button><button data-position-view="side" aria-pressed="false">分方向</button></div>
         <label class="meta check"><input id="show-zero" type="checkbox">显示零仓位</label>
         <span id="position-note" class="meta">等待持仓数据</span>
@@ -311,15 +308,10 @@
     };
     const names = {waiting:'等待数据',unavailable:'来源不可用',stopped:'已停止',failed:'执行失败',recovering:'恢复中',disconnected:'已断线',stale:'数据延迟',observing:'已同步'};
     const badge = phase => `<span class="status ${phase==='observing'?'done':['failed','disconnected','unavailable'].includes(phase)?'error':'wait'}">${escape(names[phase] || phase)}</span>`;
+    const venueName = value => ({CFFEX:'中金所',SHFE:'上期所',INE:'上期能源',CZCE:'郑商所',DCE:'大商所',GFEX:'广期所'}[value] || value);
+    const adapterName = source => source.adapter==='yida'?'易达':'CTP';
     const side = value => `<span class="${value==='buy'?'positive':'negative'}">${value==='buy'?'多头':'空头'}</span>`;
     const match = (venue,symbol,day) => (!$('venue').value || venue===$('venue').value) && (symbol+' '+contractName(venue,symbol,day)).toLowerCase().includes($('symbol').value.trim().toLowerCase());
-    function selectedSources() { return [...state.sources.values()].filter(s=>!$('counter').value || s.source_id===$('counter').value); }
-    function options() {
-      const select=$('counter'), old=select.value, sources=[...state.sources.values()], signature=JSON.stringify(sources.map(s=>[s.source_id,s.label]));
-      if (select.dataset.options===signature) return;
-      select.replaceChildren(new Option('全部账户',''),...sources.map(s=>new Option(s.label,s.source_id)));
-      select.value=sources.some(s=>s.source_id===old)?old:''; select.dataset.options=signature;
-    }
     function rows(id, content, columns, empty) { $(id).innerHTML=content || `<tr><td class="empty" colspan="${columns}">${escape(empty)}</td></tr>`; }
     function connection(text,kind) { $('connection').textContent=text; $('conn-dot').className='dot '+(kind||''); }
     function positionGroups(sources, filtered = true) {
@@ -342,20 +334,20 @@
       return [...groups.values()].filter(g => $('show-zero').checked || g.long || g.short || g.frozenLong || g.frozenShort).sort((a,b) => a.source.source_id.localeCompare(b.source.source_id) || a.venue.localeCompare(b.venue) || a.symbol.localeCompare(b.symbol));
     }
 
-    function renderAccounts(sources,groups) {
+    function renderOverview(sources,groups) {
       const known=sources.length && sources.every(s=>s.entry?.position_ready);
       $('contract-count').textContent=known?fmt(groups.length):'--';
       $('long-lots').textContent=known?fmt(groups.reduce((n,g)=>n+g.long,0)):'--';
       $('short-lots').textContent=known?fmt(groups.reduce((n,g)=>n+g.short,0)):'--';
       $('frozen-lots').textContent=known?fmt(groups.reduce((n,g)=>n+g.frozenLong+g.frozenShort,0)):'--';
-      $('budget').textContent=sources.length===1?yuan(sources[0].entry?.available_local_budget):sources.length?'按账户查看':'--';
+      $('budget').textContent=sources.length===1?yuan(sources[0].entry?.available_local_budget):'--';
       $('budget').title=$('budget').textContent+' 人民币元';
       const captured=sources.map(s=>s.entry?.observed_us).filter(Boolean);
       $('last-capture').textContent=captured.length?time(Math.min(...captured)):'--';
       $('updated').textContent=captured.length?'更新于 '+time(Math.min(...captured),true):'--';
-      $('mode').textContent=sources.length && sources.every(s=>s.entry && !s.entry.can_trade)?'当前不可交易':'账户持仓';
-      $('account-updates').innerHTML=sources.map(s=>`<div class="strategy-update"><span class="strategy-update-name">${escape(s.label)}</span>${badge(status(s))}<span>交易日 ${escape(s.entry?.trading_day)}</span><time>${time(s.entry?.observed_us)}</time></div>`).join('');
-      const problems=sources.flatMap(s=>[s.error,status(s)==='observing'?null:s.entry?.reason,status(s)==='stale'?'持仓心跳过期，保留最后已知仓位':null].filter(Boolean).map(reason=>s.label+'：'+reason));
+      $('mode').textContent=sources.length && sources.every(s=>s.entry && !s.entry.can_trade)?'当前不可交易':'持仓观察';
+      $('source-updates').innerHTML=sources.map(s=>`<div class="strategy-update"><span class="strategy-update-name">${adapterName(s)}</span>${badge(status(s))}<span>交易日 ${escape(s.entry?.trading_day)}</span><time>${time(s.entry?.observed_us)}</time></div>`).join('');
+      const problems=sources.flatMap(s=>[s.error,status(s)==='observing'?null:s.entry?.reason,status(s)==='stale'?'持仓心跳过期，保留最后已知仓位':null].filter(Boolean).map(reason=>adapterName(s)+'：'+reason));
       $('notice').hidden=!problems.length; $('notice').textContent=problems.join(' · '); $('notice').className='meta stale';
     }
     function renderPositions(sources, groups) {
@@ -364,30 +356,30 @@
       const known = sources.length && sources.every(s => s.entry?.position_ready);
       $('filtered-contracts').textContent = known ? fmt(groups.length) : '--'; $('filtered-long').textContent = known ? fmt(sums.long) + ' 手' : '--'; $('filtered-short').textContent = known ? fmt(sums.short) + ' 手' : '--';
       const ready = sources.length && sources.every(s => s.entry?.position_ready);
-      $('position-note').textContent = !ready ? "等待账户恢复" : `${groups.length} 个合约 · ${groups.reduce((n,g)=>n+g.positions.length,0)} 条多空记录`;
+      $('position-note').textContent = !ready ? "等待持仓恢复" : `${groups.length} 个合约 · ${groups.reduce((n,g)=>n+g.positions.length,0)} 条多空记录`;
       let content = '';
       if (state.view === "symbol") {
-        $('position-head').innerHTML = '<tr><th>品种 / 账户</th><th>交易所</th><th>状态</th><th>净持仓 · 手</th><th>多头 · 手</th><th>空头 · 手</th><th>今仓 多 / 空 · 手</th><th>昨仓 多 / 空 · 手</th><th>冻结 多 / 空 · 手</th><th>可平 多 / 空 · 手</th><th>更新时间</th></tr>';
+        $('position-head').innerHTML = '<tr><th>合约</th><th>交易所</th><th>状态</th><th>净持仓 · 手</th><th>多头 · 手</th><th>空头 · 手</th><th>今仓 多 / 空 · 手</th><th>昨仓 多 / 空 · 手</th><th>冻结 多 / 空 · 手</th><th>可平 多 / 空 · 手</th><th>更新时间</th></tr>';
         groups.forEach((g,index) => {
           const open=state.expanded.has(g.key), net=g.long-g.short;
-          content += `<tr class="aggregate-row ${status(g.source)!=='observing'?'retained':''}"  data-symbol="${escape(g.symbol)}"><td><span class="group-label"><button class="group-toggle" data-group="${index}" aria-expanded="${open}" aria-label="展开 ${escape(g.symbol)}"></button>${contractLabel(g)}<span class="muted account-label">${escape(g.source.account)}</span></span></td><td>${escape(g.venue)}</td><td>${badge(status(g.source))}</td><td class="${net>0?'positive':net<0?'negative':''}">${fmt(net)}</td><td class="positive">${fmt(g.long)}</td><td class="negative">${fmt(g.short)}</td><td>${fmt(g.todayLong)} / ${fmt(g.todayShort)}</td><td>${fmt(g.yesterdayLong)} / ${fmt(g.yesterdayShort)}</td><td>${fmt(g.frozenLong)} / ${fmt(g.frozenShort)}</td><td>${fmt(g.long-g.frozenLong)} / ${fmt(g.short-g.frozenShort)}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;
-          if (open) content += g.positions.map(p => {const v=p.position;return `<tr class="detail-row" ><td>${side(p.side)}</td><td>${escape(g.venue)}</td><td>${badge(status(g.source))}</td><td>${p.side==='buy'?'':'−'}${fmt(v.today+v.yesterday)}</td><td>${p.side==='buy'?fmt(v.today+v.yesterday):'--'}</td><td>${p.side==='sell'?fmt(v.today+v.yesterday):'--'}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${fmt(v.frozen_today+v.frozen_yesterday)}</td><td>${fmt(v.today+v.yesterday-v.frozen_today-v.frozen_yesterday)}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;}).join('');
+          content += `<tr class="aggregate-row ${status(g.source)!=='observing'?'retained':''}"  data-symbol="${escape(g.symbol)}"><td><span class="group-label"><button class="group-toggle" data-group="${index}" aria-expanded="${open}" aria-label="展开 ${escape(g.symbol)}"></button>${contractLabel(g)}</span></td><td>${escape(venueName(g.venue))}</td><td>${badge(status(g.source))}</td><td class="${net>0?'positive':net<0?'negative':''}">${fmt(net)}</td><td class="positive">${fmt(g.long)}</td><td class="negative">${fmt(g.short)}</td><td>${fmt(g.todayLong)} / ${fmt(g.todayShort)}</td><td>${fmt(g.yesterdayLong)} / ${fmt(g.yesterdayShort)}</td><td>${fmt(g.frozenLong)} / ${fmt(g.frozenShort)}</td><td>${fmt(g.long-g.frozenLong)} / ${fmt(g.short-g.frozenShort)}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;
+          if (open) content += g.positions.map(p => {const v=p.position;return `<tr class="detail-row" ><td>${side(p.side)}</td><td>${escape(venueName(g.venue))}</td><td>${badge(status(g.source))}</td><td>${p.side==='buy'?'':'−'}${fmt(v.today+v.yesterday)}</td><td>${p.side==='buy'?fmt(v.today+v.yesterday):'--'}</td><td>${p.side==='sell'?fmt(v.today+v.yesterday):'--'}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${fmt(v.frozen_today+v.frozen_yesterday)}</td><td>${fmt(v.today+v.yesterday-v.frozen_today-v.frozen_yesterday)}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;}).join('');
         });
       } else {
-        $('position-head').innerHTML = '<tr><th>合约</th><th>账户</th><th>交易所</th><th>方向</th><th>持仓 · 手</th><th>今仓 · 手</th><th>昨仓 · 手</th><th>冻结今仓 · 手</th><th>冻结昨仓 · 手</th><th>可平 · 手</th><th>状态</th><th>更新时间</th></tr>';
-        content = groups.flatMap(g=>g.positions.map(p=>{const v=p.position;return `<tr  data-symbol="${escape(g.symbol)}" class="${status(g.source)!=='observing'?'retained':''}"><td>${contractLabel(g)}</td><td>${escape(g.source.account)}</td><td>${escape(p.venue)}</td><td>${side(p.side)}</td><td>${fmt(v.today+v.yesterday)}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${fmt(v.frozen_today)}</td><td>${fmt(v.frozen_yesterday)}</td><td>${fmt(v.today+v.yesterday-v.frozen_today-v.frozen_yesterday)}</td><td>${badge(status(g.source))}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;})).join('');
+        $('position-head').innerHTML = '<tr><th>合约</th><th>交易所</th><th>方向</th><th>持仓 · 手</th><th>今仓 · 手</th><th>昨仓 · 手</th><th>冻结今仓 · 手</th><th>冻结昨仓 · 手</th><th>可平 · 手</th><th>状态</th><th>更新时间</th></tr>';
+        content = groups.flatMap(g=>g.positions.map(p=>{const v=p.position;return `<tr  data-symbol="${escape(g.symbol)}" class="${status(g.source)!=='observing'?'retained':''}"><td>${contractLabel(g)}</td><td>${escape(venueName(p.venue))}</td><td>${side(p.side)}</td><td>${fmt(v.today+v.yesterday)}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${fmt(v.frozen_today)}</td><td>${fmt(v.frozen_yesterday)}</td><td>${fmt(v.today+v.yesterday-v.frozen_today-v.frozen_yesterday)}</td><td>${badge(status(g.source))}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;})).join('');
       }
-      const empty = !sources.length ? "等待账户数据" : !ready ? "等待柜台完成持仓恢复" : sources.some(s=>status(s)!=='observing') ? "账户数据未就绪，等待更新" : $('symbol').value || $('venue').value ? "当前筛选没有持仓" : "当前账户无持仓";
-      rows('positions',content,state.view==='symbol'?11:12,empty);
+      const empty = !sources.length ? "等待持仓数据" : !ready ? "等待柜台完成持仓恢复" : sources.some(s=>status(s)!=='observing') ? "持仓数据未就绪，等待更新" : $('symbol').value || $('venue').value ? "当前筛选没有持仓" : "当前无持仓";
+      rows('positions',content,11,empty);
     }
 
     function render() {
-      const sources=selectedSources(), allGroups=positionGroups(sources,false).filter(g=>g.long||g.short||g.frozenLong||g.frozenShort);
-      renderAccounts(sources,allGroups); renderPositions(sources,positionGroups(sources));
+      const sources=[...state.sources.values()], allGroups=positionGroups(sources,false).filter(g=>g.long||g.short||g.frozenLong||g.frozenShort);
+      renderOverview(sources,allGroups); renderPositions(sources,positionGroups(sources));
     }
     function accept(frame) {
       if (frame.type!=='cn_futures_state' || !frame.source_id) return;
-      state.sources.set(frame.source_id,frame); options(); render();
+      state.sources.set(frame.source_id,frame); render();
     }
     function connect() {
       clearTimeout(state.timer);
@@ -405,7 +397,7 @@
       state.expanded.has(key)?state.expanded.delete(key):state.expanded.add(key);render();
     });
     document.querySelectorAll('[data-position-view]').forEach(button=>button.onclick=()=>{state.view=button.dataset.positionView;document.querySelectorAll('[data-position-view]').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));render();});
-    ['counter','venue','show-zero'].forEach(id=>$(id).onchange=render);$('symbol').oninput=render;
+    ['venue','show-zero'].forEach(id=>$(id).onchange=render);$('symbol').oninput=render;
     $('refresh').onclick=connect;
     render();setInterval(render,1000);connect();
   })();
