@@ -83,7 +83,7 @@
       main { padding: 16px 18px 28px; display: grid; gap: 16px; }
       .risk-band {
         display: grid;
-        grid-template-columns: repeat(6, minmax(130px, 1fr));
+        grid-template-columns: repeat(4, minmax(130px, 1fr));
         border: 1px solid var(--line);
         border-radius: 8px;
         overflow: hidden;
@@ -166,16 +166,16 @@
       .status.wait { color: var(--amber); border-color: #82661d; }
       .empty { padding: 42px; text-align: center; color: var(--muted); }
       @media (max-width: 980px) {
-        .risk-band { grid-template-columns: repeat(3, 1fr); }
-        .metric:nth-child(3) { border-right: 0; }
-        .metric:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
+        .risk-band { grid-template-columns: repeat(2, 1fr); }
+        .metric:nth-child(2n) { border-right: 0; }
+        .metric:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
         .toolbar { margin-left: 0; width: 100%; }
         select, input { flex: 1; min-width: 130px; }
       }
       @media (max-width: 560px) {
         header, main { padding-left: 10px; padding-right: 10px; }
         .strategy-update-name { max-width: 210px; }
-        #budget, #futures-amount, #options-amount { font-size:14px; }
+        #futures-amount, #options-amount { font-size:14px; }
         .risk-band { grid-template-columns: repeat(2, 1fr); }
         .metric { border-bottom: 1px solid var(--line); }
         .metric:nth-child(2n) { border-right: 0; }
@@ -190,10 +190,10 @@
       .status.error { color:var(--red); border-color:#8c3e50; }
       .positions-wrap { max-height:62vh; }
       .table-note { margin-top:8px; font-size:11px; }
-      .valuation-note { display:block; margin-top:3px; color:var(--muted); font-size:10px; }
-      .valuation-note.stale { color:var(--amber); }
+      .quote-status { color:var(--muted); font-size:12px; }
+      .quote-status.stale { color:var(--amber); }
       .valuation-basis { padding:10px; border-bottom:1px solid var(--line); color:var(--muted); font-size:12px; white-space:normal; }
-      .net-amount { min-width:170px; }
+      .net-amount { min-width:140px; }
       .retained td { color:var(--muted); }
       .group-label { max-width:520px; }
       .contract-code { color:var(--muted); margin-left:6px; font-weight:400; }
@@ -212,12 +212,10 @@
   </header>
   <main>
     <section class="risk-band" aria-label="持仓概览">
-      <div class="metric"><label>本地预算 · 人民币元 <span title="执行端本地保守预算，不是账户权益">ⓘ</span></label><strong id="budget">--</strong></div>
       <div class="metric"><label>持仓合约数</label><strong id="contract-count">--</strong></div>
-      <div class="metric"><label>期货净名义金额 · 元</label><strong id="futures-amount">--</strong><span id="futures-basis" class="valuation-note"></span></div>
-      <div class="metric"><label>期权净权利金市值 · 元</label><strong id="options-amount">--</strong><span id="options-basis" class="valuation-note"></span></div>
-      <div class="metric"><label>估值覆盖 · 合约</label><strong id="valuation-coverage">--</strong></div>
-      <div class="metric"><label>最近采集 · 北京时间</label><strong id="last-capture">--</strong></div>
+      <div class="metric"><label title="净名义金额＝净手数 × 合约乘数 × L1 最新价，不是保证金或盈亏">期货持仓金额 · 元</label><strong id="futures-amount">--</strong></div>
+      <div class="metric"><label title="净权利金市值＝净手数 × 合约乘数 × L1 最新价，不是标的敞口、保证金或盈亏">期权持仓金额 · 元</label><strong id="options-amount">--</strong></div>
+      <div class="metric"><label>行情覆盖 · 合约</label><strong id="valuation-coverage">--</strong></div>
     </section>
     <div id="notice" class="meta" role="status" hidden></div>
     <section class="section">
@@ -225,10 +223,11 @@
         <h2>合约净持仓</h2>
         <label class="meta check"><input id="show-zero" type="checkbox">显示零仓位</label>
         <span id="position-note" class="meta">等待持仓数据</span>
+        <span id="quote-status" class="quote-status"></span>
         <div class="summary"><span>合约 <strong id="filtered-contracts">--</strong></span><span>净多合约 <strong id="filtered-net-long">--</strong></span><span>净空合约 <strong id="filtered-net-short">--</strong></span></div>
       </div>
       <div class="table-wrap positions-wrap"><table><thead id="position-head"></thead><tbody id="positions"></tbody></table></div>
-      <div class="meta table-note">数量单位：手；金额单位：人民币元。净持仓＝多头－空头，按同账户、同交易所、同合约计算；正数为净多、负数为净空。展开查看多空、今昨及冻结明细。人民币金额＝净手数 × 原生合约乘数 × 易达 L1 最新价。期货为净名义金额，期权为净权利金市值；均不代表保证金或盈亏。缺价显示 --，快照及停更价格标为历史估值。</div>
+      <div class="meta table-note">正数净多，负数净空；数量为手，金额为人民币元。展开查看今昨仓、行情时间和金额口径。</div>
     </section>
   </main>
   <script>
@@ -322,9 +321,9 @@
     }
     function amountCell(g) {
       const v=valuation(g);
-      if(v.amount===null) return `<span>--</span><span class="valuation-note stale">${escape(v.reason)}</span>`;
-      const kind=g.mark.kind==='option'?'权利金市值':'名义金额';
-      return `<span title="${escape(kind+'＝净手数 × '+g.mark.contract_multiple+' × '+g.mark.last_price+'；行情 '+v.quoteTime)}">${escape(yuan(v.amount))}</span><span class="valuation-note ${v.historical?'stale':''}">${v.historical?'历史估值 · ':''}${escape(kind)} · ${escape(v.reason)}</span><span class="valuation-note">${escape(v.quoteTime)}</span>`;
+      if(v.amount===null) return `<span title="${escape(v.reason)}">--</span>`;
+      const kind=g.mark.kind==='option'?'净权利金市值':'净名义金额';
+      return `<span title="${escape(kind+'＝净手数 × '+g.mark.contract_multiple+' × '+g.mark.last_price+'；'+(v.historical?'历史行情；':'')+v.quoteTime+'；'+v.reason)}">${escape(yuan(v.amount))}</span>`;
     }
     function totalAmount(groups,kind) {
       if(groups.some(g=>!g.mark || !['future','option'].includes(g.mark.kind))) return null;
@@ -360,14 +359,14 @@
         $(id).textContent=amount===null?'--':yuan(amount);
         const historical=groups.filter(g=>g.mark?.kind===kind).some(g=>valuation(g).historical);
         $(id).title=amount===null?'估值资料不完整；查看各合约缺失原因':historical?'含历史行情估值；展开合约查看行情交易日和时刻':'易达 L1 最新价估值';
-        $(id).className='';
-        $(id==='futures-amount'?'futures-basis':'options-basis').textContent=amount===null?'资料不完整':historical?'历史行情估值':'L1 最新价估值';
       }
       $('valuation-coverage').textContent=known?groups.filter(g=>valuation(g).amount!==null).length+' / '+groups.length:'--';
-      $('budget').textContent=sources.length===1?yuan(sources[0].entry?.available_local_budget):'--';
-      $('budget').title=$('budget').textContent+' 人民币元';
+      const priced=groups.map(valuation).filter(v=>v.amount!==null), historical=priced.some(v=>v.historical);
+      const quoteDays=[...new Set(groups.filter(g=>g.mark?.trading_day).map(g=>String(g.mark.trading_day)))].sort();
+      $('quote-status').textContent=priced.length?(historical?'历史行情':'L1 行情')+(quoteDays.length?' · '+quoteDays.join(' / '):''):'';
+      $('quote-status').className='quote-status'+(historical?' stale':'');
+      $('quote-status').title=historical?'含快照、暂停、断线、停更或原生时间较旧的行情；展开合约查看具体时刻':'金额按易达 L1 最新价计算';
       const captured=sources.map(s=>s.entry?.observed_us).filter(Boolean);
-      $('last-capture').textContent=captured.length?time(Math.min(...captured)):'--';
       $('updated').textContent=captured.length?'更新于 '+time(Math.min(...captured),true):'--';
       $('mode').textContent=sources.length && sources.every(s=>s.entry && !s.entry.can_trade)?'当前不可交易':'持仓观察';
       $('source-updates').innerHTML=sources.map(s=>`<div class="strategy-update"><span class="strategy-update-name">${adapterName(s)}</span>${badge(status(s))}<span>交易日 ${escape(s.entry?.trading_day)}</span><time>${time(s.entry?.observed_us)}</time></div>`).join('');
@@ -391,7 +390,7 @@
             return `<tr><td>${side(p.side)}</td><td>${fmt(v.today+v.yesterday)}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${fmt(v.frozen_today)}</td><td>${fmt(v.frozen_yesterday)}</td><td>${fmt(v.today+v.yesterday-v.frozen_today-v.frozen_yesterday)}</td></tr>`;
           }).join('');
           const v=valuation(g), mark=g.mark;
-          const basis=mark?`原生乘数 ${fmt(mark.contract_multiple)} · L1 最新价 ${mark.last_price==null?'--':escape(String(mark.last_price))} · 行情交易日／时刻 ${escape(v.quoteTime||String(mark.trading_day||'--')+' '+(mark.native_time||'--'))} · ${escape(v.reason)}${v.historical?' · 历史行情':''}`:'等待原生合约元数据与 L1 行情';
+          const basis=mark?`${mark.kind==='option'?'净权利金市值':'净名义金额'}＝净手数 × 合约乘数 ${fmt(mark.contract_multiple)} × L1 最新价 ${mark.last_price==null?'--':escape(String(mark.last_price))}；行情交易日／时刻 ${escape(v.quoteTime||String(mark.trading_day||'--')+' '+(mark.native_time||'--'))} · ${escape(v.reason)}${v.historical?' · 历史行情':''}。金额不代表保证金、盈亏或期权标的敞口。`:'等待合约元数据与 L1 行情';
           html += `<tr class="detail-row"><td colspan="6"><div class="position-detail"><div class="valuation-basis">${basis}</div><table aria-label="${escape(g.symbol)} 多空与今昨明细"><thead><tr><th>方向</th><th>持仓 · 手</th><th>今仓 · 手</th><th>昨仓 · 手</th><th>冻结今仓 · 手</th><th>冻结昨仓 · 手</th><th>可平 · 手</th></tr></thead><tbody>${details}</tbody></table></div></td></tr>`;
         }
         return html;

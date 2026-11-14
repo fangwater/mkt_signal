@@ -155,14 +155,9 @@ async fn direct_ws_replays_each_source_and_forwards_without_flush_timer_or_rest_
     let f: Value = serde_json::from_str(raw.to_text().unwrap()).unwrap();
     assert_eq!(f["entry"]["sequence"], "2");
     let client = reqwest::Client::new();
-    let html = client
-        .get(format!("http://{addr}/"))
-        .send()
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
+    let response = client.get(format!("http://{addr}/")).send().await.unwrap();
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let html = response.text().await.unwrap();
     assert!(html.contains("const WS_PATH = \"/observe/live\""));
     assert!(!html.contains("fetch("));
     assert!(!html.contains("data-activity"));

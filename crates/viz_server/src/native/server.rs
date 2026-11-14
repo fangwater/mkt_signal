@@ -5,6 +5,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
+    http::header,
     response::{Html, IntoResponse},
     routing::get,
     Json, Router,
@@ -23,7 +24,7 @@ pub fn router(cfg: &crate::config::HttpCfg, hub: Hub) -> Router {
             "/",
             get(move || {
                 let html = html.clone();
-                async move { Html(html) }
+                async move { ([(header::CACHE_CONTROL, "no-store")], Html(html)) }
             }),
         )
         .route(
