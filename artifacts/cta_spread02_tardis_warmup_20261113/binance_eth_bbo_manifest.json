@@ -1,0 +1,19 @@
+{
+  "market": "binance-futures",
+  "interval": "1h",
+  "start_ms": 1794096000000,
+  "end_ms": 1794355200000,
+  "source": "Tardis trades + incremental_book_L2; current Redis thresholds and historical previous-month hourly KLL",
+  "symbols": {
+    "ETHUSDT": {
+      "file": "ETHUSDT.bin.gz",
+      "rows": 72,
+      "sha256": "72f0f4757faddb55c3650eea5742d8d90146d5e2e7b72cdb0dcecf6acca1a157",
+      "first_end_ms": 1794099600000,
+      "last_end_ms": 1794355200000,
+      "source_book_events": 9688605,
+      "source_trades": 14316587,
+      "thresholds": {}
+    }
+  }
+}

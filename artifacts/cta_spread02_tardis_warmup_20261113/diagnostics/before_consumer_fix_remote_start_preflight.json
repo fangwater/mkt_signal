@@ -1,0 +1,8 @@
+{
+  "command": "taskset -c 0-5 /home/ubuntu/cta-audits/spread02_tardis_warmup_20261113/candidate/cta-factor-spread.upload --config /home/ubuntu/cta-factor-spread/config/cta_factor_spread.toml --check --validate-hourly-history --validate-kafka-continuity --hourly-history /home/ubuntu/cta-audits/spread02_tardis_warmup_20261113/candidate/history",
+  "returncode": 1,
+  "expected_refusal": true,
+  "error": "Error: timed out reading first retained Kafka periods",
+  "offline_seed_matches_local": true,
+  "production_worker_restarted": false
+}

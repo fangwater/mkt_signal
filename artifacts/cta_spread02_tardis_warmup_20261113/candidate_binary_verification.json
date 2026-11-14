@@ -1,0 +1,9 @@
+{
+  "matches_published_artifacts": true,
+  "installed_in_production_environment": true,
+  "sha256": {
+    "/home/ubuntu/cta-factor-spread/cta-factor-spread": "76a86403f5ad51979f2beec8cb0c7cbbe6030d8e6167014e51c529b43cdbdf09",
+    "/home/ubuntu/cta-factor-spread/scripts/cta_factor_process.sh": "d654faeb5954d415afcbb14bef8570b208ef56eab92084b0fb6801e05c962deb",
+    "/home/ubuntu/cta-audits/spread02_tardis_warmup_20261113/candidate/cta-hourly-history.upload": "9bdd8f5e55b9160e63ac7feafd1cba919c60d53a116f33d8e911605c21d0d6df"
+  }
+}

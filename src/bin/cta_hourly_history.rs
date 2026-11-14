@@ -5,8 +5,8 @@ use clap::{Parser, Subcommand};
 use mkt_signal::{
     common::amount_threshold::AmountThreshold,
     cta_factor_calc::{
-        config::{Combination, FactorRule, Interval, Market, Plan},
-        engine::Engine,
+        config::{Config, Interval, Market, Plan},
+        engine::{Engine, FactorPoint, MinuteFormulaState},
         hourly_history::{self, HourlyHistory, HourlyInput, Manifest, SymbolFile, HOUR_MS},
         runtime::atomic_json,
     },
@@ -34,6 +34,22 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Migrate this worker's factual minute journal into its bounded state checkpoint.
+    MinuteState {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        generation: PathBuf,
+        #[arg(long)]
+        control_snapshot: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Inspect the first retained source period in every required Kafka partition.
+    KafkaStart {
+        #[arg(long)]
+        config: PathBuf,
+    },
     /// Extend a native archive with a contiguous archive from the same market.
     Extend {
         #[arg(long)]
@@ -47,18 +63,21 @@ enum Action {
     Replay {
         #[arg(long)]
         history: PathBuf,
-        #[arg(long, required = true)]
-        rules: Vec<PathBuf>,
         #[arg(long, default_value = "config/cta_prep_binance_futures.toml")]
         config: PathBuf,
         #[arg(long)]
         control_snapshot: PathBuf,
         #[arg(long)]
         brokers: Option<String>,
+        #[arg(long)]
+        minute_state: Option<PathBuf>,
     },
     Build {
-        #[arg(long, required = true)]
-        rules: Vec<PathBuf>,
+        #[arg(long)]
+        config: PathBuf,
+        /// Source market matching the archived Tardis trades/book files.
+        #[arg(long)]
+        market: String,
         #[arg(long)]
         source_root: PathBuf,
         #[arg(long)]
@@ -78,15 +97,13 @@ enum Action {
     Check {
         #[arg(long)]
         history: PathBuf,
-        #[arg(long, required = true)]
-        rules: Vec<PathBuf>,
-        /// Timestamp of the first completed Kafka period (milliseconds).
         #[arg(long)]
-        first_period_ms: Option<i64>,
+        config: PathBuf,
     },
 }
 #[derive(Serialize, Deserialize)]
 struct Completed {
+    market: Market,
     start_ms: i64,
     end_ms: i64,
     depth: bool,
@@ -101,43 +118,42 @@ struct Job {
     size: bool,
 }
 
-fn needs_depth(name: &str) -> bool {
-    name.starts_with("depth_") || name.starts_with("factor_") && !name.starts_with("factor_trades_")
-}
 fn needs_size(name: &str) -> bool {
     mkt_signal::cta_factor_calc::requires_amount_thresholds(name)
 }
-fn rule_jobs(paths: &[PathBuf]) -> Result<(Vec<Job>, Plan)> {
+fn source_plan(path: &Path) -> Result<(Config, Plan)> {
+    let config = Config::load(path)?;
+    let plan = Plan::load(&config.combinations_dir)?;
+    Ok((config, plan))
+}
+fn market_jobs(plan: &Plan, market: Market) -> Vec<Job> {
     let mut jobs = BTreeMap::<String, Job>::new();
-    let mut combinations = Vec::new();
-    for (i, path) in paths.iter().enumerate() {
-        let rules: Vec<FactorRule> = serde_json::from_slice(&fs::read(path)?)
-            .with_context(|| format!("read four-column rules {}", path.display()))?;
-        let combination = Combination {
-            name: format!("history_{i}"),
-            strategy_group: "history".into(),
-            symbol_group: None,
-            venue: Market::BinanceFutures,
-            interval: Interval::Hour,
-            reference_venue: None,
-            factor_rules: rules,
-            signal: None,
-            parameters: BTreeMap::new(),
-        };
-        combination.validate()?;
-        for rule in &combination.factor_rules {
-            let id = combination.rule_id(rule)?;
-            let job = jobs.entry(id.symbol.clone()).or_insert(Job {
-                symbol: id.symbol,
-                depth: false,
-                size: false,
-            });
-            job.depth |= needs_depth(&id.factor);
-            job.size |= needs_size(&id.factor);
+    for calculation in plan
+        .calculations
+        .values()
+        .filter(|c| c.id.interval == Interval::Hour)
+    {
+        if !calculation.id.markets().any(|source| source == market) {
+            continue;
         }
-        combinations.push(combination);
+        let job = jobs.entry(calculation.id.symbol.clone()).or_insert(Job {
+            symbol: calculation.id.symbol.clone(),
+            depth: false,
+            size: false,
+        });
+        job.depth |= hourly_history::requires_book(&calculation.id);
+        job.size |= calculation.id.is_formula()
+            && calculation.id.market == market
+            && needs_size(&calculation.id.factor);
     }
-    Ok((jobs.into_values().collect(), Plan::merge(combinations)?))
+    jobs.into_values().collect()
+}
+fn source_layout(market: Market) -> (&'static str, &'static str) {
+    match market {
+        Market::BinanceFutures => ("binance_usd", "binance-futures"),
+        Market::OkexFutures => ("okex_usd", "okex-swap"),
+        Market::BinanceMargin => ("binance_spot", "binance"),
+    }
 }
 fn midnight(day: NaiveDate) -> Result<i64> {
     Ok(day
@@ -176,6 +192,7 @@ fn capture_bar(
 }
 fn build_one(
     job: &Job,
+    market: Market,
     source_root: &Path,
     from: NaiveDate,
     until: NaiveDate,
@@ -190,7 +207,8 @@ fn build_one(
     if meta_path.is_file() {
         let previous: Completed = serde_json::from_slice(&fs::read(&meta_path)?)?;
         ensure!(
-            previous.start_ms == start
+            previous.market == market
+                && previous.start_ms == start
                 && previous.end_ms == end
                 && previous.depth == job.depth
                 && previous.size == job.size
@@ -208,8 +226,9 @@ fn build_one(
     }
     let started = Instant::now();
     let last = until.pred_opt().context("invalid end day")?;
-    let root = source_root.join(format!("binance_usd_{}", job.symbol.to_ascii_lowercase()));
-    let trade_from = if job.size {
+    let (prefix, exchange) = source_layout(market);
+    let root = source_root.join(format!("{prefix}_{}", job.symbol.to_ascii_lowercase()));
+    let trade_from = if job.size && month(start)? != current_month {
         let first = from.with_day(1).context("month start")?;
         first
             .pred_opt()
@@ -222,7 +241,7 @@ fn build_one(
     let trades = discover_files(
         &root,
         "trades",
-        "binance-futures",
+        exchange,
         &job.symbol,
         Some(&trade_from.to_string()),
         Some(&last.to_string()),
@@ -236,7 +255,7 @@ fn build_one(
         let paths = discover_files(
             &root,
             "incremental_book_L2",
-            "binance-futures",
+            exchange,
             &job.symbol,
             Some(&from.to_string()),
             Some(&last.to_string()),
@@ -280,7 +299,13 @@ fn build_one(
                 completed
             }
             ReplayEvent::Trade(trade) => {
-                ensure!(trade.symbol == job.symbol, "trade symbol mismatch");
+                ensure!(
+                    runtime_common::symbol_util::normalize_symbol_for_internal(&trade.symbol)
+                        == job.symbol,
+                    "{} trade symbol mismatch for {}",
+                    market.name(),
+                    job.symbol
+                );
                 if job.size {
                     if let Some(snapshot) =
                         hourly.on_trade(trade.timestamp_us, trade.price, trade.amount)
@@ -300,7 +325,7 @@ fn build_one(
                     if !thresholds.contains_key(&apply) {
                         let limits = if apply == current_month {
                             *current
-                                .get(&format!("binance-futures:{}", job.symbol))
+                                .get(&format!("{}:{}", market.name(), job.symbol))
                                 .with_context(|| {
                                     format!("missing current shared thresholds for {}", job.symbol)
                                 })?
@@ -388,6 +413,7 @@ fn build_one(
     data.source_trades = ntrade;
     data.thresholds = thresholds;
     let completed = Completed {
+        market,
         start_ms: start,
         end_ms: end,
         depth: job.depth,
@@ -471,6 +497,73 @@ fn extend_archives(history: &Path, append: &Path, output: &Path) -> Result<Manif
 fn main() -> Result<()> {
     let args = Args::parse();
     match args.action {
+        Action::MinuteState {
+            config,
+            generation,
+            control_snapshot,
+            output,
+        } => {
+            use std::io::BufRead;
+            let (mut config, plan) = source_plan(&config)?;
+            let old: serde_json::Value =
+                serde_json::from_slice(&fs::read(generation.join("plan.json"))?)?;
+            let matching = plan
+                .calculations
+                .iter()
+                .filter(|(id, c)| {
+                    c.id.is_formula()
+                        && c.id.interval != Interval::Hour
+                        && serde_json::to_value(&c.parameters).ok().as_ref()
+                            == old["calculations"][*id].get("parameters")
+                })
+                .map(|(id, _)| id.clone())
+                .collect::<BTreeSet<_>>();
+            let control: serde_json::Value = serde_json::from_slice(&fs::read(control_snapshot)?)?;
+            config.amount_thresholds =
+                serde_json::from_value(control["amount_thresholds"].clone())?;
+            let mut engine = Engine::new(plan, &config)?;
+            let mut files = fs::read_dir(&generation)?
+                .map(|e| e.map(|e| e.path()))
+                .collect::<std::io::Result<Vec<_>>>()?;
+            files.retain(|p| {
+                p.file_name().and_then(|v| v.to_str()).is_some_and(|v| {
+                    v.len() == 14
+                        && v.ends_with(".jsonl")
+                        && v[..8].bytes().all(|b| b.is_ascii_digit())
+                })
+            });
+            files.sort();
+            let mut rows = 0;
+            for file in files {
+                let mut reader = std::io::BufReader::new(fs::File::open(file)?);
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line)? == 0 || !line.ends_with('\n') {
+                        break;
+                    }
+                    let point: FactorPoint = serde_json::from_str(&line)?;
+                    if matching.contains(&point.factor_id)
+                        && engine.replay_minute_journal_point(point)?
+                    {
+                        rows += 1;
+                    }
+                }
+            }
+            ensure!(rows > 0, "no matching factual minute journal rows");
+            let state = engine.minute_formula_state(&config.amount_thresholds);
+            let restored = Engine::new(engine.plan.clone(), &config)?
+                .restore_minute_formula_state(&state, &config)?;
+            atomic_json(&output, &state)?;
+            println!(
+                "{}",
+                serde_json::json!({"journal_rows":rows,"minute_formulas":restored,"output":output})
+            );
+        }
+        Action::KafkaStart { config } => {
+            let (config, plan) = source_plan(&config)?;
+            let starts = hourly_history::retained_kafka_start(&config.kafka, plan.topics())?;
+            println!("{}", serde_json::to_string_pretty(&starts)?);
+        }
         Action::Extend {
             history,
             append,
@@ -481,15 +574,14 @@ fn main() -> Result<()> {
         }
         Action::Replay {
             history,
-            rules,
             config,
             control_snapshot,
             brokers,
+            minute_state,
         } => {
             use period_pbs::kafka::{decode_period_payload, RawKafkaConsumer};
-            let history = HourlyHistory::load(&history)?;
-            let (_, plan) = rule_jobs(&rules)?;
-            let mut config = mkt_signal::cta_factor_calc::config::Config::load(&config)?;
+            let (mut config, plan) = source_plan(&config)?;
+            let histories = hourly_history::load_for_plan(Some(&history), &plan)?;
             let control: serde_json::Value = serde_json::from_slice(&fs::read(control_snapshot)?)?;
             config.amount_thresholds =
                 serde_json::from_value(control["amount_thresholds"].clone())?;
@@ -498,12 +590,12 @@ fn main() -> Result<()> {
                 kafka.brokers = brokers;
                 kafka.broker_addr_rewrites.clear();
             }
-            kafka.topics = vec!["binance-futures".into()];
+            kafka.topics = plan.topics();
             kafka.group_id = format!("cta-hourly-history-check-{}", uuid::Uuid::new_v4());
             kafka.client_id = kafka.group_id.clone();
             kafka.enable_auto_commit = false;
             kafka.offset_reset = "earliest".into();
-            let consumer = RawKafkaConsumer::new(&kafka)?;
+            let consumer = RawKafkaConsumer::new_unassigned(&kafka)?;
             let marks = consumer.query_topic_watermarks(&kafka.topics, 10000, 10000)?;
             ensure!(
                 marks.iter().all(|m| m.high > m.low),
@@ -516,9 +608,15 @@ fn main() -> Result<()> {
             consumer.assign_offsets(&offsets)?;
             let mut engine = Engine::new(plan, &config)?;
             let mut consumed = BTreeMap::new();
-            let mut first = None;
+            let mut first = BTreeMap::new();
             let mut last = 0;
-            let mut seed = None;
+            let seed = engine.seed_hourly_histories(&histories)?;
+            let restored = if let Some(path) = minute_state {
+                let state: MinuteFormulaState = serde_json::from_slice(&fs::read(path)?)?;
+                engine.restore_minute_formula_state(&state, &config)?
+            } else {
+                0
+            };
             let mut records = 0u64;
             let mut last_points = BTreeMap::new();
             let mut points = 0usize;
@@ -539,25 +637,29 @@ fn main() -> Result<()> {
                 let record = record?;
                 let (_, _, period) =
                     decode_period_payload(&record.payload, kafka.payload_compression)?;
-                if first.is_none() {
-                    ensure!(
-                        hourly_history::cutoff_ms(period.ts)? <= history.manifest.end_ms,
-                        "history ends before retained Kafka; refresh package (first={}, end={})",
-                        period.ts,
-                        history.manifest.end_ms
-                    );
-                    first = Some(period.ts);
-                    seed = Some(engine.seed_hourly_history(&history, history.manifest.end_ms)?);
-                    eprintln!(
-                        "KAFKA first_period_ms={} seed_end_ms={}",
-                        period.ts, history.manifest.end_ms
-                    );
+                let market = Market::ALL
+                    .into_iter()
+                    .find(|m| m.topic() == record.topic)
+                    .context("unknown replay topic")?;
+                if !first.contains_key(&market) {
+                    engine.validate_minute_state_start(market, period.ts)?;
+                    if let Some(history) = histories.get(&market) {
+                        ensure!(
+                            hourly_history::cutoff_ms(period.ts)? <= history.manifest.end_ms,
+                            "{} history ends before retained Kafka; refresh package",
+                            market.name()
+                        );
+                    }
+                    first.insert(market, period.ts);
                 }
-                for point in engine.on_period(Market::BinanceFutures, &period)? {
-                    ensure!(
-                        point.ts_ms > history.manifest.end_ms,
-                        "replayed a seeded hourly observation"
-                    );
+                for point in engine.on_period(market, &period)? {
+                    if engine.plan.calculations[&point.factor_id].id.interval == Interval::Hour {
+                        let source = engine.plan.calculations[&point.factor_id].id.market;
+                        ensure!(
+                            point.ts_ms > histories[&source].manifest.end_ms,
+                            "replayed a seeded hourly observation"
+                        );
+                    }
                     let previous = last_points.insert(point.factor_id.clone(), point.ts_ms);
                     ensure!(
                         previous.is_none_or(|ts| point.ts_ms > ts),
@@ -593,12 +695,13 @@ fn main() -> Result<()> {
                 serde_json::to_string_pretty(&serde_json::json!({
                     "first_period_ms":first,"last_period_ms":last,"records":records,"hourly_points":points,
                     "elapsed_secs":started.elapsed().as_secs_f64(),"seed":seed,"latest":engine.latest,
-                    "not_ready":not_ready,"missing":missing,"consumed":consumed.iter().map(|((t,p),o)|(format!("{t}:{p}"),o)).collect::<BTreeMap<_,_>>()
+                    "not_ready":not_ready,"missing":missing,"minute_formulas_restored":restored,"consumed":consumed.iter().map(|((t,p),o)|(format!("{t}:{p}"),o)).collect::<BTreeMap<_,_>>()
                 }))?
             );
         }
         Action::Build {
-            rules,
+            config,
+            market,
             source_root,
             from,
             until,
@@ -611,7 +714,9 @@ fn main() -> Result<()> {
                 from < until && workers > 0 && workers <= 32,
                 "invalid bounded history job"
             );
-            let (mut jobs, _) = rule_jobs(&rules)?;
+            let market: Market = serde_json::from_value(serde_json::json!(market))?;
+            let (_, plan) = source_plan(&config)?;
+            let mut jobs = market_jobs(&plan, market);
             if !symbol.is_empty() {
                 let selected = symbol.into_iter().collect::<BTreeSet<_>>();
                 jobs.retain(|j| selected.contains(&j.symbol));
@@ -633,6 +738,7 @@ fn main() -> Result<()> {
                     .map(|j| {
                         build_one(
                             j,
+                            market,
                             &source_root,
                             from,
                             until,
@@ -650,65 +756,15 @@ fn main() -> Result<()> {
                 let (symbol, data) = result?;
                 symbols.insert(symbol, data);
             }
-            let manifest=Manifest{market:Market::BinanceFutures,interval:Interval::Hour,start_ms:midnight(from)?,
+            let manifest=Manifest{market,interval:Interval::Hour,start_ms:midnight(from)?,
                 end_ms:midnight(until)?,source:"Tardis trades + incremental_book_L2; current Redis thresholds and historical previous-month hourly KLL".into(),symbols};
             atomic_json(&output.join("manifest.json"), &manifest)?;
             println!("{}", serde_json::to_string_pretty(&manifest)?);
         }
-        Action::Check {
-            history,
-            rules,
-            first_period_ms,
-        } => {
-            let history = HourlyHistory::load(&history)?;
-            let (_, plan) = rule_jobs(&rules)?;
-            let config = mkt_signal::cta_factor_calc::config::Config::load(Path::new(
-                "config/cta_prep_binance_futures.toml",
-            ))?;
-            let mut engine = Engine::new(plan, &config)?;
-            let cutoff = first_period_ms
-                .map(hourly_history::cutoff_ms)
-                .transpose()?
-                .unwrap_or(history.manifest.end_ms);
-            let summary = engine.seed_hourly_history(&history, cutoff)?;
-            for (id, ready) in &summary.ready_formulas {
-                if *ready {
-                    continue;
-                }
-                let calculation = &engine.plan.calculations[id];
-                if let Some(depth) = mkt_signal::factor_pub::depth_book::DepthFactorId::from_name(
-                    &calculation.id.factor,
-                ) {
-                    let rows = &history.rows[&calculation.id.symbol];
-                    let raw = rows
-                        .iter()
-                        .filter(|r| r.bar.start_ms + HOUR_MS <= cutoff)
-                        .map(|r| {
-                            r.bar
-                                .full_depth
-                                .as_ref()
-                                .map(|b| b.factor(depth))
-                                .filter(|v| v.is_finite())
-                        })
-                        .collect::<Vec<_>>();
-                    let recent = raw.iter().rev().take(48).collect::<Vec<_>>();
-                    let unique = recent
-                        .iter()
-                        .filter_map(|v| v.map(f64::to_bits))
-                        .collect::<BTreeSet<_>>();
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({"unready_factor":id,
-                            "factual_raw_count":raw.iter().flatten().count(),"last_48_valid_raw":recent.iter().filter(|v|v.is_some()).count(),
-                            "last_48_distinct_raw":unique.len(),"latest_raw":raw.last().copied().flatten(),
-                            "last_24_bbo_spread_bps":rows.iter().filter(|r|r.bar.start_ms+HOUR_MS<=cutoff).rev().take(24).map(|r|{
-                                let bid=r.bar.depth20.bids[0].0;let ask=r.bar.depth20.asks[0].0;
-                                (bid>0.0 && ask>=bid).then_some((ask-bid)/((ask+bid)*0.5)*10000.0)
-                            }).collect::<Vec<_>>()
-                        })
-                    );
-                }
-            }
+        Action::Check { history, config } => {
+            let (config, plan) = source_plan(&config)?;
+            let histories = hourly_history::load_for_plan(Some(&history), &plan)?;
+            let summary = Engine::new(plan, &config)?.seed_hourly_histories(&histories)?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
     }
@@ -792,6 +848,29 @@ mod tests {
     }
 
     #[test]
+    fn jobs_include_both_spread_legs_and_scope_formula_thresholds_to_owner() {
+        use mkt_signal::cta_factor_calc::config::Combination;
+        let combination: Combination = serde_json::from_value(serde_json::json!({
+            "name":"test", "strategy_group":"test", "venue":"okex-futures", "interval":"1h",
+            "factor_rules":[
+                {"标的":"BTC","因子":"baseline_196","符号":1,"nq":"关闭"},
+                {"标的":"BTC","因子":"spread","符号":1,"nq":"关闭","reference_venue":"binance-futures"},
+                {"标的":"ETH","因子":"avg_price","符号":1,"nq":"关闭"}
+            ]
+        })).unwrap();
+        let plan = Plan::merge([combination]).unwrap();
+        let okx = market_jobs(&plan, Market::OkexFutures);
+        let bn = market_jobs(&plan, Market::BinanceFutures);
+        assert_eq!(okx.len(), 2);
+        assert!(okx[0].depth && okx[0].size);
+        assert!(!okx[1].depth && !okx[1].size);
+        assert_eq!(bn.len(), 1);
+        assert_eq!(bn[0].symbol, "BTCUSDT");
+        assert!(bn[0].depth && !bn[0].size);
+        assert!(market_jobs(&plan, Market::BinanceMargin).is_empty());
+    }
+
+    #[test]
     fn sparse_tardis_hours_include_right_edge_and_use_causal_quote_or_trade_close() {
         let root = std::env::temp_dir().join(format!("cta-hourly-build-{}", uuid::Uuid::new_v4()));
         let source = root.join("binance_usd_btcusdt");
@@ -832,27 +911,56 @@ mod tests {
             ),
             &books,
         );
-        for depth in [false, true] {
-            let output = root.join(if depth { "depth" } else { "trades" });
+        // Tardis filenames use the internal symbol, while OKX CSV rows use
+        // the native contract name and quantities stay in native contracts.
+        let okx = root.join("okex_usd_btcusdt");
+        gzip(
+            &okx.join("trades/okex-swap_trades_2026-11-07_BTCUSDT.csv.gz"),
+            &trades.replace("binance-futures,BTCUSDT", "okex-swap,BTC-USDT-SWAP"),
+        );
+        gzip(
+            &okx.join(
+                "incremental_book_L2/okex-swap_incremental_book_L2_2026-11-07_BTCUSDT.csv.gz",
+            ),
+            &books.replace("binance-futures,BTCUSDT", "okex-swap,BTC-USDT-SWAP"),
+        );
+        // Current-month classifications use the factual shared snapshot and
+        // must not scan an unused previous-month KLL source.
+        for (directory, exchange) in [(&source, "binance-futures"), (&okx, "okex-swap")] {
+            let old = directory.join(format!(
+                "trades/{exchange}_trades_2026-10-01_BTCUSDT.csv.gz"
+            ));
+            fs::write(old, b"unused previous month must not be opened").unwrap();
+        }
+        for (market, depth, size) in [
+            (Market::BinanceFutures, false, false),
+            (Market::BinanceFutures, true, false),
+            (Market::OkexFutures, false, false),
+            (Market::OkexFutures, true, false),
+            (Market::BinanceFutures, true, true),
+            (Market::OkexFutures, true, true),
+        ] {
+            let output = root.join(format!("{}-{depth}-{size}", market.name()));
             fs::create_dir_all(&output).unwrap();
             let job = Job {
                 symbol: "BTCUSDT".into(),
                 depth,
-                size: false,
+                size,
             };
             let done = build_one(
                 &job,
+                market,
                 &root,
                 from,
                 until,
                 &output,
-                &BTreeMap::new(),
+                &BTreeMap::from([(format!("{}:BTCUSDT", market.name()), [100.0, 200.0])]),
                 "2026-11",
                 "fixture",
             )
             .unwrap();
             let manifest = Manifest {
-                market: Market::BinanceFutures,
+                market,
                 interval: Interval::Hour,
                 start_ms: start,
                 end_ms: midnight(until).unwrap(),
@@ -866,6 +974,8 @@ mod tests {
             for (i, row) in rows.iter().enumerate() {
                 assert_eq!(row.bar.start_ms, start + i as i64 * 2 * HOUR_MS);
                 assert_eq!(row.bar.count, 2);
+                assert_eq!(row.bar.volume, 2.0);
+                assert_eq!(row.classified, size);
                 assert_eq!(row.bar.close, 100.0 + i as f64 * 10.0);
                 assert_eq!(row.nq_price, Some(100.0 + i as f64 * 10.0));
             }

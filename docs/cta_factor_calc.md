@@ -357,28 +357,14 @@ Prep 和 Spread 的所有频段普通因子共用当前窗口全量截断算法�
 |---|---:|---:|---|
 | 原始因子标准化 | 24 根 | 16 根 | 当前窗口统一 ±3σ 截断后重算 z |
 | 标准化因子交易分位 | 48 根 | 24 根 | `count(z ≤ 当前 z) / count(有效 z)`，含当前根 |
-| NQ 极值 / 变化值分位 | 120 根 / 120 根 | 60 个有效变化值 | 历史 close 补充，Kafka 部分使用封闭 bar 的 mid，无额外滞后 |
+| NQ 极值 / 变化值分位 | 120 根 / 120 根 | 60 个有效变化值 | Tardis 小时 BBO mid 预热，Kafka 部分使用封闭 bar 的 mid，无额外滞后 |
 
-1h NQ 是历史价格来源的特例。Kafka 只保留约两天时，启动及新计算代次先从 Binance
-USDT 永续公共 `GET /fapi/v1/klines?interval=1h` 读取更早的已闭合小时 close。
-默认读取 `120 + 120 - 1 = 239` 根，使最终保留的 120 个变化值各自都有完整的
-120 根极值回看；60 个有效变化值的就绪门槛不变。自定义窗口按
-`lookback + rank_window - 1` 计算请求根数。
-
-补充截止点由第一条 Binance Kafka `PeriodMessage.ts` 确定：只使用其所属小时开始
-以前、含开始边界的闭合 K 线。边界上的 Kafka 事件属于正在结束的小时，因此如果首个
-period 恰在整点结束，种子截止到前一个整点。先灌入更早的 close，再回放 Kafka mid，
-重叠小时不重复计数，不读取未收盘或相对于回放起点的未来 K 线。
-不强制 K 线数量或连续覆盖；新上市标的按实际返回的有效历史预热。
-
-下载在后台异步执行，候选代次等待种子期间，已有代次与仓位表仍可继续运行。
-只预热 1h Binance NQ 的价格状态，普通因子的原始输入、标准化与价差窗口继续从 Kafka
-计算；种子不生成历史持仓或发布历史因子点。其余频段仍使用 Kafka mid。
-逐币补充根数、截止点和错误写入 `state.json.hourly_nq_warmup`，完整种子保存为
-`generations/<代次>/hourly_nq_seed.json`，明确标记来源为小时 K 线 close。
-网络或响应错误保留可用 Kafka 回放并显示补充错误，不伪造价格，也不降低 NQ 就绪门槛。
-每个代次每币只做一轮补充；429/418 后停止本轮后续请求，不立即重试。
-公共请求基址及限速策略见 [公共 API 清单](public_api_cache.md)。
+所有包含 1h 因子的部署、配置变更与新计算代次，都必须先导入对应市场的本地
+Tardis 历史。Kline 是有效的输入格式：从 Tardis 成交聚合小时 OHLC、成交量与
+大小单字段；盘口因子、BBO NQ 和价差另外使用 Tardis L2。普通因子、NQ 与价差
+沿用线上窗口和样本门槛。不能拿 Binance 历史预热 OKX 因子，也不再以 Binance
+REST Kline 作为小时 NQ 的独立启动兜底。历史种子不生成持仓或发布历史因子点。
+具体构建和启动校验见下文“原生小时预热输入”。
 
 交易分位不足 24 个有效 z 或当前原始因子无效时输出未知并保持仓位。1h 的开多 / 平多
 默认阈值为严格高于 0.90 / 严格低于 0.30；开空 / 平空为严格低于 0.10 / 严格高于 0.70。
@@ -543,53 +529,110 @@ DASH `depth_imb_bps1` 的最近48根在中间价±1bp内没有挂单，原值为
 58,142条记录通过。上传与接续回执见 `artifacts/cta_history_continuation_audit/verification.json`，
 JP副本在 `~/cta-hourly-history/receipts/`。
 
-`cta-hourly-history build` 从已有 Tardis `trades` / `incremental_book_L2` 合成
-Binance 永续小时输入。它复用线上成交与盘口聚合器和因子引擎，不导入预先计算的
-z-score、交易分位或仓位。每币文件保存 OHLC、成交与大小单字段、20 档盘口、
-盘口流量统计及 NQ 的小时末 mid；仅成交输入的标的使用已授权的小时 close 补充 NQ。
-这些是本地合成数据，不能称为交易所或 Tardis 官方小时产品。
+`cta-hourly-history build` 从只读 Tardis `trades` / `incremental_book_L2` 合成
+对应市场的小时输入，支持 Binance 永续、OKX USDT 永续与 Binance 现货。
+配置通过 `--config` 读取实际 worker 的合并计划，自动包含小时公式、NQ 与价差的
+两条腿。它复用线上成交、盘口聚合器及因子引擎，不导入预计算因子或仓位。
+每币保存小时 Kline、成交与大小单字段，以及需要时的盘口和小时末 BBO mid。
+这些是本地合成数据，不是交易所或 Tardis 官方小时产品。
 
-大小单因子读取上个自然月的完整成交并按现有小时 KLL 合并方法生成历史月份阈值；
-当前月使用 JP 共享阈值的只读快照。逐币阈值与来源事件数写入元数据，
-每币 gzip/bincode 文件带 SHA-256，整个目录由一个 `manifest.json` 描述。
-合成跳过无输入小时，不检查 60 分钟完整性，不把旧盘口填成缺失小时。
-事件按 Kafka 使用的 `(t-1h,t]` 小时归属；原始因子参数 N 不变。
+大小单因子读取上个自然月的完整成交，按现有小时 KLL 方法生成历史月份阈值；
+当前月使用共享阈值的只读快照。OKX 数量保留原始合约张数，阈值仍按 price × contracts
+分类，不能乘 ctVal。逐币文件包含来源事件数、月份阈值和 SHA-256。
+无输入小时不补造；事件沿用 Kafka 的 `(t-1h,t]` 归属，原始参数 N 不变。
+
+历史包采用单一目录结构，市场之间隔离且具有共同截止小时：
+
+```text
+history/
+  binance-futures/manifest.json + SYMBOL.bin.gz
+  okex-futures/manifest.json + SYMBOL.bin.gz
+```
 
 ```bash
-cta-hourly-history build --rules /path/to/rx01.json --rules /path/to/rx03_top-5.json \
-  --rules /path/to/rx03_top-20.json --rules /path/to/rx03_last-20.json \
+cta-hourly-history build --config /path/to/cta_factor_spread.toml --market okex-futures \
   --source-root /mnt/nfs/30.133_xt_crypto/TardisSource \
-  --from 2026-10-08 --until 2026-11-08 --output /path/to/history \
+  --from 2026-10-08 --until 2026-11-11 --output /path/to/history/okex-futures \
   --control-snapshot /path/to/current_control_snapshot.json --workers 6
-cta-hourly-history check --history /path/to/history --rules /path/to/rx01.json
+# 对计划涉及的另一市场使用同样范围构建到其市场子目录。
+cta-hourly-history check --history /path/to/history --config /path/to/cta_factor_spread.toml
+cta-hourly-history kafka-start --config /path/to/cta_factor_spread.toml
 ```
 
-`--until` 是不含当天的 UTC 日界。相同参数的逐币完成文件可续跑，已完成的文件重新校验后复用。
-Prep 与 Spread 都通过 `--hourly-history /path/to/history`，或
-`CTA_HOURLY_HISTORY_DIR=/path/to/history` 读取历史；没有小时计算时不加载它。
-种子只重建公式原始窗口、24 根标准化、48 根分位及 NQ 状态，不发布历史点或重建历史仓位。
-原有 K 线 NQ 补充继续用于未包含在包内的标的。
+`--until` 是不含当天的 UTC 日界。构建会验证首个可用日之后的原始日文件连续性。
+相同参数的逐币完成文件可续跑，复用前重新校验。上面的日期只是命令示例，不能当成
+当前 Kafka 留存已被覆盖。Prep/Spread 通过 `--hourly-history /path/to/history` 或
+`CTA_HOURLY_HISTORY_DIR` 读取整个包；计划没有小时计算时无需历史包。
+所有小时依赖都必须在其市场目录内，缺失、市场错误、校验和不符或截止不一致时报错。
+Kline-only 普通公式可以只用 Tardis trades；需要 BBO/盘口的依赖必须有实际 L2。
 
-读取历史包时，专用 Kafka 消费者从实际保留分区的最早 offset 开始，不提交 offset。
-导入包的完整截止小时，重叠 Kafka 只重建盘口，不重复计算已导入小时；
-超过截止边界后再推进小时因子。缺少首个保留 Kafka 小时以前的衔接数据时明确报错，
-不跳过中间缺口。包是有明确截止时间的快照，Kafka 留存移过该截止点之前需要刷新。
-可用同一工具先合成缺少日期的独立输入包，再执行
-`cta-hourly-history extend --history /path/to/current --append /path/to/additional --output /path/to/new`。
-扩展要求市场、币种集合一致、起止时间衔接，新增小时逐根连续，重叠月份分类阈值一致；
-输出必须是新目录。安装前执行 `check`，并核对新截止时间覆盖实际最早 Kafka 小时。
-`state.json.hourly_history_warmup` 和 `generations/<代次>/hourly_history_seed.json`
-记录各币实际种子根数、因子就绪状态与衔接边界。
+种子恢复原始公式、标准化、交易分位、NQ 和双市场价差窗口，保留当前持仓账本。
+Kafka 使用不订阅消费组的历史客户端，直接指定每个实际保留分区最早 offset，
+不提交 offset，避免 JoinGroup 竞态阻塞历史读取；重叠历史只用于恢复盘口，
+不会重复推进已导入小时。历史末尾必须覆盖每个分区第一条源数据所属小时的起点。
+有衔接缺口时先补数据，不能跳过缺口或降低就绪门槛。
+可用 `cta-hourly-history extend --history /path/to/market --append /path/to/append --output /path/to/new-market`
+合并同市场、同币种集合、截止连续且月份阈值一致的输入，输出必须是新目录。
+
+环境本地启动脚本在操作 supervisor 或现有进程前执行：
 
 ```bash
-cta-hourly-history replay --history /path/to/history --rules /path/to/rx01.json \
-  --rules /path/to/rx03_top-5.json --rules /path/to/rx03_top-20.json \
-  --rules /path/to/rx03_last-20.json --control-snapshot /path/to/current_control_snapshot.json
+cta-factor-spread --config /path/to/cta_factor_spread.toml --check \
+  --validate-hourly-history --validate-kafka-continuity --hourly-history /path/to/history
 ```
 
-`replay` 是只读检查：导入历史，再消费到启动时捕获的 Kafka 末尾；
-验证小时因子时间严格递增，拒绝重复导入的历史小时，并输出未就绪及缺失因子。
-它不连接 Manager/Exec，不写策略配置或 Kafka offset。
+任一预检失败，都保留原进程。单独 `--check` 仅检查配置；加 `--validate-hourly-history`
+可离线验证及播种窗口；再加 `--validate-kafka-continuity` 才会只读检查各 Kafka 分区。
+`state.json.hourly_history_warmup.active/candidate` 和
+`generations/<代次>/hourly_history_seed.json` 按市场记录根数、就绪状态与截止点。
+旧的单市场根目录需先整理到上述市场子目录，不能直接替换正在运行的环境路径。
+
+```bash
+cta-hourly-history replay --history /path/to/history --config /path/to/cta_factor_spread.toml \
+  --control-snapshot /path/to/current_control_snapshot.json
+```
+
+`replay` 只读导入历史并回放到启动时捕获的 Kafka 末尾，验证因子时间递增且不重复
+导入历史小时，输出未就绪与缺失因子。它不连接 Manager/Exec、不改策略或 Kafka offset。
+安装替换前先验证真实输入与回放，保存运行日志和持仓账本，再通过环境本地脚本切换。
+禁用的 Spread02 继续禁用，历史预热不构成启用发布的授权。
+
+## 共享 worker 的普通分钟窗口续接
+
+小时输入始终按前述 Tardis 规则加载。共享 worker 重启还需保留已在线普通分钟因子的
+标准化与排名窗口，避免 Kafka 留存足以算出原始因子、却不足以重新积累完整交易分位。
+当前文件是各 worker `history_dir/minute_formula_state.json`，只包含普通 1min/5min/15min
+公式的有限窗口与最近事实点，不包含小时输入、NQ/价差状态、目标仓位或持仓账本。
+
+运行代次接管后每 60 秒原子保存该文件。恢复只接受相同计算参数；大小单公式还要
+对应市场/标的的阈值一致。Kafka 重建原始公式输入，但不重复推进检查点覆盖期间的
+标准化/排名；超过该因子的检查点时间后，重新按实际 raw 推进。未知 raw 仍不可交易。
+检查点与保留 Kafka 之间存在缺口则拒绝续接，不能用旧分位掩盖缺失数据。
+
+首次迁移可由本 worker 自己的完整事实日志提取，逐条重算并比对既有输出后才保存：
+
+```bash
+cta-hourly-history minute-state --config /path/to/cta_factor_spread.toml \
+  --generation /path/to/history_dir/generations/GENERATION_ID \
+  --control-snapshot /path/to/current_control_snapshot.json \
+  --output /path/to/minute_formula_state.json
+```
+
+这是本进程计算状态的延续，不替代任何 1h 的 Tardis 预热，也不重建历史持仓。
+`--minute-state /path/to/file` 可用于离线预检/回放时明确指定检查点；生产默认读取
+`history_dir` 下的文件。`state.json.minute_formulas_restored.active/candidate` 给出恢复数量。
+
+## Spread01 / Spread02 双市场小时预热上线
+
+2026-11-13 08:06 UTC，JP共享 `cta-factor-spread` 已追平，PID1140614、CPU18。
+两市场各17个小时标的使用Tardis合成历史，统一截止11/12 00:00 UTC；
+最初缺失的11/11 OKX trades已补齐，68个原始文件完整gzip校验通过。
+Spread01小时109/109、Spread02小时130/130就绪；227个普通分钟窗口从本进程
+原代次事实记录恢复，8份仓位账本保留，三条既有分钟规则未因重启重新冷启动。
+Spread01配置保持开启，实时新bar及Manager确认已验证；Spread02继续100U/规则、
+发布关闭，整体326/341就绪，其余15项分钟因子保持原有效样本门槛。
+两个Exec、Prep/配置服务等受保护进程未变化，source IP/ENI/监听均未变化。
+回执见 `artifacts/cta_spread02_tardis_warmup_20261113/continuation_verification.json`。
 
 ## 同进程小时策略
 

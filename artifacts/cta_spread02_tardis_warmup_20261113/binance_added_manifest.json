@@ -1,0 +1,58 @@
+{
+  "market": "binance-futures",
+  "interval": "1h",
+  "start_ms": 1791417600000,
+  "end_ms": 1794355200000,
+  "source": "Tardis trades + incremental_book_L2; current Redis thresholds and historical previous-month hourly KLL",
+  "symbols": {
+    "AVAXUSDT": {
+      "file": "AVAXUSDT.bin.gz",
+      "rows": 816,
+      "sha256": "5d369b8209bee47b1a5db228babfd64addbf4101d399a803965c11d1ca1065ea",
+      "first_end_ms": 1791421200000,
+      "last_end_ms": 1794355200000,
+      "source_book_events": 57051459,
+      "source_trades": 18628036,
+      "thresholds": {}
+    },
+    "DOGEUSDT": {
+      "file": "DOGEUSDT.bin.gz",
+      "rows": 816,
+      "sha256": "8bad2c8545e0a34d41e9f34b63c5d3cd7451a31d5273b9447c87125d3f29b6a2",
+      "first_end_ms": 1791421200000,
+      "last_end_ms": 1794355200000,
+      "source_book_events": 80423130,
+      "source_trades": 29668873,
+      "thresholds": {
+        "2026-10": [
+          10.09188,
+          691.2801
+        ],
+        "2026-11": [
+          16.07112,
+          700.1651999999999
+        ]
+      }
+    },
+    "LINKUSDT": {
+      "file": "LINKUSDT.bin.gz",
+      "rows": 816,
+      "sha256": "36d0ff95cc72442c8df3b752469f3ebab77b2b0b6ed30f217ad1495d71d810dd",
+      "first_end_ms": 1791421200000,
+      "last_end_ms": 1794355200000,
+      "source_book_events": 65858772,
+      "source_trades": 16190106,
+      "thresholds": {}
+    },
+    "LTCUSDT": {
+      "file": "LTCUSDT.bin.gz",
+      "rows": 816,
+      "sha256": "6d5f0e33cb00fe67e19677bd50a250278d2b467ad24574969aa979094ca1cc67",
+      "first_end_ms": 1791421200000,
+      "last_end_ms": 1794355200000,
+      "source_book_events": 48969742,
+      "source_trades": 9320514,
+      "thresholds": {}
+    }
+  }
+}

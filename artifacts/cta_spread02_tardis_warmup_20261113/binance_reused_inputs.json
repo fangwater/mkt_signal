@@ -1,0 +1,15 @@
+{
+  "source": "/home/fanghaizhou/mkt_signal/data/ops/cta_spread02_deployment/binance_hourly_current",
+  "manifest_sha256": "79248dafa376dffc5759854bae31da3216e8e6fe5e1139f7d4b80a93f6728cb6",
+  "files": {
+    "AAVEUSDT": "8b9bd82d2e9356adf2981938cff7e1aa939ff2828293a4b378d788c4137199ca",
+    "ADAUSDT": "48b0a30a7ff961642bc200baabec370eab912082edd6607b231b1edf12e9e542",
+    "ATOMUSDT": "e4f886ce03cf86248b9e0c0f5ebfa51ef1df75a3926962aeead801396ef40794",
+    "CRVUSDT": "8f7c0edab1311bb911cfdb3c4f3c4dabc0013d88c438f4fdbecab0f70064b546",
+    "DOTUSDT": "bb178752c6e76ca5a028a359330cc0dbfd83b1dad07360f8c0f64eda7e2a14eb",
+    "ETCUSDT": "40645dad6c8065e99f04e3c84c3d929320bb2fb5d5f5ad26230b45d8bd25a919",
+    "NEARUSDT": "46ae91742576e2db22fefa901e426df9e0b4361a42faacbd0820757660d9472e",
+    "TRBUSDT": "54a383f7292f51495d7cd656ebf4cd9160340992ed9aa64ec840b77a57bc039d",
+    "UNIUSDT": "e4566c66906046fe084866450eaa1bd80430678cc3c22914717df69625ff5637"
+  }
+}

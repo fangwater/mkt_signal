@@ -1,0 +1,10 @@
+combinations_dir = "cta_factor_spread"
+history_dir = "../data"
+lookback_secs = 1296000
+catchup_timeout_secs = 5400
+[kafka]
+brokers = "156.231.137.189:1501"
+payload_compression = "zlib"
+security_protocol = "none"
+enable_auto_commit = false
+broker_addr_rewrites = [{from_host="10.140.140.55",to_host="156.231.137.189"}]

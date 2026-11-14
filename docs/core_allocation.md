@@ -42,6 +42,14 @@ Delist 配置散列未变。编译及参数巡检 5 项测试通过；本地发�
 仍增长；不能据此认定推送 502 已解决。Bitget03 UniMMR 空列表告警重启前已存在。
 回滚和现场基线：`~/delist_risk_server/backups/redis_client_fix_20261114T0553Z/`。
 
+2026-11-13 07:42 UTC，JP `cta-factor-spread` 已安装本地 `arbmm` release，SCP/SHA-256
+校验后经环境本地脚本重启，PID1140614，继续CPU18。两市场17币Tardis小时输入
+补至11/12 00:00 UTC，227个普通分钟归一化/分位窗口从原进程事实记录续接；
+8份仓位账本保留，Spread02四表继续100U/规则、发布关闭。08:06 UTC回放追平；
+Spread01小时109/109、Spread02小时130/130就绪，既有三条分钟规则未退回预热；
+两个Exec、Prep和配置服务等受保护进程身份及CPU保持；无source IP/ENI/端口变化。
+回执：`artifacts/cta_spread02_tardis_warmup_20261113/`。
+
 2026-11-12 15:34 UTC，JP `bybit_fr_arb01`完成整套重发：7个本地release产物源自
 `arbmm 87bf37fb`，SCP/SHA-256核验、原子安装后，经本环境脚本恢复8服务含signal。
 persist继续CPU15，其余保持0-5,48-95；配置与`.35.232/.35.233`源IP、86个其他已记录
@@ -2070,7 +2078,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 15 | persist_manager ×N | 原FR等及okex_exec_trade01/binance_exec_spread01持久化；新账户MM PID421889，旧MM alpha停止 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
 | 17 | cta-prep-binance-futures | PID2168358；Prep01四频段与Prep02三券池×5min/15min/1h，同进程596项计算，回放完成且四张小时表已启用；原仓位账本保留；无额外独占核 |
-| 18 | cta-factor-spread | PID3923566；Spread01四频段、209条规则/215项计算；无券池；1h109/109项就绪，发布开启，两侧各4条绑定跟随1份 |
+| 18 | cta-factor-spread | PID1140614；Spread01/Spread02四频段共享532项计算；双市场Tardis小时包截止2026-11-12，227个普通分钟窗口续接；已追平，小时Spread01 109/109、Spread02 130/130就绪；Spread01开启、Spread02每规则100U且发布关闭；双Exec保持 |
 | 19 | 空闲 | RX03 旧因子/信号/页面已停止，Exec07 已清仓解绑并移除 Manager 入口 |
 | 20 | exec_volatility_pub(exec_volatility_binance) | 共享Binance现货/永续Vol，PID2865016；独立于RX01生命周期 |
 | 21 | okex_exec_trade01 account_monitor | PID3911954；UID241049181320564736，与当前MM为不同子账户 |

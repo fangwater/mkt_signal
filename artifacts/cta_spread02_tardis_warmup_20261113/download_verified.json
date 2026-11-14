@@ -1,0 +1,9 @@
+{
+  "checked_utc": "2026-11-13T06:09:59.456739+00:00",
+  "okex_trade_files_present": 17,
+  "required_okex_trade_files": 17,
+  "gzip_files_valid": 68,
+  "start_preflight_passed": true,
+  "history_end_utc": "2026-11-12 00:00 UTC",
+  "production_cutover_started": false
+}

@@ -256,6 +256,35 @@ Key config files:
 
 Prefer existing config loaders and Redis sync/print scripts over ad hoc parsing.
 
+## CTA Hourly Factor Warm-Up
+
+Whenever a CTA deployment, factor-list change, or replay includes `1h` factors,
+build and validate native hourly warm-up inputs locally from the matching
+market's Tardis history before publishing the change. Kline is a valid input
+format: construct its historical hourly bars from Tardis trades, adding Tardis
+`incremental_book_L2` when the factor, BBO-based NQ, or spread requires it.
+This applies to every market, including Binance and OKX, and to each hourly
+formula, NQ dependency, and both legs of an hourly spread. These hourly inputs are local synthesis products, not official Tardis hourly bars.
+
+Do not substitute exchange REST Klines, Kafka retention plus future live
+accumulation, another venue's history, or precomputed factor scores for this
+warm-up. Preserve the live formula windows, normalization, rank windows, raw
+quantity units and factual previous-month size classification. Build enough
+history to validate the requested factors with the real engine; investigate
+unready or null-valued outputs rather than weakening readiness gates.
+
+Before stopping any current worker, validate the archive's market/symbol
+coverage, SHA-256 hashes, closed-hour bounds and continuity through the first
+retained Kafka source hour. Missing files or an uncovered interval must block
+the replacement, with the current live generation and position ledgers retained.
+Preserve already-warm ordinary minute normalization/rank windows when
+restarting a shared worker. A minute checkpoint may continue only this
+worker's factual live state with matching definitions and size thresholds;
+it is never a substitute for Tardis hourly inputs.
+Historical warm-up must not publish past targets, reconstruct historical
+positions or enable a disabled strategy. Keep an explicit deployment receipt
+of per-market inputs, per-frequency readiness and preserved live state.
+
 ## Exchange-Specific Notes
 
 Gate futures decimal contract sizes require `X-Gate-Size-Decimal: 1` on affected REST and WS paths. Without it, decimal positions/orders can be reported or interpreted as integer-compatible sizes. Keep this in mind for Gate futures order placement, position snapshots, user streams, account monitors, and flatten scripts.

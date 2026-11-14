@@ -1,0 +1,417 @@
+{
+  "checked_utc": "2026-11-13T06:09:59.456739+00:00",
+  "markets": {
+    "okex-futures": {
+      "AAVEUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 1773771,
+          "latest": "okex-swap_trades_2026-11-11_AAVEUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 37024253,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_AAVEUSDT.csv.gz"
+        }
+      },
+      "ADAUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 847748,
+          "latest": "okex-swap_trades_2026-11-11_ADAUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 18490638,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_ADAUSDT.csv.gz"
+        }
+      },
+      "ATOMUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 323679,
+          "latest": "okex-swap_trades_2026-11-11_ATOMUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 5772632,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_ATOMUSDT.csv.gz"
+        }
+      },
+      "AVAXUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 2052331,
+          "latest": "okex-swap_trades_2026-11-11_AVAXUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 29869469,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_AVAXUSDT.csv.gz"
+        }
+      },
+      "BCHUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 2105040,
+          "latest": "okex-swap_trades_2026-11-11_BCHUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 35068949,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_BCHUSDT.csv.gz"
+        }
+      },
+      "CRVUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 1014856,
+          "latest": "okex-swap_trades_2026-11-11_CRVUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 13898481,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_CRVUSDT.csv.gz"
+        }
+      },
+      "DOGEUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 3336333,
+          "latest": "okex-swap_trades_2026-11-11_DOGEUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 58839075,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_DOGEUSDT.csv.gz"
+        }
+      },
+      "DOTUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 1308981,
+          "latest": "okex-swap_trades_2026-11-11_DOTUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 22391918,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_DOTUSDT.csv.gz"
+        }
+      },
+      "ETCUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 760433,
+          "latest": "okex-swap_trades_2026-11-11_ETCUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 12924049,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_ETCUSDT.csv.gz"
+        }
+      },
+      "ETHUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 25430272,
+          "latest": "okex-swap_trades_2026-11-11_ETHUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 283429017,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_ETHUSDT.csv.gz"
+        }
+      },
+      "FILUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 2157525,
+          "latest": "okex-swap_trades_2026-11-11_FILUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 29675947,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_FILUSDT.csv.gz"
+        }
+      },
+      "LINKUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 1898030,
+          "latest": "okex-swap_trades_2026-11-11_LINKUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 32344720,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_LINKUSDT.csv.gz"
+        }
+      },
+      "LTCUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 788727,
+          "latest": "okex-swap_trades_2026-11-11_LTCUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 15875505,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_LTCUSDT.csv.gz"
+        }
+      },
+      "NEARUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 3705582,
+          "latest": "okex-swap_trades_2026-11-11_NEARUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 52135116,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_NEARUSDT.csv.gz"
+        }
+      },
+      "TRBUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 164141,
+          "latest": "okex-swap_trades_2026-11-11_TRBUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 4189621,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_TRBUSDT.csv.gz"
+        }
+      },
+      "UNIUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 2995106,
+          "latest": "okex-swap_trades_2026-11-11_UNIUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 49240002,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_UNIUSDT.csv.gz"
+        }
+      },
+      "XRPUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 4388538,
+          "latest": "okex-swap_trades_2026-11-11_XRPUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 70971222,
+          "latest": "okex-swap_incremental_book_L2_2026-11-11_XRPUSDT.csv.gz"
+        }
+      }
+    },
+    "binance-futures": {
+      "AAVEUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 3698633,
+          "latest": "binance-futures_trades_2026-11-11_AAVEUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 76766448,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_AAVEUSDT.csv.gz"
+        }
+      },
+      "ADAUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 3102644,
+          "latest": "binance-futures_trades_2026-11-11_ADAUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 63517245,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_ADAUSDT.csv.gz"
+        }
+      },
+      "ATOMUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 1029533,
+          "latest": "binance-futures_trades_2026-11-11_ATOMUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 21719820,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_ATOMUSDT.csv.gz"
+        }
+      },
+      "AVAXUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 4484699,
+          "latest": "binance-futures_trades_2026-11-11_AVAXUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 73817431,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_AVAXUSDT.csv.gz"
+        }
+      },
+      "BCHUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 3771225,
+          "latest": "binance-futures_trades_2026-11-11_BCHUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 93153244,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_BCHUSDT.csv.gz"
+        }
+      },
+      "CRVUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 1793770,
+          "latest": "binance-futures_trades_2026-11-11_CRVUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 26830494,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_CRVUSDT.csv.gz"
+        }
+      },
+      "DOGEUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 6414546,
+          "latest": "binance-futures_trades_2026-11-11_DOGEUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 129037059,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_DOGEUSDT.csv.gz"
+        }
+      },
+      "DOTUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 3826821,
+          "latest": "binance-futures_trades_2026-11-11_DOTUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 68276052,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_DOTUSDT.csv.gz"
+        }
+      },
+      "ETCUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 1273616,
+          "latest": "binance-futures_trades_2026-11-11_ETCUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 28767149,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_ETCUSDT.csv.gz"
+        }
+      },
+      "ETHUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 31795631,
+          "latest": "binance-futures_trades_2026-11-11_ETHUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 826396267,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_ETHUSDT.csv.gz"
+        }
+      },
+      "FILUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 4093488,
+          "latest": "binance-futures_trades_2026-11-11_FILUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 62774137,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_FILUSDT.csv.gz"
+        }
+      },
+      "LINKUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 4431128,
+          "latest": "binance-futures_trades_2026-11-11_LINKUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 83656747,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_LINKUSDT.csv.gz"
+        }
+      },
+      "LTCUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 2279407,
+          "latest": "binance-futures_trades_2026-11-11_LTCUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 49427130,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_LTCUSDT.csv.gz"
+        }
+      },
+      "NEARUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 8220328,
+          "latest": "binance-futures_trades_2026-11-11_NEARUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 128069168,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_NEARUSDT.csv.gz"
+        }
+      },
+      "TRBUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 934857,
+          "latest": "binance-futures_trades_2026-11-11_TRBUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 17037025,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_TRBUSDT.csv.gz"
+        }
+      },
+      "UNIUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 6541972,
+          "latest": "binance-futures_trades_2026-11-11_UNIUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 102781927,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_UNIUSDT.csv.gz"
+        }
+      },
+      "XRPUSDT": {
+        "trades": {
+          "required_day_exists": true,
+          "bytes": 11251660,
+          "latest": "binance-futures_trades_2026-11-11_XRPUSDT.csv.gz"
+        },
+        "incremental_book_L2": {
+          "required_day_exists": true,
+          "bytes": 238506964,
+          "latest": "binance-futures_incremental_book_L2_2026-11-11_XRPUSDT.csv.gz"
+        }
+      }
+    }
+  }
+}

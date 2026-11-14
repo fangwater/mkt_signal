@@ -46,7 +46,9 @@ PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 command -v "$PMDAEMON_BIN" >/dev/null
 if [[ "$action" == start ]]; then
   [[ -x "$BASE_DIR/$binary" ]] || { echo "[ERROR] missing published artifact $BASE_DIR/$binary" >&2; exit 1; }
-  "$BASE_DIR/$binary" "${process_args[@]}" --check >/dev/null
+  check_args=(--check)
+  [[ "$config_service" == 1 ]] || check_args+=(--validate-hourly-history --validate-kafka-continuity)
+  "$BASE_DIR/$binary" "${process_args[@]}" "${check_args[@]}" >/dev/null
 fi
 # This wrapper owns cwd, environment and matching real processes, in addition
 # to the supervisor entry. Do not replace it with operator pmdaemon commands.

@@ -462,3 +462,154 @@ fn independent_hourly_output_keeps_default_minute_service_and_rejects_ambiguous_
         assert!(output_service_path(Worker::Perp, Some(invalid)).is_err());
     }
 }
+
+#[test]
+fn tardis_bundle_seeds_both_markets_and_spread_like_continuous_periods() {
+    use crate::cta_factor_calc::hourly_history::{self, HourlyInput, Manifest};
+    let combination: Combination = serde_json::from_value(serde_json::json!({
+        "name":"both", "strategy_group":"test", "venue":"okex-futures", "interval":"1h",
+        "factor_rules":[
+            {"标的":"BTC","因子":"avg_price","符号":1,"nq":"0.50"},
+            {"标的":"BTC","因子":"avg_price","符号":1,"nq":"0.50","venue":"binance-futures"},
+            {"标的":"BTC","因子":"spread","符号":1,"nq":"关闭","reference_venue":"binance-futures"}
+        ]
+    }))
+    .unwrap();
+    let plan = Plan::merge([combination]).unwrap();
+    let settings = Config::load(std::path::Path::new("config/cta_factor_spread.toml")).unwrap();
+    let mut continuous = Engine::new(plan.clone(), &settings).unwrap();
+    let mut records = BTreeMap::new();
+    let root = std::env::temp_dir().join(format!("cta-both-history-{}", uuid::Uuid::new_v4()));
+    assert!(hourly_history::load_for_plan(None, &plan).is_err());
+    for (market, offset) in [(Market::BinanceFutures, 0.0), (Market::OkexFutures, 2.0)] {
+        let mut native = input();
+        let mut rows = Vec::new();
+        for hour in 0..320 {
+            if hour == 150 {
+                continue;
+            }
+            let end = START + (hour + 1) * HOUR;
+            let mid = 100.0 + (hour % 7) as f64 + offset;
+            let mut period = record(end, Some(end * 1000), mid);
+            let mut sell = period.symbol_infos[0].trades[0].clone();
+            sell.side = "sell".into();
+            period.symbol_infos[0].trades.push(sell);
+            let (bars, _) = push(&mut native, &period);
+            if hour < 300 {
+                rows.push(HourlyInput {
+                    bar: bars[0].clone(),
+                    nq_price: Some(mid),
+                    classified: false,
+                });
+            }
+            records.insert((hour, market), period);
+        }
+        let path = root.join(market.name());
+        std::fs::create_dir_all(&path).unwrap();
+        let mut meta = hourly_history::write_symbol(&path, "BTCUSDT", &rows).unwrap();
+        meta.source_book_events = rows.len() as u64;
+        let manifest = Manifest {
+            market,
+            interval: Interval::Hour,
+            start_ms: START,
+            end_ms: START + 300 * HOUR,
+            source: "Tardis fixture".into(),
+            symbols: BTreeMap::from([("BTCUSDT".into(), meta)]),
+        };
+        std::fs::write(
+            path.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+    let loaded = hourly_history::load_for_plan(Some(&root), &plan).unwrap();
+    let mut resumed = Engine::new(plan.clone(), &settings).unwrap();
+    let summaries = resumed.seed_hourly_histories(&loaded).unwrap();
+    assert_eq!(summaries.len(), 2);
+    assert!(summaries
+        .values()
+        .all(|s| s.ready_formulas.values().all(|r| *r) && s.ready_nq.values().all(|r| *r)));
+    assert!(summaries[&Market::OkexFutures]
+        .ready_spreads
+        .values()
+        .all(|r| *r));
+    assert_eq!(summaries[&Market::OkexFutures].ready_spreads.len(), 1);
+    assert!(resumed.latest.is_empty() && resumed.previous_spreads.is_empty());
+    for ((hour, market), period) in &records {
+        if *hour < 300 {
+            continuous.on_period(*market, period).unwrap();
+            if *hour >= 250 {
+                assert!(resumed.on_period(*market, period).unwrap().is_empty());
+            }
+        } else {
+            let expected = continuous.on_period(*market, period).unwrap();
+            let actual = resumed.on_period(*market, period).unwrap();
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+        }
+    }
+    let starts = BTreeMap::from([
+        ("binance-futures:0".into(), START + 299 * HOUR),
+        ("okex-swap:0".into(), START + 300 * HOUR + 3000),
+    ]);
+    hourly_history::validate_kafka_start(&loaded, &starts).unwrap();
+    let mut gap = starts.clone();
+    gap.insert("okex-swap:1".into(), START + 302 * HOUR);
+    assert!(hourly_history::validate_kafka_start(&loaded, &gap).is_err());
+    assert!(hourly_history::validate_kafka_start(&loaded, &BTreeMap::new()).is_err());
+    // A reference-only price series needs the actual spread window, while a
+    // market's ordinary formulas may require much longer source history.
+    let spread: Combination = serde_json::from_value(serde_json::json!({
+        "name":"spread_only", "strategy_group":"test", "venue":"okex-futures", "interval":"1h",
+        "factor_rules":[{"标的":"BTC","因子":"spread","符号":1,"nq":"关闭","reference_venue":"binance-futures"}]
+    })).unwrap();
+    let spread_plan = Plan::merge([spread]).unwrap();
+    let mut full = Engine::new(spread_plan.clone(), &settings).unwrap();
+    full.seed_hourly_histories(&loaded).unwrap();
+    let mut shortened = loaded;
+    shortened
+        .get_mut(&Market::BinanceFutures)
+        .unwrap()
+        .rows
+        .get_mut("BTCUSDT")
+        .unwrap()
+        .retain(|row| row.bar.start_ms >= START + 228 * HOUR);
+    let mut short = Engine::new(spread_plan, &settings).unwrap();
+    let summary = short.seed_hourly_histories(&shortened).unwrap();
+    assert!(summary[&Market::OkexFutures]
+        .ready_spreads
+        .values()
+        .all(|ready| *ready));
+    for ((hour, market), period) in &records {
+        if *hour >= 300 {
+            assert_eq!(
+                serde_json::to_value(full.on_period(*market, period).unwrap()).unwrap(),
+                serde_json::to_value(short.on_period(*market, period).unwrap()).unwrap()
+            );
+        }
+    }
+    for (field, value) in [
+        ("market", serde_json::json!("binance-futures")),
+        ("source", serde_json::json!("REST candles")),
+        ("end_ms", serde_json::json!(START + 301 * HOUR)),
+    ] {
+        let path = root.join("okex-futures/manifest.json");
+        let old = std::fs::read(&path).unwrap();
+        let mut wrong: serde_json::Value = serde_json::from_slice(&old).unwrap();
+        wrong[field] = value;
+        std::fs::write(&path, serde_json::to_vec(&wrong).unwrap()).unwrap();
+        assert!(
+            hourly_history::load_for_plan(Some(&root), &plan).is_err(),
+            "{field}"
+        );
+        std::fs::write(&path, old).unwrap();
+    }
+    std::fs::remove_file(root.join("okex-futures/BTCUSDT.bin.gz")).unwrap();
+    assert!(hourly_history::load_for_plan(Some(&root), &plan).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(hourly_history::load_for_plan(None, &Plan::default())
+        .unwrap()
+        .is_empty());
+}

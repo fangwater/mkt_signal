@@ -10,6 +10,5 @@ pub mod symbol_filter;
 
 mod catalog;
 pub use catalog::requires_amount_thresholds;
-mod hourly_nq_seed;
 mod normalize;
 mod thresholds;

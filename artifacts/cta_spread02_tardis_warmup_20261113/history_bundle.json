@@ -1,0 +1,10 @@
+{
+  "file": "data/ops/cta_spread02_tardis_warmup_20261113/hourly_history_bundle.tar.gz",
+  "bytes": 18547565,
+  "sha256": "085853df032659c7b37731f67958ba8d0eef8b762690037a361919f2b4070ea7",
+  "markets": [
+    "binance-futures",
+    "okex-futures"
+  ],
+  "symbols_per_market": 17
+}

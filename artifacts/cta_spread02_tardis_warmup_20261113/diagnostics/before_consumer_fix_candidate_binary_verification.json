@@ -1,0 +1,9 @@
+{
+  "sha256": {
+    "cta-factor-spread": "11ae8affb5508d81acc8b7cbe82ceec42beda7db25baf1f4c2f68a438e4a11c5",
+    "cta-hourly-history": "7f1a986109175bcf4fbc5fd24ddf33368bfcf1623b6a3b9c022422472358ed56"
+  },
+  "remote_directory": "/home/ubuntu/cta-audits/spread02_tardis_warmup_20261113/candidate",
+  "matches_local_release": true,
+  "installed_in_production_environment": false
+}

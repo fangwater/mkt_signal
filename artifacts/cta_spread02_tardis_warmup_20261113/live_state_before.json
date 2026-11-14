@@ -1,0 +1,121 @@
+{
+  "checked_ms": 1794546057932,
+  "updated_ms": 1794546056618,
+  "generation": "67181a32-7d5a-4ed9-9daf-156517a13136",
+  "warming": false,
+  "error": null,
+  "positions_error": null,
+  "tables": [
+    {
+      "group": "spread01",
+      "interval": "15min",
+      "enabled": true,
+      "calculations": 22,
+      "ready": 22,
+      "unready": []
+    },
+    {
+      "group": "spread01",
+      "interval": "1h",
+      "enabled": true,
+      "calculations": 109,
+      "ready": 109,
+      "unready": []
+    },
+    {
+      "group": "spread01",
+      "interval": "1min",
+      "enabled": true,
+      "calculations": 35,
+      "ready": 35,
+      "unready": []
+    },
+    {
+      "group": "spread01",
+      "interval": "5min",
+      "enabled": true,
+      "calculations": 49,
+      "ready": 48,
+      "unready": [
+        "binance-futures-trbusdt-5min-td_ti_002"
+      ]
+    },
+    {
+      "group": "spread02",
+      "interval": "15min",
+      "enabled": false,
+      "calculations": 78,
+      "ready": 70,
+      "unready": [
+        "okex-futures-adausdt-15min-sell_avg_price",
+        "okex-futures-atomusdt-15min-tp_vpi_001",
+        "okex-futures-avaxusdt-15min-avg_price",
+        "okex-futures-crvusdt-15min-baseline_100",
+        "okex-futures-filusdt-15min-baseline_120",
+        "okex-futures-filusdt-15min-factor_114",
+        "okex-futures-trbusdt-15min-baseline_120",
+        "okex-futures-xrpusdt-15min-factor_032"
+      ]
+    },
+    {
+      "group": "spread02",
+      "interval": "1h",
+      "enabled": false,
+      "calculations": 130,
+      "ready": 103,
+      "unready": [
+        "okex-futures-adausdt-1h-factor_116",
+        "okex-futures-atomusdt-1h-factor_052",
+        "okex-futures-atomusdt-1h-factor_114",
+        "okex-futures-atomusdt-1h-td_ti_015",
+        "okex-futures-atomusdt-1h-td_ti_033",
+        "okex-futures-bchusdt-1h-baseline_113",
+        "okex-futures-bchusdt-1h-factor_047",
+        "okex-futures-bchusdt-1h-factor_094",
+        "okex-futures-crvusdt-1h-baseline_104",
+        "okex-futures-crvusdt-1h-factor_052",
+        "okex-futures-crvusdt-1h-tp_vpi_005",
+        "okex-futures-dogeusdt-1h-td_ti_030",
+        "okex-futures-dotusdt-1h-factor_052",
+        "okex-futures-etcusdt-1h-baseline_113",
+        "okex-futures-etcusdt-1h-factor_052",
+        "okex-futures-etcusdt-1h-td_ti_008",
+        "okex-futures-filusdt-1h-td_ti_008",
+        "okex-futures-linkusdt-1h-factor_052",
+        "okex-futures-linkusdt-1h-tp_vpi_014",
+        "okex-futures-ltcusdt-1h-baseline_047",
+        "okex-futures-ltcusdt-1h-baseline_113",
+        "okex-futures-ltcusdt-1h-factor_094",
+        "okex-futures-nearusdt-1h-factor_052",
+        "okex-futures-trbusdt-1h-baseline_120",
+        "okex-futures-trbusdt-1h-factor_094",
+        "okex-futures-trbusdt-1h-factor_114",
+        "okex-futures-xrpusdt-1h-tp_vpi_014"
+      ]
+    },
+    {
+      "group": "spread02",
+      "interval": "1min",
+      "enabled": false,
+      "calculations": 50,
+      "ready": 50,
+      "unready": []
+    },
+    {
+      "group": "spread02",
+      "interval": "5min",
+      "enabled": false,
+      "calculations": 83,
+      "ready": 76,
+      "unready": [
+        "okex-futures-crvusdt-5min-td_ti_002",
+        "okex-futures-nearusdt-5min-factor_031",
+        "okex-futures-trbusdt-5min-factor_031",
+        "okex-futures-trbusdt-5min-td_ti_002",
+        "okex-futures-trxusdt-5min-buy_avg_price",
+        "okex-futures-uniusdt-5min-buy_avg_price",
+        "okex-futures-xrpusdt-5min-td_ti_002"
+      ]
+    }
+  ]
+}
