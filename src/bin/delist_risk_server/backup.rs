@@ -212,18 +212,15 @@ fn mm_model_keys(strategy: &serde_json::Value) -> Result<Vec<ConfigKey>> {
 
 /// Values only: no DUMP, TTL changes, scans or writes on the source Redis.
 pub async fn parameter_values(
-    url: &str,
+    conn: &mut redis::aio::MultiplexedConnection,
     account: &AccountSpec,
 ) -> Result<BTreeMap<String, serde_json::Value>> {
     use mkt_signal::common::parameter_audit::normalise_redis;
-    let mut conn = redis::Client::open(url)?
-        .get_multiplexed_async_connection()
-        .await?;
     let mut keys = config_keys(account)?;
     if account.kind == "market_making" {
         let strategy: BTreeMap<String, String> = redis::cmd("HGETALL")
             .arg(format!("mm_strategy_params_{}-futures", account.exchange))
-            .query_async(&mut conn)
+            .query_async(&mut *conn)
             .await?;
         keys.extend(mm_model_keys(&serde_json::to_value(strategy)?)?);
     }
@@ -234,7 +231,7 @@ pub async fn parameter_values(
         pipe.cmd(if key.kind == "hash" { "HGETALL" } else { "GET" })
             .arg(&key.name);
     }
-    let values: Vec<redis::Value> = pipe.query_async(&mut conn).await?;
+    let values: Vec<redis::Value> = pipe.query_async(&mut *conn).await?;
     anyhow::ensure!(
         values.len() == keys.len() * 2,
         "incomplete parameter snapshot"

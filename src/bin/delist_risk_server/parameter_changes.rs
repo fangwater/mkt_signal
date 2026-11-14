@@ -402,8 +402,18 @@ async fn snapshot(
     } else {
         state.sg_redis.as_deref().context("SG Redis unavailable")?
     };
+    let mut conn = if accounts.is_empty() {
+        None
+    } else {
+        Some(
+            redis::Client::open(url)?
+                .get_multiplexed_async_connection()
+                .await?,
+        )
+    };
     for account in accounts {
-        for (key, value) in super::backup::parameter_values(url, account).await? {
+        let conn = conn.as_mut().context("Redis connection unavailable")?;
+        for (key, value) in super::backup::parameter_values(conn, account).await? {
             // Shared Redis keys produce one observation for all affected envs.
             let id = identity("redis", &key);
             let item = current.entry(id).or_insert_with(|| Watched {

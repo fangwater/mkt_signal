@@ -33,6 +33,15 @@ Manager `08fad46`单独发布为PID438574，继续CPU24；Redis7.4.12 PID4100946
 详情见`docs/rapidx_integration.md`；现场回执
 `~/crypto_cta_manager/backups/rapidx-ipc-20261114/`。
 
+2026-11-14 05:55 UTC，JP Delist 重新发布 Redis 客户端修复，参数巡检每轮复用
+连接并关闭 Redis 7.0 不支持的 CLIENT SETINFO。新 PID 3996586，继续 CPU28；
+Redis PID 2769589 和 Manager PID 2268661 保持，95 个受保护进程身份未变化，
+Delist 配置散列未变。编译及参数巡检 5 项测试通过；本地发布产物 SHA-256
+`7ec5bd797e5dc99ae0cfa32251d3e2e36d8c0c183d63cec33f1753414e52a08d`。
+20 秒采样 Delist 新建连接 32 次，其他现有客户端仍发送 SETINFO，Redis ERR
+仍增长；不能据此认定推送 502 已解决。Bitget03 UniMMR 空列表告警重启前已存在。
+回滚和现场基线：`~/delist_risk_server/backups/redis_client_fix_20261114T0553Z/`。
+
 2026-11-12 15:34 UTC，JP `bybit_fr_arb01`完成整套重发：7个本地release产物源自
 `arbmm 87bf37fb`，SCP/SHA-256核验、原子安装后，经本环境脚本恢复8服务含signal。
 persist继续CPU15，其余保持0-5,48-95；配置与`.35.232/.35.233`源IP、86个其他已记录
