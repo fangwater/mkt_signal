@@ -228,21 +228,22 @@ override and remove it before committing.
 
 The current table is an undated 88-product snapshot. Replay configs must retain a separately validated bounded date range; do not infer full historical applicability from the table. Snapshot-construction provenance lives in `../preprocess/database/domestic_future_product_multipliers.sql` and is not a runtime source.
 
-## LSEG US Stock Replay
+## CME And US-Stock Post-Market Pipelines (moved out)
 
-US-stock production replay code is maintained in this repository. Keep the
-three source products separate because their source contracts and persisted
-codecs differ:
+The CME TAS / LL2 / Raw LL2 replay and export crate (`cme_tas_replay`), the six
+LSEG US-stock replay crates (`usstock_replay`, `usstock_lseg_mbp_replay`,
+`usstock_lseg_raw_replay`, `usstock_lseg_rawll2_replay`,
+`usstock_nasdaq_baseline`, `usstock_aggregate_baseline`) and their configs,
+scripts and docs moved to the post-market repository `market_replay`
+(GitHub `fangwater/market_replay`, local `/home/fanghaizhou/cn_futures_db`) on
+2026-11-15. Run and maintain them there; their rules (keep the three LSEG
+source products separate, data contracts in `../preprocess/data_format/lseg/`)
+are documented there. `cme_roll_metadata` lives in that repository's shared
+`crates/core` and is pinned here by `git` + `rev`, like `cn_futures_core`.
 
-- `crates/usstock_replay`: TAS/normalised source-row replay and downstream tools.
-- `crates/usstock_lseg_mbp_replay`: Market By Price raw replay, template audit,
-  Python correctness baseline, and MBP/normalised comparison tools.
-- `crates/usstock_lseg_raw_replay`: general RAW zstd staging, typed event replay,
-  verifier, schema printer, Python correctness baselines, and audit fixtures.
-
-The data-contract and audit-result documentation remains in
-`../preprocess/data_format/lseg/`. Do not add replay implementations back under
-`preprocess`.
+The offline factor replays `cn_features_1min_hfq`, `cme_features_1min_hfq` and
+`usstock_features_1min_hfq` stay in this crate because they reuse the live
+factor formulas in `src/factor_pub`.
 
 ## IPC And Config
 

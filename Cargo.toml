@@ -3,17 +3,9 @@ members = [
     ".",
     "crates/hyperliquid_l4",
     "crates/account_common",
-    "crates/cme_tas_replay",
-    "crates/cme_roll_metadata",
     "crates/cn_futures",
     "crates/cn_futures_pbs",
     "crates/cn_futures_state",
-    "crates/usstock_lseg_mbp_replay",
-    "crates/usstock_lseg_raw_replay",
-    "crates/usstock_lseg_rawll2_replay",
-    "crates/usstock_replay",
-    "crates/usstock_nasdaq_baseline",
-    "crates/usstock_aggregate_baseline",
     "crates/account_monitor_common",
     "crates/depth_pub",
     "crates/factor_engine",
@@ -238,6 +230,12 @@ path = "src/bin/cn_features_1min_hfq.rs"
 name = "cme_features_1min_hfq"
 path = "src/bin/cme_features_1min_hfq.rs"
 
+# Offline LSEG US-stock factor replay; stays with the live factor formulas
+# (moved from crates/usstock_replay when the post-market crates left).
+[[bin]]
+name = "usstock_features_1min_hfq"
+path = "src/bin/usstock_features_1min_hfq.rs"
+
 [[bin]]
 name = "db_fusion_factor_replay"
 path = "src/bin/db_fusion_factor_replay.rs"
@@ -347,7 +345,8 @@ name = "remote_ip_diag"
 path = "src/bin/remote_ip_diag.rs"
 
 [dependencies]
-cme_roll_metadata = { path = "crates/cme_roll_metadata" }
+# Shared with the post-market repo; bump `rev` explicitly to take changes.
+cme_roll_metadata = { git = "ssh://git@github.com/fangwater/market_replay.git", rev = "0891b11aa0c4bdf4eb18521b5d1244533f408699" }
 account_common = { path = "crates/account_common" }
 account_monitor_common = { path = "crates/account_monitor_common" }
 persist_common = { path = "crates/persist_common" }
@@ -433,7 +432,7 @@ zmq = "0.10"
 mkt_model_runtime = { path = "crates/mkt_model_runtime", optional = true }
 indexmap = "2"
 rayon = "1.10"
-polars = { version = "0.43.1", default-features = false, features = ["parquet"] }
+polars = { version = "0.43.1", default-features = false, features = ["parquet", "dtype-i8", "dtype-i16"] }
 arc-swap = "1.7"
 
 
