@@ -38,6 +38,7 @@ use trade_signal::MktChannel;
 
 const QTY_EPS: f64 = 1e-12;
 const POSITION_RECONCILE_SETTLE_US: i64 = 5_000_000;
+const EXCHANGE_MINIMUM_WARNING_INTERVAL_US: i64 = 60_000_000;
 const BATCH_EXEC_SIGNAL_KIND: u8 = 0;
 pub const ALLOWED_TARGET_SIGNALS: [i32; 5] = [-2, -1, 0, 1, 2];
 
@@ -1052,6 +1053,8 @@ pub struct BatchExecStrategy {
     order_seq: u32,
     next_batch_at_us: i64,
     completion_reason: Option<BatchExecCompletionReason>,
+    exchange_minimum_warning_at_us: Option<i64>,
+    exchange_minimum_suppressed_warnings: u64,
     borrow_unavailable_generation: Option<i64>,
     reconcile_state: HedgeOrderReconcileState,
     alive_flag: bool,
@@ -1094,6 +1097,8 @@ impl BatchExecStrategy {
             order_seq: 0,
             next_batch_at_us: 0,
             completion_reason: None,
+            exchange_minimum_warning_at_us: None,
+            exchange_minimum_suppressed_warnings: 0,
             borrow_unavailable_generation: None,
             reconcile_state: HedgeOrderReconcileState::default(),
             alive_flag: true,
@@ -1584,6 +1589,20 @@ impl BatchExecStrategy {
             record.client_order_id,
         );
         Ok(record)
+    }
+
+    fn exchange_minimum_warning(&mut self, now_ts: i64) -> Option<u64> {
+        if self.exchange_minimum_warning_at_us.is_none_or(|last| {
+            now_ts < last || now_ts.saturating_sub(last) >= EXCHANGE_MINIMUM_WARNING_INTERVAL_US
+        }) {
+            self.exchange_minimum_warning_at_us = Some(now_ts);
+            return Some(std::mem::take(
+                &mut self.exchange_minimum_suppressed_warnings,
+            ));
+        }
+        self.exchange_minimum_suppressed_warnings =
+            self.exchange_minimum_suppressed_warnings.saturating_add(1);
+        None
     }
 
     fn record_exchange_minimum(&mut self) {
@@ -2294,10 +2313,12 @@ impl BatchExecStrategy {
             return;
         }
         if below_exchange_minimum {
-            if self.next_batch_at_us != i64::MAX {
+            // A live or cancelling batch must keep being reconciled. Its retry
+            // deadline therefore cannot also serve as a log suppression flag.
+            if let Some(suppressed) = self.exchange_minimum_warning(now_ts) {
                 warn!(
-                    "BatchExecStrategy: strategy_id={} symbol={} aggregate residual blocked by exchange minimum aggregate_base_qty={:.8} minimum_base_qty={:.8}",
-                    self.strategy_id, self.symbol, aggregate_base_qty, minimum_base_qty
+                    "BatchExecStrategy: strategy_id={} symbol={} aggregate residual blocked by exchange minimum aggregate_base_qty={:.8} minimum_base_qty={:.8} suppressed={}",
+                    self.strategy_id, self.symbol, aggregate_base_qty, minimum_base_qty, suppressed
                 );
             }
             self.record_exchange_minimum();
@@ -5220,6 +5241,35 @@ mod tests {
         strategy.batches.insert(2, strategy.batches[&1].clone());
         strategy.next_batch_at_us = i64::MAX;
         strategy
+    }
+
+    #[test]
+    fn exchange_minimum_warning_is_bounded_while_reconciliation_keeps_running() {
+        let mut strategy = idle_residual_strategy(0.000799);
+        strategy.next_batch_at_us = 1;
+        assert_eq!(strategy.exchange_minimum_warning(1), Some(0));
+        // A 50 Hz strategy with a batch awaiting terminal evidence keeps its
+        // scheduler awake. Rechecking the minimum is not a new warning event.
+        for tick in 1..3_000 {
+            assert_eq!(strategy.exchange_minimum_warning(1 + tick * 20_000), None);
+        }
+        assert_eq!(strategy.next_batch_at_us, 1);
+        assert_eq!(strategy.batches.len(), 2);
+        assert_eq!(strategy.exchange_minimum_warning(60_000_001), Some(2_999));
+        assert_eq!(strategy.exchange_minimum_warning(60_000_001), None);
+        assert_eq!(strategy.exchange_minimum_warning(120_000_001), Some(1));
+    }
+
+    #[test]
+    fn exchange_minimum_warning_recovers_from_clock_changes_and_is_strategy_local() {
+        let mut a = idle_residual_strategy(0.000799);
+        let mut b = idle_residual_strategy(0.000799);
+        assert_eq!(a.exchange_minimum_warning(100_000_000), Some(0));
+        assert_eq!(a.exchange_minimum_warning(100_000_001), None);
+        assert_eq!(b.exchange_minimum_warning(100_000_001), Some(0));
+        assert_eq!(a.exchange_minimum_warning(1), Some(1));
+        assert_eq!(a.exchange_minimum_warning(2), None);
+        assert_eq!(a.exchange_minimum_warning(i64::MAX), Some(1));
     }
 
     #[test]
