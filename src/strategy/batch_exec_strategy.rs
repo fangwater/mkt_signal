@@ -3421,6 +3421,13 @@ impl HedgeOrderReconcileCommon for BatchExecStrategy {
         code_desc: &str,
         client_order_id: i64,
     ) {
+        if self.child_orders.contains_key(&client_order_id) {
+            crate::pre_trade::leverage_guard::binance_fallback::report_cap_rejection(
+                self.exec_venue,
+                &self.symbol,
+                i64::from(response.error_code()),
+            );
+        }
         let retry_post_only_immediately = response.is_post_only_rejected();
         let borrow_unavailable = response.is_rapidx_borrow_unavailable()
             && self.child_orders.contains_key(&client_order_id);

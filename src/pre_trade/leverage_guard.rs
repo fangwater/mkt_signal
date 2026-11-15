@@ -26,6 +26,8 @@ use trade_signal::ArbMode;
 type HmacSha256 = Hmac<Sha256>;
 type HmacSha512 = Hmac<Sha512>;
 
+pub(crate) mod binance_fallback;
+
 const TARGET_LEVERAGES: [u8; 1] = [5];
 pub const BATCH_EXEC_DEFAULT_LEVERAGE: u8 = 5;
 pub const RAPIDX_EXEC_DEFAULT_LEVERAGE: u8 = 4;
@@ -259,6 +261,7 @@ pub struct LeverageGuard;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeverageInitOutcome {
     Set,
+    Fallback(u8),
     PortfolioMargin,
 }
 
@@ -380,10 +383,17 @@ pub async fn set_batch_exec_default_leverage(
         client = client.local_address(binance_exec_leverage_local_ip()?);
     }
     let client = client
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("build BatchExec leverage REST client")?;
     match venue {
         TradingVenue::BinanceFutures => {
+            if binance_fallback::enabled()
+                && binance_account_mode == Some(BinanceAccountMode::Standard)
+                && !overrides.contains_key(&symbol)
+            {
+                return binance_fallback::initialize(client, &symbol).await;
+            }
             set_binance_leverage(&client, &symbol, leverage, binance_account_mode, false)
                 .await
                 .map(|()| LeverageInitOutcome::Set)
@@ -1107,6 +1117,7 @@ async fn set_target_with_fallback(
     for leverage in TARGET_LEVERAGES {
         match set_target_leverage(client, config, target, leverage).await {
             Ok(LeverageInitOutcome::Set) => return TargetStatus::Confirmed(leverage),
+            Ok(LeverageInitOutcome::Fallback(actual)) => return TargetStatus::Confirmed(actual),
             Ok(LeverageInitOutcome::PortfolioMargin) => return TargetStatus::PortfolioMargin,
             Err(err) => {
                 last_error = format!("{err:#}");

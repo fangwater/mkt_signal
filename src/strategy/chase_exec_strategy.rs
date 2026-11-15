@@ -2231,6 +2231,13 @@ impl HedgeOrderReconcileCommon for ChaseExecStrategy {
         code_desc: &str,
         client_order_id: i64,
     ) {
+        if self.children.contains_key(&client_order_id) {
+            crate::pre_trade::leverage_guard::binance_fallback::report_cap_rejection(
+                self.exec_venue,
+                &self.symbol,
+                i64::from(response.error_code()),
+            );
+        }
         // Post-only (GTX) rejects are transient: the book moved and the order
         // was refused instead of crossing. The remainder already flows back
         // through `unallocated`, so reposting at the next tick's fresh anchor

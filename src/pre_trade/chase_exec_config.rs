@@ -576,6 +576,11 @@ impl ChaseExecConfigReloader {
         venue: TradingVenue,
         binance_account_mode: Option<BinanceAccountMode>,
     ) -> Result<Self> {
+        crate::pre_trade::leverage_guard::binance_fallback::spawn(
+            redis.clone(),
+            venue,
+            binance_account_mode,
+        )?;
         let mut client = RedisClient::connect(redis).await?;
         let loaded_leverage_init = client
             .get_json::<ChaseExecLeverageInitState>(LEVERAGE_INIT_KEY)
@@ -845,6 +850,14 @@ impl ChaseExecConfigReloader {
                         symbol,
                         self.venue,
                         self.leverage_init.scope.symbol_leverage(symbol)
+                    );
+                    newly_initialized.insert(symbol.clone());
+                    self.leverage_confirmed_symbols.insert(symbol.clone());
+                }
+                Ok(crate::pre_trade::leverage_guard::LeverageInitOutcome::Fallback(actual)) => {
+                    warn!(
+                        "Exec leverage fallback initialized: symbol={} leverage={} preferred=5",
+                        symbol, actual
                     );
                     newly_initialized.insert(symbol.clone());
                     self.leverage_confirmed_symbols.insert(symbol.clone());
