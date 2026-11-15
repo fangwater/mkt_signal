@@ -50,10 +50,14 @@ The current Redis diagnostic contract is `<source>:binance-futures:exec_leverage
 `leverage`, `max_notional`, `required_notional` and optional per-symbol `error`.
 Exec alone writes it; Manager's `cta_monitor` reads it. Lower levels generate
 an order-channel notice, failed checks/margin/cap issues generate alarms, and
-updates older than 180 seconds generate a worker-stale alarm. Existing monitor
-transition/repeat/recovery and failed-send retry behavior apply. Successful
-fallback remains visible as a monitored condition; it does not trigger one
-message per poll. Redis retains diagnostics across restarts. Local rejection
+updates older than 180 seconds generate a worker-stale alarm. By operator
+instruction on 2026-11-15, successful 4x/3x fallback sends one informational
+`[通知]` per observed level transition, without periodic repeats or recovery
+messages, and does not count as an unresolved fault in heartbeats. Failed
+notification delivery still retries until acknowledged. Monitoring state is
+in memory, so restarting the monitor observes the current setting once again.
+Actual errors retain the existing transition/repeat/recovery policy. Redis
+retains diagnostics across restarts. Local rejection
 and in-flight initialization evidence is memory-only; startup initialization
 retries failures, and the periodic factual/target check rebuilds current risk.
 
