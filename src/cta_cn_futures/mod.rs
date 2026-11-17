@@ -5,6 +5,7 @@ mod extras;
 mod history;
 mod live;
 mod panel;
+mod publication;
 mod recovery;
 #[cfg(test)]
 mod tests;
@@ -385,7 +386,7 @@ pub async fn run() -> Result<()> {
                     let v = s.read().unwrap_or_else(|p| p.into_inner());
                     Json(
                         json!({"live_ready":v["live_ready"],"factor_ready":v["factor_ready"],
-                "positions":v["positions"],"frequencies":v["frequencies"],"error":v["error"]}),
+                "positions":v["positions"],"frequencies":v["frequencies"],"strategy_group":v["strategy_group"],"strategies":v["strategies"],"manager_publication":v["manager_publication"],"error":v["error"]}),
                     )
                 }
             }),
@@ -399,6 +400,11 @@ pub async fn run() -> Result<()> {
         extras: Some(extras::Extras::new(&cfg)?),
         ..Stream::default()
     };
+    let mut manager_publisher = publication::Publisher::start(
+        &cfg,
+        &engine,
+        stream.extras.as_ref().context("missing frequency states")?,
+    )?;
     let mut history = Some(history::History::default());
     let mut hours = engine::Bars::default();
     let mut load_start = history_begin(&cfg);
@@ -438,6 +444,12 @@ pub async fn run() -> Result<()> {
                     anyhow::bail!("ZMQ capture thread stopped")
                 }
             };
+            if let Some(publisher) = manager_publisher.as_mut() {
+                match &event {
+                    live::Event::Quote(q) => publisher.quote(q),
+                    live::Event::Reset => publisher.reset(),
+                }
+            }
             if let live::Event::Quote(q) = &event {
                 if q.symbol().starts_with(b"sn") && q.trading_day > current.trading_day {
                     match current.for_day(q.trading_day) {
@@ -537,7 +549,22 @@ pub async fn run() -> Result<()> {
             }
         }
         let ready = stream.ready() && health.error().is_none();
+        if let Some(publisher) = manager_publisher.as_mut() {
+            publisher.observe(
+                &engine,
+                stream.extras.as_ref().context("missing frequency states")?,
+                ready,
+            )?;
+        }
         let mut report = status(&cfg, &current, &engine, health.error(), ready);
+        report["strategy_group"] = json!(cfg.strategy_group()?);
+        report["strategies"] = json!(publication::positions(
+            &engine,
+            stream.extras.as_ref().context("missing frequency states")?
+        )?);
+        report["manager_publication"] = manager_publisher
+            .as_ref()
+            .map_or(serde_json::Value::Null, |p| p.status());
         let mut frequencies = stream
             .extras
             .as_ref()

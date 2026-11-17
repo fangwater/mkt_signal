@@ -27,7 +27,7 @@ class PreflightTests(unittest.TestCase):
         (self.data / "warmup.json").write_text("obsolete and invalid")
         self.binary = self.base / "candidate"
         self.binary.write_bytes(b"candidate binary")
-        self.cfg = dict(name=WORKER.NAME, exchange="SHFE", symbol="SN", data_directory="data")
+        self.cfg = dict(name="cta-cn_futures-01", exchange="SHFE", symbol="SN", data_directory="data")
         self.receipt = dict(positions_preserved=True, ready_rules=12, total_rules=12)
         self.base_patch = patch.object(WORKER, "BASE", self.base)
         self.base_patch.start()
@@ -57,7 +57,7 @@ class PreflightTests(unittest.TestCase):
     def test_failed_restart_preflight_never_stops_the_old_process(self):
         cfg_path = self.base / "config.json"
         cfg_path.write_text(json.dumps(self.cfg))
-        rows = [dict(name=WORKER.NAME, pid=123, pm2_env=dict(pm_cwd=str(self.base), status="online"))]
+        rows = [dict(name="cta-cn_futures-01", pid=123, pm2_env=dict(pm_cwd=str(self.base), status="online"))]
         with patch.object(WORKER, "CONFIG", cfg_path), patch.object(WORKER, "processes", return_value=rows), \
                 patch.object(WORKER, "preflight", side_effect=RuntimeError("gRPC method unavailable")), \
                 patch.object(WORKER, "run") as run, patch("sys.argv", ["process.py", "restart", "--execute"]):
@@ -65,6 +65,41 @@ class PreflightTests(unittest.TestCase):
                 WORKER.main()
             run.assert_not_called()
         self.assertEqual((self.data / "positions.json").read_bytes(), self.ledger)
+
+    def test_instance_names_are_independent_and_cannot_cross_environment_directories(self):
+        cfg = dict(self.cfg, name="cta-cn_futures-02")
+        self.assertEqual(WORKER.environment_name(cfg), "cta-cn_futures-02")
+        with patch.object(WORKER, "BASE", self.base / "cta-cn_futures-01"):
+            with self.assertRaisesRegex(RuntimeError, "another native CTA environment"):
+                WORKER.environment_name(cfg)
+
+    def test_backup_keeps_instance_name_for_stop_and_restart(self):
+        cfg_path = self.base / "config.json"
+        cfg_path.write_text(json.dumps(dict(self.cfg, name="cta-cn_futures-02")))
+        (self.base / "cta-cn-futures").write_bytes(b"candidate binary")
+        outbox = b'{"pending":{"batch_id":"unconfirmed"}}'
+        (self.data / "manager_publication.json").write_bytes(outbox)
+        log_path = self.base / "worker.log"
+        log_path.write_text("preserved runtime log")
+        rows = [dict(name="cta-cn_futures-02", pid=123, pm2_env=dict(
+            pm_cwd=str(self.base), status="online", pm_out_log_path=str(log_path),
+            pm_err_log_path=str(log_path)))]
+        for action in ("stop", "restart"):
+            with self.subTest(action=action), patch.object(WORKER, "CONFIG", cfg_path), \
+                    patch.object(WORKER, "processes", return_value=rows), \
+                    patch.object(WORKER, "preflight"), patch.object(WORKER, "run") as run, \
+                    patch("sys.argv", ["process.py", action, "--execute"]):
+                WORKER.main()
+                command = run.call_args_list[0].args[0]
+                self.assertEqual(command[-1], "cta-cn_futures-02")
+                if action == "restart":
+                    ecology = json.loads((self.base / "config/ecosystem.json").read_text())
+                    self.assertEqual(ecology["apps"][0]["name"], "cta-cn_futures-02")
+        backups = list((self.data / "stops").iterdir())
+        self.assertTrue(backups)
+        for backup in backups:
+            self.assertEqual((backup / "manager_publication.json").read_bytes(), outbox)
+            self.assertEqual((backup / "positions.json").read_bytes(), self.ledger)
 
 
 if __name__ == "__main__":

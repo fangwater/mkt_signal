@@ -2,12 +2,63 @@
 
 最后更新：2026-11-17
 
-`cta-cn_futures-01` 位于 `/home/fanghaizhou/cta-cn_futures-01`，由环境脚本包装
+国内 CTA 按 `cta-cn_futures-01 / 02 / ...` 实例隔离；当前 `01` 位于 `/home/fanghaizhou/cta-cn_futures-01`，由环境脚本包装
 PM2 管理。范围为 `SHFE/SN`，支持 `1min / 5min / 15min / 1h`；各频率独立配置规则、
-开关和每规则手数，并各自维护绝对目标。既有 1h 的 12 条规则和事实账本保留；
+开关和每规则手数，并各自维护绝对目标。1h 按用户表配置 10 条规则，事实账本保留；
 新增频率默认关闭、空规则。每条规则输出 `-1/0/+1`，乘以 `lots_per_rule` 后求和。复用 CN 原始因子、Prep 小时归一化、
-百分位和开平仓判断，不做金额到数量的换算，不连接账户或下单服务。
+百分位和开平仓判断，不做金额到数量的换算。可通过组级发布凭据整批推送 Manager；不加载交易 SDK、不直接报撤单。
 该进程使用公司 ZMQ；本机禁止执行 CTP SDK 的约束保持有效。
+
+当前环境的 1h 因子表如下，每规则 1 手；1min / 5min / 15min 仍为关闭、空规则。
+
+| 因子 | 符号 | NQ |
+|---|---|---|
+| td_pr_010 | +1 | 0.20/0.80 |
+| baseline_095 | +1 | 关 |
+| factor_094 | -1 | 0.20/0.80 |
+| baseline_094 | +1 | 关 |
+| baseline_110 | -1 | 关 |
+| td_pr_011 | +1 | 关 |
+| baseline_035 | +1 | 关 |
+| factor_093 | -1 | 关 |
+| baseline_068 | +1 | 关 |
+| baseline_101 | -1 | 关 |
+
+因子替换前用候选配置通过环境本地 `preflight`；仅替换规则，不修改开平阈值、
+手数或事实仓位。历史预热不产生目标，下一次有效实时决策才按新表更新。
+
+## 实例与临时逐因子归因
+
+`01 / 02` 各自使用环境目录、配置、数据目录、HTTP 端口和进程名。生命周期脚本从配置读取实例名并核对目录，禁止用 `01` 的目录启动 `02`。`config/cta_cn_futures_01.json` 维护用户的十因子表；`config/cta_cn_futures_02.json` 是关闭、空规则的独立实例模板，不自动启用。
+
+`publication.per_factor_intervals` 控制临时归因展开，例如 `["1h"]`：
+
+- 普通模式：同实例每频段一个策略，如 `cn-futures-01-1h`、`cn-futures-02-5min`。
+- 逐因子模式：`cn-futures-01-td_pr_010-1h`、`cn-futures-01-factor_094-1h` 等。
+- 两种表示互斥；同一频段不会把聚合目标与子策略目标同时加进 Manager。公式、NQ、每规则手数、因子事实旗标和本地聚合展示保持原义。
+- 同一实例的全部策略组成一个 `strategy_group = cn-futures-01`，每次只 POST 一个完整批次；禁止遍历因子逐条发布。Manager 按账户统一输出净目标，同时保存各子策略持仓和内部调拨。
+
+发布由 `publication.enabled` 显式开启，仓库模板默认关闭。配置示例：
+
+```json
+{
+  "enabled": false,
+  "manager_url": "http://127.0.0.1:18202/api",
+  "source_id": "native-account",
+  "token_env": "CN_CTA_01_PUBLISH_TOKEN",
+  "per_factor_intervals": ["1h"]
+}
+```
+
+以上是根配置内的 `publication` 对象。`manager_url` 使用部署网关实际地址，不包含凭据；组级发布令牌只从环境变量读入，不进入配置面板、状态、出站日志或 outbox。先在 Manager 创建子策略、核对账户事实持仓并初始化 `strategy_groups`，再通过原会话授权的 `POST /api/native/sources/{id}/netting/publish-token` 为该组生成令牌。每个实例使用独立令牌；源账户与组名均须一致。
+
+发送端先读取 `netting/publication?strategy_group=cn-futures-01` 的组名单、完整合约范围和 revision，补齐合约零目标后，原子 POST `target-batches`。批次含 `strategy_group / batch_id / expected_revision / decision_us / signal_times / strategies / quotes`。`signal_times` 留存各子策略的真实 bar 决策时间；外层 `decision_us` 是整批发布时点。BBO 来自当前公司 ZMQ，原生合约和价格观测时间原样保留。
+
+首次启动仅记录既有决策基线，历史预热不发过去目标；实际新决策才可触发推送。断网时保留最新完整目标；已派发但结果未知的请求在 `data/manager_publication.json` 中持久化，重启后逐字重试原批次，不能改写它的 revision、价格或部分策略。Manager 409 表示该请求未接纳，才重新获取 CAS；过期且已明确拒绝的信号不重放。任何未落盘的待发请求不得发送。
+
+`/state` 和 `/targets` 新增 `strategy_group / strategies / manager_publication`。已有 `positions` 是本地聚合展示，消费端不能把它与 `strategies` 再求和。发布状态显示待确认批次、已确认批次和错误，不暴露令牌。
+
+本轮统一执行边界是 Manager 的整批净目标输出与可拆分归因，未新增原生自动报撤单适配器；Manager 的 `execution_enabled=false` 保持真实。环境切换必须另行完成真实输入预热、归因初始化与存量持仓核对，不能直接把旧聚合策略的真实归属改名。
 
 ## 数据接续
 
@@ -127,6 +178,8 @@ cd /home/fanghaizhou/cta-cn_futures-01
 `data/ops/cta_cn_futures_01_latest.txt` 指向（均不提交到 Git）。
 
 当前验证：23 项信号测试、8 项 SDK-free 行情测试和 3 项生命周期检查通过；
-真实 gRPC 预热 `sn2612` 的 36,720 根分钟形成 712 根小时，12/12 就绪，事实账本不变。
+真实 gRPC 预热 `sn2612` 的 36,720 根分钟形成 712 根小时，当前用户表 10/10 就绪，事实账本不变。
+因子表替换的预检、配置备份和加载核验由
+`data/ops/cta_cn_futures_user_factors_latest.txt` 指向（不提交到 Git）。
 盘后启动的版本先保留已有目标，等待下一交易时段形成首根完整 ZMQ 分钟，并完成
 gRPC 对齐；`initialization_complete / live_ready` 以内部接口实际返回为准。

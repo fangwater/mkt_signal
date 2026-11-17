@@ -6,7 +6,10 @@ use super::{
 use cn_market_proto::{Book5, BookLevel, MinuteBar, SizeBuckets};
 use std::collections::BTreeMap;
 fn config() -> Config {
-    serde_json::from_str(include_str!("../../config/cta_cn_futures_01.json")).unwrap()
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/cta_cn_futures_legacy.json"
+    ))
+    .unwrap()
 }
 fn minute(i: i64) -> MinuteBar {
     let close = 200_000. + (i as f64 * 0.13).sin() * 500. + i as f64 * 0.1;

@@ -532,6 +532,60 @@ impl Engine {
         }
         Ok(publish)
     }
+    pub fn publication_positions(
+        &self,
+    ) -> Result<BTreeMap<String, super::publication::StrategyPosition>> {
+        let group = self.cfg.strategy_group()?;
+        let native = |lots: i64| {
+            let mut targets = super::publication::Targets::new();
+            for contract in &self.ledger.retired_contracts {
+                targets.insert(format!("{}:{contract}", self.cfg.exchange), 0);
+            }
+            if !self.ledger.contract.is_empty() {
+                targets.insert(
+                    format!("{}:{}", self.cfg.exchange, self.ledger.contract),
+                    lots,
+                );
+            }
+            super::publication::StrategyPosition {
+                decision_ms: self.ledger.last_decision_ms,
+                targets,
+            }
+        };
+        if self.cfg.publish_per_factor() {
+            let names: std::collections::BTreeSet<_> = self
+                .cfg
+                .rules
+                .iter()
+                .map(|r| r.factor.clone())
+                .chain(self.ledger.flags.keys().cloned())
+                .collect();
+            Ok(names
+                .into_iter()
+                .map(|factor| {
+                    let lots = i64::from(*self.ledger.flags.get(&factor).unwrap_or(&0))
+                        * i64::from(self.ledger.lots_per_rule);
+                    (
+                        format!("{group}-{factor}-{}", self.cfg.interval),
+                        native(lots),
+                    )
+                })
+                .collect())
+        } else if self.cfg.rules.is_empty() && self.ledger.flags.is_empty() {
+            Ok(BTreeMap::new())
+        } else {
+            let lots = self
+                .ledger
+                .flags
+                .values()
+                .map(|v| i64::from(*v) * i64::from(self.ledger.lots_per_rule))
+                .sum();
+            Ok(BTreeMap::from([(
+                format!("{group}-{}", self.cfg.interval),
+                native(lots),
+            )]))
+        }
+    }
     pub fn targets(&self) -> serde_json::Value {
         let mut targets: Vec<_> = self
             .ledger

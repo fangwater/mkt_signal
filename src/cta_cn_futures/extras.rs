@@ -29,6 +29,20 @@ pub struct Extras {
     slots: BTreeMap<Interval, Slot>,
 }
 impl Extras {
+    pub fn publication_positions(
+        &self,
+    ) -> Result<BTreeMap<String, super::publication::StrategyPosition>> {
+        let mut result = BTreeMap::new();
+        for slot in self.slots.values() {
+            for (name, position) in slot.engine.publication_positions()? {
+                ensure!(
+                    result.insert(name, position).is_none(),
+                    "duplicate native frequency publication identity"
+                );
+            }
+        }
+        Ok(result)
+    }
     pub fn ledgers(&self) -> BTreeMap<Interval, Ledger> {
         self.slots
             .iter()

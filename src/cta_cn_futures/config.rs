@@ -3,7 +3,7 @@ use crate::cta_perp::config::{EntryConfig, ExecutionConfig};
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -26,6 +26,8 @@ pub struct Config {
     pub entry: EntryConfig,
     pub exits: ExecutionConfig,
     pub rules: Vec<Rule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication: Option<PublicationConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub frequencies: BTreeMap<String, FrequencyConfig>,
 }
@@ -38,6 +40,16 @@ pub struct FrequencyConfig {
     pub exits: ExecutionConfig,
     pub rules: Vec<Rule>,
 }
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationConfig {
+    pub enabled: bool,
+    pub manager_url: String,
+    pub source_id: String,
+    pub token_env: String,
+    pub per_factor_intervals: BTreeSet<String>,
+}
+
 fn enabled_by_default() -> bool {
     true
 }
@@ -65,6 +77,28 @@ impl Rule {
     }
 }
 impl Config {
+    pub fn strategy_group(&self) -> Result<String> {
+        let tail = self
+            .name
+            .strip_prefix("cta-cn_futures-")
+            .context("native CTA name must be cta-cn_futures-NN")?;
+        let (instance, frequency) = tail
+            .split_once('-')
+            .map_or((tail, None), |(id, f)| (id, Some(f)));
+        ensure!(
+            instance.len() == 2
+                && instance.bytes().all(|b| b.is_ascii_digit())
+                && instance != "00"
+                && frequency.is_none_or(|f| f == self.interval),
+            "native CTA requires instance 01..99 and its own frequency suffix"
+        );
+        Ok(format!("cn-futures-{instance}"))
+    }
+    pub fn publish_per_factor(&self) -> bool {
+        self.publication
+            .as_ref()
+            .is_some_and(|p| p.per_factor_intervals.contains(&self.interval))
+    }
     pub fn interval_kind(&self) -> Result<Interval> {
         match self.interval.as_str() {
             "1min" => Ok(Interval::Minute),
@@ -112,6 +146,44 @@ impl Config {
     }
     pub fn validate(&self) -> Result<()> {
         let cfg = self;
+        cfg.strategy_group()?;
+        if let Some(publication) = &cfg.publication {
+            let url = reqwest::Url::parse(&publication.manager_url)
+                .context("invalid native Manager URL")?;
+            ensure!(
+                matches!(url.scheme(), "http" | "https")
+                    && url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.query().is_none()
+                    && url.fragment().is_none(),
+                "Manager URL must be HTTP(S) without credentials/query/fragment"
+            );
+            ensure!(
+                !publication.source_id.is_empty()
+                    && publication
+                        .source_id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')),
+                "invalid native publication source_id"
+            );
+            ensure!(
+                !publication.token_env.is_empty()
+                    && publication
+                        .token_env
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+                "invalid native publication token environment name"
+            );
+            ensure!(
+                publication
+                    .per_factor_intervals
+                    .iter()
+                    .all(|f| matches!(f.as_str(), "1min" | "5min" | "15min" | "1h")),
+                "invalid per-factor attribution frequency"
+            );
+        }
+
         ensure!(
             cfg.exchange == "SHFE" && cfg.symbol == "SN",
             "this deployment owns SHFE/SN only"

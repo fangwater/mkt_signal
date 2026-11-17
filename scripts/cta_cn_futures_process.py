@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -13,7 +14,15 @@ import tempfile
 
 BASE = Path(__file__).resolve().parent.parent
 CONFIG = BASE / "config/cta_cn_futures.json"
-NAME = "cta-cn_futures-01"
+
+
+def environment_name(cfg):
+    name = cfg["name"]
+    if not re.fullmatch(r"cta-cn_futures-(?:0[1-9]|[1-9][0-9])", name):
+        raise RuntimeError("native CTA name must be cta-cn_futures-01..99")
+    if re.fullmatch(r"cta-cn_futures-\d{2}", BASE.name) and BASE.name != name:
+        raise RuntimeError("configuration belongs to another native CTA environment")
+    return name
 
 
 def run(args, **kwargs):
@@ -74,8 +83,9 @@ def main():
         parser.error("candidate paths are supported only for preflight")
     binary = (args.binary or BASE / "cta-cn-futures").resolve()
     cfg = json.loads((args.config or CONFIG).read_text())
-    if (cfg["name"], cfg["exchange"], cfg["symbol"]) != (NAME, "SHFE", "SN"):
-        raise RuntimeError("this lifecycle owns only cta-cn_futures-01 / SHFE/SN")
+    name = environment_name(cfg)
+    if (cfg["exchange"], cfg["symbol"]) != ("SHFE", "SN"):
+        raise RuntimeError("this lifecycle owns SHFE/SN only")
     if args.action != "status" and not args.execute:
         print(f"[DRY-RUN] env={BASE} exchange=SHFE symbol_scope=SN "
               f"action={args.action} role=absolute-lot-targets")
@@ -83,7 +93,7 @@ def main():
     if args.action == "preflight":
         preflight(cfg, binary)
         return
-    rows = [p for p in processes() if p["name"] == NAME]
+    rows = [p for p in processes() if p["name"] == name]
     for p in rows:
         if Path(p["pm2_env"]["pm_cwd"]).resolve() != BASE:
             raise RuntimeError("PM2 name belongs to another environment")
@@ -104,19 +114,19 @@ def main():
                 path = Path(p["pm2_env"][key])
                 if path.is_file():
                     shutil.copy2(path, backup / path.name)
-        for name in ("positions.json", "targets.json", "positions_1min.json", "targets_1min.json",
-                     "positions_5min.json", "targets_5min.json", "positions_15min.json", "targets_15min.json"):
-            source = BASE / cfg["data_directory"] / name
+        for snapshot_name in ("positions.json", "targets.json", "positions_1min.json", "targets_1min.json",
+                              "positions_5min.json", "targets_5min.json", "positions_15min.json", "targets_15min.json", "manager_publication.json"):
+            source = BASE / cfg["data_directory"] / snapshot_name
             if source.exists():
-                shutil.copy2(source, backup / name)
+                shutil.copy2(source, backup / snapshot_name)
     if args.action == "stop":
         if rows:
-            run(["pm2", "stop", NAME])
+            run(["pm2", "stop", name])
     else:
         save(BASE / "data/published-binary.json", {
             "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()})
         ecology = {"apps": [{
-            "name": NAME, "namespace": "cta-native-futures", "cwd": str(BASE),
+            "name": name, "namespace": "cta-native-futures", "cwd": str(BASE),
             "script": str(BASE / "scripts/run_cta_cn_futures.sh"),
             "interpreter": "none", "instances": 1, "exec_mode": "fork",
             "autorestart": True, "restart_delay": 30000, "min_uptime": 1000,
@@ -126,7 +136,7 @@ def main():
             "env": {"RUST_BACKTRACE": "1"},
         }]}
         save(BASE / "config/ecosystem.json", ecology)
-        run(["pm2", "startOrRestart", BASE / "config/ecosystem.json", "--only", NAME])
+        run(["pm2", "startOrRestart", BASE / "config/ecosystem.json", "--only", name])
     run(["pm2", "save", "--force"], stdout=subprocess.DEVNULL)
 
 
