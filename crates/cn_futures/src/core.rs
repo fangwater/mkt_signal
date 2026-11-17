@@ -228,6 +228,12 @@ impl TradingCore {
             .map(|id| self.position_id(id, side))
             .unwrap_or_default()
     }
+    /// Includes terminal order reports whose factual fills have not arrived.
+    pub fn has_working_orders(&self, venue: Venue, symbol: &str) -> bool {
+        self.symbols
+            .id(venue, symbol)
+            .is_some_and(|id| !self.working_by_symbol[id.0].is_empty())
+    }
     /// Copy only account state/positions into a cold-preallocated observation
     /// buffer. No order/instrument projection, JSON, I/O or mutable-core borrow
     /// crosses into the publisher thread.

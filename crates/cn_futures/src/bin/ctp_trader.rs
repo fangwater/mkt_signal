@@ -47,7 +47,7 @@ fn run() -> Result<()> {
             "--confirm-settlement" => confirm_settlement = true,
             "--check-config" => check_config = true,
             "--help" | "-h" => {
-                println!("ctp-trader --config PATH [--market-data-config MD_PATH] [--check-config] [--connect [--execute] [--confirm-settlement]]\nctp-trader --sdk-version /absolute/path/libthosttraderapi_se.so\n\nDefault: validate configuration only; no network or credentials required.\n--market-data-config consumes MdApi on the trading business thread; built-in strategy is NoStrategy and never produces orders.\n--connect logs in and queries account state without confirming settlement.\n--confirm-settlement explicitly permits confirming the broker settlement.\n--execute additionally permits explicit JSON-line submit/cancel commands.\nWithout --execute, no order placement or cancellation is permitted.\nCommands: state, reconcile, submit, cancel, shutdown. EOF stops trade-only mode; combined MD mode continues. SIGINT/SIGTERM request shutdown.\nExisting venue orders are never automatically cancelled on startup or exit.");
+                println!("ctp-trader --config PATH [--market-data-config MD_PATH] [--check-config] [--connect [--execute] [--confirm-settlement]]\nctp-trader --sdk-version /absolute/path/libthosttraderapi_se.so\n\nDefault: validate configuration only; no network or credentials required.\n--market-data-config consumes MdApi on the trading business thread; strategy defaults to NoStrategy; an explicit [ctaker] section enables bounded limit/FAK target execution.\n--connect logs in and queries account state without confirming settlement.\n--confirm-settlement explicitly permits confirming the broker settlement.\n--execute additionally permits explicit JSON-line submit/cancel commands.\nWithout --execute, no order placement or cancellation is permitted.\nCommands: state, reconcile, ctaker_target, submit, cancel, shutdown. EOF stops trade-only mode; combined MD mode continues. SIGINT/SIGTERM request shutdown.\nExisting venue orders are never automatically cancelled on startup or exit.");
                 return Ok(());
             }
             _ => bail!("unknown argument; use --help"),
@@ -80,6 +80,10 @@ fn run() -> Result<()> {
     if let Some(md) = &market_data {
         config.validate_market_data(md)?;
     }
+    anyhow::ensure!(
+        config.ctaker.is_none() || market_data.is_some(),
+        "ctaker requires --market-data-config"
+    );
     if confirm_settlement {
         anyhow::ensure!(connect, "settlement confirmation requires --connect");
         config.confirm_settlement = true;
@@ -99,13 +103,14 @@ fn run() -> Result<()> {
             libc::signal(libc::SIGINT, stop as *const () as libc::sighandler_t);
             libc::signal(libc::SIGTERM, stop as *const () as libc::sighandler_t);
         }
-        cn_futures::runtime::run_with_strategy(
-            config,
-            market_data,
-            execute,
-            cn_futures::ctp::strategy::NoStrategy,
-            &STOP,
-        )
+        let strategy = cn_futures::ctp::strategy::ConfiguredStrategy(
+            config
+                .ctaker
+                .as_ref()
+                .map(|_| cn_futures::ctp::ctaker::Ctaker::new(&config))
+                .transpose()?,
+        );
+        cn_futures::runtime::run_with_strategy(config, market_data, execute, strategy, &STOP)
     }
     #[cfg(not(feature = "ctp-sdk"))]
     {

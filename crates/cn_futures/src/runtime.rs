@@ -26,6 +26,9 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    CtakerTarget {
+        target: crate::ctp::ctaker::Target,
+    },
     Submit {
         intent: Intent,
     },
@@ -79,6 +82,10 @@ enum AuditPayload {
         shutdown_tail: bool,
     },
     PreparedSubmit(SubmitAudit),
+    PreparedCtaker {
+        submit: SubmitAudit,
+        target: Arc<crate::ctp::ctaker::Target>,
+    },
     PreparedCancel(CancelAudit),
     StrategyResult(crate::ctp::strategy::ActionOutcome),
     OrderProjection(SmallVec<[OrderAudit; 1]>),
@@ -123,6 +130,12 @@ impl AuditPayload {
                 let order = audit.owned();
                 mutation = crate::persistence::prepared_at(audit.day(), &order, audit.received_us);
                 serde_json::json!({"type":"prepared_submit","key":order.key,"intent":order.intent,"limit_price":order.limit_price})
+            }
+            Self::PreparedCtaker { submit, target } => {
+                let order = submit.owned();
+                mutation =
+                    crate::persistence::prepared_at(submit.day(), &order, submit.received_us);
+                serde_json::json!({"type":"prepared_submit","key":order.key,"intent":order.intent,"limit_price":order.limit_price,"ctaker_target":target})
             }
             Self::PreparedCancel(audit) => {
                 let order = audit.owned();
@@ -483,6 +496,22 @@ impl Journal {
             self.sync_before_send,
         )
     }
+    pub fn prepared_ctaker(
+        &self,
+        day: &str,
+        p: &crate::model::PreparedOrder,
+        target: Arc<crate::ctp::ctaker::Target>,
+    ) -> Result<()> {
+        self.enqueue(
+            AuditPayload::PreparedCtaker {
+                submit: SubmitAudit::new(day, p, crate::persistence::now_us())?,
+                target,
+            },
+            false,
+            NativeMutation::default(),
+            self.sync_before_send,
+        )
+    }
     pub fn prepared_cancel(&self, p: &crate::model::PreparedCancel) -> Result<()> {
         self.enqueue(
             AuditPayload::PreparedCancel(CancelAudit::new(p)?),
@@ -795,6 +824,10 @@ pub fn lock_flow(path: &Path) -> Result<File> {
 
 #[cfg(feature = "ctp-sdk")]
 pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
+    anyhow::ensure!(
+        config.ctaker.is_none(),
+        "ctaker requires a combined MD/Trader runtime"
+    );
     run_with_strategy(
         config,
         None,
@@ -1207,6 +1240,15 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                             .map(command_order_keys)
                             .unwrap_or_default();
                         let result = match command {
+                            Ok(Command::CtakerTarget { target }) => {
+                                let can_trade = execute
+                                    && runtime.core.is_ready()
+                                    && feed
+                                        .as_ref()
+                                        .is_some_and(|md| md.ready() && !md.has_backlog());
+                                strategy.on_target(target.clone(), StrategyContext { core: &runtime.core, can_trade }, crate::persistence::now_us())
+                                    .map(|_|json!({"type":"ctaker_target_accepted","target":target,"venue_accepted":false}))
+                            }
                             Ok(Command::State {}) => Ok(
                                 json!({"type":"state","state":runtime.core.view(),"account":session.account(),"settlement_confirmed":session.settlement_confirmed()}),
                             ),
@@ -1220,6 +1262,11 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     runtime.core.block("operator-requested reconciliation");
                                     json!({"type":"reconciling"})
                                 })
+                            }
+                            Ok(Command::Submit { .. }) if config.ctaker.is_some() => {
+                                Err(anyhow::anyhow!(
+                                    "ctaker owns account targets; manual submits are disabled"
+                                ))
                             }
                             Ok(Command::Submit { .. })
                                 if market_data.is_some()
@@ -1502,6 +1549,53 @@ mod persistence_tests {
             true,
         )
         .unwrap()
+    }
+    #[test]
+    fn ctaker_prepared_children_keep_exact_batch_and_native_order_identity() {
+        let path = path("ctaker-batch");
+        let journal = journal(&path);
+        let prepared = prepared();
+        let target = Arc::new(crate::ctp::ctaker::Target {
+            source_id: "explicit-account".into(),
+            batch_id: "explicit-batch".into(),
+            target_revision: 17,
+            trading_day: "20261110".into(),
+            expires_at_us: crate::persistence::now_us() + 1_000_000,
+            net_targets: std::collections::BTreeMap::from([("SHFE:cu2612".into(), -1)]),
+        });
+        journal
+            .prepared_ctaker("20261110", &prepared, target.clone())
+            .unwrap();
+        journal.finish().unwrap();
+        let store = persist_manager::RocksDbStore::open_read_only(
+            path.join("db").to_str().unwrap(),
+            COLUMN_FAMILIES,
+        )
+        .unwrap();
+        let entries = store.scan(EVENTS, None, false, None).unwrap();
+        let events: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(_, bytes)| serde_json::from_slice(bytes).unwrap())
+            .collect();
+        let submit = events
+            .iter()
+            .find(|event| event["value"]["type"] == "prepared_submit")
+            .unwrap();
+        assert_eq!(
+            submit["value"]["key"],
+            serde_json::to_value(&prepared.key).unwrap()
+        );
+        assert_eq!(
+            submit["value"]["ctaker_target"],
+            serde_json::to_value(&target).unwrap()
+        );
+        let orders = store.scan(ORDERS, None, false, None).unwrap();
+        assert_eq!(orders.len(), 1);
+        let order: NativeOrderRecord = serde_json::from_slice(&orders[0].1).unwrap();
+        assert_eq!(order.evidence_seq, submit["sequence"].as_u64().unwrap());
+        assert_eq!(order.order.key, prepared.key);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn normalized_trade_origins_persist_without_changing_factual_fill_fields() {

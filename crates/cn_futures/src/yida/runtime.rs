@@ -219,6 +219,9 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                             .unwrap_or_default();
                         let result = (|| -> Result<serde_json::Value> {
                             match command? {
+                                Command::CtakerTarget { .. } => anyhow::bail!(
+                                    "ctaker target execution is configured on the CTP runtime only"
+                                ),
                                 Command::State {} => {
                                     let transport_ready = runtime.trader.transport_ready();
                                     Ok(

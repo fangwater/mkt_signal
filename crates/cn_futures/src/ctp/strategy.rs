@@ -12,8 +12,19 @@ pub struct StrategyContext<'a> {
     pub can_trade: bool,
 }
 pub enum Action {
-    Submit { tag: u64, intent: Intent },
-    Cancel { tag: u64, key: OrderKey },
+    Submit {
+        tag: u64,
+        intent: Intent,
+    },
+    SubmitCtaker {
+        tag: u64,
+        intent: Intent,
+        target: std::sync::Arc<super::ctaker::Target>,
+    },
+    Cancel {
+        tag: u64,
+        key: OrderKey,
+    },
 }
 #[derive(Default)]
 pub struct Actions {
@@ -41,6 +52,14 @@ pub enum ActionOutcome {
 /// Hooks must do bounded CPU work only: no network/disk I/O, sleeps or waits.
 /// Submitted outcomes report local SDK acceptance, never venue acceptance/fills.
 pub trait Strategy {
+    fn on_target(
+        &mut self,
+        _target: super::ctaker::Target,
+        _context: StrategyContext<'_>,
+        _now_us: u64,
+    ) -> Result<()> {
+        anyhow::bail!("target execution is not configured")
+    }
     fn on_tick(
         &mut self,
         tick: &TickRecord,
@@ -68,7 +87,45 @@ impl Strategy for NoStrategy {
     }
 }
 
-#[cfg(feature = "ctp-sdk")]
+pub struct ConfiguredStrategy(pub Option<super::ctaker::Ctaker>);
+impl Strategy for ConfiguredStrategy {
+    fn on_tick(
+        &mut self,
+        tick: &TickRecord,
+        context: StrategyContext<'_>,
+        actions: &mut Actions,
+    ) -> Result<()> {
+        if let Some(strategy) = &mut self.0 {
+            strategy.on_tick(tick, context, actions)?;
+        }
+        Ok(())
+    }
+    fn on_target(
+        &mut self,
+        target: super::ctaker::Target,
+        context: StrategyContext<'_>,
+        now_us: u64,
+    ) -> Result<()> {
+        self.0
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("ctaker is not configured"))?
+            .on_target(target, context, now_us)
+    }
+    fn on_market_state(&mut self, ready: bool, generation: u64) -> Result<()> {
+        if let Some(strategy) = &mut self.0 {
+            strategy.on_market_state(ready, generation)?;
+        }
+        Ok(())
+    }
+    fn on_result(&mut self, outcome: &ActionOutcome, context: StrategyContext<'_>) -> Result<()> {
+        if let Some(strategy) = &mut self.0 {
+            strategy.on_result(outcome, context)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(feature = "ctp-sdk", test))]
 pub(crate) fn dispatch<T: crate::model::Trader>(
     runtime: &mut crate::core::SingleLoop<T>,
     journal: &crate::runtime::Journal,
@@ -78,7 +135,9 @@ pub(crate) fn dispatch<T: crate::model::Trader>(
 ) -> Result<ActionOutcome> {
     let day = runtime.core.trading_day().to_owned();
     let tag = match &action {
-        Action::Submit { tag, .. } | Action::Cancel { tag, .. } => *tag,
+        Action::Submit { tag, .. }
+        | Action::SubmitCtaker { tag, .. }
+        | Action::Cancel { tag, .. } => *tag,
     };
     if !can_trade || !runtime.execute || !runtime.core.is_ready() {
         return Ok(ActionOutcome::Rejected {
@@ -86,9 +145,19 @@ pub(crate) fn dispatch<T: crate::model::Trader>(
             error: "strategy execution gate closed".into(),
         });
     }
+    let target = match &action {
+        Action::SubmitCtaker { target, .. } => Some(target.clone()),
+        _ => None,
+    };
     let outcome = match action {
-        Action::Submit { tag, intent } => {
-            match runtime.submit_planned_with(intent, now, |p| journal.prepared_submit(&day, p)) {
+        Action::Submit { tag, intent } | Action::SubmitCtaker { tag, intent, .. } => {
+            match runtime.submit_planned_with(intent, now, |p| {
+                if let Some(target) = &target {
+                    journal.prepared_ctaker(&day, p, target.clone())
+                } else {
+                    journal.prepared_submit(&day, p)
+                }
+            }) {
                 Ok(receipt) => {
                     let keys: SmallVec<[OrderKey; 2]> =
                         receipt.children.iter().map(|c| c.key.clone()).collect();

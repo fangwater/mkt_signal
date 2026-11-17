@@ -37,6 +37,7 @@ pub struct Config {
     pub response_timeout_ms: u64,
     pub symbols: Vec<SymbolConfig>,
     pub risk: RiskLimits,
+    pub ctaker: Option<crate::ctp::ctaker::Settings>,
 }
 
 #[cfg(test)]
@@ -125,6 +126,13 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
+        if let Some(ctaker) = &self.ctaker {
+            ctaker.validate(&self.risk)?;
+            ensure!(
+                self.symbols.len() <= 128,
+                "ctaker scope exceeds 128 contracts"
+            );
+        }
         if let Some(ipc) = &self.position_ipc {
             ipc.validate()?;
         }

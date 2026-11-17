@@ -1,4 +1,5 @@
 //! Official CTP 6.7.11 Trader API mapping; no CTP-compatible replacement libraries.
+pub mod ctaker;
 pub mod ingress;
 pub mod market_data;
 #[cfg(feature = "ctp-sdk")]
