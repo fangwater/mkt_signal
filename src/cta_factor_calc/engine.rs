@@ -109,14 +109,25 @@ impl Transform {
         }
     }
     pub(crate) fn observe(&mut self, raw: Option<f64>, standardize: bool) -> Field {
+        self.observe_inner(raw, standardize, false)
+    }
+    pub(crate) fn observe_with_forward_fill(&mut self, raw: Option<f64>) -> Field {
+        self.observe_inner(raw, true, true)
+    }
+    fn observe_inner(&mut self, raw: Option<f64>, standardize: bool, forward_fill: bool) -> Field {
         let normalized = if standardize {
             self.normalize.observe(raw.unwrap_or(f64::NAN))
         } else {
             raw
         };
-        // An invalid current raw observation cannot become a tradable carried
-        // z-score, even though causal normalization retains its previous value.
-        let value = raw.and(normalized).and_then(finite);
+        // Crypto and minute-frequency rules reject carried scores. Domestic
+        // futures hourly rules explicitly opt into causal forward filling.
+        let value = if forward_fill {
+            normalized
+        } else {
+            raw.and(normalized)
+        }
+        .and_then(finite);
         self.ranks.observe_slot(value.unwrap_or(f64::NAN));
         let quantile = if self.inclusive_ranks {
             (self.ranks.len() >= self.min_periods)

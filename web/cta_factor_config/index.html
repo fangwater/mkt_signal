@@ -273,7 +273,7 @@ function showNative(doc){
   $('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.rules);
   const windows=catalog.window_parameters?.[doc.interval],hint=$('native-window-params');
   hint.hidden=!windows;
-  if(windows){const f=windows.factor,n=windows.nq;hint.textContent=`固定窗口（单位：根 ${doc.interval} bar）：因子公式窗口由各因子定义；z-score ${f.normalize_window} 根、至少 ${f.normalize_min_periods} 个有效值，先按均值 ±${f.clip_zscore}σ 截断并以样本标准差重算；因子分位 ${f.rank_window} 根、至少 ${f.rank_min_periods} 个有效值，${windows.factor_rank_ties==='inclusive'?'等值全部计入':'等值取中点排名'}。NQ 以行情提供的 mid 为输入，多侧变化为 (mid−${n.lookback} 根最低 mid) / 最低 mid，空侧变化为 (mid−${n.lookback} 根最高 mid) / 最高 mid；两侧各用最近 ${n.rank_window} 个有效变化值求分位，至少 ${n.rank_min_periods} 个，0.50 门限比较线性中位数；NQ 不做 z-score。`;}
+  if(windows){const f=windows.factor,n=windows.nq;hint.textContent=`固定窗口（单位：根 ${doc.interval} bar）：因子公式窗口由各因子定义；z-score ${f.normalize_window} 根、至少 ${f.normalize_min_periods} 个有效值，先按均值 ±${f.clip_zscore}σ 截断并以样本标准差重算${doc.interval==='1h'?'，缺失 z-score 向前填充':''}；因子分位 ${f.rank_window} 根、至少 ${f.rank_min_periods} 个有效值，${windows.factor_rank_ties==='inclusive'?'等值全部计入':'等值取中点排名'}。NQ 以行情提供的 mid 为输入${doc.interval==='1h'?'，缺失时用 close':''}，仅限制新开仓；多侧变化为 (mid−${n.lookback} 根最低 mid) / 最低 mid，空侧变化为 (mid−${n.lookback} 根最高 mid) / 最高 mid；两侧各用最近 ${n.rank_window} 个有效变化值求分位，至少 ${n.rank_min_periods} 个，0.50 门限比较线性中位数；NQ 不做 z-score。`;}
   $('frequency-tabs').replaceChildren();
   for(const interval of prepIntervals){
     const item=catalog.frequency_configurations?.[interval];if(!item)continue;

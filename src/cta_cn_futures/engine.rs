@@ -18,6 +18,29 @@ use cn_market_proto::{Book5, MinuteBar};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
+pub(super) fn parameters(interval: Interval, nq: bool) -> Parameters {
+    let mut params = Parameters::for_interval(interval, nq);
+    if interval == Interval::Hour && !nq {
+        params.normalize_window = 120;
+        params.normalize_min_periods = 60;
+    }
+    params
+}
+
+pub(super) fn hourly_entry(q: f64, long: f64, short: f64) -> f64 {
+    if q > long {
+        1.
+    } else if q < short {
+        -1.
+    } else {
+        0.
+    }
+}
+
+pub(super) fn hourly_exit(current: i8, q: f64, long: f64, short: f64) -> bool {
+    (current > 0 && q <= long) || (current < 0 && q >= short)
+}
+
 #[derive(Clone)]
 pub struct Bar {
     pub start_ms: i64,
@@ -54,7 +77,8 @@ impl Bars {
     pub fn push(&mut self, row: MinuteBar, multiple: f64) -> Result<Vec<Bar>> {
         let mut out = Vec::new();
         ensure!(
-            row.mid_price.is_some_and(|mid| mid.is_finite() && mid > 0.),
+            row.mid_price.is_some_and(|mid| mid.is_finite() && mid > 0.)
+                || (self.interval == Interval::Hour && row.close.is_finite() && row.close > 0.),
             "minute is missing a valid mid_price"
         );
         if !self.started && self.interval != Interval::Hour {
@@ -184,7 +208,14 @@ impl Bars {
             book.bids.len() == 5 && book.asks.len() == 5,
             "native book must have exactly five levels"
         );
-        let mid = last.mid_price.context("minute is missing mid_price")?;
+        let mid = last
+            .mid_price
+            .filter(|v| v.is_finite() && *v > 0.)
+            .or_else(|| {
+                (self.interval == Interval::Hour && last.close.is_finite() && last.close > 0.)
+                    .then_some(last.close)
+            })
+            .context("minute is missing a valid mid_price")?;
         Ok(Some(Bar {
             start_ms: first.open_time_ms,
             end_ms: last.open_time_ms + 60_000,
@@ -270,9 +301,9 @@ impl Engine {
             transforms: cfg
                 .rules
                 .iter()
-                .map(|_| Transform::new(&Parameters::for_interval(interval, false), interval))
+                .map(|_| Transform::new(&parameters(interval, false), interval))
                 .collect(),
-            nq: Nq::new(&Parameters::for_interval(interval, true)),
+            nq: Nq::new(&parameters(interval, true)),
             ledger,
             latest: Vec::new(),
             last_end_ms: 0,
@@ -346,13 +377,19 @@ impl Engine {
         let mut points = Vec::new();
         let mut all_ready = true;
         for ((rule, transform), raw) in self.cfg.rules.iter().zip(&mut self.transforms).zip(raw) {
-            let f: Field = transform.observe(raw, true);
+            let f: Field = if self.cfg.interval == "1h" {
+                transform.observe_with_forward_fill(raw)
+            } else {
+                transform.observe(raw, true)
+            };
             let gates = if self.cfg.entry.nq_change_enabled {
                 rule.gates()?
             } else {
                 None
             };
-            let ready = f.ready && gates.is_none_or(|_| nq.values().all(|v| v.ready));
+            let ready = f.ready
+                && (self.cfg.interval == "1h"
+                    || gates.is_none_or(|_| nq.values().all(|v| v.ready)));
             all_ready &= ready;
             points.push((rule.clone(), f, gates, ready));
         }
@@ -386,7 +423,13 @@ impl Engine {
                 let q = f.quantile.context("ready factor missing rank")?;
                 let q = if rule.sign > 0 { q } else { 1. - q };
                 let eps = 4. * f64::EPSILON;
-                let direction = if q - self.cfg.entry.factor_long_quantile > eps {
+                let direction = if self.cfg.interval == "1h" {
+                    hourly_entry(
+                        q,
+                        self.cfg.entry.factor_long_quantile,
+                        self.cfg.entry.factor_short_quantile,
+                    )
+                } else if q - self.cfg.entry.factor_long_quantile > eps {
                     1.
                 } else if self.cfg.entry.factor_short_quantile - q > eps {
                     -1.
@@ -451,7 +494,18 @@ impl Engine {
                     votes: Vec::new(),
                     nq: input,
                 };
-                next_position_flag(current, &bar, &signal)
+                if self.cfg.interval == "1h"
+                    && hourly_exit(
+                        current,
+                        q,
+                        self.cfg.exits.factor_exit_quantile_long,
+                        self.cfg.exits.factor_exit_quantile_short,
+                    )
+                {
+                    next_position_flag(0, &bar, &signal)
+                } else {
+                    next_position_flag(current, &bar, &signal)
+                }
             } else {
                 current
             };

@@ -94,7 +94,7 @@ fn missing_or_invalid_mid_is_rejected_without_using_close() {
     for mid in [None, Some(0.), Some(f64::NAN)] {
         let mut r = minute(0);
         r.mid_price = mid;
-        let mut h = Bars::default();
+        let mut h = Bars::new(crate::cta_factor_calc::config::Interval::Minute);
         assert!(h
             .push(r, 1.)
             .err()
@@ -102,6 +102,52 @@ fn missing_or_invalid_mid_is_rejected_without_using_close() {
             .to_string()
             .contains("mid_price"));
     }
+}
+#[test]
+fn hourly_nq_falls_back_to_close_only_when_mid_is_missing_or_invalid() {
+    for mid in [None, Some(0.), Some(f64::NAN)] {
+        let mut r = minute(0);
+        r.mid_price = mid;
+        let mut h = Bars::default();
+        h.push(r.clone(), 1.).unwrap();
+        assert_eq!(h.finish(1.).unwrap().unwrap().mid, r.close);
+    }
+}
+
+#[test]
+fn hourly_cn_transform_uses_120_and_forward_fills_without_changing_prep() {
+    use crate::cta_factor_calc::{config::Interval, engine::Transform};
+    let cn = super::engine::parameters(Interval::Hour, false);
+    let prep = crate::cta_factor_calc::config::Parameters::for_interval(Interval::Hour, false);
+    assert_eq!((cn.normalize_window, cn.normalize_min_periods), (120, 60));
+    assert_eq!(
+        (prep.normalize_window, prep.normalize_min_periods),
+        (24, 16)
+    );
+    let mut domestic = Transform::new(&cn, Interval::Hour);
+    let mut ordinary = Transform::new(&prep, Interval::Hour);
+    let mut last = None;
+    for i in 0..100 {
+        last = domestic.observe_with_forward_fill(Some(i as f64)).value;
+        ordinary.observe(Some(i as f64), true);
+    }
+    let carried = domestic.observe_with_forward_fill(None);
+    assert_eq!(carried.value, last);
+    assert!(carried.ready);
+    assert!(!ordinary.observe(None, true).ready);
+}
+
+#[test]
+fn hourly_entry_is_strict_and_exit_includes_the_boundary() {
+    use super::engine::{hourly_entry, hourly_exit};
+    assert_eq!(hourly_entry(0.9, 0.9, 0.1), 0.);
+    assert_eq!(hourly_entry(0.901, 0.9, 0.1), 1.);
+    assert_eq!(hourly_entry(0.1, 0.9, 0.1), 0.);
+    assert_eq!(hourly_entry(0.099, 0.9, 0.1), -1.);
+    assert!(hourly_exit(1, 0.3, 0.3, 0.7));
+    assert!(!hourly_exit(1, 0.301, 0.3, 0.7));
+    assert!(hourly_exit(-1, 0.7, 0.3, 0.7));
+    assert!(!hourly_exit(-1, 0.699, 0.3, 0.7));
 }
 #[test]
 fn bookless_or_unclassified_history_is_rejected_instead_of_zero_filled() {
@@ -926,7 +972,7 @@ fn displayed_windows_are_the_prep_parameters_at_each_frequency() {
         ("1min", 1440, 1000, 2880, 1440),
         ("5min", 288, 200, 576, 288),
         ("15min", 96, 67, 192, 96),
-        ("1h", 24, 16, 48, 24),
+        ("1h", 120, 60, 48, 24),
     ] {
         let p = &catalog["window_parameters"][name];
         assert_eq!(p["factor"]["normalize_window"], norm);

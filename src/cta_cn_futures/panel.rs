@@ -112,7 +112,7 @@ pub(super) fn revision(cfg: &Config) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(cfg)?)))
 }
 pub(super) fn catalog(cfg: &Config) -> Result<Value> {
-    use crate::cta_factor_calc::config::{Interval, Parameters};
+    use crate::cta_factor_calc::config::Interval;
     let windows: BTreeMap<_, _> = [
         Interval::Minute,
         Interval::FiveMinutes,
@@ -124,8 +124,8 @@ pub(super) fn catalog(cfg: &Config) -> Result<Value> {
         (
             interval.name(),
             json!({
-                "factor": Parameters::for_interval(interval, false),
-                "nq": Parameters::for_interval(interval, true),
+                "factor": super::engine::parameters(interval, false),
+                "nq": super::engine::parameters(interval, true),
                 "factor_rank_ties": if interval == Interval::Hour { "inclusive" } else { "midpoint" },
             }),
         )
