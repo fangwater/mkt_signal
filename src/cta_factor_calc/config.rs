@@ -193,20 +193,24 @@ pub struct Parameters {
 }
 impl Parameters {
     pub fn for_id(id: &FactorId) -> Self {
-        let slots = (172_800_000 / id.interval.millis()) as usize;
+        Self::for_interval(id.interval, id.factor == "nq")
+    }
+
+    pub(crate) fn for_interval(interval: Interval, nq: bool) -> Self {
+        let slots = (172_800_000 / interval.millis()) as usize;
         Self {
             normalize_window: slots / 2,
-            normalize_min_periods: match id.interval {
+            normalize_min_periods: match interval {
                 Interval::Minute => 1000,
                 Interval::FiveMinutes => 200,
                 Interval::FifteenMinutes => 67,
                 Interval::Hour => 16,
             },
             clip_zscore: 3.0,
-            rank_window: if id.factor == "nq" { 120 } else { slots },
-            rank_min_periods: if id.factor == "nq" { 60 } else { slots / 2 },
+            rank_window: if nq { 120 } else { slots },
+            rank_min_periods: if nq { 60 } else { slots / 2 },
             lookback: 120,
-            missing_policy: if id.factor == "nq" {
+            missing_policy: if nq {
                 MissingPolicy::ValidSamples
             } else {
                 MissingPolicy::Slots

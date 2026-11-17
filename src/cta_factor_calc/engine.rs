@@ -74,7 +74,7 @@ fn finite(value: f64) -> Option<f64> {
 
 pub use super::catalog::requires_amount_thresholds;
 
-struct Transform {
+pub(crate) struct Transform {
     normalize: NormalizeState,
     ranks: ExactRollingWindow,
     min_periods: usize,
@@ -96,7 +96,7 @@ struct MinuteTransformState {
     latest: FactorPoint,
 }
 impl Transform {
-    fn new(params: &Parameters, interval: Interval) -> Self {
+    pub(crate) fn new(params: &Parameters, interval: Interval) -> Self {
         Self {
             normalize: NormalizeState::new(
                 params.normalize_window,
@@ -108,7 +108,7 @@ impl Transform {
             inclusive_ranks: interval == Interval::Hour,
         }
     }
-    fn observe(&mut self, raw: Option<f64>, standardize: bool) -> Field {
+    pub(crate) fn observe(&mut self, raw: Option<f64>, standardize: bool) -> Field {
         let normalized = if standardize {
             self.normalize.observe(raw.unwrap_or(f64::NAN))
         } else {
@@ -135,14 +135,14 @@ impl Transform {
     }
 }
 
-struct Nq {
+pub(crate) struct Nq {
     params: Parameters,
     closes: VecDeque<Option<f64>>,
     long: ExactRollingWindow,
     short: ExactRollingWindow,
 }
 impl Nq {
-    fn new(params: &Parameters) -> Self {
+    pub(crate) fn new(params: &Parameters) -> Self {
         Self {
             params: params.clone(),
             closes: VecDeque::new(),
@@ -150,7 +150,7 @@ impl Nq {
             short: ExactRollingWindow::new(params.rank_window),
         }
     }
-    fn observe(&mut self, mid: Option<f64>) -> BTreeMap<String, Field> {
+    pub(crate) fn observe(&mut self, mid: Option<f64>) -> BTreeMap<String, Field> {
         // Include the latest closed bar's mid in both the extrema and change
         // distributions. The output belongs to this same closed decision bar.
         let valid = mid.filter(|p| p.is_finite() && *p > 0.0);

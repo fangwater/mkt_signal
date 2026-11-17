@@ -21,6 +21,7 @@
     .hint,.badge{color:var(--muted);font-size:12px;line-height:1.5}.badge{font-weight:400;margin-left:8px}.status{font-size:12px;color:var(--muted);min-height:18px;margin:10px 0;white-space:pre-wrap;line-height:1.6}.status.ok{color:var(--ok)}.status.err{color:var(--danger)}
     textarea{display:block;width:100%;min-height:420px;resize:vertical;font:13px/1.65 Menlo,Consolas,monospace;tab-size:2;margin-top:12px}
     #dirty{align-self:center;color:var(--muted);font-size:12px}
+    body[data-native-futures] main>nav,body[data-native-futures] details.panel{display:none}
     @media(max-width:960px){.kv-table{grid-template-columns:1fr}.kv-desc{padding:0 4px 10px}header,main{padding-left:12px;padding-right:12px}}
     @media(max-width:480px){.field{min-width:0;flex:1 1 130px}.toolbar>.actions{width:100%}.section-header{align-items:flex-start;flex-wrap:wrap}textarea{min-height:420px;font-size:12px}}
   </style>
@@ -71,18 +72,22 @@
 <script>
 'use strict';
 const $=id=>document.getElementById(id),clone=value=>JSON.parse(JSON.stringify(value));
+const nativeMode=document.body.dataset.nativeFutures==='true';
+if(nativeMode){const access=new URLSearchParams(location.hash.slice(1)).get('access');if(access&&/^[a-f0-9]{64}$/.test(access)){localStorage.setItem('cta-cn-futures-panel-access',access);history.replaceState(null,'',location.pathname+location.search);}prepareNative();}
 const prepIntervals=['1min','5min','15min','1h'];
-let catalog=null,draft=null,dirty=false,groupsDirty=false,busy=true,selectedWorker=new URL(location.href).searchParams.get('worker')||'cta-prep-binance-futures';
+let catalog=null,draft=null,dirty=false,groupsDirty=false,busy=true,selectedWorker=nativeMode?'cta-cn-futures':new URL(location.href).searchParams.get('worker')||'cta-prep-binance-futures';
 function message(text,error=false){$('message').textContent=text;$('message').className='status '+(error?'err':'ok');}
 function changed(){dirty=true;$('dirty').textContent='有未保存修改';}
 function hasChanges(){return dirty||groupsDirty;}
-function setBusy(value){busy=value;document.querySelector('main').setAttribute('aria-busy',String(value));for(const el of document.querySelectorAll('input,select,button,textarea'))el.disabled=value;if(!value){for(const button of $('frequency-tabs').children)button.disabled=!button.dataset.name;$('save').disabled=!draft;}}
+function setBusy(value){busy=value;document.querySelector('main').setAttribute('aria-busy',String(value));for(const el of document.querySelectorAll('input,select,button,textarea'))el.disabled=value;if(!value){for(const button of $('frequency-tabs').children)button.disabled=!button.dataset.name;$('save').disabled=!draft;}if(nativeMode)for(const id of ['strategy-type','strategy-group','symbol-group'])$(id).disabled=true;}
 async function api(path,options={}){
   const url=new URL('api/'+path,location.href.split('#')[0]);url.searchParams.set('worker',selectedWorker);
-  const response=await fetch(url,{...options,headers:{'Content-Type':'application/json',...(options.headers||{})},credentials:'same-origin',cache:'no-store'});
+  const access=nativeMode?localStorage.getItem('cta-cn-futures-panel-access'):null;
+  const response=await fetch(url,{...options,headers:{'Content-Type':'application/json',...(access?{'Authorization':'Bearer '+access}:{}),...(options.headers||{})},credentials:'same-origin',cache:'no-store'});
   const raw=await response.text();let result;try{result=JSON.parse(raw);}catch{throw Error('读取失败，请检查登录状态');}if(!response.ok)throw Error(result.error||result.message||raw);return result;
 }
 function factorRows(doc){
+  if(nativeMode)return doc.rules.map(row=>({'标的':row.symbol,nq:row.NQ,'符号':row.sign,'因子':row.factor}));
   return doc.factor_rules.map(row=>({'标的':row['标的'].replace(/USDT$/i,''),nq:row.nq,'符号':row['符号'],'因子':row['因子']}));
 }
 function factorSourceMarket(doc){
@@ -126,7 +131,7 @@ function collect(){
   }
   return doc;
 }
-function updateCount(rows){$('factor-count').textContent=new Set(rows.map(row=>row['标的'])).size+' 个标的 · '+rows.length+' 条规则';}
+function updateCount(rows){$('factor-count').textContent=new Set(rows.map(row=>nativeMode?row.symbol:row['标的'])).size+' 个标的 · '+rows.length+' 条规则';}
 function show(doc){
   draft=clone(doc);dirty=false;$('dirty').textContent=groupsDirty?'券池定义有未保存修改':'';$('strategy-group').value=doc.strategy_group;$('symbol-group').value=doc.symbol_group||'';$('current-frequency').textContent=(doc.symbol_group?doc.symbol_group+' · ':'')+doc.interval;
   const signal=doc.signal;$('strategy-settings').hidden=!signal;
@@ -160,6 +165,7 @@ function renderTabs(){
   }
 }
 function renderCatalog(preferred){
+  if(nativeMode){showNative(catalog.configuration);return;}
   selectedWorker=catalog.worker;$('strategy-type').replaceChildren();for(const worker of catalog.workers||[catalog.worker])$('strategy-type').append(new Option(worker==='cta-factor-spread'?'Spread':'Prep',worker));$('strategy-type').value=selectedWorker;
   const groups=[...new Set(Object.values(catalog.plan.combinations).map(doc=>doc.strategy_group))].sort();$('strategy-group').replaceChildren();for(const group of groups)$('strategy-group').append(new Option(group,group));
   $('symbol-group').replaceChildren(new Option('all（未限定券池）',''));for(const group of Object.keys(catalog.plan.symbol_groups||{}))$('symbol-group').append(new Option(group,group));
@@ -172,11 +178,58 @@ async function load(){
   setBusy(true);try{catalog=await api('config');renderCatalog(decodeURIComponent(location.hash.slice(1)));message('读取完成');}catch(error){if(catalog){selectedWorker=catalog.worker;$('strategy-type').value=selectedWorker;}message(error.message,true);}finally{setBusy(false);}
 }
 async function action(save){
+  if(nativeMode){await nativeAction(save);return;}
   if(busy||!draft)return;if(groupsDirty){message('请先保存券池定义，再保存或校验当前规则',true);return;}setBusy(true);
   try{const combination=collect(),result=await api(save?'combinations':'preview',{method:'POST',body:JSON.stringify({worker:selectedWorker,combination,expected_revision:catalog.revision})});
     const filtered=result.plan.combinations[combination.name],excluded=result.excluded_symbols||[],notice=excluded.length?'\n已过滤非交易标的：'+excluded.map(row=>row.symbol+'（'+row.status+'，'+row.removed_rules+' 条）').join('、'):'';
     if(save){catalog=result;renderCatalog(combination.name);message('已保存 '+combination.strategy_group+' · '+(combination.symbol_group||'all')+' · '+combination.interval+notice);}
     else{if(excluded.length){$('factor-json').value=JSON.stringify(factorRows(filtered),null,2);changed();}updateCount(filtered.factor_rules);message('JSON 校验通过：'+filtered.factor_rules.length+' 条规则'+notice);}
+  }catch(error){message(error.message,true);}finally{setBusy(false);}
+}
+function nativeRules(){
+  let rows;try{rows=JSON.parse($('factor-json').value);}catch(error){throw Error('JSON 格式错误：'+error.message);}
+  if(!Array.isArray(rows)||!rows.length)throw Error('请填写非空因子数组');
+  const fields=['标的','nq','符号','因子'];
+  return rows.map((row,index)=>{
+    if(!row||typeof row!=='object'||Array.isArray(row)||Object.keys(row).length!==4||fields.some(key=>!Object.hasOwn(row,key)))throw Error('第 '+(index+1)+' 项只接受「标的、nq、符号、因子」');
+    if(typeof row['标的']!=='string'||row['标的'].trim().toUpperCase()!=='SN')throw Error('本策略仅配置锡 SN');
+    if(![-1,1].includes(row['符号']))throw Error('符号只接受 -1 或 1');
+    if(typeof row.nq!=='string'||typeof row['因子']!=='string'||!row['因子'].trim())throw Error('nq 和因子须为字符串');
+    return {symbol:'SN',factor:row['因子'].trim(),sign:row['符号'],NQ:row.nq.trim()};
+  });
+}
+function nativeCollect(){
+  const doc=clone(draft);doc.enabled=$('enabled').value==='true';doc.lots_per_rule=number('max-pos');
+  if(!Number.isInteger(doc.lots_per_rule)||doc.lots_per_rule<1||doc.lots_per_rule>100)throw Error('单份手数必须是 1 至 100 的整数');
+  doc.entry.factor_long_quantile=number('entry-long');doc.entry.factor_short_quantile=number('entry-short');
+  doc.exits.factor_exit_quantile_long=number('exit-long');doc.exits.factor_exit_quantile_short=number('exit-short');
+  doc.rules=nativeRules();return doc;
+}
+function prepareNative(){
+  $('strategy-type').replaceChildren(new Option('国内期货 Prep','cta-cn-futures'));$('strategy-group').replaceChildren(new Option('读取配置中…',''));
+  $('symbol-group').previousElementSibling.textContent='品种';$('symbol-group').replaceChildren(new Option('锡 · SN','SN'));
+  $('strategy-settings').hidden=false;$('current-frequency').textContent='SHFE · SN · 1h';
+  $('strategy-settings').querySelector('.hint').textContent='每条因子规则独立计算开平仓，目标按整数手数合并。关闭策略会停止生成新目标，保留已发布目标。';
+  document.querySelector('label[for="max-pos"]').textContent='单份手数（手）';$('max-pos').parentElement.nextElementSibling.textContent='每条规则的目标手数，修改后用于后续实时决策。';
+  $('enabled').parentElement.nextElementSibling.textContent='只控制本策略生成目标仓位。';
+  $('max-pos').min='1';$('max-pos').max='100';$('max-pos').step='1';
+  $('spread-settings').hidden=true;
+  $('factor-hint').textContent='每项填写「标的、nq、符号、因子」。标的固定为 SN，频率固定为 1h；符号为 -1 / 1；nq 填「0.50」「0.20/0.80」或「关闭」。';
+  $('symbol-members').textContent='上期所锡 SN · 实际交割合约由主力 REST 选择。';
+}
+function showNative(doc){
+  selectedWorker='cta-cn-futures';draft=clone(doc);dirty=false;groupsDirty=false;$('dirty').textContent='';
+  $('strategy-group').replaceChildren(new Option(doc.name,doc.name));
+  $('enabled').value=String(doc.enabled);$('max-pos').value=doc.lots_per_rule;
+  for(const [id,value] of [['entry-long',doc.entry.factor_long_quantile],['entry-short',doc.entry.factor_short_quantile],['exit-long',doc.exits.factor_exit_quantile_long],['exit-short',doc.exits.factor_exit_quantile_short]]){$(id).value=value;$(id).min='0';$(id).max='1';}
+  $('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.rules);
+  const button=document.createElement('button');button.type='button';button.dataset.name=doc.name;button.setAttribute('role','tab');button.setAttribute('aria-selected','true');button.textContent='1h · '+(doc.enabled?'已启用':'已关闭');$('frequency-tabs').replaceChildren(button);
+}
+async function nativeAction(save){
+  if(busy||!draft)return;setBusy(true);
+  try{const configuration=nativeCollect(),result=await api(save?'config':'preview',{method:'POST',body:JSON.stringify({configuration,expected_revision:catalog.revision})});
+    if(save){catalog=result;renderCatalog();message('已保存，后续实时决策使用新配置；已发布目标保留。');}
+    else{updateCount(configuration.rules);message('校验通过：'+configuration.rules.length+' 条规则；尚未保存。');}
   }catch(error){message(error.message,true);}finally{setBusy(false);}
 }
 async function groupsAction(save){
@@ -192,9 +245,9 @@ $('symbol-group').onchange=()=>{if(dirty&&!confirm('放弃未保存修改，切�
 $('symbol-groups-json').addEventListener('input',()=>{groupsDirty=true;$('dirty').textContent='券池定义有未保存修改';});
 $('save-groups').onclick=()=>groupsAction(true);$('validate-groups').onclick=()=>groupsAction(false);
 $('reload').onclick=load;$('save').onclick=()=>action(true);$('validate').onclick=()=>action(false);
-$('format').onclick=()=>{if(!draft||busy)return;try{const doc=clone(draft);doc.factor_rules=parseRules();$('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.factor_rules);changed();message('JSON 已格式化，尚未保存');}catch(error){message(error.message,true);}};
+$('format').onclick=()=>{if(!draft||busy)return;try{const doc=clone(draft);if(nativeMode){doc.rules=nativeRules();$('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.rules);}else{doc.factor_rules=parseRules();$('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.factor_rules);}changed();message('JSON 已格式化，尚未保存');}catch(error){message(error.message,true);}};
 for(const id of ['factor-json','enabled','max-pos','entry-long','entry-short','exit-long','exit-short','spread-long','spread-short'])$(id).addEventListener('input',changed);
-window.addEventListener('hashchange',()=>{if(!catalog||busy)return;const requested=decodeURIComponent(location.hash.slice(1)),next=catalog.plan.combinations[requested];if(!next||next.name===draft?.name)return;if(dirty&&!confirm('放弃未保存修改，切换频段？')){const url=new URL(location.href);url.hash=draft.name;history.replaceState(null,'',url);return;}show(next);message('');});
+window.addEventListener('hashchange',()=>{if(nativeMode||!catalog||busy)return;const requested=decodeURIComponent(location.hash.slice(1)),next=catalog.plan.combinations[requested];if(!next||next.name===draft?.name)return;if(dirty&&!confirm('放弃未保存修改，切换频段？')){const url=new URL(location.href);url.hash=draft.name;history.replaceState(null,'',url);return;}show(next);message('');});
 window.addEventListener('beforeunload',event=>{if(hasChanges()){event.preventDefault();event.returnValue='';}});
 load();
 </script>

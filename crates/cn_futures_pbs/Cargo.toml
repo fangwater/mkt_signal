@@ -15,7 +15,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 # Shared live/post-market MDL logic; bump `rev` explicitly to take core changes.
-cn_futures_core = { git = "ssh://git@github.com/fangwater/market_replay.git", rev = "890313d25c6f12a293c5ed4b21797cf78824e5d8" }
+cn_futures_core = { git = "ssh://git@github.com/fangwater/market_replay.git", rev = "5ee7d1d793e1fd02f78280c224d710390767aa59" }
 clap = { version = "4.0", features = ["derive"] }
 cn_futures = { path = "../cn_futures", optional = true }
 iceoryx2 = "0.8.1"

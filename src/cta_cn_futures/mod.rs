@@ -1,0 +1,590 @@
+//! SDK-free native-futures Prep: historical warm-up, live inputs and absolute lot targets.
+mod config;
+mod engine;
+mod history;
+mod live;
+mod panel;
+mod recovery;
+#[cfg(test)]
+mod tests;
+
+use anyhow::{ensure, Context, Result};
+use axum::{routing::get, Json, Router};
+use clap::Parser;
+use config::Config;
+use engine::Ledger;
+use serde_json::{json, Value};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, RwLock},
+    time::Duration,
+};
+
+#[derive(Parser)]
+struct Args {
+    #[arg(long)]
+    config: PathBuf,
+    #[arg(long)]
+    check: bool,
+    #[arg(long)]
+    preflight: bool,
+}
+fn atomic(path: &Path, value: &impl serde::Serialize) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("json.new");
+    let file = std::fs::File::create(&temporary)?;
+    serde_json::to_writer_pretty(&file, value)?;
+    file.sync_all()?;
+    std::fs::rename(temporary, path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+fn ledger(cfg: &Config) -> Result<Ledger> {
+    let p = cfg.data_directory.join("positions.json");
+    if p.exists() {
+        Ok(serde_json::from_slice(&std::fs::read(p)?)?)
+    } else {
+        Ok(Ledger::default())
+    }
+}
+fn status(
+    cfg: &Config,
+    main: &history::Dominant,
+    engine: &engine::Engine,
+    error: Option<&str>,
+    live_ready: bool,
+) -> Value {
+    json!({"name":cfg.name,"phase":if error.is_some() {"paused"} else if live_ready {"live"} else {"waiting_live"},"exchange":cfg.exchange,"symbol":cfg.symbol,"interval":"1h","position_unit":"lot","dominant":main,"factor_ready":engine.ready(),"live_ready":live_ready,"error":error,"last_bar_end_ms":engine.last_end_ms,"rules":engine.latest,"positions":engine.targets(),"updated_us":chrono::Utc::now().timestamp_micros()})
+}
+
+#[derive(Default)]
+struct Health {
+    ingress: Option<String>,
+    dominant: Option<String>,
+}
+impl Health {
+    fn error(&self) -> Option<&str> {
+        self.ingress.as_deref().or(self.dominant.as_deref())
+    }
+    fn pause(&mut self, error: String) {
+        if self.ingress.as_deref() != Some(&error) {
+            eprintln!("native input waiting; factual targets retained: {error}");
+        }
+        self.ingress = Some(error);
+    }
+}
+fn consume(
+    engine: &mut engine::Engine,
+    input: &live::Input,
+    hours: &mut engine::Hours,
+    main: &history::Dominant,
+    rows: Vec<cn_market_proto::MinuteBar>,
+    dominant_ready: bool,
+) -> Result<()> {
+    let mut closed = Vec::new();
+    for row in rows {
+        closed.extend(hours.push(row, input.multiple)?);
+        if hours
+            .last_minute_ms()
+            .is_some_and(|last| input.context.ends_after(last))
+        {
+            if let Some(hour) = hours.finish(input.multiple)? {
+                closed.push(hour);
+            }
+        }
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    let fresh = (chrono::Utc::now().timestamp_micros() as u64)
+        .saturating_sub(input.last_received_us)
+        <= 5_000_000;
+    for hour in closed {
+        let live = dominant_ready
+            && fresh
+            && hour.end_ms > input.live_after_ms
+            && hour.end_ms <= now
+            && now - hour.end_ms <= 120_000;
+        engine.observe(&hour, &main.contract, input.multiple, live)?;
+    }
+    Ok(())
+}
+fn history_begin(cfg: &Config) -> i64 {
+    (chrono::Utc::now() - chrono::Duration::days(cfg.history_days)).timestamp_millis()
+}
+async fn preflight(cfg: &Config, main: &history::Dominant, ledger: Ledger) -> Result<Value> {
+    let context = history::parameters(cfg).await?;
+    let until = chrono::Utc::now().timestamp_millis();
+    let mut start = history_begin(cfg);
+    let mut history = history::History::default();
+    while start <= until {
+        let end = (start + 30 * 86_400_000 - 1).min(until);
+        history.fetch(cfg, main, start, end).await?;
+        start = end + 1;
+    }
+    ensure!(
+        context.snapshot_as_of == history.session_snapshot,
+        "gRPC minute/session snapshot differs"
+    );
+    let multiple = history.multiple()?;
+    let mut engine = engine::Engine::new(cfg, ledger.clone())?;
+    let mut hours = engine::Hours::default();
+    for row in history
+        .minutes
+        .values()
+        .filter(|r| !r.provisional || r.open_time_ms + 60_000 <= history.through_ms)
+    {
+        for hour in hours.push(row.clone(), multiple)? {
+            engine.observe(&hour, &main.contract, multiple, false)?;
+        }
+    }
+    if hours
+        .last_minute_ms()
+        .is_some_and(|last| context.ends_after(last))
+    {
+        if let Some(hour) = hours.finish(multiple)? {
+            engine.observe(&hour, &main.contract, multiple, false)?;
+        }
+    }
+    ensure!(
+        engine.ready(),
+        "gRPC warm-up incomplete: {}/{} factors",
+        engine.latest.iter().filter(|r| r.ready).count(),
+        cfg.rules.len()
+    );
+    ensure!(
+        engine.ledger == ledger,
+        "preflight changed factual positions"
+    );
+    Ok(
+        json!({"contract":main.contract,"source_minute_rows":history.minutes.len(),"hours":engine.hours,"ready_rules":engine.latest.iter().filter(|r|r.ready).count(),"total_rules":cfg.rules.len(),"last_end_ms":engine.last_end_ms,"grpc_through_ms":history.through_ms,"session_snapshot":context.snapshot_as_of,"source":"grpc","positions_preserved":true}),
+    )
+}
+/// ZMQ minutes are accumulated independently of delayed historical requests.
+#[derive(Default)]
+struct Stream {
+    pending: recovery::Buffer,
+    input: Option<live::Input>,
+    minutes: Vec<cn_market_proto::MinuteBar>,
+    aligned: bool,
+    needs_restart: bool,
+}
+impl Stream {
+    fn reset(&mut self) {
+        let needs_restart = self.aligned || self.needs_restart;
+        *self = Self {
+            needs_restart,
+            ..Self::default()
+        };
+    }
+    fn activate(&mut self) {
+        self.aligned = true;
+        self.minutes = Vec::new();
+        self.pending = recovery::Buffer::default();
+        if let Some(input) = self.input.as_mut() {
+            input.live_after_ms = chrono::Utc::now().timestamp_millis();
+        }
+    }
+    fn next_day(
+        &mut self,
+        previous: &history::Dominant,
+        next: &history::Dominant,
+        first_ms: i64,
+        engine: &mut engine::Engine,
+        hours: &mut engine::Hours,
+    ) -> Result<()> {
+        ensure!(
+            !self.needs_restart,
+            "source continuity lost; restart for initialization"
+        );
+        ensure!(
+            previous.contract == next.contract,
+            "dominant contract changed; restart for new-contract initialization"
+        );
+        let input = self
+            .input
+            .as_mut()
+            .context("missing initialized ZMQ input")?;
+        // An ordered quote from the next day also closes the previous day's
+        // final source minute. Preserve formula windows across ordinary days.
+        let rows = input.closed(first_ms, previous)?;
+        self.accept(rows, engine, hours, previous, false)?;
+        let input = self.input.take().context("missing initialized ZMQ input")?;
+        let cutoff = input.live_after_ms;
+        self.input = Some(live::Input::new(
+            input.context,
+            input.multiple,
+            first_ms - 60_000,
+        ));
+        if let Some(input) = self.input.as_mut() {
+            input.live_after_ms = cutoff;
+        }
+        Ok(())
+    }
+    fn accept(
+        &mut self,
+        rows: Vec<cn_market_proto::MinuteBar>,
+        engine: &mut engine::Engine,
+        hours: &mut engine::Hours,
+        main: &history::Dominant,
+        dominant_ready: bool,
+    ) -> Result<()> {
+        if self.aligned {
+            consume(
+                engine,
+                self.input.as_ref().context("missing live input")?,
+                hours,
+                main,
+                rows,
+                dominant_ready,
+            )?;
+        } else {
+            ensure!(
+                self.minutes.len() + rows.len() <= 4096,
+                "ZMQ minute cache exhausted"
+            );
+            self.minutes.extend(rows);
+        }
+        Ok(())
+    }
+    fn observe(
+        &mut self,
+        event: live::Event,
+        engine: &mut engine::Engine,
+        hours: &mut engine::Hours,
+        main: &history::Dominant,
+        dominant_ready: bool,
+    ) -> Result<()> {
+        ensure!(
+            !self.needs_restart,
+            "source continuity lost; restart for initialization"
+        );
+        if matches!(event, live::Event::Reset) {
+            self.reset();
+            ensure!(!self.needs_restart, "ZMQ reset; restart for initialization");
+            anyhow::bail!("ZMQ reset; waiting for a new first complete minute");
+        }
+        if let Some(input) = self.input.as_mut() {
+            let rows = input.observe(event, main)?;
+            self.accept(rows, engine, hours, main, dominant_ready)
+        } else {
+            self.pending.push(&event, main)
+        }
+    }
+    fn prepare(
+        &mut self,
+        context: live::Context,
+        multiple: f64,
+        main: &history::Dominant,
+    ) -> Result<()> {
+        ensure!(
+            !self.needs_restart && !self.aligned,
+            "gRPC preparation is startup-only"
+        );
+        let (input, rows) = live::Input::from_quotes(context, multiple, self.pending.take(), main)?;
+        self.input = Some(input);
+        self.minutes = rows;
+        Ok(())
+    }
+    fn ready(&self) -> bool {
+        self.aligned
+            && self.input.as_ref().is_some_and(|i| {
+                (chrono::Utc::now().timestamp_micros() as u64).saturating_sub(i.last_received_us)
+                    <= 5_000_000
+            })
+    }
+}
+
+pub async fn run() -> Result<()> {
+    let args = Args::parse();
+    let mut cfg = Config::load(&args.config)?;
+    if args.check {
+        println!(
+            "{} valid: {} rules, SHFE/SN, integer lot targets, no execution",
+            cfg.name,
+            cfg.rules.len()
+        );
+        return Ok(());
+    }
+    std::fs::create_dir_all(&cfg.data_directory)?;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(cfg.data_directory.join(".lock"))?;
+    lock.try_lock()
+        .context("CN CTA environment already running")?;
+    // Capture before any REST/gRPC wait. This process never loads a CTP SDK.
+    let rx = if args.preflight {
+        None
+    } else {
+        Some(live::capture(&cfg)?)
+    };
+    let mut engine = engine::Engine::new(&cfg, ledger(&cfg)?)?;
+    if args.preflight {
+        let main = history::dominant(&cfg).await?;
+        println!("{}", preflight(&cfg, &main, engine.ledger.clone()).await?);
+        return Ok(());
+    }
+    let state = Arc::new(RwLock::new(json!({"name":cfg.name,"phase":"warming",
+        "live_ready":false,"factor_ready":false,"positions":engine.targets()})));
+    let catalog = Arc::new(RwLock::new(panel::catalog(&cfg)?));
+    let (config_tx, mut config_rx) = tokio::sync::mpsc::channel(8);
+    let read = state.clone();
+    let positions = state.clone();
+    let app = Router::new()
+        .route(
+            "/state",
+            get(move || {
+                let s = read.clone();
+                async move { Json(s.read().unwrap_or_else(|p| p.into_inner()).clone()) }
+            }),
+        )
+        .route(
+            "/targets",
+            get(move || {
+                let s = positions.clone();
+                async move {
+                    let v = s.read().unwrap_or_else(|p| p.into_inner());
+                    Json(
+                        json!({"live_ready":v["live_ready"],"factor_ready":v["factor_ready"],
+                "positions":v["positions"],"error":v["error"]}),
+                    )
+                }
+            }),
+        )
+        .merge(panel::router(&cfg, catalog.clone(), config_tx)?);
+    let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
+    let mut http = tokio::spawn(async move { axum::serve(listener, app).await });
+    let mut current = history::dominant(&cfg).await?;
+    let rx = rx.context("missing ZMQ receiver")?;
+    let mut stream = Stream::default();
+    let mut history = Some(history::History::default());
+    let mut hours = engine::Hours::default();
+    let mut load_start = history_begin(&cfg);
+    let mut loaded = false;
+    let mut health = Health::default();
+    let mut next_fetch = tokio::time::Instant::now();
+    let mut next_dominant = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut tick = tokio::time::interval(Duration::from_millis(100));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            result = &mut http => anyhow::bail!("target HTTP task stopped: {result:?}"),
+            _ = tick.tick() => {}
+        }
+        while let Ok(command) = config_rx.try_recv() {
+            panel::process(command, &args.config, &mut cfg, &mut engine, &catalog);
+        }
+        let decision_before = engine.ledger.last_decision_ms;
+        // Drain all events accumulated during the preceding network request,
+        // including reset markers, before closing bars or attempting a handoff.
+        loop {
+            let event = match rx.try_recv() {
+                Ok(event) => event,
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    anyhow::bail!("ZMQ capture thread stopped")
+                }
+            };
+            if let live::Event::Quote(q) = &event {
+                if q.symbol().starts_with(b"sn") && q.trading_day > current.trading_day {
+                    match current.for_day(q.trading_day) {
+                        Ok(next) => {
+                            if history.is_some() {
+                                stream.reset();
+                                history = Some(history::History::default());
+                                load_start = history_begin(&cfg);
+                                loaded = false;
+                                next_fetch = tokio::time::Instant::now();
+                            } else if let Err(e) = stream.next_day(
+                                &current,
+                                &next,
+                                q.exchange_ts_us / 1000,
+                                &mut engine,
+                                &mut hours,
+                            ) {
+                                stream.reset();
+                                health.pause(format!("native day transition: {e:#}"));
+                            }
+                            current = next;
+                        }
+                        Err(e) => {
+                            stream.reset();
+                            health.pause(format!("dominant trading day: {e:#}"));
+                            continue;
+                        }
+                    }
+                }
+            }
+            if let Err(e) = stream.observe(
+                event,
+                &mut engine,
+                &mut hours,
+                &current,
+                health.dominant.is_none(),
+            ) {
+                stream.reset();
+                health.pause(format!("ZMQ input: {e:#}"));
+            }
+        }
+        if let Some(input) = stream.input.as_mut() {
+            let rows = input.clock(chrono::Utc::now().timestamp_millis(), &current);
+            if let Err(e) = rows.and_then(|rows| {
+                stream.accept(
+                    rows,
+                    &mut engine,
+                    &mut hours,
+                    &current,
+                    health.dominant.is_none(),
+                )
+            }) {
+                stream.reset();
+                health.pause(format!("ZMQ minute: {e:#}"));
+            }
+        }
+        // Persist every new factual decision before any await or factor rebuild.
+        if engine.ledger.last_decision_ms != decision_before {
+            atomic(&cfg.data_directory.join("positions.json"), &engine.ledger)?;
+            atomic(&cfg.data_directory.join("targets.json"), &engine.targets())?;
+            println!("{}", engine.targets());
+        }
+        if loaded {
+            if let (Some(history_input), Some(input)) = (history.as_ref(), &stream.input) {
+                match recovery::recover(
+                    &cfg,
+                    &current,
+                    history_input,
+                    engine.ledger.clone(),
+                    input,
+                    &stream.minutes,
+                ) {
+                    Ok(recovered) => {
+                        println!(
+                            "{}",
+                            json!({"type":"grpc_zmq_aligned","contract":current.contract,
+                            "anchor_ms":recovered.anchor_ms,"history_rows":recovered.history_rows,
+                            "cached_zmq_minutes":stream.minutes.len(),"hours":recovered.engine.hours,
+                            "positions_preserved":true})
+                        );
+                        engine = recovered.engine;
+                        hours = recovered.hours;
+                        stream.activate();
+                        // gRPC is a startup dependency. Drop its data and make
+                        // further runtime historical requests unreachable.
+                        history = None;
+                        health.ingress = None;
+                    }
+                    Err(e) => health.pause(format!("gRPC catch-up: {e:#}")),
+                }
+            }
+        }
+        let ready = stream.ready() && health.error().is_none();
+        let mut report = status(&cfg, &current, &engine, health.error(), ready);
+        if !engine.ready() {
+            report["phase"] = json!("warming");
+        }
+        report["initialization_complete"] = json!(history.is_none());
+        report["restart_required"] = json!(stream.needs_restart);
+        report["grpc_through_ms"] = json!(history.as_ref().map(|h| h.through_ms));
+        report["history_rows"] = json!(history.as_ref().map_or(0, |h| h.minutes.len()));
+        report["zmq_first_minute_ms"] = json!(stream.minutes.first().map(|r| r.open_time_ms));
+        report["zmq_cached_minutes"] = json!(stream.minutes.len());
+        *state.write().unwrap_or_else(|p| p.into_inner()) = report;
+
+        // Slow gRPC is expected. It never replaces or advances the local anchor.
+        if let Some(history) = history.as_mut() {
+            if tokio::time::Instant::now() >= next_fetch {
+                let until = chrono::Utc::now().timestamp_millis();
+                let start = if loaded {
+                    history
+                        .minutes
+                        .values()
+                        .find(|r| r.provisional)
+                        .map(|r| r.open_time_ms)
+                        .or_else(|| history.minutes.keys().next_back().copied())
+                        .unwrap_or(load_start)
+                } else {
+                    load_start
+                };
+                let end = if loaded {
+                    until
+                } else {
+                    (start + 30 * 86_400_000 - 1).min(until)
+                };
+                let result = history.fetch(&cfg, &current, start, end).await;
+                let succeeded = result.is_ok();
+                match result {
+                    Ok(()) => {
+                        if !loaded {
+                            load_start = end + 1;
+                            loaded = load_start > until;
+                        }
+                        if stream.input.is_none()
+                            && stream.pending.has()
+                            && history.contract.is_some()
+                        {
+                            match history::parameters(&cfg).await {
+                                Ok(context) => {
+                                    if let Err(e) =
+                                        stream.prepare(context, history.multiple()?, &current)
+                                    {
+                                        stream.reset();
+                                        health.pause(format!("ZMQ baseline preparation: {e:#}"));
+                                    }
+                                }
+                                Err(e) => health.pause(format!("gRPC parameters: {e:#}")),
+                            }
+                        }
+                    }
+                    Err(e) => health.pause(format!("gRPC history: {e:#}")),
+                }
+                next_fetch = tokio::time::Instant::now()
+                    + if succeeded && !loaded {
+                        Duration::from_millis(100)
+                    } else {
+                        Duration::from_secs(5)
+                    };
+            }
+        }
+        if tokio::time::Instant::now() >= next_dominant {
+            match history::dominant(&cfg).await {
+                Ok(row) => {
+                    let row = if row.trading_day < current.trading_day {
+                        row.for_day(current.trading_day)
+                    } else {
+                        Ok(row)
+                    };
+                    match row {
+                        Ok(next) => {
+                            if let Some(history) = history.as_mut() {
+                                if next.contract != current.contract
+                                    || next.source_trading_day > current.source_trading_day
+                                {
+                                    stream.reset();
+                                    *history = history::History::default();
+                                    load_start = history_begin(&cfg);
+                                    loaded = false;
+                                    next_fetch = tokio::time::Instant::now();
+                                }
+                            } else if next.contract != current.contract {
+                                stream.reset();
+                                health.pause("dominant contract changed; restart for new-contract initialization".into());
+                            }
+                            current = next;
+                            health.dominant = None;
+                        }
+                        Err(e) => health.dominant = Some(format!("dominant selection: {e:#}")),
+                    }
+                }
+                Err(e) => health.dominant = Some(format!("dominant REST: {e:#}")),
+            }
+            next_dominant = tokio::time::Instant::now() + Duration::from_secs(60);
+        }
+    }
+    Ok(())
+}

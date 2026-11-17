@@ -354,6 +354,13 @@ impl FuturesFusionState {
         self.push_validated(input, true)
     }
 
+    /// Closed native coarse bars retain formula windows over normal session and
+    /// trading-day boundaries. Explicit source-quality breaks still reset them.
+    pub fn push_continuous(&mut self, input: FuturesFusionInput) -> Result<()> {
+        input.validate()?;
+        self.push_validated(input, false)
+    }
+
     /// Push an additive-HFQ row while retaining the normal replay state and
     /// formulas. This is not a raw/live quote input path.
     pub fn push_additive_hfq(&mut self, input: FuturesFusionInput) -> Result<()> {
@@ -865,6 +872,26 @@ mod tests {
         assert!(state.factor_values(&plan).unwrap()[0].is_some());
         state
             .push(input(5_000, 20251104, QUALITY_SEGMENT_BREAK, 104.0))
+            .unwrap();
+        assert_eq!(state.history_len(), 1);
+        assert_eq!(state.factor_values(&plan).unwrap()[0], None);
+    }
+
+    #[test]
+    fn native_hour_windows_cross_days_but_reset_on_explicit_quality_breaks() {
+        let plan =
+            FuturesFactorPlan::from_factor_names(vec!["cn_features_baseline_159".into()]).unwrap();
+        let mut state = FuturesFusionState::default();
+        state
+            .push_continuous(input(1_000, 20251103, 0, 100.))
+            .unwrap();
+        state
+            .push_continuous(input(86_401_000, 20251104, 0, 101.))
+            .unwrap();
+        assert_eq!(state.history_len(), 2);
+        assert!(state.factor_values(&plan).unwrap()[0].is_some());
+        state
+            .push_continuous(input(86_402_000, 20251104, QUALITY_SEGMENT_BREAK, 102.))
             .unwrap();
         assert_eq!(state.history_len(), 1);
         assert_eq!(state.factor_values(&plan).unwrap()[0], None);
