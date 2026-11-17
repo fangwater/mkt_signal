@@ -465,6 +465,7 @@ pub fn journal_update(
                 Some(e.native_time),
                 received_us,
                 applied,
+                e.replay == 0,
             )?;
         }
         DecodedUpdate::Order(order) if applied => journal.orders(

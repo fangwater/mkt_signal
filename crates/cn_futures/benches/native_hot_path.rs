@@ -253,7 +253,7 @@ fn projection_bench(j: &Journal, samples: usize, ops: usize) -> Result<()> {
             for _ in 0..ops {
                 let start = Instant::now();
                 if trade {
-                    j.trade_for(&core, &fill, Some(1.25), Some(16230), 123, true)?;
+                    j.trade_for(&core, &fill, Some(1.25), Some(16230), 123, true, true)?;
                 } else {
                     j.orders(
                         &core,

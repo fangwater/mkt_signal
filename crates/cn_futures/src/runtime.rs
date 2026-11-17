@@ -86,6 +86,7 @@ enum AuditPayload {
     ProjectedTrade {
         fill: FillAudit,
         order: Option<OrderAudit>,
+        live_report: bool,
         commission: Option<f64>,
         native_time: Option<i32>,
         received_us: u64,
@@ -150,11 +151,12 @@ impl AuditPayload {
                     .last_mut()
                     .expect("normalized trade payload has one factual trade");
                 trade.commission_currency = trade.commission.map(|_| "CNY".into());
-                serde_json::json!({"type":"normalized_trade","identity":trade.fill.identity})
+                serde_json::json!({"type":"normalized_trade","identity":trade.fill.identity,"origin":"unclassified"})
             }
             Self::ProjectedTrade {
                 fill,
                 order,
+                live_report,
                 commission,
                 native_time,
                 received_us,
@@ -163,7 +165,7 @@ impl AuditPayload {
                     order.append(&mut mutation);
                 }
                 let fill = fill.owned();
-                let value = serde_json::json!({"type":"normalized_trade","identity":fill.identity});
+                let value = serde_json::json!({"type":"normalized_trade","identity":fill.identity,"origin":if live_report {"live_report"}else{"recovery_report"}});
                 mutation.trades.push(NativeTradeRecord {
                     fill,
                     commission,
@@ -530,6 +532,7 @@ impl Journal {
         native_time: Option<i32>,
         received_us: u64,
         applied: bool,
+        live_report: bool,
     ) -> Result<()> {
         let order = if applied {
             core.fill_order_key(fill)
@@ -552,6 +555,7 @@ impl Journal {
             AuditPayload::ProjectedTrade {
                 fill: FillAudit::new(fill)?,
                 order,
+                live_report,
                 commission,
                 native_time,
                 received_us,
@@ -1028,6 +1032,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                 None,
                                 received.received_us,
                                 outcome.is_ok(),
+                                true,
                             )?;
                         }
                     }
@@ -1454,7 +1459,7 @@ mod checkpoint_tests {
 mod persistence_tests {
     use super::*;
     use crate::model::*;
-    use persist_manager::cn_futures::{COLUMN_FAMILIES, EVENTS, ORDERS};
+    use persist_manager::cn_futures::{COLUMN_FAMILIES, EVENTS, ORDERS, TRADES};
     use std::path::PathBuf;
     fn identity() -> StoreIdentity {
         crate::persistence::store_identity("fixture", &[b"account", b"endpoint"])
@@ -1497,6 +1502,69 @@ mod persistence_tests {
             true,
         )
         .unwrap()
+    }
+    #[test]
+    fn normalized_trade_origins_persist_without_changing_factual_fill_fields() {
+        let path = path("trade-origin");
+        let journal = journal(&path);
+        for (number, live_report) in [(1, true), (2, false)] {
+            let fill = crate::model::Fill {
+                identity: crate::model::TradeIdentity {
+                    venue: Venue::Shfe,
+                    symbol: "cu2612".into(),
+                    trading_day: "20261110".into(),
+                    trade_id: number.to_string(),
+                    side: Side::Buy,
+                },
+                order_ref: "101".into(),
+                order_key: None,
+                system_id: "2001".into(),
+                offset: Offset::Open,
+                lots: 2,
+                price: 40000.0,
+            };
+            journal
+                .enqueue(
+                    AuditPayload::ProjectedTrade {
+                        fill: FillAudit::new(&fill).unwrap(),
+                        order: None,
+                        live_report,
+                        commission: None,
+                        native_time: None,
+                        received_us: 123 + number,
+                    },
+                    false,
+                    NativeMutation::default(),
+                    false,
+                )
+                .unwrap();
+        }
+        journal.finish().unwrap();
+        let store = persist_manager::RocksDbStore::open_read_only(
+            path.join("db").to_str().unwrap(),
+            COLUMN_FAMILIES,
+        )
+        .unwrap();
+        let events = store.scan(EVENTS, None, false, None).unwrap();
+        let origins: Vec<_> = events
+            .iter()
+            .filter_map(|(_, bytes)| {
+                let event: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+                (event["value"]["type"] == "normalized_trade")
+                    .then(|| event["value"]["origin"].as_str().unwrap().to_owned())
+            })
+            .collect();
+        assert_eq!(origins, vec!["live_report", "recovery_report"]);
+        let facts = store.scan(TRADES, None, false, None).unwrap();
+        assert_eq!(facts.len(), 2);
+        for (_, bytes) in facts {
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["fill"]["lots"], 2);
+            assert_eq!(value["fill"]["price"], 40000.0);
+            assert!(value["commission"].is_null());
+        }
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn shutdown_drains_async_records_and_redacts_rocksdb_evidence() {

@@ -115,6 +115,7 @@ fn deferred_trade_and_order_commit_together_and_keep_the_captured_rule() {
             Some(16230),
             123,
             true,
+            true,
         )
         .unwrap();
     let mut revised = core.instrument(Venue::Cffex, "IF2612").unwrap().clone();
