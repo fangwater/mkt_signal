@@ -1,6 +1,6 @@
 use super::{
     config::Config,
-    engine::{Engine, Hours, Ledger},
+    engine::{Bars, Engine, Ledger},
     history::Dominant,
 };
 use cn_market_proto::{Book5, BookLevel, MinuteBar, SizeBuckets};
@@ -58,14 +58,14 @@ fn minute(i: i64) -> MinuteBar {
         ..MinuteBar::default()
     }
 }
-fn hour(i: i64) -> super::engine::Hour {
-    let mut h = Hours::default();
+fn hour(i: i64) -> super::engine::Bar {
+    let mut h = Bars::default();
     h.push(minute(i * 60), 1.).unwrap();
     h.finish(1.).unwrap().unwrap()
 }
 #[test]
 fn native_hour_aggregation_keeps_last_book_and_mid_and_sums_turnover() {
-    let mut h = Hours::default();
+    let mut h = Bars::default();
     for i in 0..59 {
         assert!(h.push(minute(i), 1.).unwrap().is_empty());
     }
@@ -81,7 +81,7 @@ fn native_hour_aggregation_keeps_last_book_and_mid_and_sums_turnover() {
 }
 #[test]
 fn session_gap_keeps_short_tail_without_inventing_minutes() {
-    let mut h = Hours::default();
+    let mut h = Bars::default();
     h.push(minute(0), 1.).unwrap();
     h.push(minute(1), 1.).unwrap();
     let rows = h.push(minute(17), 1.).unwrap();
@@ -93,7 +93,7 @@ fn session_gap_keeps_short_tail_without_inventing_minutes() {
 fn close_is_only_used_when_mid_was_not_supplied() {
     let mut r = minute(0);
     r.mid_price = None;
-    let mut h = Hours::default();
+    let mut h = Bars::default();
     h.push(r.clone(), 1.).unwrap();
     let out = h.finish(1.).unwrap().unwrap();
     assert!(out.close_approximation);
@@ -108,7 +108,7 @@ fn bookless_or_unclassified_history_is_rejected_instead_of_zero_filled() {
         } else {
             r.size_buckets = None
         };
-        let mut h = Hours::default();
+        let mut h = Bars::default();
         h.push(r, 1.).unwrap();
         assert!(h.finish(1.).is_err());
     }
@@ -174,7 +174,7 @@ fn next_trading_day_uses_explicit_scheduled_main_once_then_requires_rest_refresh
 
 #[test]
 fn zero_trade_minutes_preserve_a_single_complete_hour() {
-    let mut h = Hours::default();
+    let mut h = Bars::default();
     let mut out = Vec::new();
     for i in 0..60 {
         let mut row = minute(i);
@@ -282,7 +282,7 @@ fn native_live_assembly_includes_empty_minutes_and_rejects_continuity_loss() {
     let mut input = super::live::Input::new(live_context(), 1., start - 1000);
     input.observe(quote(start - 1000, 89), &main).unwrap();
     let mut hours = Vec::new();
-    let mut aggregate = Hours::default();
+    let mut aggregate = Bars::default();
     let mut volume = 89;
     for i in 0..=60 {
         if i != 30 {
@@ -716,8 +716,11 @@ fn reconnect_clears_the_first_minute_and_cached_tail_but_keeps_targets() {
     let (_dir, cfg, main) = live_fixture();
     let mut engine = warmed_engine(&cfg);
     let targets = engine.targets();
-    let mut stream = super::Stream::default();
-    let mut hours = Hours::default();
+    let mut stream = super::Stream {
+        extras: Some(super::extras::Extras::new(&cfg).unwrap()),
+        ..Default::default()
+    };
+    let mut hours = Bars::default();
     stream
         .observe(
             quote(night_open(), 100),
@@ -792,8 +795,11 @@ fn initialized_stream_releases_startup_cache_and_requires_restart_after_source_l
     let (_dir, cfg, main) = live_fixture();
     let mut engine = warmed_engine(&cfg);
     let factual = engine.targets();
-    let mut stream = super::Stream::default();
-    let mut hours = Hours::default();
+    let mut stream = super::Stream {
+        extras: Some(super::extras::Extras::new(&cfg).unwrap()),
+        ..Default::default()
+    };
+    let mut hours = Bars::default();
     stream
         .observe(
             quote(night_open(), 100),
@@ -860,8 +866,11 @@ fn ordinary_next_day_reuses_initialized_parameters_and_keeps_factor_windows() {
     let (_dir, cfg, main) = live_fixture();
     let mut engine = warmed_engine(&cfg);
     let factual = engine.targets();
-    let mut stream = super::Stream::default();
-    let mut hours = Hours::default();
+    let mut stream = super::Stream {
+        extras: Some(super::extras::Extras::new(&cfg).unwrap()),
+        ..Default::default()
+    };
+    let mut hours = Bars::default();
     stream
         .observe(
             quote(night_open(), 100),
@@ -903,4 +912,242 @@ fn ordinary_next_day_reuses_initialized_parameters_and_keeps_factor_windows() {
     assert!(engine.ready());
     assert_eq!(engine.targets(), factual);
     assert_eq!(hours.last_minute_ms(), Some(start + 60_000));
+}
+
+#[test]
+fn displayed_windows_are_the_prep_parameters_at_each_frequency() {
+    let cfg = config();
+    let catalog = super::panel::catalog(&cfg).unwrap();
+    for (name, norm, norm_min, rank, rank_min) in [
+        ("1min", 1440, 1000, 2880, 1440),
+        ("5min", 288, 200, 576, 288),
+        ("15min", 96, 67, 192, 96),
+        ("1h", 24, 16, 48, 24),
+    ] {
+        let p = &catalog["window_parameters"][name];
+        assert_eq!(p["factor"]["normalize_window"], norm);
+        assert_eq!(p["factor"]["normalize_min_periods"], norm_min);
+        assert_eq!(p["factor"]["rank_window"], rank);
+        assert_eq!(p["factor"]["rank_min_periods"], rank_min);
+        assert_eq!(p["factor"]["clip_zscore"], 3.0);
+        assert_eq!(
+            p["factor_rank_ties"],
+            if name == "1h" {
+                "inclusive"
+            } else {
+                "midpoint"
+            }
+        );
+        assert_eq!(p["nq"]["lookback"], 120);
+        assert_eq!(p["nq"]["rank_window"], 120);
+        assert_eq!(p["nq"]["rank_min_periods"], 60);
+    }
+}
+
+#[test]
+fn minute_frequencies_use_clock_aligned_bars_and_keep_hourly_convention() {
+    use crate::cta_factor_calc::config::Interval;
+    for (interval, expected, minutes_per_bar) in [
+        (Interval::Minute, 30, 1),
+        (Interval::FiveMinutes, 6, 5),
+        (Interval::FifteenMinutes, 2, 15),
+        (Interval::Hour, 0, 60),
+    ] {
+        let mut aggregate = Bars::new(interval);
+        let mut output = Vec::new();
+        // 1,000,005 is divisible by both 5 and 15.
+        for i in 5..35 {
+            output.extend(aggregate.push(minute(i), 1.).unwrap());
+        }
+        assert_eq!(output.len(), expected);
+        for bar in output {
+            assert_eq!(bar.minutes, minutes_per_bar);
+        }
+    }
+    let mut five = Bars::new(Interval::FiveMinutes);
+    let mut output = Vec::new();
+    for i in 6..15 {
+        output.extend(five.push(minute(i), 1.).unwrap());
+    }
+    assert_eq!(output.len(), 1);
+    assert_eq!(output[0].start_ms, minute(10).open_time_ms);
+}
+
+#[test]
+fn new_frequencies_default_off_and_load_separate_fact_ledgers() {
+    use crate::cta_factor_calc::config::Interval;
+    let (_dir, cfg, _) = live_fixture();
+    let old = Ledger {
+        contract: "sn2612".into(),
+        last_decision_ms: 99,
+        flags: BTreeMap::from([("baseline_076".into(), -1)]),
+        ..Ledger::default()
+    };
+    super::atomic(&cfg.data_directory.join("positions_1min.json"), &old).unwrap();
+    let extras = super::extras::Extras::new(&cfg).unwrap();
+    let v = extras.views(false);
+    assert_eq!(v["1min"]["enabled"], false);
+    assert_eq!(v["1min"]["positions"]["targets"][0]["target_lots"], -1);
+    assert_eq!(
+        v["5min"]["positions"]["targets"].as_array().unwrap().len(),
+        0
+    );
+    assert_eq!(cfg.for_interval(Interval::Hour).rules.len(), 12);
+    assert!(cfg.for_interval(Interval::Minute).rules.is_empty());
+    assert!(cfg.frequencies.is_empty());
+}
+
+#[test]
+fn extra_frequency_fault_does_not_stop_other_frequencies() {
+    let (_dir, cfg, main) = live_fixture();
+    let mut extras = super::extras::Extras::new(&cfg).unwrap();
+    let mut row = minute(0);
+    row.book = None;
+    extras
+        .push(row, 1., &main, &live_context(), None, false)
+        .unwrap();
+    let views = extras.views(false);
+    assert!(views["1min"]["error"].is_string());
+    assert!(views["5min"]["error"].is_null());
+    assert!(views["15min"]["error"].is_null());
+}
+
+#[test]
+fn configured_minute_frequency_preheats_and_persists_its_own_targets() {
+    use super::panel::{self, Controls, Save};
+    use crate::cta_factor_calc::config::Interval;
+    let (_dir, mut cfg, main) = live_fixture();
+    let path = cfg.data_directory.join("config.json");
+    super::atomic(&path, &cfg).unwrap();
+    let initial = Ledger {
+        contract: "sn2612".into(),
+        last_decision_ms: 123,
+        flags: BTreeMap::from([("baseline_076".into(), 1)]),
+        ..Ledger::default()
+    };
+    super::atomic(&cfg.data_directory.join("positions.json"), &initial).unwrap();
+    let mut extras = super::extras::Extras::new(&cfg).unwrap();
+    let context = live_context();
+    for i in 0..4500 {
+        extras
+            .push(minute(i), 1., &main, &context, None, false)
+            .unwrap();
+    }
+    let mut controls = Controls::from(&cfg.for_interval(Interval::Minute));
+    controls.rules = vec![cfg
+        .rules
+        .iter()
+        .find(|r| r.factor == "baseline_076")
+        .unwrap()
+        .clone()];
+    controls.enabled = false;
+    let request = |cfg: &Config, controls: &Controls| Save {
+        configuration: controls.clone(),
+        expected_revision: panel::revision(cfg).unwrap(),
+    };
+    let audit = cfg.data_directory.join("audit");
+    panel::apply_extra(
+        request(&cfg, &controls),
+        &Default::default(),
+        true,
+        &path,
+        &mut cfg,
+        &mut extras,
+        &audit,
+    )
+    .unwrap();
+    assert_eq!(extras.views(false)["1min"]["factor_ready"], true);
+    assert!(super::ledger(&cfg).unwrap() == initial);
+    assert!(cfg.enabled);
+    assert_eq!(cfg.rules.len(), 12);
+    controls.enabled = true;
+    panel::apply_extra(
+        request(&cfg, &controls),
+        &Default::default(),
+        true,
+        &path,
+        &mut cfg,
+        &mut extras,
+        &audit,
+    )
+    .unwrap();
+    let end = chrono::Utc::now().timestamp_millis().div_euclid(60_000) * 60_000;
+    let mut row = minute(4501);
+    row.open_time_ms = end - 60_000;
+    extras
+        .push(row, 1., &main, &context, Some(end - 1), true)
+        .unwrap();
+    extras.persist().unwrap();
+    let minute_ledger = super::ledger(&cfg.for_interval(Interval::Minute)).unwrap();
+    assert_eq!(minute_ledger.last_decision_ms, end);
+    assert_eq!(minute_ledger.contract, "sn2612");
+    assert!(super::ledger(&cfg).unwrap() == initial);
+    assert!(cfg.data_directory.join("positions_1min.json").exists());
+    assert!(!cfg.data_directory.join("positions_5min.json").exists());
+}
+
+#[test]
+fn recovery_warms_independent_minute_ledger_without_replaying_positions() {
+    use super::config::FrequencyConfig;
+    use crate::cta_factor_calc::config::Interval;
+    let (_dir, mut cfg, main) = live_fixture();
+    cfg.enabled = false;
+    cfg.frequencies.insert(
+        "1min".into(),
+        FrequencyConfig {
+            enabled: true,
+            lots_per_rule: 1,
+            entry: cfg.entry.clone(),
+            exits: cfg.exits.clone(),
+            rules: vec![cfg
+                .rules
+                .iter()
+                .find(|r| r.factor == "baseline_076")
+                .unwrap()
+                .clone()],
+        },
+    );
+    let hourly = Ledger {
+        contract: "sn2612".into(),
+        last_decision_ms: 321,
+        flags: BTreeMap::from([("baseline_078".into(), 1)]),
+        ..Ledger::default()
+    };
+    let minute_ledger = Ledger {
+        contract: "sn2612".into(),
+        last_decision_ms: 123,
+        flags: BTreeMap::from([("baseline_076".into(), -1)]),
+        ..Ledger::default()
+    };
+    super::atomic(
+        &cfg.data_directory.join("positions_1min.json"),
+        &minute_ledger,
+    )
+    .unwrap();
+    let mut history = super::history::History {
+        contract: Some(metadata()),
+        session_snapshot: "2026-11-01".into(),
+        ..Default::default()
+    };
+    for i in 0..=5000 {
+        let mut row = minute(i);
+        row.trading_day = main.trading_day;
+        history.minutes.insert(row.open_time_ms, row);
+    }
+    let local: Vec<_> = (5000..5010)
+        .map(|i| {
+            let mut row = minute(i);
+            row.trading_day = main.trading_day;
+            row
+        })
+        .collect();
+    let input = super::live::Input::new(live_context(), 1., local[0].open_time_ms);
+    let result =
+        super::recovery::recover(&cfg, &main, &history, hourly.clone(), &input, &local).unwrap();
+    assert!(result.engine.ledger == hourly);
+    assert!(result.extras.ledgers()[&Interval::Minute] == minute_ledger);
+    let view = result.extras.views(false);
+    assert_eq!(view["1min"]["factor_ready"], true);
+    assert_eq!(view["1min"]["positions"]["targets"][0]["target_lots"], -1);
+    assert_eq!(result.anchor_ms, local[0].open_time_ms);
 }

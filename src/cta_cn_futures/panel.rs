@@ -1,7 +1,8 @@
 //! Prep configuration UI, backed by this worker's native SN lot configuration.
 use super::{
-    config::{Config, Rule},
+    config::{Config, FrequencyConfig, Rule},
     engine::Engine,
+    extras::Extras,
 };
 use crate::{common::parameter_audit, cta_factor_calc::runtime::CatalogConflict};
 use anyhow::{ensure, Context, Result};
@@ -67,7 +68,7 @@ impl Controls {
                 base.symbol.as_str(),
                 base.interval.as_str()
             ),
-            "strategy identity, exchange, SN and 1h cannot change in place"
+            "strategy identity, exchange, symbol and frequency cannot change in place"
         );
         let mut next = base.clone();
         next.enabled = self.enabled;
@@ -111,8 +112,36 @@ pub(super) fn revision(cfg: &Config) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(cfg)?)))
 }
 pub(super) fn catalog(cfg: &Config) -> Result<Value> {
+    use crate::cta_factor_calc::config::{Interval, Parameters};
+    let windows: BTreeMap<_, _> = [
+        Interval::Minute,
+        Interval::FiveMinutes,
+        Interval::FifteenMinutes,
+        Interval::Hour,
+    ]
+    .into_iter()
+    .map(|interval| {
+        (
+            interval.name(),
+            json!({
+                "factor": Parameters::for_interval(interval, false),
+                "nq": Parameters::for_interval(interval, true),
+                "factor_rank_ties": if interval == Interval::Hour { "inclusive" } else { "midpoint" },
+            }),
+        )
+    })
+    .collect();
+    let configurations: BTreeMap<_, _> = [
+        Interval::Minute,
+        Interval::FiveMinutes,
+        Interval::FifteenMinutes,
+        Interval::Hour,
+    ]
+    .into_iter()
+    .map(|interval| (interval.name(), Controls::from(&cfg.for_interval(interval))))
+    .collect();
     Ok(
-        json!({"worker":"cta-cn-futures","workers":["cta-cn-futures"],"native_futures":true,"revision":revision(cfg)?,"configuration":Controls::from(cfg)}),
+        json!({"worker":"cta-cn-futures","workers":["cta-cn-futures"],"native_futures":true,"revision":revision(cfg)?,"configuration":Controls::from(cfg),"frequency_configurations":configurations,"window_parameters":windows}),
     )
 }
 fn authorize(app: &App, headers: &HeaderMap) -> std::result::Result<(), Failure> {
@@ -319,6 +348,7 @@ pub(super) fn process(
     path: &Path,
     cfg: &mut Config,
     engine: &mut Engine,
+    extras: &mut Extras,
     catalog: &Arc<RwLock<Value>>,
 ) {
     if command.reply.is_closed() {
@@ -326,15 +356,27 @@ pub(super) fn process(
     }
     let result = parameter_audit::default_root()
         .and_then(|root| {
-            apply(
-                command.request,
-                &command.headers,
-                command.execute,
-                path,
-                cfg,
-                engine,
-                &root,
-            )
+            if command.request.configuration.interval == "1h" {
+                apply(
+                    command.request,
+                    &command.headers,
+                    command.execute,
+                    path,
+                    cfg,
+                    engine,
+                    &root,
+                )
+            } else {
+                apply_extra(
+                    command.request,
+                    &command.headers,
+                    command.execute,
+                    path,
+                    cfg,
+                    extras,
+                    &root,
+                )
+            }
         })
         .map_err(failure);
     if command.execute {
@@ -343,4 +385,93 @@ pub(super) fn process(
         }
     }
     let _ = command.reply.send(result);
+}
+
+pub(super) fn apply_extra(
+    request: Save,
+    headers: &HeaderMap,
+    execute: bool,
+    path: &Path,
+    cfg: &mut Config,
+    extras: &mut Extras,
+    audit_root: &Path,
+) -> Result<Value> {
+    let current = Config::load(path)?;
+    if request.expected_revision.is_empty()
+        || request.expected_revision != revision(&current)?
+        || revision(cfg)? != revision(&current)?
+    {
+        return Err(CatalogConflict("configuration changed; reload before saving (external file changes require a worker restart)".into()).into());
+    }
+    let interval = match request.configuration.interval.as_str() {
+        "1min" => crate::cta_factor_calc::config::Interval::Minute,
+        "5min" => crate::cta_factor_calc::config::Interval::FiveMinutes,
+        "15min" => crate::cta_factor_calc::config::Interval::FifteenMinutes,
+        _ => anyhow::bail!("unsupported native CTA frequency"),
+    };
+    let next_frequency = request
+        .configuration
+        .merge(&current.for_interval(interval))?;
+    let mut next = current.clone();
+    next.frequencies.insert(
+        interval.name().into(),
+        FrequencyConfig {
+            enabled: next_frequency.enabled,
+            lots_per_rule: next_frequency.lots_per_rule,
+            entry: next_frequency.entry.clone(),
+            exits: next_frequency.exits.clone(),
+            rules: next_frequency.rules.clone(),
+        },
+    );
+    next.validate()?;
+    let changed = revision(&next)? != revision(&current)?;
+    let replacement = if changed {
+        Some(extras.prepare(interval, &next_frequency)?)
+    } else {
+        None
+    };
+    let value = catalog(&next)?;
+    if execute && changed {
+        let key = next_frequency.name.clone();
+        let metadata = parameter_audit::Metadata {
+            family: "cta_prep".into(),
+            environment: key.clone(),
+            source: "config_page".into(),
+            actor: None,
+            source_ip: headers
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned),
+            session_id: None,
+            request_path: Some("/api/config".into()),
+        };
+        parameter_audit::apply(
+            audit_root,
+            metadata,
+            "cta",
+            || {
+                Ok(BTreeMap::from([(
+                    key.clone(),
+                    serde_json::to_value(Controls::from(
+                        &Config::load(path)?.for_interval(interval),
+                    ))?,
+                )]))
+            },
+            || {
+                if revision(&Config::load(path)?)? != request.expected_revision {
+                    return Err(
+                        CatalogConflict("configuration changed before saving".into()).into(),
+                    );
+                }
+                parameter_audit::atomic(path, &next)
+            },
+        )?;
+        extras.apply(
+            interval,
+            next_frequency,
+            replacement.context("missing frequency engine")?,
+        )?;
+        *cfg = next;
+    }
+    Ok(value)
 }

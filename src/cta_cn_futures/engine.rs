@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone)]
-pub struct Hour {
+pub struct Bar {
     pub start_ms: i64,
     pub end_ms: i64,
     pub trading_day: u32,
@@ -29,35 +29,58 @@ pub struct Hour {
     pub mid: f64,
     pub close_approximation: bool,
 }
-/// The published CN hourly convention: consecutive source minutes, groups of
-/// 60 starting at the segment's first minute; retain a segment's short tail.
-#[derive(Default)]
-pub struct Hours {
+/// Aggregate native minutes. Hourly bars retain the existing CN segment
+/// convention; shorter bars align to clock boundaries as in Prep.
+pub struct Bars {
     rows: Vec<MinuteBar>,
+    interval: Interval,
+    started: bool,
 }
-impl Hours {
+impl Default for Bars {
+    fn default() -> Self {
+        Self::new(Interval::Hour)
+    }
+}
+impl Bars {
+    pub fn new(interval: Interval) -> Self {
+        Self {
+            rows: Vec::new(),
+            interval,
+            started: false,
+        }
+    }
     pub fn last_minute_ms(&self) -> Option<i64> {
         self.rows.last().map(|r| r.open_time_ms)
     }
-    pub fn push(&mut self, row: MinuteBar, multiple: f64) -> Result<Vec<Hour>> {
+    pub fn push(&mut self, row: MinuteBar, multiple: f64) -> Result<Vec<Bar>> {
         let mut out = Vec::new();
+        if !self.started && self.interval != Interval::Hour {
+            if row.open_time_ms.rem_euclid(self.interval.millis()) != 0 {
+                return Ok(out);
+            }
+            self.started = true;
+        }
         if let Some(last) = self.rows.last() {
             ensure!(
                 row.open_time_ms > last.open_time_ms,
                 "minute timestamps must increase"
             );
-            if row.open_time_ms - last.open_time_ms != 60_000 || row.trading_day != last.trading_day
+            if row.open_time_ms - last.open_time_ms != 60_000
+                || row.trading_day != last.trading_day
+                || (self.interval != Interval::Hour
+                    && row.open_time_ms.div_euclid(self.interval.millis())
+                        != last.open_time_ms.div_euclid(self.interval.millis()))
             {
                 out.push(self.finish(multiple)?.context("missing hourly tail")?);
             }
         }
         self.rows.push(row);
-        if self.rows.len() == 60 {
-            out.push(self.finish(multiple)?.context("missing full hour")?);
+        if self.rows.len() == (self.interval.millis() / 60_000) as usize {
+            out.push(self.finish(multiple)?.context("missing complete bar")?);
         }
         Ok(out)
     }
-    pub fn finish(&mut self, multiple: f64) -> Result<Option<Hour>> {
+    pub fn finish(&mut self, multiple: f64) -> Result<Option<Bar>> {
         if self.rows.is_empty() {
             return Ok(None);
         }
@@ -159,7 +182,7 @@ impl Hours {
             "native book must have exactly five levels"
         );
         let mid = last.mid_price.filter(|v| v.is_finite() && *v > 0.);
-        Ok(Some(Hour {
+        Ok(Some(Bar {
             start_ms: first.open_time_ms,
             end_ms: last.open_time_ms + 60_000,
             trading_day: last.trading_day,
@@ -209,7 +232,7 @@ pub struct RuleState {
 
 pub struct Engine {
     cfg: Config,
-    plan: FuturesFactorPlan,
+    plan: Option<FuturesFactorPlan>,
     formula: FuturesFusionState,
     transforms: Vec<Transform>,
     nq: Nq,
@@ -218,7 +241,7 @@ pub struct Engine {
     pub last_end_ms: i64,
     pub hours: usize,
     pub approximated_mid_hours: usize,
-    observations: VecDeque<(Hour, String, f64)>,
+    observations: VecDeque<(Bar, String, f64)>,
 }
 impl Engine {
     pub fn new(cfg: &Config, ledger: Ledger) -> Result<Self> {
@@ -227,12 +250,18 @@ impl Engine {
                 && ledger.flags.values().all(|v| matches!(v, -1..=1)),
             "invalid persisted rule position"
         );
-        let plan = FuturesFactorPlan::from_factor_names(
-            cfg.rules
-                .iter()
-                .map(|r| format!("cn_features_{}", r.factor))
-                .collect(),
-        )?;
+        let interval = cfg.interval_kind()?;
+        let plan = if cfg.rules.is_empty() {
+            ensure!(!cfg.enabled, "empty frequency must be disabled");
+            None
+        } else {
+            Some(FuturesFactorPlan::from_factor_names(
+                cfg.rules
+                    .iter()
+                    .map(|r| format!("cn_features_{}", r.factor))
+                    .collect(),
+            )?)
+        };
         Ok(Self {
             cfg: cfg.clone(),
             plan,
@@ -240,14 +269,9 @@ impl Engine {
             transforms: cfg
                 .rules
                 .iter()
-                .map(|_| {
-                    Transform::new(
-                        &Parameters::for_interval(Interval::Hour, false),
-                        Interval::Hour,
-                    )
-                })
+                .map(|_| Transform::new(&Parameters::for_interval(interval, false), interval))
                 .collect(),
-            nq: Nq::new(&Parameters::for_interval(Interval::Hour, true)),
+            nq: Nq::new(&Parameters::for_interval(interval, true)),
             ledger,
             latest: Vec::new(),
             last_end_ms: 0,
@@ -262,7 +286,7 @@ impl Engine {
             next.observe(hour, contract, *multiple, false)?;
         }
         ensure!(
-            next.ready(),
+            next.ready() || (!cfg.enabled && (cfg.rules.is_empty() || cfg.interval != "1h")),
             "changed factors are not ready on the factual hourly history"
         );
         ensure!(
@@ -272,11 +296,13 @@ impl Engine {
         Ok(next)
     }
     pub fn ready(&self) -> bool {
-        self.latest.len() == self.cfg.rules.len() && self.latest.iter().all(|r| r.ready)
+        !self.cfg.rules.is_empty()
+            && self.latest.len() == self.cfg.rules.len()
+            && self.latest.iter().all(|r| r.ready)
     }
     pub fn observe(
         &mut self,
-        hour: &Hour,
+        hour: &Bar,
         contract: &str,
         multiple: f64,
         live: bool,
@@ -310,7 +336,10 @@ impl Engine {
             volume_multiple: multiple,
             volume_multiple_verified: true,
         })?;
-        let raw = self.formula.factor_values(&self.plan)?;
+        let raw = match &self.plan {
+            Some(plan) => self.formula.factor_values(plan)?,
+            None => Vec::new(),
+        };
         let nq = self.nq.observe(Some(hour.mid));
         self.last_end_ms = hour.end_ms;
         self.hours += 1;
@@ -372,7 +401,12 @@ impl Engine {
                     entry.nq_short_quantile = short;
                 }
                 let signal = CtaPerpConfig {
-                    bar_interval: BarInterval::OneHour,
+                    bar_interval: match self.cfg.interval_kind()? {
+                        Interval::Minute => BarInterval::OneMinute,
+                        Interval::FiveMinutes => BarInterval::FiveMinutes,
+                        Interval::FifteenMinutes => BarInterval::FifteenMinutes,
+                        Interval::Hour => BarInterval::OneHour,
+                    },
                     enabled: true,
                     max_pos_u: 1.,
                     position_algorithm: PositionAlgorithm::V0,
@@ -462,6 +496,6 @@ impl Engine {
                 .sum();
             targets.push(serde_json::json!({"exchange":self.cfg.exchange,"symbol":self.ledger.contract,"target_lots":lots}));
         }
-        serde_json::json!({"strategy_name":self.cfg.name,"interval":"1h","position_unit":"lot","decision_ms":self.ledger.last_decision_ms,"targets":targets})
+        serde_json::json!({"strategy_name":self.cfg.name,"interval":self.cfg.interval,"position_unit":"lot","decision_ms":self.ledger.last_decision_ms,"targets":targets})
     }
 }

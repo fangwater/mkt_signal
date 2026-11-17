@@ -49,6 +49,7 @@
   <section id="strategy-settings" class="panel">
     <div class="section-header"><h2>策略参数 <span id="current-frequency" class="badge"></span></h2></div>
     <p class="hint">开关、金额和开平仓阈值分别保存到当前策略组、券池和频段。各因子沿用独立开平仓规则。</p>
+    <p id="native-window-params" class="hint" hidden></p>
     <div class="kv-table">
       <label for="enabled" class="kv-key">策略开关</label><div class="kv-input"><select id="enabled"><option value="false">关闭</option><option value="true">启用</option></select></div><div class="kv-desc">只控制当前策略组、券池和频段。</div>
       <label for="max-pos" class="kv-key">单份金额（USDT）</label><div class="kv-input"><input id="max-pos" type="number" min="0" step="any"></div><div class="kv-desc">每条因子规则的单份金额，修改后用于后续新开仓。</div>
@@ -82,6 +83,7 @@ const nativeMode=document.body.dataset.nativeFutures==='true';
 if(nativeMode){const access=new URLSearchParams(location.hash.slice(1)).get('access');if(access&&/^[a-f0-9]{64}$/.test(access)){localStorage.setItem('cta-cn-futures-panel-access',access);history.replaceState(null,'',location.pathname+location.search);}prepareNative();}
 const prepIntervals=['1min','5min','15min','1h'];
 let catalog=null,draft=null,dirty=false,groupsDirty=false,busy=true,selectedWorker=nativeMode?'cta-cn-futures':new URL(location.href).searchParams.get('worker')||'cta-prep-binance-futures';
+let nativeFrequency='1h';
 let accountRisk=[],riskDirty=false,riskBusy=false;
 function message(text,error=false){$('message').textContent=text;$('message').className='status '+(error?'err':'ok');}
 function changed(){dirty=true;$('dirty').textContent='有未保存修改';}
@@ -209,7 +211,7 @@ function renderTabs(){
   }
 }
 function renderCatalog(preferred){
-  if(nativeMode){showNative(catalog.configuration);return;}
+  if(nativeMode){showNative(catalog.frequency_configurations?.[nativeFrequency]||catalog.configuration);return;}
   selectedWorker=catalog.worker;$('strategy-type').replaceChildren();for(const worker of catalog.workers||[catalog.worker])$('strategy-type').append(new Option(worker==='cta-factor-spread'?'Spread':'Prep',worker));$('strategy-type').value=selectedWorker;
   const groups=[...new Set(Object.values(catalog.plan.combinations).map(doc=>doc.strategy_group))].sort();$('strategy-group').replaceChildren();for(const group of groups)$('strategy-group').append(new Option(group,group));
   $('symbol-group').replaceChildren(new Option('all（未限定券池）',''));for(const group of Object.keys(catalog.plan.symbol_groups||{}))$('symbol-group').append(new Option(group,group));
@@ -233,7 +235,7 @@ async function action(save){
 }
 function nativeRules(){
   let rows;try{rows=JSON.parse($('factor-json').value);}catch(error){throw Error('JSON 格式错误：'+error.message);}
-  if(!Array.isArray(rows)||!rows.length)throw Error('请填写非空因子数组');
+  if(!Array.isArray(rows)||(!rows.length&&$('enabled').value==='true'))throw Error('启用的频段必须填写非空因子数组');
   const fields=['标的','nq','符号','因子'];
   return rows.map((row,index)=>{
     if(!row||typeof row!=='object'||Array.isArray(row)||Object.keys(row).length!==4||fields.some(key=>!Object.hasOwn(row,key)))throw Error('第 '+(index+1)+' 项只接受「标的、nq、符号、因子」');
@@ -259,16 +261,28 @@ function prepareNative(){
   $('enabled').parentElement.nextElementSibling.textContent='只控制本策略生成目标仓位。';
   $('max-pos').min='1';$('max-pos').max='100';$('max-pos').step='1';
   $('spread-settings').hidden=true;
-  $('factor-hint').textContent='每项填写「标的、nq、符号、因子」。标的固定为 SN，频率固定为 1h；符号为 -1 / 1；nq 填「0.50」「0.20/0.80」或「关闭」。';
+  $('factor-hint').textContent='每项填写「标的、nq、符号、因子」。标的固定为 SN；符号为 -1 / 1；nq 填「0.50」「0.20/0.80」或「关闭」。';
   $('symbol-members').textContent='上期所锡 SN · 实际交割合约由主力 REST 选择。';
 }
 function showNative(doc){
   selectedWorker='cta-cn-futures';draft=clone(doc);dirty=false;groupsDirty=false;$('dirty').textContent='';
+  nativeFrequency=doc.interval;$('current-frequency').textContent='SHFE · SN · '+doc.interval;
   $('strategy-group').replaceChildren(new Option(doc.name,doc.name));
   $('enabled').value=String(doc.enabled);$('max-pos').value=doc.lots_per_rule;
   for(const [id,value] of [['entry-long',doc.entry.factor_long_quantile],['entry-short',doc.entry.factor_short_quantile],['exit-long',doc.exits.factor_exit_quantile_long],['exit-short',doc.exits.factor_exit_quantile_short]]){$(id).value=value;$(id).min='0';$(id).max='1';}
   $('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.rules);
-  const button=document.createElement('button');button.type='button';button.dataset.name=doc.name;button.setAttribute('role','tab');button.setAttribute('aria-selected','true');button.textContent='1h · '+(doc.enabled?'已启用':'已关闭');$('frequency-tabs').replaceChildren(button);
+  const windows=catalog.window_parameters?.[doc.interval],hint=$('native-window-params');
+  hint.hidden=!windows;
+  if(windows){const f=windows.factor,n=windows.nq;hint.textContent=`固定窗口（单位：根 ${doc.interval} bar）：因子公式窗口由各因子定义；z-score ${f.normalize_window} 根、至少 ${f.normalize_min_periods} 个有效值，先按均值 ±${f.clip_zscore}σ 截断并以样本标准差重算；因子分位 ${f.rank_window} 根、至少 ${f.rank_min_periods} 个有效值，${windows.factor_rank_ties==='inclusive'?'等值全部计入':'等值取中点排名'}。NQ 以 mid 为输入（缺失时使用 close 近似），多侧变化为 (mid−${n.lookback} 根最低 mid) / 最低 mid，空侧变化为 (mid−${n.lookback} 根最高 mid) / 最高 mid；两侧各用最近 ${n.rank_window} 个有效变化值求分位，至少 ${n.rank_min_periods} 个，0.50 门限比较线性中位数；NQ 不做 z-score。`;}
+  $('frequency-tabs').replaceChildren();
+  for(const interval of prepIntervals){
+    const item=catalog.frequency_configurations?.[interval];if(!item)continue;
+    const button=document.createElement('button');button.type='button';button.dataset.name=item.name;
+    button.setAttribute('role','tab');button.setAttribute('aria-selected',String(interval===nativeFrequency));
+    button.textContent=interval+' · '+(item.rules.length?(item.enabled?'已启用':'已关闭'):'未配置');
+    button.onclick=()=>{if(dirty&&!confirm('放弃未保存修改，切换频段？'))return;showNative(item);};
+    $('frequency-tabs').append(button);
+  }
 }
 async function nativeAction(save){
   if(busy||!draft)return;setBusy(true);

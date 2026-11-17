@@ -1,6 +1,7 @@
 //! SDK-free native-futures Prep: historical warm-up, live inputs and absolute lot targets.
 mod config;
 mod engine;
+mod extras;
 mod history;
 mod live;
 mod panel;
@@ -44,7 +45,12 @@ fn atomic(path: &Path, value: &impl serde::Serialize) -> Result<()> {
     Ok(())
 }
 fn ledger(cfg: &Config) -> Result<Ledger> {
-    let p = cfg.data_directory.join("positions.json");
+    let filename = if cfg.interval == "1h" {
+        "positions.json".to_string()
+    } else {
+        format!("positions_{}.json", cfg.interval)
+    };
+    let p = cfg.data_directory.join(filename);
     if p.exists() {
         Ok(serde_json::from_slice(&std::fs::read(p)?)?)
     } else {
@@ -80,7 +86,7 @@ impl Health {
 fn consume(
     engine: &mut engine::Engine,
     input: &live::Input,
-    hours: &mut engine::Hours,
+    hours: &mut engine::Bars,
     main: &history::Dominant,
     rows: Vec<cn_market_proto::MinuteBar>,
     dominant_ready: bool,
@@ -130,12 +136,15 @@ async fn preflight(cfg: &Config, main: &history::Dominant, ledger: Ledger) -> Re
     );
     let multiple = history.multiple()?;
     let mut engine = engine::Engine::new(cfg, ledger.clone())?;
-    let mut hours = engine::Hours::default();
+    let mut hours = engine::Bars::default();
+    let mut extras = extras::Extras::new(cfg)?;
+    let extra_ledgers = extras.ledgers();
     for row in history
         .minutes
         .values()
         .filter(|r| !r.provisional || r.open_time_ms + 60_000 <= history.through_ms)
     {
+        extras.push(row.clone(), multiple, main, &context, None, false)?;
         for hour in hours.push(row.clone(), multiple)? {
             engine.observe(&hour, &main.contract, multiple, false)?;
         }
@@ -149,7 +158,7 @@ async fn preflight(cfg: &Config, main: &history::Dominant, ledger: Ledger) -> Re
         }
     }
     ensure!(
-        engine.ready(),
+        !cfg.enabled || engine.ready(),
         "gRPC warm-up incomplete: {}/{} factors",
         engine.latest.iter().filter(|r| r.ready).count(),
         cfg.rules.len()
@@ -158,8 +167,13 @@ async fn preflight(cfg: &Config, main: &history::Dominant, ledger: Ledger) -> Re
         engine.ledger == ledger,
         "preflight changed factual positions"
     );
+    ensure!(
+        extras.ledgers() == extra_ledgers,
+        "preflight changed minute-frequency ledgers"
+    );
+    extras.check_enabled_ready()?;
     Ok(
-        json!({"contract":main.contract,"source_minute_rows":history.minutes.len(),"hours":engine.hours,"ready_rules":engine.latest.iter().filter(|r|r.ready).count(),"total_rules":cfg.rules.len(),"last_end_ms":engine.last_end_ms,"grpc_through_ms":history.through_ms,"session_snapshot":context.snapshot_as_of,"source":"grpc","positions_preserved":true}),
+        json!({"contract":main.contract,"source_minute_rows":history.minutes.len(),"hours":engine.hours,"ready_rules":engine.latest.iter().filter(|r|r.ready).count(),"total_rules":cfg.rules.len(),"last_end_ms":engine.last_end_ms,"grpc_through_ms":history.through_ms,"session_snapshot":context.snapshot_as_of,"source":"grpc","positions_preserved":true,"frequencies":extras.views(false)}),
     )
 }
 /// ZMQ minutes are accumulated independently of delayed historical requests.
@@ -170,12 +184,15 @@ struct Stream {
     minutes: Vec<cn_market_proto::MinuteBar>,
     aligned: bool,
     needs_restart: bool,
+    extras: Option<extras::Extras>,
 }
 impl Stream {
     fn reset(&mut self) {
         let needs_restart = self.aligned || self.needs_restart;
+        let extras = self.extras.take();
         *self = Self {
             needs_restart,
+            extras,
             ..Self::default()
         };
     }
@@ -193,7 +210,7 @@ impl Stream {
         next: &history::Dominant,
         first_ms: i64,
         engine: &mut engine::Engine,
-        hours: &mut engine::Hours,
+        hours: &mut engine::Bars,
     ) -> Result<()> {
         ensure!(
             !self.needs_restart,
@@ -227,11 +244,28 @@ impl Stream {
         &mut self,
         rows: Vec<cn_market_proto::MinuteBar>,
         engine: &mut engine::Engine,
-        hours: &mut engine::Hours,
+        hours: &mut engine::Bars,
         main: &history::Dominant,
         dominant_ready: bool,
     ) -> Result<()> {
         if self.aligned {
+            let input = self.input.as_ref().context("missing live input")?;
+            let fresh = (chrono::Utc::now().timestamp_micros() as u64)
+                .saturating_sub(input.last_received_us)
+                <= 5_000_000;
+            for row in &rows {
+                self.extras
+                    .as_mut()
+                    .context("missing minute frequency states")?
+                    .push(
+                        row.clone(),
+                        input.multiple,
+                        main,
+                        &input.context,
+                        dominant_ready.then_some(input.live_after_ms),
+                        fresh,
+                    )?;
+            }
             consume(
                 engine,
                 self.input.as_ref().context("missing live input")?,
@@ -253,7 +287,7 @@ impl Stream {
         &mut self,
         event: live::Event,
         engine: &mut engine::Engine,
-        hours: &mut engine::Hours,
+        hours: &mut engine::Bars,
         main: &history::Dominant,
         dominant_ready: bool,
     ) -> Result<()> {
@@ -351,7 +385,7 @@ pub async fn run() -> Result<()> {
                     let v = s.read().unwrap_or_else(|p| p.into_inner());
                     Json(
                         json!({"live_ready":v["live_ready"],"factor_ready":v["factor_ready"],
-                "positions":v["positions"],"error":v["error"]}),
+                "positions":v["positions"],"frequencies":v["frequencies"],"error":v["error"]}),
                     )
                 }
             }),
@@ -361,9 +395,12 @@ pub async fn run() -> Result<()> {
     let mut http = tokio::spawn(async move { axum::serve(listener, app).await });
     let mut current = history::dominant(&cfg).await?;
     let rx = rx.context("missing ZMQ receiver")?;
-    let mut stream = Stream::default();
+    let mut stream = Stream {
+        extras: Some(extras::Extras::new(&cfg)?),
+        ..Stream::default()
+    };
     let mut history = Some(history::History::default());
-    let mut hours = engine::Hours::default();
+    let mut hours = engine::Bars::default();
     let mut load_start = history_begin(&cfg);
     let mut loaded = false;
     let mut health = Health::default();
@@ -378,7 +415,17 @@ pub async fn run() -> Result<()> {
             _ = tick.tick() => {}
         }
         while let Ok(command) = config_rx.try_recv() {
-            panel::process(command, &args.config, &mut cfg, &mut engine, &catalog);
+            panel::process(
+                command,
+                &args.config,
+                &mut cfg,
+                &mut engine,
+                stream
+                    .extras
+                    .as_mut()
+                    .context("missing minute frequency states")?,
+                &catalog,
+            );
         }
         let decision_before = engine.ledger.last_decision_ms;
         // Drain all events accumulated during the preceding network request,
@@ -453,6 +500,11 @@ pub async fn run() -> Result<()> {
             atomic(&cfg.data_directory.join("targets.json"), &engine.targets())?;
             println!("{}", engine.targets());
         }
+        stream
+            .extras
+            .as_mut()
+            .context("missing minute frequency states")?
+            .persist()?;
         if loaded {
             if let (Some(history_input), Some(input)) = (history.as_ref(), &stream.input) {
                 match recovery::recover(
@@ -473,6 +525,7 @@ pub async fn run() -> Result<()> {
                         );
                         engine = recovered.engine;
                         hours = recovered.hours;
+                        stream.extras = Some(recovered.extras);
                         stream.activate();
                         // gRPC is a startup dependency. Drop its data and make
                         // further runtime historical requests unreachable.
@@ -485,7 +538,15 @@ pub async fn run() -> Result<()> {
         }
         let ready = stream.ready() && health.error().is_none();
         let mut report = status(&cfg, &current, &engine, health.error(), ready);
-        if !engine.ready() {
+        let mut frequencies = stream
+            .extras
+            .as_ref()
+            .context("missing minute frequency states")?
+            .views(ready);
+        frequencies["1h"] = json!({"enabled":cfg.enabled,"factor_ready":engine.ready(),"live_ready":ready && engine.ready(),
+            "last_bar_end_ms":engine.last_end_ms,"rules":engine.latest,"positions":engine.targets()});
+        report["frequencies"] = frequencies;
+        if cfg.enabled && !engine.ready() {
             report["phase"] = json!("warming");
         }
         report["initialization_complete"] = json!(history.is_none());

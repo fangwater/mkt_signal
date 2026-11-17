@@ -1,7 +1,8 @@
 //! Match server minutes to independently captured ZMQ minutes, then keep the live tail.
 use super::{
     config::Config,
-    engine::{Engine, Hours, Ledger},
+    engine::{Bars, Engine, Ledger},
+    extras::Extras,
     history::{Dominant, History},
     live::{Event, Input},
 };
@@ -129,7 +130,8 @@ pub fn same_minute(a: &MinuteBar, b: &MinuteBar) -> bool {
 }
 pub struct Recovered {
     pub engine: Engine,
-    pub hours: Hours,
+    pub hours: Bars,
+    pub extras: Extras,
     pub anchor_ms: i64,
     pub history_rows: usize,
 }
@@ -172,7 +174,9 @@ pub fn recover(
         "gRPC prefix contains unfinished minutes"
     );
     let mut engine = Engine::new(cfg, ledger.clone())?;
-    let mut hours = Hours::default();
+    let mut hours = Bars::default();
+    let mut extras = Extras::new(cfg)?;
+    let extra_ledgers = extras.ledgers();
     let mut count = 0;
     for row in history
         .minutes
@@ -181,6 +185,7 @@ pub fn recover(
         .chain(local.iter().filter(|r| r.open_time_ms > anchor).cloned())
     {
         count += 1;
+        extras.push(row.clone(), multiple, main, &input.context, None, false)?;
         for hour in hours.push(row, multiple)? {
             engine.observe(&hour, &main.contract, multiple, false)?;
         }
@@ -194,16 +199,21 @@ pub fn recover(
         }
     }
     ensure!(
-        engine.ready(),
+        !cfg.enabled || engine.ready(),
         "hourly formulas are not ready after gRPC/ZMQ catch-up"
     );
     ensure!(
         engine.ledger == ledger,
         "catch-up changed factual positions"
     );
+    ensure!(
+        extras.ledgers() == extra_ledgers,
+        "catch-up changed minute-frequency ledgers"
+    );
     Ok(Recovered {
         engine,
         hours,
+        extras,
         anchor_ms: anchor,
         history_rows: count,
     })

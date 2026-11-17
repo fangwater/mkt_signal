@@ -41,14 +41,16 @@ def preflight(cfg, binary):
     # this validation never locks or changes the running generation's ledger.
     with tempfile.TemporaryDirectory(prefix="cta-cn-preflight-", dir=BASE) as temp:
         stage = Path(temp)
-        source = data / "positions.json"
-        if source.is_file():
-            shutil.copy2(source, stage / source.name)
+        for name in ("positions.json", "positions_1min.json", "positions_5min.json", "positions_15min.json"):
+            source = data / name
+            if source.is_file():
+                shutil.copy2(source, stage / source.name)
         save(stage / "config.json", dict(cfg, data_directory=str(stage)))
         result = run([binary, "--config", stage / "config.json", "--preflight"],
                      capture_output=True, text=True)
         receipt = json.loads(result.stdout)
-        if not receipt["positions_preserved"] or receipt["ready_rules"] != receipt["total_rules"]:
+        if (not receipt["positions_preserved"] or
+                (cfg.get("enabled", True) and receipt["ready_rules"] != receipt["total_rules"])):
             raise RuntimeError("replacement preflight did not preserve a ready factual ledger")
         receipt["binary_sha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()
         save(data / "preflight.json", receipt)
@@ -102,7 +104,8 @@ def main():
                 path = Path(p["pm2_env"][key])
                 if path.is_file():
                     shutil.copy2(path, backup / path.name)
-        for name in ("positions.json", "targets.json"):
+        for name in ("positions.json", "targets.json", "positions_1min.json", "targets_1min.json",
+                     "positions_5min.json", "targets_5min.json", "positions_15min.json", "targets_15min.json"):
             source = BASE / cfg["data_directory"] / name
             if source.exists():
                 shutil.copy2(source, backup / name)

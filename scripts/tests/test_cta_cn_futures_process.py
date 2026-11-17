@@ -22,6 +22,7 @@ class PreflightTests(unittest.TestCase):
         self.data.mkdir()
         self.ledger = b'{"last_decision_ms":123,"flags":{"baseline_078":1}}'
         (self.data / "positions.json").write_bytes(self.ledger)
+        (self.data / "positions_1min.json").write_bytes(self.ledger)
         (self.data / "history").mkdir()
         (self.data / "warmup.json").write_text("obsolete and invalid")
         self.binary = self.base / "candidate"
@@ -37,7 +38,7 @@ class PreflightTests(unittest.TestCase):
             stage = Path(args[2]).parent
             self.assertEqual(args[0], self.binary)
             self.assertEqual(args[-1], "--preflight")
-            self.assertEqual({p.name for p in stage.iterdir()}, {"positions.json", "config.json"})
+            self.assertEqual({p.name for p in stage.iterdir()}, {"positions.json", "positions_1min.json", "config.json"})
             self.assertEqual((stage / "positions.json").read_bytes(), self.ledger)
             return subprocess.CompletedProcess(args, 0, json.dumps(self.receipt))
         with patch.object(WORKER, "run", side_effect=run):
