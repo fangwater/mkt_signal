@@ -1566,6 +1566,21 @@ impl ChaseExecStrategy {
         is_taker: bool,
     ) -> f64 {
         MonitorChannel::instance().refresh_exec_risk_state();
+        if let Err(reason) = MonitorChannel::instance().check_exec_order_leverage(
+            &self.symbol,
+            self.exec_venue,
+            side,
+            qty_venue,
+        ) {
+            crate::pre_trade::log_throttle::log_open_risk_reject_summary(
+                "ChaseExecStrategy",
+                Some(self.strategy_id),
+                &self.symbol,
+                "杠杆风控",
+                &reason,
+            );
+            return 0.0;
+        }
         if order_type.is_limit()
             && MonitorChannel::instance()
                 .check_pending_limit_order_for_exec(&self.symbol, side)

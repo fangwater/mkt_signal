@@ -1,6 +1,29 @@
 # Delist Risk Server
 
-最后更新：2026-11-12 15:36 UTC（Bybit FR重发完成，启动缺价已恢复）
+最后更新：2026-11-16 05:21 UTC（CTA Config 账户杠杆编辑）
+
+2026-11-16，`/delist/cta/config/` 新增“账户风控”，在原有 Delist 登录下分别读取和
+保存 LGQ RX01 / RX03 的最大杠杆。数据直接来自各自 `<env>:<venue>:pre_trade_risk_params`
+的 `max_leverage`，支持小数、0关闭；运行中的 Exec 沿既有250ms刷新自动加载。
+账户阈值跨频段共用，双所分别配置、独立占用权益。保存只 HSET 该字段，原值比较
+不一致返回409，避免覆盖其他操作者的更新；其他账户与风险字段不变。
+
+配置服务通过 `CTA_EXEC_ACCOUNT_CATALOG` 读取既有 Manager source 的名称与 venue，
+`CTA_EXEC_RISK_SOURCE_IDS` 显式限定可编辑账户。环境本地脚本传入
+`--exec-account-catalog` / `--exec-risk-source-ids`；未配置账户不自动启用限值。
+GET/POST共用`api/account-risk`，继承已有登录、同源写入与可信actor边界。页面写入
+按`family=exec`记录旧值/新值；Delist仅接受当前Manager目录中的对应账户/venue风险Hash，
+并只读比较这些Hash以识别页面外的持久修改。新增比较基线保持静默。
+
+本地`arbmm fb54c643`加本次补丁release构建，SHA-256校验后仅发布Config和Delist服务。
+Config PID2094016仍housekeeping，Delist PID2088322仍CPU28；现有Nginx网关保留。
+24份风险Hash及26份配置文件指纹保持，两账户仍1倍；193个其他常驻进程身份/CPU保持，
+另1个既有有限期`sync_history`退出，未将其计作常驻保持。6项Config、96项Delist、
+2项公共审计及2项生命周期测试通过；独立Redis实测页面保存、并发冲突、双所隔离、
+禁用限值、修改记录及桌面/手机布局。线上只提交原值1验证，无实际阈值变更或通知。
+回执`data/ops/exec_leverage_config_20261116T051036Z/`；主机回执与私有备份使用
+`exec-leverage-config-20261116T051036Z`目录。启动参数预检拦下的引用错误已修正，
+没有在预检失败时停止旧Config服务。
 
 2026-11-12 15:34 UTC，Bybit FR arb01整套重发和3币合约小额对齐完成，8服务含signal恢复。
 启动后的HMSTR/HNT/HOLO/QTUM缺价随行情更新消失，Delist回读complete=true/risk_status=ok。

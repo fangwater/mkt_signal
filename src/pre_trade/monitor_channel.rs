@@ -7598,6 +7598,143 @@ impl MonitorChannel {
         Self::refresh_basic_state_cache();
     }
 
+    /// Account cap for Exec only. Include every market in this account and all
+    /// unacknowledged/live child orders; never use another exchange's collateral.
+    pub fn check_exec_order_leverage(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+        side: Side,
+        qty: f64,
+    ) -> Result<(), String> {
+        let Some(limit) = super::exec_leverage_guard::limit() else {
+            return Ok(());
+        };
+        if !self.exec_position_snapshot_ready() {
+            return Err("Exec leverage: account position snapshot is not ready".into());
+        }
+        Self::with_inner(|inner| {
+            Self::check_exec_order_leverage_inner(inner, symbol, venue, side, qty, limit)
+        })
+    }
+
+    fn check_exec_order_leverage_inner(
+        inner: &MonitorChannelInner,
+        symbol: &str,
+        venue: TradingVenue,
+        side: Side,
+        qty: f64,
+        limit: f64,
+    ) -> Result<(), String> {
+        use super::exec_leverage_guard::{check_projection, PositionRisk};
+        if exchange_from_venue(inner.open_venue) != exchange_from_venue(inner.hedge_venue) {
+            return Err("Exec leverage: separate exchange accounts require independent caps and equity; combined collateral is forbidden".into());
+        }
+        if venue != inner.open_venue && venue != inner.hedge_venue {
+            return Err("Exec leverage: order venue is outside this account".into());
+        }
+        let mut positions: HashMap<(TradingVenue, String), PositionRisk> = HashMap::new();
+        let mut add_position = |venue, symbol: String, qty| {
+            positions.entry((venue, symbol)).or_default().qty += qty;
+        };
+        for (index, (leg_venue, leg)) in [
+            (inner.open_venue, &inner.open_leg),
+            (inner.hedge_venue, &inner.hedge_leg),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if index == 1 && inner.open_venue == inner.hedge_venue {
+                continue;
+            }
+            match leg {
+                LegMgr::Margin { bal, .. } => {
+                    for balance in bal.borrow().balances_iter() {
+                        if !is_exposure_exempt_asset(&balance.symbol) && balance.net() != 0.0 {
+                            add_position(
+                                leg_venue,
+                                format!("{}USDT", balance.symbol.to_uppercase()),
+                                balance.net(),
+                            );
+                        }
+                    }
+                }
+                LegMgr::Futures { um, .. } => {
+                    for (symbol, contracts) in um.borrow().net_contracts_iter() {
+                        if contracts != 0.0 {
+                            add_position(
+                                leg_venue,
+                                normalize_symbol_for_internal(symbol),
+                                f64::from(contracts),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for order in inner.order_manager.borrow().active_orders() {
+            if order.venue != inner.open_venue && order.venue != inner.hedge_venue {
+                continue;
+            }
+            let remaining = order.quantity - order.cumulative_filled_quantity;
+            if !remaining.is_finite() {
+                return Err("Exec leverage: invalid live order quantity".into());
+            }
+            let key = (order.venue, normalize_symbol_for_internal(&order.symbol));
+            let position = positions.entry(key).or_default();
+            match order.side {
+                Side::Buy => position.buys += remaining.max(0.0),
+                Side::Sell => position.sells += remaining.max(0.0),
+            }
+        }
+        let key = (venue, normalize_symbol_for_internal(symbol));
+        positions.entry(key.clone()).or_default();
+        if !qty.is_finite() || qty <= 0.0 {
+            return Err("Exec leverage: invalid order quantity".into());
+        }
+        let signed_qty = if side == Side::Buy { qty } else { -qty };
+        if positions[&key].reduces_position(signed_qty) {
+            return Ok(());
+        }
+        let price_table = inner.price_table.borrow();
+        let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
+            inner.open_venue,
+            inner.hedge_venue,
+        ));
+        for ((position_venue, position_symbol), position) in &mut positions {
+            let symbol_key = min_qty_symbol_key(*position_venue, position_symbol);
+            let mark = price_table
+                .mark_price(&symbol_key)
+                .or_else(|| {
+                    extract_base_asset(position_symbol).map(|asset| {
+                        Self::mark_price_for_asset(&*price_mapper, &price_table, &asset)
+                    })
+                })
+                .filter(|mark| mark.is_finite() && *mark > 0.0)
+                .ok_or_else(|| {
+                    format!("Exec leverage: missing mark price for {position_symbol}")
+                })?;
+            let multiplier = Self::qty_multiplier_for_venue_at_price_inner(
+                inner,
+                *position_venue,
+                position_symbol,
+                mark,
+            )?;
+            if !position.qty.is_finite() || !multiplier.is_finite() || multiplier <= 0.0 {
+                return Err(format!(
+                    "Exec leverage: invalid position or contract multiplier for {position_symbol}"
+                ));
+            }
+            position.unit_notional = mark * multiplier;
+        }
+        let current_worst = positions
+            .values()
+            .map(|position| position.worst_notional())
+            .sum();
+        let equity = Self::with_basic_state_cached(|state| state.total_equity_usdt);
+        check_projection(positions[&key], signed_qty, current_worst, equity, limit)
+    }
+
     // ==================== 内部辅助方法 ====================
 
     fn get_position_qty_inner(
@@ -11365,6 +11502,181 @@ pub(crate) mod tests {
         assert!((projection.next_short_usdt - 100.0).abs() < 1e-9);
         assert!((projection.current_imbalance_ratio - (1.0 / 3.0)).abs() < 1e-9);
         assert!((projection.next_imbalance_ratio - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn exec_leverage_uses_gross_markets_and_reserves_unacknowledged_orders() {
+        install_binance_arb_hedge_exposure_fixture(1.0, -1.0, false);
+        MonitorChannel::with_inner(|inner| {
+            // Spot/cash and perpetual legs contribute 100 each, despite zero net.
+            assert!(MonitorChannel::check_exec_order_leverage_inner(
+                inner,
+                "FILUSDT",
+                TradingVenue::BinanceMargin,
+                Side::Buy,
+                1.0,
+                0.025,
+            )
+            .is_err());
+            inner
+                .order_manager
+                .borrow_mut()
+                .create_order_with_pending_limit_flag(
+                    TradingVenue::BinanceMargin,
+                    7,
+                    order_common::OrderType::Market,
+                    "FILUSDT".into(),
+                    Side::Buy,
+                    1.0,
+                    100.0,
+                    false,
+                    1.0,
+                    false,
+                );
+            // The unacknowledged market buy consumes another 100 of account cap.
+            assert!(MonitorChannel::check_exec_order_leverage_inner(
+                inner,
+                "FILUSDT",
+                TradingVenue::BinanceMargin,
+                Side::Buy,
+                1.0,
+                0.035,
+            )
+            .is_err());
+            inner.order_manager.borrow_mut().remove(7);
+            assert!(MonitorChannel::check_exec_order_leverage_inner(
+                inner,
+                "FILUSDT",
+                TradingVenue::BinanceMargin,
+                Side::Buy,
+                1.0,
+                0.035,
+            )
+            .is_ok());
+        });
+    }
+
+    #[test]
+    fn exec_leverage_keeps_each_exchange_account_independent() {
+        install_binance_exec_cross_section_fixture();
+        MonitorChannel::with_inner_mut(|inner| {
+            inner.hedge_venue = TradingVenue::OkexFutures;
+            let error = MonitorChannel::check_exec_order_leverage_inner(
+                inner,
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                Side::Buy,
+                1.0,
+                1.0,
+            )
+            .unwrap_err();
+            assert!(error.contains("independent caps and equity"), "{error}");
+        });
+    }
+
+    #[test]
+    fn exec_leverage_reductions_reserve_other_closes_and_allow_missing_prices() {
+        install_binance_arb_hedge_exposure_fixture(0.0, -20.0, false);
+        MonitorChannel::with_inner(|inner| {
+            inner
+                .order_manager
+                .borrow_mut()
+                .create_order_with_pending_limit_flag(
+                    TradingVenue::BinanceFutures,
+                    7,
+                    order_common::OrderType::Limit,
+                    "FILUSDT".into(),
+                    Side::Buy,
+                    15.0,
+                    100.0,
+                    false,
+                    1.0,
+                    true,
+                );
+            assert!(MonitorChannel::check_exec_order_leverage_inner(
+                inner,
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                Side::Buy,
+                5.0,
+                0.1,
+            )
+            .is_ok());
+            assert!(MonitorChannel::check_exec_order_leverage_inner(
+                inner,
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                Side::Buy,
+                6.0,
+                0.1,
+            )
+            .is_err());
+            // Missing unrelated prices must not stop a factual, fully reserved close.
+            inner
+                .order_manager
+                .borrow_mut()
+                .create_order_with_pending_limit_flag(
+                    TradingVenue::BinanceMargin,
+                    8,
+                    order_common::OrderType::Market,
+                    "DOGEUSDT".into(),
+                    Side::Buy,
+                    1.0,
+                    0.0,
+                    false,
+                    1.0,
+                    false,
+                );
+            assert!(MonitorChannel::check_exec_order_leverage_inner(
+                inner,
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                Side::Buy,
+                5.0,
+                0.1,
+            )
+            .is_ok());
+            let error = MonitorChannel::check_exec_order_leverage_inner(
+                inner,
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                Side::Sell,
+                1.0,
+                1.0,
+            )
+            .unwrap_err();
+            assert!(error.contains("missing mark price"), "{error}");
+        });
+    }
+
+    #[test]
+    fn exec_leverage_counts_a_single_market_once_and_uses_other_symbol_positions() {
+        install_binance_exec_cross_section_fixture();
+        MonitorChannel::with_inner_mut(|inner| {
+            inner.hedge_venue = TradingVenue::BinanceFutures;
+        });
+        MonitorChannel::refresh_basic_state_cache();
+        MonitorChannel::with_inner(|inner| {
+            // FIL long 200 + ETH short 100; another FIL 100 exactly reaches 400.
+            assert!(MonitorChannel::check_exec_order_leverage_inner(
+                inner,
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                Side::Buy,
+                1.0,
+                0.04,
+            )
+            .is_ok());
+            assert!(MonitorChannel::check_exec_order_leverage_inner(
+                inner,
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                Side::Buy,
+                1.01,
+                0.04,
+            )
+            .is_err());
+        });
     }
 
     #[test]

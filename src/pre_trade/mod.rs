@@ -19,6 +19,7 @@ pub(crate) mod close_exposure;
 pub mod close_inventory;
 pub mod event;
 pub mod exec_algorithm_switch;
+pub mod exec_leverage_guard;
 pub mod exec_position_ledger;
 pub mod exec_resample_channel;
 pub mod exec_volatility_channel;

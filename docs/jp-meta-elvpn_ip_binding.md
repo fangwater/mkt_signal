@@ -1,6 +1,18 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-12 11:02 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-16 05:21 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-16 05:18–05:21 UTC，仅更新Delist与CTA Config以编辑RX01/RX03的Redis
+账户杠杆阈值；保留现有loopback监听及Nginx鉴权网关。两账户仍1倍，交易执行继续运行；
+没有修改交易source IP、`trade_engine.toml local_ips`、ENI/EIP或路由。配置服务的账户
+范围显式限定为`binance_exec_rx01` / `binance_exec_rx03`。回执见核心分配登记
+`exec-leverage-config-20261116T051036Z`条目。
+
+2026-11-16 04:12–04:14 UTC，仅发布 LGQ `binance_exec_rx01` / `binance_exec_rx03`
+的账户杠杆限制并分别设 `max_leverage=1`，通过环境本地脚本重启 exec-pre-trade。
+两环境 `env.sh` 及全部10份配置文件指纹保持；没有修改 `trade_engine.toml local_ips`、
+ENI、EIP、路由或监听，其他交易/监控/行情进程保持。回执及备份见核心分配登记
+`account-leverage-20261116T041018Z` 条目。
 
 2026-11-12 11:02 UTC，JP 新增独立 `~/ltp_transfer_server`，LTP私有HTTPS请求显式绑定现有控制网卡
 `ens41` 的 `172.31.35.228`（公网 `13.115.227.29`）；不经公共API缓存。

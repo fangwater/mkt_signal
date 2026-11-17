@@ -2704,6 +2704,21 @@ impl BatchExecStrategy {
         let mut sent_ids = Vec::new();
         let mut rate_limited_retry_at_us = None;
         for plan in plans {
+            if let Err(reason) = MonitorChannel::instance().check_exec_order_leverage(
+                &self.symbol,
+                self.exec_venue,
+                plan.side,
+                plan.qty_venue,
+            ) {
+                crate::pre_trade::log_throttle::log_open_risk_reject_summary(
+                    "BatchExecStrategy",
+                    Some(self.strategy_id),
+                    &self.symbol,
+                    "杠杆风控",
+                    &reason,
+                );
+                break;
+            }
             let qty_multiplier = plan.qty_multiplier;
             if plan.order_type.is_limit()
                 && MonitorChannel::instance()

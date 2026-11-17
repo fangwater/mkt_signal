@@ -30,6 +30,13 @@ if [[ "$config_service" == 1 ]]; then
   default_port=19220; [[ "$kind" != spread ]] || default_port=19221
   process_args+=(--bind 127.0.0.1 --port "${CTA_FACTOR_CONFIG_PORT:-$default_port}")
   [[ "$kind" != spread ]] || process_args+=(--spread)
+  if [[ -n "${CTA_EXEC_RISK_SOURCE_IDS:-}" || -n "${CTA_EXEC_ACCOUNT_CATALOG:-}" ]]; then
+    [[ -n "${CTA_EXEC_RISK_SOURCE_IDS:-}" && -n "${CTA_EXEC_ACCOUNT_CATALOG:-}" ]] || {
+      echo '[ERROR] account risk editing requires both CTA_EXEC_RISK_SOURCE_IDS and CTA_EXEC_ACCOUNT_CATALOG' >&2
+      exit 1
+    }
+    process_args+=(--exec-account-catalog "$CTA_EXEC_ACCOUNT_CATALOG" --exec-risk-source-ids "$CTA_EXEC_RISK_SOURCE_IDS")
+  fi
   if [[ "$kind" == perp ]]; then
     if [[ -n "${CTA_PREP_HOURLY_CONFIG:-}" ]]; then
       process_args+=(--hourly-config "$CTA_PREP_HOURLY_CONFIG")

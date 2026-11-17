@@ -24,6 +24,9 @@ use std::{
     sync::Arc,
 };
 
+#[path = "cta_factor_config_account_risk.rs"]
+mod account_risk;
+
 #[derive(Parser)]
 struct Args {
     #[arg(long, default_value = "config/cta_prep_binance_futures.toml")]
@@ -44,6 +47,14 @@ struct Args {
     check: bool,
     #[arg(long)]
     parameter_audit_dir: Option<PathBuf>,
+    /// Existing Manager catalog used for account names and owned venues.
+    #[arg(long, requires = "exec_risk_source_ids")]
+    exec_account_catalog: Option<PathBuf>,
+    /// Explicit accounts whose Redis leverage can be edited here.
+    #[arg(long, value_delimiter = ',', requires = "exec_account_catalog")]
+    exec_risk_source_ids: Vec<String>,
+    #[arg(long, default_value_t = 6379)]
+    exec_risk_redis_port: u16,
 }
 struct App {
     config: Config,
@@ -52,6 +63,7 @@ struct App {
     hourly_config: Option<Config>,
     audit_dir: Option<PathBuf>,
     symbol_filter: ConfigurationSymbolFilter,
+    account_risk: Option<account_risk::Settings>,
 }
 impl App {
     fn profile(&self, requested: Option<Worker>) -> Result<(&Config, Worker)> {
@@ -256,29 +268,16 @@ fn audited<T>(
     let Some(root) = &app.audit_dir else {
         return write();
     };
-    let metadata = parameter_audit::Metadata {
-        family: if worker == Worker::Perp {
+    let metadata = request_metadata(
+        headers,
+        if worker == Worker::Perp {
             "cta_prep"
         } else {
             "cta_spread"
-        }
-        .into(),
-        environment: worker.name().into(),
-        source: "config_page".into(),
-        actor: headers
-            .get("x-parameter-actor")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned),
-        source_ip: headers
-            .get("x-real-ip")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned),
-        session_id: headers.get("cookie").map(|value| {
-            use sha2::{Digest, Sha256};
-            format!("{:x}", Sha256::digest(value.as_bytes()))[..16].to_string()
-        }),
-        request_path: Some(format!("{}/{}", worker.name(), name)),
-    };
+        },
+        worker.name(),
+        &format!("{}/{}", worker.name(), name),
+    );
     let path = config.combinations_dir.join(name);
     let key = format!("{}/{}", worker.name(), name);
     parameter_audit::apply(
@@ -300,6 +299,31 @@ fn audited<T>(
         },
         write,
     )
+}
+fn request_metadata(
+    headers: &HeaderMap,
+    family: &str,
+    environment: &str,
+    path: &str,
+) -> parameter_audit::Metadata {
+    parameter_audit::Metadata {
+        family: family.into(),
+        environment: environment.into(),
+        source: "config_page".into(),
+        actor: headers
+            .get("x-parameter-actor")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned),
+        source_ip: headers
+            .get("x-real-ip")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned),
+        session_id: headers.get("cookie").map(|value| {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(value.as_bytes()))[..16].to_string()
+        }),
+        request_path: Some(path.into()),
+    }
 }
 fn ensure_same_identity(previous: &Combination, next: &Combination) -> Result<()> {
     ensure!((previous.signal.is_none() && next.signal.is_none()) ||
@@ -512,6 +536,10 @@ fn router(app: App) -> Router {
         )
         .route("/api/config", get(catalog))
         .route("/api/status", get(status))
+        .route(
+            "/api/account-risk",
+            get(account_risk::read).post(account_risk::save),
+        )
         .route("/api/combinations", post(save))
         .route("/api/preview", post(preview))
         .route("/api/symbol-groups", post(save_groups))
@@ -571,12 +599,28 @@ async fn main() -> Result<()> {
             Ok(hourly)
         })
         .transpose()?;
+    let account_risk = args
+        .exec_account_catalog
+        .map(|catalog| -> Result<_> {
+            let settings = account_risk::Settings {
+                catalog,
+                sources: args.exec_risk_source_ids.into_iter().collect(),
+                redis: runtime_common::redis_client::RedisSettings {
+                    port: args.exec_risk_redis_port,
+                    ..Default::default()
+                },
+            };
+            settings.validate()?;
+            Ok(settings)
+        })
+        .transpose()?;
     let app = App {
         config,
         worker,
         spread_config,
         hourly_config,
         symbol_filter: ConfigurationSymbolFilter::from_env()?,
+        account_risk,
         audit_dir: Some(
             args.parameter_audit_dir
                 .unwrap_or(parameter_audit::default_root()?),

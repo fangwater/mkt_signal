@@ -971,6 +971,9 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     )
                 });
             info!("Risk parameters loaded successfully");
+            if exec_pre_trade {
+                mkt_signal::pre_trade::exec_leverage_guard::start(redis_settings.clone()).await?;
+            }
 
             // 打印风控参数三线表
             loader.print_params_table();

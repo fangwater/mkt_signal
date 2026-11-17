@@ -21,7 +21,7 @@
     .hint,.badge{color:var(--muted);font-size:12px;line-height:1.5}.badge{font-weight:400;margin-left:8px}.status{font-size:12px;color:var(--muted);min-height:18px;margin:10px 0;white-space:pre-wrap;line-height:1.6}.status.ok{color:var(--ok)}.status.err{color:var(--danger)}
     textarea{display:block;width:100%;min-height:420px;resize:vertical;font:13px/1.65 Menlo,Consolas,monospace;tab-size:2;margin-top:12px}
     #dirty{align-self:center;color:var(--muted);font-size:12px}
-    body[data-native-futures] main>nav,body[data-native-futures] details.panel{display:none}
+    body[data-native-futures] #account-risk,body[data-native-futures] main>nav,body[data-native-futures] details.panel{display:none}
     @media(max-width:960px){.kv-table{grid-template-columns:1fr}.kv-desc{padding:0 4px 10px}header,main{padding-left:12px;padding-right:12px}}
     @media(max-width:480px){.field{min-width:0;flex:1 1 130px}.toolbar>.actions{width:100%}.section-header{align-items:flex-start;flex-wrap:wrap}textarea{min-height:420px;font-size:12px}}
   </style>
@@ -40,6 +40,12 @@
   <nav class="subnav" aria-label="页面导航"><a href="/delist/">返回 Delist</a><a href="/manager/">CTA Manager ↗</a></nav>
   <div id="frequency-tabs" class="subnav" role="tablist" aria-label="配置频段"></div>
   <div id="message" class="status" role="status" aria-live="polite"></div>
+  <section id="account-risk" class="panel">
+    <div class="section-header"><h2>账户风控</h2><button id="reload-account-risk" class="ghost" type="button">读取账户阈值</button></div>
+    <p class="hint">最大杠杆按账户净权益的倍数设置，所有频段共用。现货、永续及在途订单共同占用额度；双所账户分别计算。保存后自动生效，超限仍允许减仓。</p>
+    <div id="account-risk-fields"></div>
+    <div id="account-risk-message" class="status" role="status" aria-live="polite">正在读取账户阈值…</div>
+  </section>
   <section id="strategy-settings" class="panel">
     <div class="section-header"><h2>策略参数 <span id="current-frequency" class="badge"></span></h2></div>
     <p class="hint">开关、金额和开平仓阈值分别保存到当前策略组、券池和频段。各因子沿用独立开平仓规则。</p>
@@ -76,16 +82,54 @@ const nativeMode=document.body.dataset.nativeFutures==='true';
 if(nativeMode){const access=new URLSearchParams(location.hash.slice(1)).get('access');if(access&&/^[a-f0-9]{64}$/.test(access)){localStorage.setItem('cta-cn-futures-panel-access',access);history.replaceState(null,'',location.pathname+location.search);}prepareNative();}
 const prepIntervals=['1min','5min','15min','1h'];
 let catalog=null,draft=null,dirty=false,groupsDirty=false,busy=true,selectedWorker=nativeMode?'cta-cn-futures':new URL(location.href).searchParams.get('worker')||'cta-prep-binance-futures';
+let accountRisk=[],riskDirty=false,riskBusy=false;
 function message(text,error=false){$('message').textContent=text;$('message').className='status '+(error?'err':'ok');}
 function changed(){dirty=true;$('dirty').textContent='有未保存修改';}
-function hasChanges(){return dirty||groupsDirty;}
-function setBusy(value){busy=value;document.querySelector('main').setAttribute('aria-busy',String(value));for(const el of document.querySelectorAll('input,select,button,textarea'))el.disabled=value;if(!value){for(const button of $('frequency-tabs').children)button.disabled=!button.dataset.name;$('save').disabled=!draft;}if(nativeMode)for(const id of ['strategy-type','strategy-group','symbol-group'])$(id).disabled=true;}
+function hasChanges(){return dirty||groupsDirty||riskDirty;}
+function setBusy(value){busy=value;document.querySelector('main').setAttribute('aria-busy',String(value));for(const el of document.querySelectorAll('input,select,button,textarea'))el.disabled=value;if(!value){for(const button of $('frequency-tabs').children)button.disabled=!button.dataset.name;$('save').disabled=!draft;}for(const el of $('account-risk').querySelectorAll('input,button'))el.disabled=value||riskBusy;if(nativeMode)for(const id of ['strategy-type','strategy-group','symbol-group'])$(id).disabled=true;}
 async function api(path,options={}){
   const url=new URL('api/'+path,location.href.split('#')[0]);url.searchParams.set('worker',selectedWorker);
   const access=nativeMode?localStorage.getItem('cta-cn-futures-panel-access'):null;
   const response=await fetch(url,{...options,headers:{'Content-Type':'application/json',...(access?{'Authorization':'Bearer '+access}:{}),...(options.headers||{})},credentials:'same-origin',cache:'no-store'});
   const raw=await response.text();let result;try{result=JSON.parse(raw);}catch{throw Error('读取失败，请检查登录状态');}if(!response.ok)throw Error(result.error||result.message||raw);return result;
 }
+function riskMessage(text,error=false){$('account-risk-message').textContent=text;$('account-risk-message').className='status '+(error?'err':'ok');}
+function renderAccountRisk(){
+  $('account-risk-fields').replaceChildren();
+  for(const account of accountRisk){
+    const row=document.createElement('div');row.className='kv-table';row.style.marginBottom='12px';row.dataset.sourceId=account.source_id;
+    const label=document.createElement('label');label.className='kv-key';label.htmlFor='leverage-'+account.source_id;label.textContent=account.alias+' · '+account.venue;
+    const controls=document.createElement('div');controls.className='actions';
+    const input=document.createElement('input');input.id=label.htmlFor;input.type='number';input.min='0';input.step='any';input.value=account.max_leverage??'';input.setAttribute('aria-label',account.alias+' 最大杠杆（倍）');
+    input.oninput=()=>{riskDirty=true;riskMessage('账户阈值有未保存修改');};
+    const save=document.createElement('button');save.type='button';save.textContent='保存账户阈值';save.onclick=()=>saveAccountRisk(account,input);
+    const description=document.createElement('div');description.className='kv-desc';description.textContent=account.error||'最大杠杆（倍），0 表示关闭；当前 '+(account.max_leverage===null?'无效':account.max_leverage===0?'未启用':account.max_leverage+' 倍');
+    controls.append(input,save);row.append(label,controls,description);$('account-risk-fields').append(row);
+  }
+}
+async function loadAccountRisk(confirmed=false){
+  if(riskBusy)return;
+  if(riskDirty&&!confirmed&&!confirm('放弃未保存的账户阈值修改，重新读取？'))return;
+  riskMessage('正在读取账户阈值…');
+  riskBusy=true;for(const el of $('account-risk').querySelectorAll('input,button'))el.disabled=true;
+  try{const result=await api('account-risk');accountRisk=result.accounts;riskDirty=false;renderAccountRisk();riskMessage(accountRisk.length?'已读取当前账户阈值':'当前没有可配置的执行账户');}
+  catch(error){riskMessage(error.message,true);}
+  finally{riskBusy=false;for(const el of $('account-risk').querySelectorAll('input,button'))el.disabled=busy;}
+}
+async function saveAccountRisk(account,input){
+  if(riskBusy||busy)return;
+  const value=Number(input.value);if(input.value.trim()===''||!Number.isFinite(value)||value<0){riskMessage('最大杠杆必须是大于等于 0 的数值，0 表示关闭',true);return;}
+  riskMessage('正在保存账户阈值…');
+  riskBusy=true;for(const el of $('account-risk').querySelectorAll('input,button'))el.disabled=true;
+  try{const result=await api('account-risk',{method:'POST',body:JSON.stringify({source_id:account.source_id,max_leverage:value,expected_value:account.expected_value})});
+    const current=result.account;Object.assign(account,current);
+    const row=input.closest('[data-source-id]');row.querySelector('.kv-desc').textContent=current.max_leverage===0?'当前未启用':'当前 '+current.max_leverage+' 倍';
+    riskDirty=accountRisk.some(item=>{const field=$('leverage-'+item.source_id);return field.value.trim()===''||Number(field.value)!==item.max_leverage;});
+    riskMessage(account.alias+' 已保存'+(value===0?'，限制已关闭':'，最大 '+value+' 倍')+'；执行进程自动加载');
+  }catch(error){riskMessage(error.message,true);}
+  finally{riskBusy=false;for(const el of $('account-risk').querySelectorAll('input,button'))el.disabled=busy;}
+}
+$('reload-account-risk').onclick=()=>loadAccountRisk();
 function factorRows(doc){
   if(nativeMode)return doc.rules.map(row=>({'标的':row.symbol,nq:row.NQ,'符号':row.sign,'因子':row.factor}));
   return doc.factor_rules.map(row=>({'标的':row['标的'].replace(/USDT$/i,''),nq:row.nq,'符号':row['符号'],'因子':row['因子']}));
@@ -176,6 +220,7 @@ function renderCatalog(preferred){
 async function load(){
   if(busy&&catalog)return;if(hasChanges()&&!confirm('放弃未保存修改，重新读取？'))return;
   setBusy(true);try{catalog=await api('config');renderCatalog(decodeURIComponent(location.hash.slice(1)));message('读取完成');}catch(error){if(catalog){selectedWorker=catalog.worker;$('strategy-type').value=selectedWorker;}message(error.message,true);}finally{setBusy(false);}
+  if(!nativeMode)await loadAccountRisk(true);
 }
 async function action(save){
   if(nativeMode){await nativeAction(save);return;}
