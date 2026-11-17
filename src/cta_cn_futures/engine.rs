@@ -27,7 +27,6 @@ pub struct Bar {
     pub trade: [f64; FUTURES_TRADE_FIELD_COUNT],
     pub book: Book5,
     pub mid: f64,
-    pub close_approximation: bool,
 }
 /// Aggregate native minutes. Hourly bars retain the existing CN segment
 /// convention; shorter bars align to clock boundaries as in Prep.
@@ -54,6 +53,10 @@ impl Bars {
     }
     pub fn push(&mut self, row: MinuteBar, multiple: f64) -> Result<Vec<Bar>> {
         let mut out = Vec::new();
+        ensure!(
+            row.mid_price.is_some_and(|mid| mid.is_finite() && mid > 0.),
+            "minute is missing a valid mid_price"
+        );
         if !self.started && self.interval != Interval::Hour {
             if row.open_time_ms.rem_euclid(self.interval.millis()) != 0 {
                 return Ok(out);
@@ -181,7 +184,7 @@ impl Bars {
             book.bids.len() == 5 && book.asks.len() == 5,
             "native book must have exactly five levels"
         );
-        let mid = last.mid_price.filter(|v| v.is_finite() && *v > 0.);
+        let mid = last.mid_price.context("minute is missing mid_price")?;
         Ok(Some(Bar {
             start_ms: first.open_time_ms,
             end_ms: last.open_time_ms + 60_000,
@@ -189,8 +192,7 @@ impl Bars {
             minutes: rows.len(),
             trade: v,
             book,
-            mid: mid.unwrap_or(last.close),
-            close_approximation: mid.is_none(),
+            mid,
         }))
     }
 }
@@ -240,7 +242,6 @@ pub struct Engine {
     pub latest: Vec<RuleState>,
     pub last_end_ms: i64,
     pub hours: usize,
-    pub approximated_mid_hours: usize,
     observations: VecDeque<(Bar, String, f64)>,
 }
 impl Engine {
@@ -276,7 +277,6 @@ impl Engine {
             latest: Vec::new(),
             last_end_ms: 0,
             hours: 0,
-            approximated_mid_hours: 0,
             observations: VecDeque::new(),
         })
     }
@@ -343,7 +343,6 @@ impl Engine {
         let nq = self.nq.observe(Some(hour.mid));
         self.last_end_ms = hour.end_ms;
         self.hours += 1;
-        self.approximated_mid_hours += usize::from(hour.close_approximation);
         let mut points = Vec::new();
         let mut all_ready = true;
         for ((rule, transform), raw) in self.cfg.rules.iter().zip(&mut self.transforms).zip(raw) {

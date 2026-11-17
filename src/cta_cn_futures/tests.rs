@@ -90,14 +90,18 @@ fn session_gap_keeps_short_tail_without_inventing_minutes() {
     assert_eq!(rows[0].end_ms, minute(1).open_time_ms + 60_000);
 }
 #[test]
-fn close_is_only_used_when_mid_was_not_supplied() {
-    let mut r = minute(0);
-    r.mid_price = None;
-    let mut h = Bars::default();
-    h.push(r.clone(), 1.).unwrap();
-    let out = h.finish(1.).unwrap().unwrap();
-    assert!(out.close_approximation);
-    assert_eq!(out.mid, r.close);
+fn missing_or_invalid_mid_is_rejected_without_using_close() {
+    for mid in [None, Some(0.), Some(f64::NAN)] {
+        let mut r = minute(0);
+        r.mid_price = mid;
+        let mut h = Bars::default();
+        assert!(h
+            .push(r, 1.)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("mid_price"));
+    }
 }
 #[test]
 fn bookless_or_unclassified_history_is_rejected_instead_of_zero_filled() {
