@@ -135,7 +135,7 @@ impl AuditPayload {
                 let order = submit.owned();
                 mutation =
                     crate::persistence::prepared_at(submit.day(), &order, submit.received_us);
-                serde_json::json!({"type":"prepared_submit","key":order.key,"intent":order.intent,"limit_price":order.limit_price,"ctaker_target":target})
+                serde_json::json!({"type":"prepared_submit","key":order.key,"intent":order.intent,"limit_price":order.limit_price,"prepared_at_us":submit.received_us,"ctaker_target":target})
             }
             Self::PreparedCancel(audit) => {
                 let order = audit.owned();
@@ -178,7 +178,19 @@ impl AuditPayload {
                     order.append(&mut mutation);
                 }
                 let fill = fill.owned();
-                let value = serde_json::json!({"type":"normalized_trade","identity":fill.identity,"origin":if live_report {"live_report"}else{"recovery_report"}});
+                let mut value = serde_json::json!({"type":"normalized_trade","identity":fill.identity,"origin":if live_report {"live_report"}else{"recovery_report"}});
+                if let Some(order) = mutation.orders.last().filter(|order| {
+                    live_report
+                        && !fill.system_id.is_empty()
+                        && order.order.system_id == fill.system_id
+                        && order.identity.trading_day == fill.identity.trading_day
+                        && order.identity.venue == fill.identity.venue
+                        && order.identity.native.order_ref == fill.order_ref
+                        && order.order.request.symbol == fill.identity.symbol
+                        && order.order.request.side == fill.identity.side
+                }) {
+                    value["order_link"] = serde_json::json!(order.identity);
+                }
                 mutation.trades.push(NativeTradeRecord {
                     fill,
                     commission,

@@ -64,6 +64,7 @@ pub(crate) fn record_owned_at(
         first_received_us: now,
         updated_us: now,
         evidence_seq: 0,
+        prepared_evidence_seq: None,
     }
 }
 pub fn projection(

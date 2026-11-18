@@ -11,6 +11,7 @@ use rocksdb::{
 #[derive(Debug, Clone, Default)]
 pub struct RocksDbTuning {
     pub block_cache_bytes: Option<usize>,
+    pub max_open_files: Option<i32>,
     pub write_buffer_size_bytes: Option<usize>,
     pub db_write_buffer_size_bytes: Option<usize>,
     pub max_write_buffer_number: Option<i32>,
@@ -21,6 +22,9 @@ impl RocksDbTuning {
     fn apply_db_options(&self, opts: &mut Options) {
         if let Some(seconds) = self.wal_ttl_seconds {
             opts.set_wal_ttl_seconds(seconds);
+        }
+        if let Some(limit) = self.max_open_files {
+            opts.set_max_open_files(limit);
         }
         if let Some(size) = self.db_write_buffer_size_bytes {
             opts.set_db_write_buffer_size(size);

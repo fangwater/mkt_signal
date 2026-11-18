@@ -62,6 +62,9 @@ impl NativeStore {
             true,
             &RocksDbTuning {
                 block_cache_bytes: Some(8 * 1024 * 1024),
+                // Leave low-numbered descriptors available to the native SDK's
+                // select-based networking when reopening a large audit store.
+                max_open_files: Some(128),
                 write_buffer_size_bytes: Some(1024 * 1024),
                 db_write_buffer_size_bytes: Some(16 * 1024 * 1024),
                 max_write_buffer_number: Some(2),
@@ -160,7 +163,13 @@ impl NativeStore {
                 value,
                 projection_error: None,
             };
-            match self.project(sequence, mutation, &orders, &trades) {
+            match self.project(
+                sequence,
+                evidence.value["type"] == "prepared_submit",
+                mutation,
+                &orders,
+                &trades,
+            ) {
                 Ok(projected) => {
                     writes.extend(projected.writes);
                     orders.extend(projected.orders);
@@ -194,12 +203,20 @@ impl NativeStore {
     fn project(
         &self,
         seq: u64,
+        prepared_submit: bool,
         mutation: NativeMutation,
         staged_orders: &OrderUpdates,
         staged_trades: &TradeUpdates,
     ) -> Result<Projection> {
         let mut updates = HashMap::new();
         for mut record in mutation.orders {
+            ensure!(
+                record.prepared_evidence_seq.is_none(),
+                "local prepare evidence sequence is assigned by the journal"
+            );
+            if prepared_submit && record.send_state == SendState::Prepared {
+                record.prepared_evidence_seq = Some(seq);
+            }
             ensure!(
                 record.identity.native == record.order.key
                     && record.identity.venue == record.order.request.venue,
@@ -216,6 +233,11 @@ impl NativeStore {
                 .or_else(|| staged_orders.get(&record.identity))
                 .or_else(|| self.orders.get(&record.identity))
             {
+                ensure!(
+                    record.prepared_evidence_seq.is_none(),
+                    "reused native key for a new local prepare event"
+                );
+                record.prepared_evidence_seq = old.prepared_evidence_seq;
                 ensure!(
                     old.order.request.symbol == record.order.request.symbol
                         && old.order.request.side == record.order.request.side
@@ -458,6 +480,7 @@ mod tests {
             first_received_us: 100,
             updated_us: 100,
             evidence_seq: 0,
+            prepared_evidence_seq: None,
         }
     }
     fn trade() -> NativeTradeRecord {

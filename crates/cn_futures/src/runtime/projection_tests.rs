@@ -135,6 +135,30 @@ fn deferred_trade_and_order_commit_together_and_keep_the_captured_rule() {
     assert_eq!(orders[0].instrument.as_ref().unwrap().price_tick, 0.2);
     assert_eq!(orders[0].submitted_intent, Some(prepared.intent));
     assert_eq!(orders[0].evidence_seq, trades[0].evidence_seq);
+    let prepared_seq = orders[0].prepared_evidence_seq.unwrap();
+    assert!(prepared_seq < trades[0].evidence_seq);
+    let prepared_event: Value = serde_json::from_slice(
+        &store
+            .get(EVENTS, &prepared_seq.to_be_bytes())
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        prepared_event["value"]["key"],
+        serde_json::to_value(&orders[0].identity.native).unwrap()
+    );
+    let normalized: Value = serde_json::from_slice(
+        &store
+            .get(EVENTS, &trades[0].evidence_seq.to_be_bytes())
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        normalized["value"]["order_link"],
+        serde_json::to_value(&orders[0].identity).unwrap()
+    );
     assert_eq!(trades[0].fill, fill);
     assert_eq!(
         trades[0].commission.unwrap().to_bits(),

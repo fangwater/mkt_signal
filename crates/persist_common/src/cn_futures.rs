@@ -617,6 +617,9 @@ pub struct NativeOrderRecord {
     pub first_received_us: u64,
     pub updated_us: u64,
     pub evidence_seq: u64,
+    /// Immutable sequence of the local prepare event. Older projections lack this proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_evidence_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
