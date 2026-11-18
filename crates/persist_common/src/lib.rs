@@ -6,6 +6,7 @@ pub mod rapidx_fact;
 pub mod rapidx_role;
 pub mod rapidx_statement;
 pub mod unified_order;
+pub mod uniform_fill;
 
 use sha2::{Digest, Sha256};
 

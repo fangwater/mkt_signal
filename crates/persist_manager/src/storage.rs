@@ -427,6 +427,55 @@ impl RocksDbStore {
         Ok(keys.len())
     }
 
+    /// Owner-only atomic projection, including its durable pending/cursor state.
+    #[cfg(feature = "runtime")]
+    pub(crate) fn replace_many(
+        &self,
+        writes: &[(String, Vec<u8>, Vec<u8>)],
+        deletes: &[(String, Vec<u8>)],
+        force_sync: bool,
+    ) -> Result<()> {
+        if self.read_only {
+            return Err(anyhow!("rocksdb store is read-only"));
+        }
+        let mut batch = WriteBatch::default();
+        for (name, key, value) in writes {
+            let cf = self
+                .db
+                .cf_handle(name)
+                .ok_or_else(|| anyhow!("missing column family {name}"))?;
+            batch.put_cf(cf, key, value);
+        }
+        for (name, key) in deletes {
+            let cf = self
+                .db
+                .cf_handle(name)
+                .ok_or_else(|| anyhow!("missing column family {name}"))?;
+            batch.delete_cf(cf, key);
+        }
+        let mut options = WriteOptions::default();
+        options.set_sync(force_sync || self.sync_writes);
+        self.db
+            .write_opt(batch, &options)
+            .context("commit normalized uniform batch")
+    }
+
+    #[cfg(feature = "runtime")]
+    pub(crate) fn checkpoint(&self, path: &Path) -> Result<()> {
+        rocksdb::checkpoint::Checkpoint::new(&*self.db)?.create_checkpoint(path)?;
+        // RocksDB checkpoints omit IDENTITY. Maintenance resumes against the
+        // original source identity, so retain it alongside the closed files.
+        std::fs::copy(self.db.path().join("IDENTITY"), path.join("IDENTITY"))?;
+        std::fs::File::open(path.join("IDENTITY"))?.sync_all()?;
+        std::fs::File::open(path)?.sync_all()?;
+        Ok(())
+    }
+
+    #[cfg(feature = "runtime")]
+    pub(crate) fn path(&self) -> &Path {
+        self.db.path()
+    }
+
     pub fn get(&self, cf_name: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let cf = self
             .db

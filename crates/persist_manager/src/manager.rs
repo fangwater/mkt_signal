@@ -40,6 +40,7 @@ pub fn default_tuning() -> RocksDbTuning {
         write_buffer_size_bytes: Some(ROCKSDB_WRITE_BUFFER_BYTES),
         db_write_buffer_size_bytes: Some(ROCKSDB_DB_WRITE_BUFFER_BYTES),
         max_write_buffer_number: Some(ROCKSDB_MAX_WRITE_BUFFER_NUMBER),
+        ..Default::default()
     }
 }
 
@@ -186,6 +187,9 @@ async fn run_persistors(
         stats.merge(order_update_unmatched.poll_available());
         stats.merge(order_queue_position.poll_available());
         stats.merge(uniform_order.poll_available(&mut uniform_pending));
+        if let Err(error) = uniform_order.poll_normalized() {
+            log::warn!("RapidX uniform projection pending: {error:#}");
+        }
 
         if stats.receive_error {
             tokio::time::sleep(polling::receive_error_sleep()).await;

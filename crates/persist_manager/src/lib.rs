@@ -23,6 +23,8 @@ pub mod rapidx_reconcile;
 #[cfg(feature = "runtime")]
 pub mod rapidx_statement;
 #[cfg(feature = "runtime")]
+pub mod rapidx_uniform;
+#[cfg(feature = "runtime")]
 pub mod read_server;
 #[cfg(feature = "runtime")]
 mod runtime_common;

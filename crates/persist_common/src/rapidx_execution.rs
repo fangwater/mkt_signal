@@ -31,6 +31,9 @@ pub struct ExecutionEvidence {
     pub reported_rebate: Option<String>,
     pub rebate_currency: Option<String>,
     pub rest: bool,
+    /// Keep the exchange role with the execution that owns its exact quantity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liquidity: Option<crate::rapidx_role::ExecutionRole>,
 }
 
 impl ExecutionEvidence {
@@ -119,6 +122,7 @@ impl ExecutionEvidence {
             reported_rebate,
             rebate_currency,
             rest,
+            liquidity: crate::rapidx_role::ExecutionRole::from_wire(row.get("execType")),
         })
     }
 }
@@ -337,6 +341,15 @@ impl ExecutionRecord {
         let object = row
             .as_object_mut()
             .context("construct RapidX execution wire object")?;
+        if let Some(role) = self.execution.liquidity {
+            object.insert(
+                "execType".into(),
+                json!(match role {
+                    crate::rapidx_role::ExecutionRole::Maker => "MAKER",
+                    crate::rapidx_role::ExecutionRole::Taker => "TAKER",
+                }),
+            );
+        }
         if self.execution.rest {
             object.insert(
                 "fee".into(),

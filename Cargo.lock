@@ -3383,6 +3383,7 @@ dependencies = [
  "flate2",
  "hex",
  "iceoryx2",
+ "libc",
  "log",
  "mkt_parsers",
  "order_common",
