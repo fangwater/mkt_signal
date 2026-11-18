@@ -73,7 +73,7 @@ fn fills(store: &RocksDbStore) -> Vec<StoredUniformOrder> {
         .collect()
 }
 fn initialize(f: &Fixture) {
-    let report = build_repair_plan(&f.source, &f.plan, "123", "BINANCE").unwrap();
+    let report = build_repair_plan(&f.source, &f.plan, "123", "BINANCE", None).unwrap();
     apply_repair_plan(&f.source, &f.plan, &report, &f.directory.0.join("backup")).unwrap();
 }
 
@@ -99,7 +99,7 @@ fn repair_keeps_verified_originals_and_replaces_quantity_without_double_counting
             .unwrap();
     }
     let before = f.source.scan(UNIFORM, None, false, None).unwrap();
-    let report = build_repair_plan(&f.source, &f.plan, "123", "BINANCE").unwrap();
+    let report = build_repair_plan(&f.source, &f.plan, "123", "BINANCE", None).unwrap();
     assert_eq!(f.source.scan(UNIFORM, None, false, None).unwrap(), before);
     assert_eq!(report.normalized_fills, 2);
     let backup = f.directory.0.join("backup");
@@ -232,7 +232,7 @@ fn conflicts_or_incomplete_repair_do_not_overwrite_good_uniform_rows() {
         )
         .unwrap();
     let before = f.source.scan(UNIFORM, None, false, None).unwrap();
-    assert!(build_repair_plan(&f.source, &f.plan, "123", "BINANCE").is_err());
+    assert!(build_repair_plan(&f.source, &f.plan, "123", "BINANCE", None).is_err());
     assert_eq!(f.source.scan(UNIFORM, None, false, None).unwrap(), before);
     assert!(marker(&f.source).unwrap().is_none());
 }
@@ -284,7 +284,7 @@ fn interrupted_history_repair_resumes_from_the_verified_backup() {
     let key = format!("{:020}", 90_000);
     let raw = lifecycle(100.0, 1.0);
     f.source.put(UNIFORM, key.as_bytes(), &raw).unwrap();
-    let report = build_repair_plan(&f.source, &f.plan, "123", "BINANCE").unwrap();
+    let report = build_repair_plan(&f.source, &f.plan, "123", "BINANCE", None).unwrap();
     let backup = f.directory.0.join("backup");
     apply_repair_plan(&f.source, &f.plan, &report, &backup).unwrap();
     let expected = f.source.scan(UNIFORM, None, false, None).unwrap();
@@ -312,7 +312,7 @@ fn interrupted_history_repair_resumes_from_the_verified_backup() {
         false,
     )
     .unwrap();
-    let resumed = build_repair_plan(&original, &rebuilt, "123", "BINANCE").unwrap();
+    let resumed = build_repair_plan(&original, &rebuilt, "123", "BINANCE", None).unwrap();
     assert_eq!(resumed, report);
     apply_repair_plan(&f.source, &rebuilt, &resumed, &backup).unwrap();
     assert_eq!(f.source.scan(UNIFORM, None, false, None).unwrap(), expected);
@@ -329,7 +329,7 @@ fn changed_projection_plan_is_rejected_before_source_writes() {
             &lifecycle(100.0, 1.0),
         )
         .unwrap();
-    let report = build_repair_plan(&f.source, &f.plan, "123", "BINANCE").unwrap();
+    let report = build_repair_plan(&f.source, &f.plan, "123", "BINANCE", None).unwrap();
     let before = f.source.scan(UNIFORM, None, false, None).unwrap();
     f.plan.put(STATE_CF, b"invalid", b"changed").unwrap();
     let backup = f.directory.0.join("backup");
@@ -343,7 +343,7 @@ fn changed_projection_plan_is_rejected_before_source_writes() {
 fn historical_repair_refuses_existing_replication_state() {
     let f = fixture();
     f.source.put("sync_meta", b"sequence", b"1").unwrap();
-    assert!(build_repair_plan(&f.source, &f.plan, "123", "BINANCE").is_err());
+    assert!(build_repair_plan(&f.source, &f.plan, "123", "BINANCE", None).is_err());
     assert!(marker(&f.source).unwrap().is_none());
 }
 
@@ -372,4 +372,30 @@ fn failed_lifecycle_admission_does_not_leave_a_pending_receipt_without_its_unifo
     persist_lifecycle(&f.source, key.as_bytes(), &payload, false).unwrap();
     assert_eq!(marker(&f.source).unwrap().unwrap().pending_orders, 1);
     assert_eq!(f.source.scan(UNIFORM, None, false, None).unwrap().len(), 1);
+}
+
+#[test]
+fn archived_execution_roles_fill_a_gap_without_changing_priced_lifecycle() {
+    let f = fixture();
+    let key = b"00000000000000090000";
+    let source = lifecycle(100.0, 1.0);
+    f.source.put(UNIFORM, key, &source).unwrap();
+    let row = serde_json::json!({
+        "portfolioId":"123","exchangeType":"BINANCE","businessType":"MARGIN",
+        "sym":"BINANCE_MARGIN_FIL_USDT","transactionId":"a","orderId":"88",
+        "clientOrderId":"7","side":"SELL","quantity":"1","price":"100",
+        "createAt":"100","rpnl":"0","fee":"0","feeCoin":"",
+        "rebate":"0","rebateCoin":"","execType":"TAKER"
+    });
+    let json = row.to_string() + "\n";
+    let mut evidence = json.as_bytes();
+    let report =
+        build_repair_plan(&f.source, &f.plan, "123", "BINANCE", Some(&mut evidence)).unwrap();
+    assert_eq!(report.normalized_fills, 1);
+    let coverage = liquidity_coverage(&f.plan, |_| panic!("unexpected Unknown fill")).unwrap();
+    assert_eq!(coverage.taker, 1);
+    let result = fills(&f.plan);
+    assert_eq!(result[0].record.price.to_bits(), 100_f64.to_bits());
+    assert_eq!(result[0].record.amount_update.to_bits(), 1_f64.to_bits());
+    assert_eq!(f.source.get(UNIFORM, key).unwrap().unwrap(), source);
 }

@@ -51,6 +51,13 @@ verifies source/evidence/plan fingerprints and creates and verifies a native
 checkpoint, retaining its source `IDENTITY` and repair receipt. Apply sets an
 incomplete marker, writes bounded batches, verifies all resulting uniform bytes,
 then commits the complete marker. A completed source is verified without reapply.
+For historical evidence that was never persisted, `--executions-jsonl` accepts
+complete, source-scoped RapidX REST execution rows from a verified collection.
+Only matched lifecycle orders are projected. Conflicting facts are rejected.
+Use the same evidence file when resuming an interrupted apply. To require an
+evidence-backed role for every external fill, use `--require-known-liquidity`.
+`--unknown-report` records unresolved fills privately for investigation.
+
 An interrupted apply requires the same original `--backup` and a new scratch
 directory; its plan is reconstructed and compared with the saved receipt.
 Retain the backup for recovery. Preview never overwrites the source.
@@ -61,10 +68,10 @@ Only the updated owner may write a normalized store: running an older owner
 would append unnormalized records and violate the receipt's guarantee. The
 current implementation requires local persistence with sync publishing disabled.
 
-Manager accepts direct uniform reads only when the receipt matches database
-identity, portfolio and exchange, repair is complete, and pending count is zero.
-An epoch change invalidates derived FIFO/history caches. Long-window readers
-reject a changed epoch rather than mixing the old checkpoint with overwritten
-history. Unrepaired sources continue using the established validated recovery
-path. Cold FIFO replay still occurs; this change removes repeated cross-CF
-evidence reconstruction for repaired sources, not all startup work.
+The repair receipt belongs to the Exec owner. Manager consumes the standard
+uniform stream directly. In-place updates publish the generic
+`uniform_orders_revision` key in the default CF as an eight-byte big-endian
+integer, in the same batch as the changed uniform records. Completed offline
+repair also publishes the revision. It lets readers invalidate old FIFO
+checkpoints without consulting an Exec repair receipt. Complete and verify
+historical rewrites before exposing the repaired store to direct readers.

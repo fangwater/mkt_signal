@@ -2,18 +2,20 @@
 use crate::storage::RocksDbStore;
 use anyhow::{ensure, Context, Result};
 use persist_common::{
-    rapidx_execution::ExecutionRecord,
+    rapidx_execution::{ExecutionEvidence, ExecutionRecord},
     rapidx_fact::RapidXFact,
     rapidx_role::ExecutionRoleRecord,
     uniform_fill::{
         self,
         normalize::{self, Lifecycle, MAX_ORDER_BYTES, MAX_ORDER_ROWS},
         NormalizedUniformMarker, StoredUniformOrder, NORMALIZED_UNIFORM_MARKER_KEY,
+        UNIFORM_ORDERS_REVISION_KEY,
     },
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufRead, Read};
 
 pub const STATE_CF: &str = "rapidx_uniform_state";
 pub const EXECUTION_OBSERVATIONS_CF: &str = "rapidx_execution_observations";
@@ -466,6 +468,11 @@ fn project_order(store: &RocksDbStore, hash: &[u8; 32], durable: bool) -> Result
             .rewrite_epoch
             .checked_add(1)
             .context("uniform epoch overflow")?;
+        writes.push((
+            "default".into(),
+            UNIFORM_ORDERS_REVISION_KEY.to_vec(),
+            m.rewrite_epoch.to_be_bytes().to_vec(),
+        ));
     }
     if store.get(STATE_CF, &tagged(b'Q', hash))?.is_some() {
         m.pending_orders = m
@@ -503,6 +510,45 @@ pub struct RepairReport {
     pub normalized_rows: u64,
     pub normalized_sha256: String,
     pub normalized_fills: u64,
+}
+
+#[derive(Default, Serialize)]
+pub struct LiquidityCoverage {
+    pub maker: u64,
+    pub taker: u64,
+    pub internal_cross: u64,
+    pub external_unknown: u64,
+}
+
+pub fn liquidity_coverage(
+    store: &RocksDbStore,
+    mut unknown: impl FnMut(&StoredUniformOrder) -> Result<()>,
+) -> Result<LiquidityCoverage> {
+    use persist_common::{FillLiquidity, UNIFORM_ORDER_TYPE_INTERNAL_CROSS};
+
+    let mut coverage = LiquidityCoverage::default();
+    store.scan_range_batches(UNIFORM, b"", b"\xff", 128, |rows| {
+        for (_, value) in rows {
+            let row = uniform_fill::decode(&value)?;
+            if row.record.amount_update <= 0.0 {
+                continue;
+            }
+            if row.record.ttype == UNIFORM_ORDER_TYPE_INTERNAL_CROSS {
+                coverage.internal_cross += 1;
+                continue;
+            }
+            match row.record.fill_liquidity {
+                FillLiquidity::Maker => coverage.maker += 1,
+                FillLiquidity::Taker => coverage.taker += 1,
+                FillLiquidity::Unknown => {
+                    coverage.external_unknown += 1;
+                    unknown(&row)?;
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(coverage)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -583,6 +629,7 @@ pub fn build_repair_plan(
     scratch: &RocksDbStore,
     portfolio: &str,
     exchange: &str,
+    evidence: Option<&mut dyn BufRead>,
 ) -> Result<RepairReport> {
     require_local_store(input)?;
     ensure!(
@@ -591,7 +638,10 @@ pub fn build_repair_plan(
             && portfolio.bytes().all(|c| c.is_ascii_digit()),
         "invalid repair scope"
     );
-    ensure!(marker(input)?.is_none(),"source is already normalized; use its original verified backup to resume an interrupted repair");
+    ensure!(
+        marker(input)?.is_none(),
+        "source is already normalized; use its original verified backup to resume an interrupted repair"
+    );
     let m = NormalizedUniformMarker {
         db_identity: identity(scratch)?,
         portfolio: portfolio.into(),
@@ -709,6 +759,50 @@ pub fn build_repair_plan(
             }
             scratch.put_many(&writes)
         })?;
+    }
+    if let Some(evidence) = evidence {
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            if (&mut *evidence)
+                .take((MAX_RECORD_BYTES + 1) as u64)
+                .read_until(b'\n', &mut line)?
+                == 0
+            {
+                break;
+            }
+            ensure!(
+                line.len() <= MAX_RECORD_BYTES,
+                "execution evidence line exceeds bound"
+            );
+            let row: serde_json::Value = serde_json::from_slice(&line)?;
+            let record = ExecutionRecord {
+                portfolio: portfolio.into(),
+                exchange: exchange.into(),
+                execution: ExecutionEvidence::parse(&row, portfolio, exchange, true)?,
+            };
+            let Some(hash) = execution_hash(&record)? else {
+                continue;
+            };
+            if scratch.get(STATE_CF, &tagged(b'H', &hash))?.is_some() {
+                let key = [tagged(b'X', &hash), record.stable_key()?.to_vec()].concat();
+                let previous = scratch
+                    .get(STATE_CF, &key)?
+                    .map(|old| -> Result<ExecutionRecord> {
+                        ensure!(
+                            record.accepts_existing(&old)?,
+                            "conflicting archived execution observation"
+                        );
+                        Ok(serde_json::from_slice(&old)?)
+                    })
+                    .transpose()?;
+                if previous.is_none_or(|old| {
+                    old.execution.liquidity.is_none() || record.execution.liquidity.is_some()
+                }) {
+                    scratch.put(STATE_CF, &key, &record.to_json_bytes()?)?;
+                }
+            }
+        }
     }
     for cf in ["trade_updates", "trade_updates_unmatched"] {
         if !input.has_column_family(cf) {
@@ -881,25 +975,41 @@ pub fn apply_repair_plan(
     // Copy exact original lifecycle audit and identity indexes first. Projection
     // data and per-order receipts remain one format and are restart-resumable.
     for cf in [STATE_CF, UNIFORM] {
+        let mut batch = Vec::new();
+        let mut bytes = 0;
         plan.scan_range_batches(cf, b"", &[255; 128], 128, |rows| {
-            store.put_many_sync(
-                &rows
-                    .into_iter()
-                    .map(|(k, v)| (cf.into(), k, v))
-                    .collect::<Vec<_>>(),
-            )
+            for (key, value) in rows {
+                bytes += key.len() + value.len();
+                batch.push((cf.into(), key, value));
+                if bytes >= 4 * 1024 * 1024 || batch.len() >= 4096 {
+                    store.put_many_sync(&batch)?;
+                    batch.clear();
+                    bytes = 0;
+                }
+            }
+            Ok(())
         })?;
+        if !batch.is_empty() {
+            store.put_many_sync(&batch)?;
+        }
     }
     ensure!(
         digest(store, UNIFORM)? == expected,
         "applied uniform records do not match verified plan"
     );
     m.complete = true;
-    store.put_sync(
-        "default",
-        NORMALIZED_UNIFORM_MARKER_KEY,
-        &serde_json::to_vec(&m)?,
-    )?;
+    store.put_many_sync(&[
+        (
+            "default".into(),
+            NORMALIZED_UNIFORM_MARKER_KEY.to_vec(),
+            serde_json::to_vec(&m)?,
+        ),
+        (
+            "default".into(),
+            UNIFORM_ORDERS_REVISION_KEY.to_vec(),
+            m.rewrite_epoch.to_be_bytes().to_vec(),
+        ),
+    ])?;
     Ok(())
 }
 

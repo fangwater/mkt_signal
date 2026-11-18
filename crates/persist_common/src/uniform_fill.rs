@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_PROVENANCE_BYTES: usize = 64 * 1024;
 pub const NORMALIZED_UNIFORM_MARKER_KEY: &[u8] = b"rapidx_uniform";
+/// Content revision in the default CF, written atomically with in-place changes.
+/// An absent key is revision zero. Ordinary uniform appends leave it unchanged.
+pub const UNIFORM_ORDERS_REVISION_KEY: &[u8] = b"uniform_orders_revision";
 
 pub mod normalize;
 

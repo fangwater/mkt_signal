@@ -4,8 +4,9 @@ use anyhow::{ensure, Context, Result};
 use clap::Parser;
 use persist_manager::{rapidx_uniform, RocksDbStore, RocksDbTuning};
 use std::{
-    fs::OpenOptions,
-    os::fd::AsRawFd,
+    fs::{File, OpenOptions},
+    io::{BufRead, BufReader, BufWriter, Write},
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::{Path, PathBuf},
 };
 
@@ -25,6 +26,65 @@ struct Args {
     backup: Option<PathBuf>,
     #[arg(long)]
     apply: bool,
+    /// Verified, source-scoped RapidX REST execution rows, one object per line.
+    #[arg(long)]
+    executions_jsonl: Option<PathBuf>,
+    /// Require evidence-backed liquidity for every external fill before applying.
+    #[arg(long)]
+    require_known_liquidity: bool,
+    /// Write unresolved external fill identities into a new private file.
+    #[arg(long)]
+    unknown_report: Option<PathBuf>,
+}
+
+fn audit_liquidity(store: &RocksDbStore, args: &Args) -> Result<()> {
+    let mut unknown = args
+        .unknown_report
+        .as_ref()
+        .map(|path| -> Result<_> {
+            let path = canonical_destination(path)?;
+            ensure!(
+                !path.starts_with(&args.db.canonicalize()?),
+                "unknown report overlaps source"
+            );
+            Ok(BufWriter::new(
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(path)?,
+            ))
+        })
+        .transpose()?;
+    let coverage = rapidx_uniform::liquidity_coverage(store, |row| {
+        if let Some(out) = &mut unknown {
+            let r = &row.record;
+            serde_json::to_writer(
+                &mut *out,
+                &serde_json::json!({
+                    "symbol": std::str::from_utf8(&r.symbol)?,
+                    "venue": r.venue,
+                    "client_order_id": r.client_order_id.to_string(),
+                    "update_ts_us": r.update_ts,
+                    "create_ts_us": r.create_ts,
+                    "price": r.price,
+                    "amount": r.amount_update,
+                    "side": r.side,
+                }),
+            )?;
+            writeln!(out)?;
+        }
+        Ok(())
+    })?;
+    if let Some(out) = &mut unknown {
+        out.flush()?;
+    }
+    println!("{}", serde_json::json!({"coverage": coverage}));
+    ensure!(
+        !args.require_known_liquidity || coverage.external_unknown == 0,
+        "unresolved external uniform fill liquidity"
+    );
+    Ok(())
 }
 
 fn selected(path: &Path) -> Result<Vec<String>> {
@@ -106,6 +166,9 @@ fn main() -> Result<()> {
             "{}",
             serde_json::json!({"already_complete":true,"verification":rapidx_uniform::verify(&source)?})
         );
+        if args.require_known_liquidity || args.unknown_report.is_some() {
+            audit_liquidity(&source, &args)?;
+        }
         return Ok(());
     }
     let original = if marker.is_some() {
@@ -123,13 +186,27 @@ fn main() -> Result<()> {
         &names,
         false,
     )?;
-    let report =
-        rapidx_uniform::build_repair_plan(&original, &plan, &args.portfolio, &args.exchange)?;
+    let mut evidence = args
+        .executions_jsonl
+        .as_ref()
+        .map(File::open)
+        .transpose()?
+        .map(BufReader::new);
+    let report = rapidx_uniform::build_repair_plan(
+        &original,
+        &plan,
+        &args.portfolio,
+        &args.exchange,
+        evidence.as_mut().map(|reader| reader as &mut dyn BufRead),
+    )?;
     std::fs::write(
         scratch.join("REPAIR_PLAN.json"),
         serde_json::to_vec_pretty(&report)?,
     )?;
     println!("{}", serde_json::json!({"apply":args.apply,"plan":report}));
+    if args.require_known_liquidity || args.unknown_report.is_some() {
+        audit_liquidity(&plan, &args)?;
+    }
     drop(original);
     drop(source);
     drop(guard);
