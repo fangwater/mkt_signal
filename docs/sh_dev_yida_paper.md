@@ -2,7 +2,7 @@
 
 最后更新：2026-11-18
 
-用户指定的部署主机为 `ssh sh_dev`，运行目录 `/home/ubuntu/yida_paper01`。本环境曾启动易达官方 SHFE／INE paper 账户观察和国内期货 Viz，使用 SDK `1.502.55.35`。
+用户指定的部署主机为 `ssh sh_dev`，运行目录 `/home/ubuntu/yida_paper01`。已部署易达官方 SHFE／INE paper 账户观察和国内期货 Viz，使用 SDK `1.502.55.35`。2026-11-16 新增独立的 [创元 CTP 只读环境](sh_dev_ctp.md)；部署前本环境 trader 已失败，Viz 仍运行，账户 Viz 更新已将独立 CTP 来源加入本环境的 8811 页面，并更新匹配当前 IPC 的易达 trader 二进制；仅重启 Viz，易达 trader 继续停用。下文历史验收结果不代表当前易达 trader 仍在线。
 
 ## 当前服务
 

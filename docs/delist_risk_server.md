@@ -25,6 +25,12 @@ Config PID2094016仍housekeeping，Delist PID2088322仍CPU28；现有Nginx网关
 `exec-leverage-config-20261116T051036Z`目录。启动参数预检拦下的引用错误已修正，
 没有在预检失败时停止旧Config服务。
 
+2026-11-16，`bitget_fr_arb03` 全部服务已停止。按用户要求，仅移除 NAV 中
+`delist` 用户对该账户的读取授权，其他授权和 NAV 账户记录保留；Delist 从 NAV
+刷新账户目录，无需重启共享服务。被移除的授权备份在 JP
+`~/crypto_nav_manager/maintenance-backups/stop_bitget_fr_arb03_20261116/delist_grant.csv`。
+快照映射作为保留的传输配置，未删除。
+
 2026-11-12 15:34 UTC，Bybit FR arb01整套重发和3币合约小额对齐完成，8服务含signal恢复。
 启动后的HMSTR/HNT/HOLO/QTUM缺价随行情更新消失，Delist回读complete=true/risk_status=ok。
 EUR/HFT既有现货尾数保持，HFT暂无可用市场价格，仍按现货尾差展示；没有伪造价格或修改

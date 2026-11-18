@@ -1,6 +1,20 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-16 05:21 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-17 09:12 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-17，新增 Binance USD-M `binance_exec_sbh11` / `ba503d02`，使用现有
+`172.31.35.229/172.31.35.230`，公网分别为 `52.193.90.33/54.238.72.43`。
+按用户要求逐一绑定四个指定出口进行公网和签名账户只读查询，均成功；账户监控
+已建立两地址连接。地址与 OKX 环境共享，没有更改 ENI、EIP 或路由；交易执行
+进程仍停止。部署和权限记录见 `docs/core_allocation.md`。
+
+2026-11-16 08:29 UTC，JP跨所账户两腿已taker清仓并下线交易：
+`okex_exec_trade01` / `binance_exec_spread01`的exec-pre-trade、trade_engine、trade_signal
+均停止，8条Manager执行绑定保留为零份；两侧交易所持仓与普通/算法挂单均0。
+Spread01/02共享计算进程、代次与配置保持，账户监控、持久化、Viz/Config继续运行。
+OKX `172.31.35.229/172.31.35.230`、Binance `172.31.35.228/172.31.35.228`
+的原绑定保留，不释放地址，不改ENI/EIP、路由或监听。回执见核心分配登记
+`cta_cross_stop_20261116`条目。
 
 2026-11-16 05:18–05:21 UTC，仅更新Delist与CTA Config以编辑RX01/RX03的Redis
 账户杠杆阈值；保留现有loopback监听及Nginx鉴权网关。两账户仍1倍，交易执行继续运行；
@@ -13,6 +27,9 @@
 两环境 `env.sh` 及全部10份配置文件指纹保持；没有修改 `trade_engine.toml local_ips`、
 ENI、EIP、路由或监听，其他交易/监控/行情进程保持。回执及备份见核心分配登记
 `account-leverage-20261116T041018Z` 条目。
+
+2026-11-16，`bitget_fr_arb03` 全部服务停止；其 `local_ips` 配置保留为
+`.35.231/.35.231`。该地址仍与其他运行环境共享，未修改 ENI、EIP 或路由。
 
 2026-11-12 11:02 UTC，JP 新增独立 `~/ltp_transfer_server`，LTP私有HTTPS请求显式绑定现有控制网卡
 `ens41` 的 `172.31.35.228`（公网 `13.115.227.29`）；不经公共API缓存。
@@ -1116,8 +1133,8 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 | 私网 IP | 公网 IP | 状态 | 当前用途 |
 | --- | --- | --- | --- |
 | `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；RX01/03分别接Exec06/07，Exec02–04的首地址；新 `binance_exec_spread01` 为81857独立只读环境。旧trade08/RX02停止，IOTA尾仓未动；trade05已归档 |
-| `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_exec_trade01 local_ips[0]`；不同子账户 `okex_mm_83777` 实盘共用 |
-| `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_exec_trade01 local_ips[1]`；不同子账户 `okex_mm_83777` 实盘共用 |
+| `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_exec_trade01 local_ips[0]`；不同子账户 `okex_mm_83777`、`binance_exec_sbh11 local_ips[0]` 共用 |
+| `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_exec_trade01 local_ips[1]`；不同子账户 `okex_mm_83777`、`binance_exec_sbh11 local_ips[1]` 共用 |
 | `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb02`–`04`、`gate_fr_arb01`/`03`/`04`/`05`（01/03/04于11-12恢复含signal的全部服务，05继续停止）、`bitget_fr_arb01`/`02`/`03`；Bitget 01于11-12发布，02/03保持原版运行 |
 | `172.31.35.232` | `54.238.97.67` | 已使用 | `gate_fr_arb02`（11-12恢复含signal的全部服务）、`bybit_fr_arb01` `local_ips[0]` |
 | `172.31.35.233` | `54.64.165.84` | 已使用 | `gate_fr_arb02`（11-12恢复含signal的全部服务）、`bybit_fr_arb01` `local_ips[1]` |
@@ -1192,7 +1209,7 @@ binance-cta-special-rx03     172.31.35.228                  RapidX/LTP（停盘�
 okex-intra-arb01             172.31.35.228, 172.31.35.228
 okex_mm_83777                172.31.35.229, 172.31.35.230   UID556411065144578537；BTC/ETH永续实盘开启，vol70分位、杠杆5、Tlen关闭
 okex_exec_trade01            172.31.35.229, 172.31.35.230   UID241049181320564736；监控及Exec运行，Spread四频段；旧记录已归档重置
-binance_exec_spread01        172.31.35.228, 172.31.35.228   81857独立source；监控及Exec运行，Spread四频段；IOTA尾仓已成交平掉，旧记录已归档重置
+binance_exec_spread01        172.31.35.228, 172.31.35.228   81857独立source；11-16清仓后交易停止，监控保留；Spread01/02计算保持，8条双边执行绑定零份
 okex-binance-cta-spread-rx01  两腿由独立Exec交易             旧signal/publisher/config停止，旧配置410；新Spread计算及发布开启
 binance_fr_arb02             172.31.35.231, 172.31.35.231
 binance_fr_arb03             172.31.35.231, 172.31.35.231
@@ -1203,7 +1220,7 @@ gate_fr_arb04                172.31.35.231, 172.31.35.231   GateAM36_LTP；multi
 gate_fr_arb05                172.31.35.231, 172.31.35.231   GateAM40_LTP；multi_currency，11-02余额0；全部停止
 bitget_fr_arb01              172.31.35.231, 172.31.35.231   新盘；20,000 USDT入金后21币正套建仓运行
 bitget_fr_arb02              172.31.35.231, 172.31.35.231
-bitget_fr_arb03              172.31.35.231, 172.31.35.231
+bitget_fr_arb03              172.31.35.231, 172.31.35.231   全部服务停止，配置保留
 gate_fr_arb02                172.31.35.232, 172.31.35.233
 bybit_fr_arb01               172.31.35.232, 172.31.35.233   SG 迁入；与 gate_fr_arb02 共用
 bitget-gate-cross-arb01      0.0.0.0, 0.0.0.0

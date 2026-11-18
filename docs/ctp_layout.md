@@ -1,6 +1,6 @@
 # CTP 单业务核固定布局
 
-最后更新：2026-11-13
+最后更新：2026-11-16
 
 本布局用于行情驱动交易的同进程接入接口。策略规则尚未配置，默认 `NoStrategy` 不产生订单。**用户已指定外部部署／执行主机 `sh_dev`（`ssh sh_dev`）；当前开发机和所有内网机器禁止执行 CTP**，包括配置检查程序、离线 SDK、测试、探针和基准。主机登记不代表已部署或已运行；运行限制见 [AGENTS.md](../AGENTS.md#ctp-execution-location-restriction)。
 
@@ -81,4 +81,6 @@ target/release/ctp-trader --config /absolute/private/trade.toml \
   --market-data-config /absolute/private/md.toml --connect
 ```
 
-本轮新增用例仅编译，没有运行 CTP、测试、SDK 或压测，也没有部署或修改主机 CPU/IRQ 设置。
+最初布局实现的新增用例只做了编译。2026-11-16 已在用户指定的 `sh_dev`
+部署并验证只读 CTP；实际放置、共享资源及验证边界见 [部署记录](sh_dev_ctp.md)。
+本机和内网机器继续只允许编辑与编译，没有执行 CTP。
