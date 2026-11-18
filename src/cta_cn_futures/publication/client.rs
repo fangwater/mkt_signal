@@ -109,6 +109,19 @@ impl Client {
             outbox,
         })
     }
+    pub(super) fn check_pending_members<'a>(
+        &self,
+        members: impl Iterator<Item = &'a String>,
+    ) -> Result<()> {
+        if let Some(pending) = &self.outbox.pending {
+            ensure!(
+                pending.request.strategies.keys().eq(members),
+                "pending publication uses a different strategy roster; reconcile the original batch before splitting product groups"
+            );
+        }
+        Ok(())
+    }
+
     fn endpoint(&self, suffix: &str) -> String {
         format!(
             "{}/native/sources/{}/{}",

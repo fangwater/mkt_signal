@@ -30,7 +30,18 @@ pub struct Config {
     pub publication: Option<PublicationConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub frequencies: BTreeMap<String, FrequencyConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_products: Vec<PathBuf>,
+    #[serde(skip)]
+    product_runtime: Option<ProductRuntime>,
 }
+
+#[derive(Clone)]
+struct ProductRuntime {
+    state_directory: PathBuf,
+    publication: Option<PublicationConfig>,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrequencyConfig {
@@ -94,12 +105,72 @@ impl Config {
                 && frequency.is_none_or(|f| f == self.interval),
             "native CTA requires instance 01..99 and its own frequency suffix"
         );
-        Ok(format!("cn-futures-{instance}"))
+        let mut group = format!("cn-futures-{instance}");
+        if self.is_additional_product() {
+            group.push('-');
+            group.push_str(&self.symbol.to_ascii_lowercase());
+        }
+        Ok(group)
+    }
+    pub fn is_additional_product(&self) -> bool {
+        self.product_runtime.is_some()
+    }
+    pub fn attach_to(&mut self, primary: &Config) {
+        let publication = primary.publication.clone().map(|mut settings| {
+            settings.token_env.push('_');
+            settings.token_env.push_str(&self.symbol);
+            settings
+        });
+        self.product_runtime = Some(ProductRuntime {
+            state_directory: primary.data_directory.join("products").join(&self.symbol),
+            publication,
+        });
+    }
+    pub fn state_directory(&self) -> &Path {
+        self.product_runtime
+            .as_ref()
+            .map_or(self.data_directory.as_path(), |product| {
+                product.state_directory.as_path()
+            })
+    }
+    pub fn publication_settings(&self) -> Option<&PublicationConfig> {
+        if let Some(product) = &self.product_runtime {
+            product.publication.as_ref()
+        } else {
+            self.publication.as_ref()
+        }
     }
     pub fn publish_per_factor(&self) -> bool {
-        self.publication
-            .as_ref()
-            .is_some_and(|p| p.per_factor_intervals.contains(&self.interval))
+        self.publication_settings()
+            .is_some_and(|settings| settings.per_factor_intervals.contains(&self.interval))
+    }
+    pub fn exchange_codes(
+        &self,
+    ) -> Result<(
+        cn_futures_core::session::Exchange,
+        cn_market_proto::Exchange,
+    )> {
+        use cn_futures_core::session::Exchange as Core;
+        use cn_market_proto::Exchange as Grpc;
+        match (
+            self.exchange.as_str(),
+            cn_futures_core::segments::exchange_of(&self.symbol),
+        ) {
+            ("SHFE", Some("xsge")) => Ok((Core::Xsge, Grpc::Shfe)),
+            ("CZCE", Some("xzce")) => Ok((Core::Xzce, Grpc::Czce)),
+            _ => anyhow::bail!(
+                "unsupported native CTA market {}/{}",
+                self.exchange,
+                self.symbol
+            ),
+        }
+    }
+    pub fn native_prefix(&self) -> String {
+        if self.exchange == "CZCE" {
+            self.symbol.clone()
+        } else {
+            self.symbol.to_ascii_lowercase()
+        }
     }
     pub fn interval_kind(&self) -> Result<Interval> {
         match self.interval.as_str() {
@@ -123,6 +194,7 @@ impl Config {
     pub fn for_interval(&self, interval: Interval) -> Self {
         let mut cfg = self.clone();
         cfg.frequencies.clear();
+        cfg.additional_products.clear();
         if interval == Interval::Hour {
             return cfg;
         }
@@ -149,7 +221,7 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         let cfg = self;
         cfg.strategy_group()?;
-        if let Some(publication) = &cfg.publication {
+        if let Some(publication) = cfg.publication_settings() {
             let url = reqwest::Url::parse(&publication.manager_url)
                 .context("invalid native Manager URL")?;
             ensure!(
@@ -186,9 +258,10 @@ impl Config {
             );
         }
 
+        cfg.exchange_codes()?;
         ensure!(
-            cfg.exchange == "SHFE" && cfg.symbol == "SN",
-            "this deployment owns SHFE/SN only"
+            cfg.symbol.bytes().all(|b| b.is_ascii_uppercase()),
+            "expected upper-case product"
         );
         cfg.interval_kind()?;
         ensure!(

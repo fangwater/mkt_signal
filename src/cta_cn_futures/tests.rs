@@ -605,6 +605,8 @@ async fn native_panel_reads_without_authorization_but_protects_configuration_wri
 fn live_context() -> super::live::Context {
     use cn_market_proto::*;
     super::live::Context::new(
+        cn_futures_core::session::Exchange::Xsge,
+        "SN",
         GetSizeThresholdsResponse {
             products: vec![ProductThresholds {
                 product: "SN".into(),
@@ -752,15 +754,15 @@ fn repeated_provisional_ranges_replace_revisions_and_removed_rows() {
         }),
     };
     history
-        .merge(&main, response(vec![r.clone()]), ts, ts + 60_000)
+        .merge(&config(), &main, response(vec![r.clone()]), ts, ts + 60_000)
         .unwrap();
     r.close += 10.;
     history
-        .merge(&main, response(vec![r.clone()]), ts, ts + 60_000)
+        .merge(&config(), &main, response(vec![r.clone()]), ts, ts + 60_000)
         .unwrap();
     assert_eq!(history.minutes[&ts].close, r.close);
     history
-        .merge(&main, response(vec![]), ts, ts + 60_000)
+        .merge(&config(), &main, response(vec![]), ts, ts + 60_000)
         .unwrap();
     assert!(history.minutes.is_empty());
 }

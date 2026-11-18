@@ -3,13 +3,15 @@
 最后更新：2026-11-18
 
 国内 CTA 按 `cta-cn_futures-01 / 02 / ...` 实例隔离；当前 `01` 位于 `/home/fanghaizhou/cta-cn_futures-01`，由环境脚本包装
-PM2 管理。范围为 `SHFE/SN`，支持 `1min / 5min / 15min / 1h`；各频率独立配置规则、
-开关和每规则手数，并各自维护绝对目标。1h 按用户表配置 10 条规则，事实账本保留；
+PM2 管理。运行实例当前为 `SHFE/SN`。候选配置加入 `SHFE/RB`、`CZCE/SA`、`CZCE/SM`，
+每个品种支持 `1min / 5min / 15min / 1h`，分别维护因子窗口、分钟接续和绝对手数账本。
+1h 分别配置 10、7、9、12 条规则；每条规则 1 手，开平分位沿用锡的参数。
 新增频率默认关闭、空规则。每条规则输出 `-1/0/+1`，乘以 `lots_per_rule` 后求和。复用 CN 原始因子、Prep 小时归一化、
 百分位和开平仓判断，不做金额到数量的换算。可通过组级发布凭据整批推送 Manager；不加载交易 SDK、不直接报撤单。
 该进程使用公司 ZMQ；本机禁止执行 CTP SDK 的约束保持有效。
 
-当前环境的 1h 因子表如下，每规则 1 手；1min / 5min / 15min 仍为关闭、空规则。
+锡的 1h 因子表如下。螺纹钢、纯碱、锰硅的方向和 NQ 配置在
+`config/cta_cn_futures_01_{rb,sa,sm}.json`。四个品种的 1min / 5min / 15min 均关闭、空规则。
 
 | 因子 | 符号 | NQ |
 |---|---|---|
@@ -29,14 +31,17 @@ PM2 管理。范围为 `SHFE/SN`，支持 `1min / 5min / 15min / 1h`；各频率
 
 ## 实例与临时逐因子归因
 
-`01 / 02` 各自使用环境目录、配置、数据目录、HTTP 端口和进程名。生命周期脚本从配置读取实例名并核对目录，禁止用 `01` 的目录启动 `02`。`config/cta_cn_futures_01.json` 维护用户的十因子表；`config/cta_cn_futures_02.json` 是关闭、空规则的独立实例模板，不自动启用。
+`01 / 02` 各自使用环境目录、配置、数据目录、HTTP 端口和进程名。生命周期脚本从配置读取实例名并核对目录，禁止用 `01` 的目录启动 `02`。`config/cta_cn_futures_01.json` 维护锡规则与 `additional_products`；`config/cta_cn_futures_02.json` 是关闭、空规则的独立实例模板。
 
 `publication.per_factor_intervals` 控制临时归因展开，例如 `["1h"]`：
 
 - 普通模式：同实例每频段一个策略，如 `cn-futures-01-1h`、`cn-futures-02-5min`。
-- 逐因子模式：`cn-futures-01-td_pr_010-1h`、`cn-futures-01-factor_094-1h` 等。
+- 逐因子模式：锡沿用 `cn-futures-01-td_pr_010-1h` 等名称；附加品种包含品种代码，如 `cn-futures-01-rb-baseline_035-1h`。
 - 两种表示互斥；同一频段不会把聚合目标与子策略目标同时加进 Manager。公式、NQ、每规则手数、因子事实旗标和本地聚合展示保持原义。
-- 同一实例的全部策略组成一个 `strategy_group = cn-futures-01`，每次只 POST 一个完整批次；禁止遍历因子逐条发布。Manager 按账户统一输出净目标，同时保存各子策略持仓和内部调拨。
+- 同品种的策略组成独立发布组，每次提交该品种的完整策略批次。01 实例的 SN 沿用
+  `cn-futures-01`，附加品种 RB、SA、SM 分别使用 `cn-futures-01-rb`、
+  `cn-futures-01-sa`、`cn-futures-01-sm`。各品种共用 ZMQ 入口，独立封 bar、触发发布和重试。
+  Manager 按账户输出净目标，并在相同原生合约内匹配策略需求。
 
 发布由 `publication.enabled` 显式开启，仓库模板默认关闭。配置示例：
 
@@ -50,17 +55,24 @@ PM2 管理。范围为 `SHFE/SN`，支持 `1min / 5min / 15min / 1h`；各频率
 }
 ```
 
-以上是根配置内的 `publication` 对象。`manager_url` 使用部署网关实际地址，不包含凭据；组级发布令牌只从环境变量读入，不进入配置面板、状态、出站日志或 outbox。先在 Manager 创建子策略、核对账户事实持仓并初始化 `strategy_groups`，再通过原会话授权的 `POST /api/native/sources/{id}/netting/publish-token` 为该组生成令牌。每个实例使用独立令牌；源账户与组名均须一致。
+以上是根配置内的 `publication` 对象。附加品种继承 Manager 地址、源账户和逐因子归因频段，
+令牌环境名在根变量后附品种后缀，例如 `CN_CTA_01_PUBLISH_TOKEN_RB`。
+各组在 Manager 单独登记成员及令牌。已有 SN 归因可通过 Manager 的 `extend-scope` 注册附加品种组，
+保留原组和已归属仓位。同账户的批次继续共享 revision 和未结清执行需求保护。
+
+`manager_url` 使用部署网关实际地址，不包含凭据；组级发布令牌只从环境变量读入，不进入配置面板、状态、出站日志或 outbox。先在 Manager 创建子策略、核对账户事实持仓并初始化 `strategy_groups`，再通过原会话授权的 `POST /api/native/sources/{id}/netting/publish-token` 为该组生成令牌。每个发布组使用独立令牌，令牌绑定对应源账户和组名。
 
 发送端先读取 `netting/publication?strategy_group=cn-futures-01` 的组名单、完整合约范围和 revision，补齐合约零目标后，原子 POST `target-batches`。批次含 `strategy_group / batch_id / expected_revision / decision_us / signal_times / strategies / quotes`。`signal_times` 留存各子策略的真实 bar 决策时间；外层 `decision_us` 是整批发布时点。BBO 来自当前公司 ZMQ，原生合约和价格观测时间原样保留。
 
 准备由 Exec 消费轧差目标的账户启用 `publication.include_trading_day`。发布批次附带本次实时决策的原生交易日，Manager 校验该日与当前账户快照一致。执行侧配置见 [Manager 目标交付](native_ctaker.md#manager-delivery)。
 
-首次启动仅记录既有决策基线，历史预热不发过去目标；实际新决策才可触发推送。断网时保留最新完整目标；已派发但结果未知的请求在 `data/manager_publication.json` 中持久化，重启后逐字重试原批次，不能改写它的 revision、价格或部分策略。Manager 409 表示该请求未接纳，才重新获取 CAS；过期且已明确拒绝的信号不重放。任何未落盘的待发请求不得发送。
+首次启动仅记录既有决策基线，历史预热不发过去目标；实际新决策才可触发推送。断网时保留最新完整目标；已派发但结果未知的请求在 `data/manager_publication.json` 中持久化，重启后逐字重试原批次，不能改写它的 revision、价格或部分策略。附加品种在各自
+`data/products/<品种>/manager_publication.json` 保存待确认批次。拆分旧发布组前须结清旧组待确认批次。Manager 409 表示该请求未接纳，才重新获取 CAS；过期且已明确拒绝的信号不重放。任何未落盘的待发请求不得发送。
 
 01 组首次启用逐因子发布时，已核对 Manager 只有空仓初始化记录，并归档旧的 +3 手本地信号目标。2026-11-18 从空信号账本启动，历史分钟和小时只用于因子预热，目标从接续完成后的首个有效实时小时决策开始计算。后续例行重启继续从已保存的实时决策接续。
 
-`/state` 和 `/targets` 新增 `strategy_group / strategies / manager_publication`。已有 `positions` 是本地聚合展示，消费端不能把它与 `strategies` 再求和。发布状态显示待确认批次、已确认批次和错误，不暴露令牌。
+`/state` 和 `/targets` 的 `strategy_group / strategies / manager_publication` 对应主品种，
+附加品种状态在 `products`，也可从各自的 `/products/<小写品种>/state` 和 `/targets` 读取。已有 `positions` 是本地聚合展示，消费端不能把它与 `strategies` 再求和。发布状态显示待确认批次、已确认批次和错误，不暴露令牌。
 
 本轮统一执行边界是 Manager 的整批净目标输出与可拆分归因，未新增原生自动报撤单适配器；Manager 的 `execution_enabled=false` 保持真实。环境切换必须另行完成真实输入预热、归因初始化与存量持仓核对，不能直接把旧聚合策略的真实归属改名。
 
@@ -70,7 +82,7 @@ PM2 管理。范围为 `SHFE/SN`，支持 `1min / 5min / 15min / 1h`；各频率
 预热各频段，接续完成后使用公司 ZMQ 实时行情。Tardis 小时归档和 Kafka 接续是加密 CTA 的预热要求。
 
 1. 启动后立即订阅公司 ZMQ `tcp://10.61.20.12:13005`，在内存中持续接收。
-2. 从 REST `http://127.0.0.1:18313/api/v1/dominant` 选择 `xsge/SN` 的原生合约。
+2. 从 REST `http://127.0.0.1:18313/api/v1/dominant` 按交易所和品种选择主力。郑商所参考代码如 `SA2701` 转为 `SA701`，用于 ZMQ 匹配和 Manager 目标。
    下一原生交易日只采用明确的 `scheduled_next`，不推算交割月份。
 3. 从 `http://127.0.0.1:18312` 的 `cn_market.v1.CnFuturesMarket` 查询分钟、阈值
    和时段。参数未齐时暂存原始 ZMQ；参数齐后复用共享 `cn_futures_core`，持续合成
@@ -101,11 +113,11 @@ PM2 管理。范围为 `SHFE/SN`，支持 `1min / 5min / 15min / 1h`；各频率
 
 ## gRPC 契约
 
-- `GetMinuteBars`：响应仅 `contract / bars / data_state`，按 30 日分页读取 120 天，
+- `GetMinuteBars`：响应仅 `contract / bars / data_state`，按 30 日分页读取。锡、螺纹钢和纯碱请求 120 天，锰硅为 240 天；
   `include_empty_minutes=true`；分钟暂态数据可反复更新，覆盖查询区间时删除已消失的行。
-- `GetSizeThresholds`：查询 SHFE/SN，按 `applies_month`（上海自然月）使用产品 P50/P90。
+- `GetSizeThresholds`：按交易所与品种查询，按 `applies_month`（上海自然月）使用产品 P50/P90。
   不在策略侧维护导出器或阈值文件，不默认使用别的月份。
-- `GetTradingSessions`：查询 SHFE/SN 时段；快照日期必须与分钟数据一致。
+- `GetTradingSessions`：查询该交易所与品种的时段；快照日期必须与分钟数据一致。
 - 归档分钟为最终数据。暂态分钟须满足 `open_time_ms + 60000 <= live_through_ms`
   才能作为 gRPC 接续边界。来源尚未补到边界时继续等待并积累本地分钟。
 
@@ -138,8 +150,9 @@ PM2 管理。范围为 `SHFE/SN`，支持 `1min / 5min / 15min / 1h`；各频率
 
 ## 配置面板与状态
 
-公网配置面板：`http://124.223.189.200/cta-cn-futures/`。复用 Prep 配置页面，
-固定 SN，通过四个频率标签分别配置；以手数替代金额，可编辑因子、符号、NQ、开关及开平阈值。
+锡的公网配置面板为 `http://124.223.189.200/cta-cn-futures/`。候选版本的新增品种使用本机面板
+`http://127.0.0.1:19401/products/{rb,sa,sm}/`。每个面板按频率配置因子、方向、
+NQ、开关、每规则手数及开平阈值。
 GET `/api/config` 无需授权；POST `/api/preview`、`/api/config` 需要环境私有凭据。
 配置读取不包含连接地址、路径或凭据。公网继续使用现有反向隧道，云端 Nginx
 配置为 `config/cta_cn_futures_public.nginx.conf`，通过环境本地的
@@ -153,7 +166,8 @@ GET `/api/config` 无需授权；POST `/api/preview`、`/api/config` 需要环�
 `/state` 提供因子就绪、实时就绪、错误、`initialization_complete` 和 `restart_required`；
 初始化期间额外提供 gRPC 水位、固定首分钟和缓存分钟数。`frequencies` 按频率返回
 独立因子状态和目标，原顶层 `positions`、`interval` 保留 1h 口径；`/targets` 同时
-提供这两种视图。原 1h 继续使用 `positions.json / targets.json`，新增频率分别使用
+提供这两种视图。附加品种在 `products` 下各自报告，`strategies` 展示当前品种的策略。
+锡的 1h 继续使用 `positions.json / targets.json`，附加品种分别在 `data/products/<品种>/` 下保存；分钟频率分别使用
 `positions_<频率>.json / targets_<频率>.json`。单个分钟频率的数据错误只暂停该频率，
 保留其事实目标，不阻止正常的其他频率。
 消费 `/targets` 必须检查 `factor_ready / live_ready / decision_ms`。换主力后的
@@ -184,8 +198,12 @@ cd /home/fanghaizhou/cta-cn_futures-01
 源码和构建校验收据位于 `data/ops/cta_cn_grpc_refactor_check/`，发布收据由
 `data/ops/cta_cn_futures_01_latest.txt` 指向（均不提交到 Git）。
 
-当前验证：23 项信号测试、8 项 SDK-free 行情测试和 3 项生命周期检查通过；
-真实 gRPC 预热 `sn2612` 的 36,720 根分钟形成 712 根小时，当前用户表 10/10 就绪，事实账本不变。
+本次实测 gRPC 预热 `sn2612` 10/10、`rb2701` 7/7、`SA701` 9/9、`SM701` 12/12。
+锰硅的 `td_mt_043` 使用 360 根原始小时成交量，后续还需归一化与分位预热；
+将历史请求扩到 240 天后，该品种形成 805 根小时，原有公式和窗口参数沿用。
+四个品种的预检及加载收据由 `data/ops/cta_cn_futures_scope_latest.txt` 指向（不提交到 Git）。
+2026-11-18 下午，Manager 已安装范围扩充接口并创建 28 个目录策略。创元 CTP 对账后掉线，
+原只读进程重启时登录超时。扩充待同源当前运行代对账完成后再提交，锡进程继续运行。
 因子表替换的预检、配置备份和加载核验由
 `data/ops/cta_cn_futures_user_factors_latest.txt` 指向（不提交到 Git）。
 盘后启动的版本先保留已有目标，等待下一交易时段形成首根完整 ZMQ 分钟，并完成

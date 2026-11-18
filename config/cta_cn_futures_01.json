@@ -92,5 +92,10 @@
     "per_factor_intervals": [
       "1h"
     ]
-  }
+  },
+  "additional_products": [
+    "cta_cn_futures_01_rb.json",
+    "cta_cn_futures_01_sa.json",
+    "cta_cn_futures_01_sm.json"
+  ]
 }

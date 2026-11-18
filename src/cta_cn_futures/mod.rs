@@ -17,6 +17,7 @@ use config::Config;
 use engine::Ledger;
 use serde_json::{json, Value};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
     time::Duration,
@@ -51,7 +52,7 @@ fn ledger(cfg: &Config) -> Result<Ledger> {
     } else {
         format!("positions_{}.json", cfg.interval)
     };
-    let p = cfg.data_directory.join(filename);
+    let p = cfg.state_directory().join(filename);
     if p.exists() {
         Ok(serde_json::from_slice(&std::fs::read(p)?)?)
     } else {
@@ -158,12 +159,19 @@ async fn preflight(cfg: &Config, main: &history::Dominant, ledger: Ledger) -> Re
             engine.observe(&hour, &main.contract, multiple, false)?;
         }
     }
-    ensure!(
-        !cfg.enabled || engine.ready(),
-        "gRPC warm-up incomplete: {}/{} factors",
-        engine.latest.iter().filter(|r| r.ready).count(),
-        cfg.rules.len()
-    );
+    if cfg.enabled && !engine.ready() {
+        let unready: Vec<_> = engine
+            .latest
+            .iter()
+            .filter(|r| !r.ready)
+            .map(|r| json!({"factor":r.factor,"raw":r.raw,"value":r.value,"quantile":r.quantile}))
+            .collect();
+        anyhow::bail!(
+            "gRPC warm-up incomplete after {} hourly bars: {}",
+            engine.hours,
+            json!(unready)
+        );
+    }
     ensure!(
         engine.ledger == ledger,
         "preflight changed factual positions"
@@ -174,7 +182,7 @@ async fn preflight(cfg: &Config, main: &history::Dominant, ledger: Ledger) -> Re
     );
     extras.check_enabled_ready()?;
     Ok(
-        json!({"contract":main.contract,"source_minute_rows":history.minutes.len(),"hours":engine.hours,"ready_rules":engine.latest.iter().filter(|r|r.ready).count(),"total_rules":cfg.rules.len(),"last_end_ms":engine.last_end_ms,"grpc_through_ms":history.through_ms,"session_snapshot":context.snapshot_as_of,"source":"grpc","positions_preserved":true,"frequencies":extras.views(false)}),
+        json!({"exchange":cfg.exchange,"symbol":cfg.symbol,"contract":main.contract,"multiplier":multiple,"source_minute_rows":history.minutes.len(),"hours":engine.hours,"ready_rules":engine.latest.iter().filter(|r|r.ready).count(),"total_rules":cfg.rules.len(),"last_end_ms":engine.last_end_ms,"grpc_through_ms":history.through_ms,"session_snapshot":context.snapshot_as_of,"source":"grpc","positions_preserved":true,"frequencies":extras.views(false)}),
     )
 }
 /// ZMQ minutes are accumulated independently of delayed historical requests.
@@ -332,79 +340,238 @@ impl Stream {
     }
 }
 
+type Report = Arc<RwLock<Value>>;
+
+fn read_report(state: &Report) -> Value {
+    state.read().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+fn targets_view(v: Value) -> Value {
+    json!({"live_ready":v["live_ready"],"factor_ready":v["factor_ready"],
+        "positions":v["positions"],"frequencies":v["frequencies"],"strategy_group":v["strategy_group"],
+        "strategies":v["strategies"],"manager_publication":v["manager_publication"],"error":v["error"],
+        "products":v["products"]})
+}
+
+fn group_report(primary: &Report, products: &BTreeMap<String, Report>) -> Value {
+    let mut report = read_report(primary);
+    if !products.is_empty() {
+        let reports: BTreeMap<_, _> = products
+            .iter()
+            .map(|(symbol, state)| (symbol, read_report(state)))
+            .collect();
+        report["products"] = json!(reports);
+    }
+    report
+}
+
+fn configs(path: &Path) -> Result<Vec<(PathBuf, Config)>> {
+    let primary = Config::load(path)?;
+    let mut configs = vec![(path.to_path_buf(), primary.clone())];
+    let mut products = BTreeSet::from([primary.symbol.clone()]);
+    for entry in &primary.additional_products {
+        let file = path
+            .parent()
+            .context("missing CTA config parent")?
+            .join(entry);
+        let mut product = Config::load(&file)
+            .with_context(|| format!("load CTA product configuration {}", file.display()))?;
+        ensure!(
+            product.name == primary.name
+                && product.additional_products.is_empty()
+                && product.publication.is_none(),
+            "additional product must belong to the same CTA group"
+        );
+        ensure!(
+            products.insert(product.symbol.clone()),
+            "duplicate CTA product {}",
+            product.symbol
+        );
+        ensure!(
+            product.zmq_endpoint == primary.zmq_endpoint,
+            "additional products must use the group's ZMQ source"
+        );
+        product.attach_to(&primary);
+        product.validate()?;
+        configs.push((file, product));
+    }
+    Ok(configs)
+}
+
 pub async fn run() -> Result<()> {
     let args = Args::parse();
-    let mut cfg = Config::load(&args.config)?;
+    let configs = configs(&args.config)?;
     if args.check {
-        println!(
-            "{} valid: {} rules, SHFE/SN, integer lot targets, no execution",
-            cfg.name,
-            cfg.rules.len()
-        );
+        for (_, cfg) in &configs {
+            println!(
+                "{} {}/{}: {} hourly rules",
+                cfg.name,
+                cfg.exchange,
+                cfg.symbol,
+                cfg.rules.len()
+            );
+        }
         return Ok(());
     }
-    std::fs::create_dir_all(&cfg.data_directory)?;
+    let root = configs[0].1.clone();
+    std::fs::create_dir_all(&root.data_directory)?;
     let lock = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(cfg.data_directory.join(".lock"))?;
+        .open(root.data_directory.join(".lock"))?;
     lock.try_lock()
         .context("CN CTA environment already running")?;
-    // Capture before any REST/gRPC wait. This process never loads a CTP SDK.
-    let rx = if args.preflight {
-        None
-    } else {
-        Some(live::capture(&cfg)?)
-    };
-    let mut engine = engine::Engine::new(&cfg, ledger(&cfg)?)?;
     if args.preflight {
-        let main = history::dominant(&cfg).await?;
-        println!("{}", preflight(&cfg, &main, engine.ledger.clone()).await?);
+        let mut receipts = BTreeMap::new();
+        for (_, cfg) in &configs {
+            let receipt = async {
+                let main = history::dominant(cfg).await?;
+                preflight(cfg, &main, ledger(cfg)?).await
+            }
+            .await
+            .with_context(|| format!("preflight {}/{}", cfg.exchange, cfg.symbol))?;
+            receipts.insert(cfg.symbol.clone(), receipt);
+        }
+        let mut report = receipts
+            .remove(&root.symbol)
+            .context("missing primary preflight")?;
+        if !receipts.is_empty() {
+            report["products"] = json!(receipts);
+        }
+        println!("{report}");
         return Ok(());
     }
-    let state = Arc::new(RwLock::new(json!({"name":cfg.name,"phase":"warming",
-        "live_ready":false,"factor_ready":false,"positions":engine.targets()})));
-    let catalog = Arc::new(RwLock::new(panel::catalog(&cfg)?));
-    let (config_tx, mut config_rx) = tokio::sync::mpsc::channel(8);
-    let read = state.clone();
-    let positions = state.clone();
-    let app = Router::new()
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut reports = BTreeMap::new();
+    let mut app = Router::new();
+    let inputs = live::capture(&root.zmq_endpoint, configs.iter().map(|(_, cfg)| cfg))?;
+    let mut workers = Vec::new();
+    for ((path, cfg), rx) in configs.into_iter().zip(inputs) {
+        std::fs::create_dir_all(cfg.state_directory())?;
+        let engine = engine::Engine::new(&cfg, ledger(&cfg)?)?;
+        let extras = extras::Extras::new(&cfg)?;
+        let positions = publication::positions(&engine, &extras)?;
+        let publisher = publication::Publisher::start(&cfg, positions.clone())
+            .map_err(|err| format!("{err:#}"));
+        if let Err(err) = &publisher {
+            eprintln!(
+                "Manager publication unavailable for {}/{}: {err}",
+                cfg.exchange, cfg.symbol
+            );
+        }
+        let state = Arc::new(RwLock::new(json!({"name":cfg.name,"phase":"warming",
+            "symbol":cfg.symbol,"exchange":cfg.exchange,"strategy_group":cfg.strategy_group()?,
+            "strategies":positions,"live_ready":false,"factor_ready":false,"positions":engine.targets(),
+            "manager_publication": publication_status(&cfg, &publisher)})));
+        reports.insert(cfg.symbol.clone(), state.clone());
+        let catalog = Arc::new(RwLock::new(panel::catalog(&cfg)?));
+        let (config_tx, config_rx) = tokio::sync::mpsc::channel(8);
+        let router = panel::router(&cfg, catalog.clone(), config_tx)?;
+        if cfg.is_additional_product() {
+            let read = state.clone();
+            let positions = state.clone();
+            app = app.nest(
+                &format!("/products/{}", cfg.symbol.to_ascii_lowercase()),
+                router
+                    .route(
+                        "/state",
+                        get(move || async move { Json(read_report(&read)) }),
+                    )
+                    .route(
+                        "/targets",
+                        get(move || async move { Json(targets_view(read_report(&positions))) }),
+                    ),
+            );
+        } else {
+            app = app.merge(router);
+        }
+        let worker = Worker {
+            cfg,
+            path,
+            rx,
+            engine,
+            extras,
+            state,
+            catalog,
+            config_rx,
+            publisher,
+        };
+        workers.push(worker);
+    }
+    for worker in workers {
+        tasks.spawn(run_worker(worker));
+    }
+    let primary = reports
+        .remove(&root.symbol)
+        .context("missing primary CTA state")?;
+    let read = primary.clone();
+    let read_products = reports.clone();
+    let app = app
         .route(
             "/state",
-            get(move || {
-                let s = read.clone();
-                async move { Json(s.read().unwrap_or_else(|p| p.into_inner()).clone()) }
-            }),
+            get(move || async move { Json(group_report(&read, &read_products)) }),
         )
         .route(
             "/targets",
-            get(move || {
-                let s = positions.clone();
-                async move {
-                    let v = s.read().unwrap_or_else(|p| p.into_inner());
-                    Json(
-                        json!({"live_ready":v["live_ready"],"factor_ready":v["factor_ready"],
-                "positions":v["positions"],"frequencies":v["frequencies"],"strategy_group":v["strategy_group"],"strategies":v["strategies"],"manager_publication":v["manager_publication"],"error":v["error"]}),
-                    )
-                }
-            }),
-        )
-        .merge(panel::router(&cfg, catalog.clone(), config_tx)?);
-    let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
-    let mut http = tokio::spawn(async move { axum::serve(listener, app).await });
-    let mut current = history::dominant(&cfg).await?;
-    let rx = rx.context("missing ZMQ receiver")?;
+            get(move || async move { Json(targets_view(group_report(&primary, &reports))) }),
+        );
+    let listener = tokio::net::TcpListener::bind(&root.bind).await?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result?,
+        result = axum::serve(listener, app) => result?,
+        result = tasks.join_next() => result.context("no CTA product workers")???,
+    }
+    Ok(())
+}
+
+struct Worker {
+    cfg: Config,
+    path: PathBuf,
+    rx: crossbeam_channel::Receiver<live::Event>,
+    engine: engine::Engine,
+    extras: extras::Extras,
+    state: Report,
+    catalog: Report,
+    config_rx: tokio::sync::mpsc::Receiver<panel::Mutation>,
+    publisher: std::result::Result<Option<publication::Publisher>, String>,
+}
+
+fn publication_status(
+    cfg: &Config,
+    publisher: &std::result::Result<Option<publication::Publisher>, String>,
+) -> Value {
+    match publisher {
+        Ok(Some(publisher)) => publisher.status(),
+        Ok(None) => Value::Null,
+        Err(error) => json!({
+            "strategy_group": cfg.strategy_group().ok(),
+            "source_id": cfg.publication_settings().map(|p| p.source_id.as_str()),
+            "error": error,
+        }),
+    }
+}
+
+async fn run_worker(worker: Worker) -> Result<()> {
+    let Worker {
+        mut cfg,
+        path,
+        rx,
+        mut engine,
+        extras,
+        state,
+        catalog,
+        mut config_rx,
+        mut publisher,
+    } = worker;
+    let mut current = history::dominant(&cfg)
+        .await
+        .with_context(|| format!("load dominant for {}/{}", cfg.exchange, cfg.symbol))?;
     let mut stream = Stream {
-        extras: Some(extras::Extras::new(&cfg)?),
+        extras: Some(extras),
         ..Stream::default()
     };
-    let mut manager_publisher = publication::Publisher::start(
-        &cfg,
-        &engine,
-        stream.extras.as_ref().context("missing frequency states")?,
-    )?;
     let mut history = Some(history::History::default());
     let mut hours = engine::Bars::default();
     let mut load_start = history_begin(&cfg);
@@ -415,15 +582,11 @@ pub async fn run() -> Result<()> {
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => break,
-            result = &mut http => anyhow::bail!("target HTTP task stopped: {result:?}"),
-            _ = tick.tick() => {}
-        }
+        tick.tick().await;
         while let Ok(command) = config_rx.try_recv() {
             panel::process(
                 command,
-                &args.config,
+                &path,
                 &mut cfg,
                 &mut engine,
                 stream
@@ -434,6 +597,10 @@ pub async fn run() -> Result<()> {
             );
         }
         let decision_before = engine.ledger.last_decision_ms;
+        let extra_before = stream
+            .extras
+            .as_ref()
+            .and_then(extras::Extras::last_live_decision);
         // Drain all events accumulated during the preceding network request,
         // including reset markers, before closing bars or attempting a handoff.
         loop {
@@ -444,14 +611,14 @@ pub async fn run() -> Result<()> {
                     anyhow::bail!("ZMQ capture thread stopped")
                 }
             };
-            if let Some(publisher) = manager_publisher.as_mut() {
+            if let Ok(Some(publisher)) = &mut publisher {
                 match &event {
                     live::Event::Quote(q) => publisher.quote(q),
                     live::Event::Reset => publisher.reset(),
                 }
             }
             if let live::Event::Quote(q) = &event {
-                if q.symbol().starts_with(b"sn") && q.trading_day > current.trading_day {
+                if q.trading_day > current.trading_day {
                     match current.for_day(q.trading_day) {
                         Ok(next) => {
                             if history.is_some() {
@@ -508,8 +675,14 @@ pub async fn run() -> Result<()> {
         }
         // Persist every new factual decision before any await or factor rebuild.
         if engine.ledger.last_decision_ms != decision_before {
-            atomic(&cfg.data_directory.join("positions.json"), &engine.ledger)?;
-            atomic(&cfg.data_directory.join("targets.json"), &engine.targets())?;
+            atomic(
+                &cfg.state_directory().join("positions.json"),
+                &engine.ledger,
+            )?;
+            atomic(
+                &cfg.state_directory().join("targets.json"),
+                &engine.targets(),
+            )?;
             println!("{}", engine.targets());
         }
         stream
@@ -549,23 +722,27 @@ pub async fn run() -> Result<()> {
             }
         }
         let ready = stream.ready() && health.error().is_none();
-        if let Some(publisher) = manager_publisher.as_mut() {
+        let extras = stream.extras.as_ref().context("missing frequency states")?;
+        let positions = publication::positions(&engine, extras)?;
+        let hour_decision = engine
+            .last_decision_day
+            .filter(|_| engine.ledger.last_decision_ms > decision_before)
+            .map(|day| (engine.ledger.last_decision_ms, day));
+        let extra_decision = extras
+            .last_live_decision()
+            .filter(|decision| Some(*decision) != extra_before);
+        if let Ok(Some(publisher)) = &mut publisher {
             publisher.observe(
-                &engine,
-                stream.extras.as_ref().context("missing frequency states")?,
+                positions.clone(),
+                hour_decision.max(extra_decision),
                 current.trading_day,
                 ready,
             )?;
         }
         let mut report = status(&cfg, &current, &engine, health.error(), ready);
         report["strategy_group"] = json!(cfg.strategy_group()?);
-        report["strategies"] = json!(publication::positions(
-            &engine,
-            stream.extras.as_ref().context("missing frequency states")?
-        )?);
-        report["manager_publication"] = manager_publisher
-            .as_ref()
-            .map_or(serde_json::Value::Null, |p| p.status());
+        report["strategies"] = json!(positions);
+        report["manager_publication"] = publication_status(&cfg, &publisher);
         let mut frequencies = stream
             .extras
             .as_ref()
@@ -675,5 +852,4 @@ pub async fn run() -> Result<()> {
             next_dominant = tokio::time::Instant::now() + Duration::from_secs(60);
         }
     }
-    Ok(())
 }

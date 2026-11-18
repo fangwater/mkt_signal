@@ -1,4 +1,4 @@
-//! One complete strategy-group publication, with a durable ambiguous-outcome retry.
+//! One native product per strategy-group publisher, with durable ambiguous-outcome retry.
 mod client;
 #[cfg(test)]
 mod tests;
@@ -47,7 +47,7 @@ struct Status {
 }
 
 pub struct Publisher {
-    baseline: String,
+    positions: BTreeMap<String, StrategyPosition>,
     latest: Option<Desired>,
     quotes: BTreeMap<String, Quote>,
     tx: watch::Sender<Option<Desired>>,
@@ -74,17 +74,22 @@ fn signature(positions: &BTreeMap<String, StrategyPosition>) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(positions)?)))
 }
 impl Publisher {
-    pub fn start(cfg: &Config, engine: &Engine, extras: &Extras) -> Result<Option<Self>> {
-        let Some(settings) = cfg.publication.as_ref().filter(|p| p.enabled) else {
+    pub fn start(
+        cfg: &Config,
+        positions: BTreeMap<String, StrategyPosition>,
+    ) -> Result<Option<Self>> {
+        let Some(settings) = cfg.publication_settings().filter(|p| p.enabled) else {
             return Ok(None);
         };
-        let baseline = signature(&positions(engine, extras)?)?;
         let group = cfg.strategy_group()?;
         let client = client::Client::new(
             settings,
             group.clone(),
-            cfg.data_directory.join("manager_publication.json"),
+            cfg.state_directory().join("manager_publication.json"),
         )?;
+        if !cfg.additional_products.is_empty() || cfg.is_additional_product() {
+            client.check_pending_members(positions.keys())?;
+        }
         let state = Arc::new(Mutex::new(Status {
             strategy_group: group,
             source_id: settings.source_id.clone(),
@@ -93,7 +98,7 @@ impl Publisher {
         let (tx, rx) = watch::channel(None);
         let task = tokio::spawn(client.run(rx, state.clone()));
         Ok(Some(Self {
-            baseline,
+            positions,
             latest: None,
             quotes: BTreeMap::new(),
             tx,
@@ -105,10 +110,6 @@ impl Publisher {
         self.quotes.clear();
     }
     pub fn quote(&mut self, q: &cn_futures_pbs::msg::MarketDataMsg) {
-        if q.flags & cn_futures_pbs::msg::SOURCE_RESET != 0 {
-            self.quotes.clear();
-            return;
-        }
         if q.bid[0].price.is_finite()
             && q.ask[0].price.is_finite()
             && q.bid[0].price > 0.0
@@ -141,45 +142,39 @@ impl Publisher {
     }
     pub fn observe(
         &mut self,
-        engine: &Engine,
-        extras: &Extras,
+        positions: BTreeMap<String, StrategyPosition>,
+        live_decision: Option<(i64, u32)>,
         active_trading_day: u32,
         live_ready: bool,
     ) -> Result<()> {
-        let positions = positions(engine, extras)?;
-        let current = signature(&positions)?;
-        if current != self.baseline {
-            // Only a factual new decision can replace the startup baseline;
-            // historical formula warm-up never publishes old targets.
-            let trigger_ms = positions.values().map(|p| p.decision_ms).max().unwrap_or(0);
-            let trigger_us = trigger_ms
-                .checked_mul(1000)
-                .context("native decision time overflow")?;
-            let trading_day = engine
-                .last_decision_day
-                .filter(|_| engine.ledger.last_decision_ms == trigger_ms)
-                .or_else(|| {
-                    extras
-                        .last_live_decision()
-                        .filter(|&(at, _)| at == trigger_ms)
-                        .map(|(_, day)| day)
-                });
-            self.latest = Some(Desired {
-                signature: current.clone(),
-                positions,
-                trigger_us,
-                trading_day,
-                live_ready,
-                quotes: self.quotes.clone(),
-            });
-            self.baseline = current;
+        let changed = self.positions != positions;
+        if changed {
+            if let Some((trigger_ms, trading_day)) = live_decision {
+                let trigger_us = trigger_ms
+                    .checked_mul(1000)
+                    .context("native decision time overflow")?;
+                let signature = signature(&positions)?;
+                if let Some(latest) = self.latest.as_mut().filter(|latest| {
+                    latest.trading_day == Some(trading_day) && latest.trigger_us > trigger_us
+                }) {
+                    latest.signature = signature;
+                    latest.positions.clone_from(&positions);
+                } else {
+                    self.latest = Some(Desired {
+                        signature,
+                        positions: positions.clone(),
+                        trigger_us,
+                        trading_day: Some(trading_day),
+                        live_ready,
+                        quotes: BTreeMap::new(),
+                    });
+                }
+            }
+            self.positions = positions;
         }
         if let Some(latest) = &mut self.latest {
-            latest.live_ready = live_ready
-                && latest
-                    .trading_day
-                    .is_none_or(|day| day == active_trading_day);
-            latest.quotes = self.quotes.clone();
+            latest.live_ready = live_ready && latest.trading_day == Some(active_trading_day);
+            latest.quotes.clone_from(&self.quotes);
             self.tx.send_replace(Some(latest.clone()));
         }
         Ok(())

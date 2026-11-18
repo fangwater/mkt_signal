@@ -3,7 +3,7 @@ use anyhow::{ensure, Context, Result};
 use chrono::NaiveDate;
 use cn_market_proto::{
     cn_futures_market_client::CnFuturesMarketClient, get_minute_bars_request::Range, Contract,
-    Exchange, GetMinuteBarsRequest, GetMinuteBarsResponse, GetSizeThresholdsRequest,
+    GetMinuteBarsRequest, GetMinuteBarsResponse, GetSizeThresholdsRequest,
     GetTradingSessionsRequest, MinuteBar, TimeRange,
 };
 use serde::{Deserialize, Serialize};
@@ -29,12 +29,6 @@ impl Dominant {
             self.trading_day == self.source_trading_day,
             "dominant REST has not advanced beyond the preceding live trading day"
         );
-        ensure!(
-            self.scheduled_next.starts_with("sn")
-                && self.scheduled_next.len() == 6
-                && self.scheduled_next[2..].bytes().all(|b| b.is_ascii_digit()),
-            "missing native scheduled tin dominant"
-        );
         Ok(Self {
             contract: self.scheduled_next.clone(),
             trading_day: day,
@@ -42,7 +36,32 @@ impl Dominant {
         })
     }
 }
+fn native_contract(cfg: &Config, code: &str) -> Result<String> {
+    let prefix = cfg.native_prefix();
+    let (product, month) = code
+        .split_at_checked(prefix.len())
+        .context("missing dominant month")?;
+    ensure!(
+        product.eq_ignore_ascii_case(&prefix)
+            && matches!(month.len(), 3 | 4)
+            && month.bytes().all(|b| b.is_ascii_digit())
+            && month[month.len() - 2..]
+                .parse::<u8>()
+                .is_ok_and(|m| (1..=12).contains(&m)),
+        "invalid dominant for {}/{}: {code}",
+        cfg.exchange,
+        cfg.symbol
+    );
+    let month = if cfg.exchange == "CZCE" {
+        &month[month.len() - 3..]
+    } else {
+        ensure!(month.len() == 4, "invalid SHFE maturity: {code}");
+        month
+    };
+    Ok(format!("{prefix}{month}"))
+}
 pub async fn dominant(cfg: &Config) -> Result<Dominant> {
+    let (exchange, _) = cfg.exchange_codes()?;
     let response: serde_json::Value = reqwest::Client::new()
         .get(&cfg.dominant_url)
         .timeout(std::time::Duration::from_secs(8))
@@ -57,7 +76,7 @@ pub async fn dominant(cfg: &Config) -> Result<Dominant> {
     let matches: Vec<_> = rows
         .iter()
         .filter(|r| {
-            r["exchange"] == "xsge"
+            r["exchange"] == exchange.as_str()
                 && r["product"]
                     .as_str()
                     .is_some_and(|s| s.eq_ignore_ascii_case(&cfg.symbol))
@@ -65,7 +84,9 @@ pub async fn dominant(cfg: &Config) -> Result<Dominant> {
         .collect();
     ensure!(
         matches.len() == 1,
-        "REST must return one SHFE/SN dominant row"
+        "REST must return one {}/{} dominant row",
+        cfg.exchange,
+        cfg.symbol
     );
     let row = matches[0];
     ensure!(
@@ -78,25 +99,23 @@ pub async fn dominant(cfg: &Config) -> Result<Dominant> {
             .context("missing dominant trading day")?,
         "%Y-%m-%d",
     )?;
-    let contract = row["dominant"]
-        .as_str()
-        .context("missing current dominant")?
-        .to_string();
-    ensure!(
-        contract.starts_with("sn")
-            && contract.len() == 6
-            && contract[2..].bytes().all(|b| b.is_ascii_digit()),
-        "dominant is not a native tin contract"
-    );
+    let contract = native_contract(
+        cfg,
+        row["dominant"]
+            .as_str()
+            .context("missing current dominant")?,
+    )?;
     let trading_day = day.format("%Y%m%d").to_string().parse()?;
     Ok(Dominant {
         contract,
         trading_day,
         source_trading_day: trading_day,
-        scheduled_next: row["scheduled_next"]
-            .as_str()
-            .context("missing next dominant")?
-            .to_string(),
+        scheduled_next: native_contract(
+            cfg,
+            row["scheduled_next"]
+                .as_str()
+                .context("missing next dominant")?,
+        )?,
     })
 }
 /// Network history retained only in memory. Repeated tail requests replace
@@ -125,7 +144,7 @@ impl History {
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(30),
             client.get_minute_bars(GetMinuteBarsRequest {
-                exchange: Exchange::Shfe as i32,
+                exchange: cfg.exchange_codes()?.1 as i32,
                 contract: main.contract.clone(),
                 include_empty_minutes: true,
                 range: Some(Range::Time(TimeRange {
@@ -136,13 +155,14 @@ impl History {
         )
         .await?;
         match response {
-            Ok(response) => self.merge(main, response.into_inner(), start, end),
+            Ok(response) => self.merge(cfg, main, response.into_inner(), start, end),
             Err(error) if self.minutes.is_empty() && error.code() as i32 == 5 => Ok(()),
             Err(error) => Err(error.into()),
         }
     }
     pub fn merge(
         &mut self,
+        cfg: &Config,
         main: &Dominant,
         response: GetMinuteBarsResponse,
         start: i64,
@@ -152,9 +172,9 @@ impl History {
             .contract
             .context("gRPC omitted contract metadata")?;
         ensure!(
-            metadata.exchange == Exchange::Shfe as i32
-                && metadata.product == "SN"
-                && metadata.native_code == main.contract,
+            metadata.exchange == cfg.exchange_codes()?.1 as i32
+                && metadata.product == cfg.symbol
+                && native_contract(cfg, &metadata.native_code)? == main.contract,
             "gRPC returned another contract"
         );
         ensure!(
@@ -208,27 +228,28 @@ impl History {
 }
 
 pub async fn parameters(cfg: &Config) -> Result<super::live::Context> {
+    let (exchange, grpc_exchange) = cfg.exchange_codes()?;
     let load = async {
         let mut client = CnFuturesMarketClient::connect(cfg.history_grpc.clone())
             .await
             .context("connect native futures parameter gRPC")?;
         let thresholds = client
             .get_size_thresholds(GetSizeThresholdsRequest {
-                exchange: Exchange::Shfe as i32,
-                product: "SN".into(),
+                exchange: grpc_exchange as i32,
+                product: cfg.symbol.clone(),
             })
             .await
-            .context("GetSizeThresholds SHFE/SN")?
+            .with_context(|| format!("GetSizeThresholds {}/{}", cfg.exchange, cfg.symbol))?
             .into_inner();
         let sessions = client
             .get_trading_sessions(GetTradingSessionsRequest {
-                exchange: Exchange::Shfe as i32,
-                product: "SN".into(),
+                exchange: grpc_exchange as i32,
+                product: cfg.symbol.clone(),
             })
             .await
-            .context("GetTradingSessions SHFE/SN")?
+            .with_context(|| format!("GetTradingSessions {}/{}", cfg.exchange, cfg.symbol))?
             .into_inner();
-        super::live::Context::new(thresholds, sessions)
+        super::live::Context::new(exchange, &cfg.symbol, thresholds, sessions)
     };
     tokio::time::timeout(std::time::Duration::from_secs(30), load).await?
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Environment-local lifecycle for the SDK-free SHFE/SN target worker."""
+"""Environment-local lifecycle for the SDK-free domestic futures target worker."""
 import argparse
 import datetime as dt
 import hashlib
@@ -14,6 +14,8 @@ import tempfile
 
 BASE = Path(__file__).resolve().parent.parent
 CONFIG = BASE / "config/cta_cn_futures.json"
+POSITION_FILES = ("positions.json", "positions_1min.json", "positions_5min.json", "positions_15min.json")
+TARGET_FILES = ("targets.json", "targets_1min.json", "targets_5min.json", "targets_15min.json")
 
 
 def environment_name(cfg):
@@ -44,23 +46,48 @@ def save(path, value):
     temporary.replace(path)
 
 
-def preflight(cfg, binary):
+def product_configs(cfg, config_path):
+    return {
+        (config_path.parent / entry).resolve(): json.loads(
+            (config_path.parent / entry).read_text())
+        for entry in cfg.get("additional_products", ())
+    }
+
+
+def copy_snapshots(source, dest, filenames):
+    for name in filenames:
+        path = source / name
+        if path.is_file():
+            dest.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, dest / name)
+
+
+def preflight(cfg, binary, config_path=None):
+    products = product_configs(cfg, config_path or CONFIG)
     data = BASE / cfg["data_directory"]
     # Only the factual ledger is copied. All market inputs come from gRPC;
     # this validation never locks or changes the running generation's ledger.
     with tempfile.TemporaryDirectory(prefix="cta-cn-preflight-", dir=BASE) as temp:
         stage = Path(temp)
-        for name in ("positions.json", "positions_1min.json", "positions_5min.json", "positions_15min.json"):
-            source = data / name
-            if source.is_file():
-                shutil.copy2(source, stage / source.name)
-        save(stage / "config.json", dict(cfg, data_directory=str(stage)))
+        copy_snapshots(data, stage, POSITION_FILES)
+        for product in products.values():
+            directory = Path("products") / product["symbol"]
+            copy_snapshots(data / directory, stage / directory, POSITION_FILES)
+        candidate = dict(cfg, data_directory=str(stage))
+        if products:
+            candidate["additional_products"] = [str(path) for path in products]
+        save(stage / "config.json", candidate)
         result = run([binary, "--config", stage / "config.json", "--preflight"],
                      capture_output=True, text=True)
         receipt = json.loads(result.stdout)
         if (not receipt["positions_preserved"] or
                 (cfg.get("enabled", True) and receipt["ready_rules"] != receipt["total_rules"])):
             raise RuntimeError("replacement preflight did not preserve a ready factual ledger")
+        for product in products.values():
+            result = receipt.get("products", {}).get(product["symbol"])
+            if (not result or not result["positions_preserved"] or
+                    (product.get("enabled", True) and result["ready_rules"] != result["total_rules"])):
+                raise RuntimeError(f'preflight failed for {product["symbol"]}')
         receipt["binary_sha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()
         save(data / "preflight.json", receipt)
         print(json.dumps(receipt))
@@ -82,16 +109,18 @@ def main():
     if (args.binary or args.config) and args.action != "preflight":
         parser.error("candidate paths are supported only for preflight")
     binary = (args.binary or BASE / "cta-cn-futures").resolve()
-    cfg = json.loads((args.config or CONFIG).read_text())
+    config_path = args.config or CONFIG
+    cfg = json.loads(config_path.read_text())
     name = environment_name(cfg)
-    if (cfg["exchange"], cfg["symbol"]) != ("SHFE", "SN"):
-        raise RuntimeError("this lifecycle owns SHFE/SN only")
+    products = product_configs(cfg, config_path)
+    markets = ",".join(f'{product["exchange"]}/{product["symbol"]}'
+                       for product in [cfg, *products.values()])
     if args.action != "status" and not args.execute:
-        print(f"[DRY-RUN] env={BASE} exchange=SHFE symbol_scope=SN "
+        print(f"[DRY-RUN] env={BASE} symbol_scope={markets} "
               f"action={args.action} role=absolute-lot-targets")
         return
     if args.action == "preflight":
-        preflight(cfg, binary)
+        preflight(cfg, binary, config_path)
         return
     rows = [p for p in processes() if p["name"] == name]
     for p in rows:
@@ -102,7 +131,7 @@ def main():
                                status=p["pm2_env"]["status"]) for p in rows]))
         return
     if args.action in ("start", "restart"):
-        preflight(cfg, binary)
+        preflight(cfg, binary, config_path)
     if args.action == "start" and any(p["pm2_env"]["status"] == "online" for p in rows):
         print("[INFO] already online; use restart to replace this generation")
         return
@@ -114,11 +143,12 @@ def main():
                 path = Path(p["pm2_env"][key])
                 if path.is_file():
                     shutil.copy2(path, backup / path.name)
-        for snapshot_name in ("positions.json", "targets.json", "positions_1min.json", "targets_1min.json",
-                              "positions_5min.json", "targets_5min.json", "positions_15min.json", "targets_15min.json", "manager_publication.json"):
-            source = BASE / cfg["data_directory"] / snapshot_name
-            if source.exists():
-                shutil.copy2(source, backup / snapshot_name)
+        data = BASE / cfg["data_directory"]
+        files = (*POSITION_FILES, *TARGET_FILES, "manager_publication.json")
+        copy_snapshots(data, backup, files)
+        for product in products.values():
+            directory = Path("products") / product["symbol"]
+            copy_snapshots(data / directory, backup / directory, files)
     if args.action == "stop":
         if rows:
             run(["pm2", "stop", name])

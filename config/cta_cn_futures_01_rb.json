@@ -1,0 +1,69 @@
+{
+  "name": "cta-cn_futures-01",
+  "exchange": "SHFE",
+  "symbol": "RB",
+  "interval": "1h",
+  "enabled": true,
+  "lots_per_rule": 1,
+  "dominant_url": "http://127.0.0.1:18313/api/v1/dominant",
+  "history_grpc": "http://127.0.0.1:18312",
+  "history_days": 120,
+  "zmq_endpoint": "tcp://10.61.20.12:13005",
+  "data_directory": "data/products/RB",
+  "bind": "127.0.0.1:19401",
+  "entry": {
+    "factor_long_quantile": 0.9,
+    "factor_short_quantile": 0.1,
+    "nq_change_enabled": true,
+    "nq_long_quantile": 0.5,
+    "nq_short_quantile": 0.5
+  },
+  "exits": {
+    "factor_exit_quantile_long": 0.3,
+    "factor_exit_quantile_short": 0.7
+  },
+  "rules": [
+    {
+      "symbol": "RB",
+      "factor": "baseline_102",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "RB",
+      "factor": "factor_131",
+      "sign": -1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "RB",
+      "factor": "factor_128",
+      "sign": -1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "RB",
+      "factor": "baseline_035",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "RB",
+      "factor": "baseline_075",
+      "sign": 1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "RB",
+      "factor": "baseline_052",
+      "sign": 1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "RB",
+      "factor": "td_ti_031",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    }
+  ]
+}

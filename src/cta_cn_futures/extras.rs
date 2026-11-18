@@ -181,14 +181,14 @@ impl Extras {
                 atomic(
                     &slot
                         .config
-                        .data_directory
+                        .state_directory()
                         .join(format!("positions_{}.json", interval.name())),
                     &slot.engine.ledger,
                 )?;
                 atomic(
                     &slot
                         .config
-                        .data_directory
+                        .state_directory()
                         .join(format!("targets_{}.json", interval.name())),
                     &slot.engine.targets(),
                 )?;

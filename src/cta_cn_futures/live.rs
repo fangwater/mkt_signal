@@ -21,43 +21,77 @@ pub enum Event {
     Reset,
     Quote(Box<MarketDataMsg>),
 }
-pub fn capture(cfg: &Config) -> Result<crossbeam_channel::Receiver<Event>> {
-    let (tx, rx) = crossbeam_channel::bounded(131072);
-    let endpoint = cfg.zmq_endpoint.clone();
+pub fn capture<'a>(
+    endpoint: &str,
+    configs: impl Iterator<Item = &'a Config>,
+) -> Result<Vec<crossbeam_channel::Receiver<Event>>> {
+    struct Product {
+        venue: String,
+        prefix: String,
+        month_len: usize,
+        tx: crossbeam_channel::Sender<Event>,
+        lost: bool,
+    }
+
+    let mut receivers = Vec::new();
+    let mut products: Vec<_> = configs
+        .map(|cfg| {
+            let (tx, rx) = crossbeam_channel::bounded(131072);
+            receivers.push(rx);
+            Product {
+                venue: cfg.exchange.clone(),
+                prefix: cfg.native_prefix(),
+                month_len: if cfg.exchange == "CZCE" { 3 } else { 4 },
+                tx,
+                lost: true,
+            }
+        })
+        .collect();
+    let endpoint = endpoint.to_owned();
     std::thread::Builder::new()
         .name("cn-md-ingress".into())
         .spawn(move || loop {
             let result = (|| -> Result<()> {
                 let mut source = ZmqSource::new(&endpoint, 131072)?;
-                let mut lost = true;
+                for product in &mut products {
+                    product.lost = true;
+                }
                 loop {
-                    if lost {
-                        match tx.try_send(Event::Reset) {
-                            Ok(()) => lost = false,
-                            Err(crossbeam_channel::TrySendError::Full(_)) => {}
-                            Err(crossbeam_channel::TrySendError::Disconnected(_)) => return Ok(()),
+                    products.retain_mut(|product| {
+                        if product.lost {
+                            match product.tx.try_send(Event::Reset) {
+                                Ok(()) => product.lost = false,
+                                Err(crossbeam_channel::TrySendError::Full(_)) => {}
+                                Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                                    return false;
+                                }
+                            }
                         }
+                        true
+                    });
+                    if products.is_empty() {
+                        return Ok(());
                     }
                     if let Some(q) = source.poll()? {
-                        let event = if q.flags & SOURCE_RESET != 0 {
-                            Some(Event::Reset)
-                        } else if q.venue() == b"SHFE"
-                            && q.symbol().len() == 6
-                            && q.symbol().starts_with(b"sn")
+                        if q.flags & SOURCE_RESET != 0 {
+                            for product in &mut products {
+                                product.lost = true;
+                            }
+                        } else if let Some(product) = products
+                            .iter_mut()
+                            .find(|product| {
+                                q.venue() == product.venue.as_bytes()
+                                    && q.symbol()
+                                        .strip_prefix(product.prefix.as_bytes())
+                                        .is_some_and(|month| {
+                                            month.len() == product.month_len
+                                                && month.iter().all(u8::is_ascii_digit)
+                                        })
+                            })
+                            .filter(|product| !product.lost)
                         {
-                            Some(Event::Quote(Box::new(q)))
-                        } else {
-                            None
-                        };
-                        if !lost {
-                            if let Some(event) = event {
-                                match tx.try_send(event) {
-                                    Ok(()) => {}
-                                    Err(crossbeam_channel::TrySendError::Full(_)) => lost = true,
-                                    Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
-                                        return Ok(())
-                                    }
-                                }
+                            if product.tx.try_send(Event::Quote(Box::new(q))).is_err() {
+                                product.lost = true;
                             }
                         }
                     } else {
@@ -73,27 +107,36 @@ pub fn capture(cfg: &Config) -> Result<crossbeam_channel::Receiver<Event>> {
                 }
             }
         })?;
-    Ok(rx)
+    Ok(receivers)
 }
 
 /// All market parameters come from the dedicated gRPC methods, once per catch-up.
 #[derive(Clone)]
 pub struct Context {
+    exchange: Exchange,
+    product: String,
     thresholds: BTreeMap<u32, SizeThreshold>,
     windows: Vec<SessionWindow>,
     pub snapshot_as_of: String,
 }
 impl Context {
     pub fn new(
+        exchange: Exchange,
+        symbol: &str,
         thresholds: GetSizeThresholdsResponse,
         sessions: GetTradingSessionsResponse,
     ) -> Result<Self> {
         let mut selected = thresholds
             .products
             .into_iter()
-            .filter(|p| p.product == "SN");
-        let product = selected.next().context("gRPC has no SN size thresholds")?;
-        ensure!(selected.next().is_none(), "duplicate SN threshold product");
+            .filter(|p| p.product == symbol);
+        let product = selected
+            .next()
+            .with_context(|| format!("gRPC has no {symbol} size thresholds"))?;
+        ensure!(
+            selected.next().is_none(),
+            "duplicate {symbol} threshold product"
+        );
         let mut thresholds = BTreeMap::new();
         for row in product.thresholds {
             ensure!(
@@ -115,11 +158,16 @@ impl Context {
             );
         }
         ensure!(!thresholds.is_empty(), "gRPC size thresholds are not ready");
-        let mut selected = sessions.products.into_iter().filter(|p| p.product == "SN");
-        let product = selected.next().context("gRPC has no SN sessions")?;
+        let mut selected = sessions
+            .products
+            .into_iter()
+            .filter(|p| p.product == symbol);
+        let product = selected
+            .next()
+            .with_context(|| format!("gRPC has no {symbol} sessions"))?;
         ensure!(
             selected.next().is_none() && !product.windows.is_empty(),
-            "missing or duplicate SN session product"
+            "missing or duplicate {symbol} session product"
         );
         for w in &product.windows {
             ensure!(
@@ -133,6 +181,8 @@ impl Context {
         NaiveDate::parse_from_str(&sessions.snapshot_as_of, "%Y-%m-%d")
             .context("gRPC session snapshot missing or invalid")?;
         Ok(Self {
+            exchange,
+            product: symbol.into(),
             thresholds,
             windows: product.windows,
             snapshot_as_of: sessions.snapshot_as_of,
@@ -241,7 +291,7 @@ impl Input {
         self.context.threshold(q.exchange_ts_us)?;
         let ts_ms = q.exchange_ts_us / 1000;
         if !self.context.allows(ts_ms)
-            && !is_auction_ts(ts_ms / 1000, Exchange::Xsge)
+            && !is_auction_ts(ts_ms / 1000, self.context.exchange)
             && !self.context.ends_after(ts_ms - 60_000)
         {
             return Ok(());
@@ -267,7 +317,7 @@ impl Input {
         self.snaps.push(Snapshot {
             trad_day: NaiveDate::parse_from_str(&q.trading_day.to_string(), "%Y%m%d")?,
             instrument_id: main.contract.clone(),
-            product_id: "SN".into(),
+            product_id: self.context.product.clone(),
             event_time: time,
             seq: i64::try_from(q.source_sequence).context("invalid native sequence")?,
             source_row: self.snaps.len() as u32,
@@ -290,7 +340,7 @@ impl Input {
         if self.snaps.is_empty() {
             return Ok(Vec::new());
         }
-        let events = process_instrument(&mut self.snaps, Exchange::Xsge)?;
+        let events = process_instrument(&mut self.snaps, self.context.exchange)?;
         let trades: Vec<_> = events
             .trades
             .iter()
@@ -308,7 +358,7 @@ impl Input {
         }
         let segments = cn_futures_core::segments::split_depth_segments(
             &seconds,
-            Exchange::Xsge,
+            self.context.exchange,
             &main.contract,
         );
         let segments = cn_futures_core::baseline_1min::minute_segments_from_seconds(&segments);
@@ -336,7 +386,7 @@ impl Input {
             let ms = row.ts * 1000;
             if ms <= self.processed_minute_ms
                 || ms >= before_ms
-                || is_auction_ts(row.ts, Exchange::Xsge)
+                || is_auction_ts(row.ts, self.context.exchange)
                 || !self.context.allows(ms)
             {
                 continue;

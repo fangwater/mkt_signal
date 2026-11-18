@@ -164,7 +164,13 @@ async fn lost_ack_retries_the_identical_batch_after_process_restart() {
         .contains("test-secret"));
     let mut restarted =
         Client::with_token(&settings, "cn-futures-01".into(), path, "test-secret").unwrap();
+    assert!(restarted
+        .check_pending_members(desired.positions.keys())
+        .is_ok());
+    let new_roster = BTreeSet::from(["cn-futures-01-rb-1h".to_owned()]);
+    assert!(restarted.check_pending_members(new_roster.iter()).is_err());
     assert!(restarted.deliver().await.unwrap().is_some());
+    assert!(restarted.check_pending_members(new_roster.iter()).is_ok());
     let state = state.lock().unwrap();
     assert_eq!(state.requests.len(), 2);
     assert_eq!(state.requests[0], state.requests[1]);

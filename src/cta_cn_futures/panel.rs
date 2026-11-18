@@ -229,7 +229,7 @@ pub(super) fn router(
 ) -> Result<Router> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let path = cfg.data_directory.join("config-access-token");
+    let path = cfg.state_directory().join("config-access-token");
     if !path.exists() {
         let mut file = std::fs::OpenOptions::new()
             .create_new(true)
@@ -296,7 +296,7 @@ pub(super) fn apply(
     {
         return Err(CatalogConflict("configuration changed; reload before saving (external file changes require a worker restart)".into()).into());
     }
-    let next = request.configuration.merge(&current)?;
+    let next = request.configuration.merge(cfg)?;
     let changed = revision(&next)? != revision(&current)?;
     let replacement = if changed {
         Some(engine.reconfigure(&next)?)
@@ -409,10 +409,8 @@ pub(super) fn apply_extra(
         "15min" => crate::cta_factor_calc::config::Interval::FifteenMinutes,
         _ => anyhow::bail!("unsupported native CTA frequency"),
     };
-    let next_frequency = request
-        .configuration
-        .merge(&current.for_interval(interval))?;
-    let mut next = current.clone();
+    let next_frequency = request.configuration.merge(&cfg.for_interval(interval))?;
+    let mut next = cfg.clone();
     next.frequencies.insert(
         interval.name().into(),
         FrequencyConfig {
