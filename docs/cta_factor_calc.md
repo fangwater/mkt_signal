@@ -359,12 +359,13 @@ Prep 和 Spread 的所有频段普通因子共用当前窗口全量截断算法�
 | 标准化因子交易分位 | 48 根 | 24 根 | `count(z ≤ 当前 z) / count(有效 z)`，含当前根 |
 | NQ 极值 / 变化值分位 | 120 根 / 120 根 | 60 个有效变化值 | Tardis 小时 BBO mid 预热，Kafka 部分使用封闭 bar 的 mid，无额外滞后 |
 
-所有包含 1h 因子的部署、配置变更与新计算代次，都必须先导入对应市场的本地
+加密 CTA 包含 1h 因子的部署、配置变更与新计算代次，都必须先导入对应市场的本地
 Tardis 历史。Kline 是有效的输入格式：从 Tardis 成交聚合小时 OHLC、成交量与
 大小单字段；盘口因子、BBO NQ 和价差另外使用 Tardis L2。普通因子、NQ 与价差
 沿用线上窗口和样本门槛。不能拿 Binance 历史预热 OKX 因子，也不再以 Binance
 REST Kline 作为小时 NQ 的独立启动兜底。历史种子不生成持仓或发布历史因子点。
-具体构建和启动校验见下文“原生小时预热输入”。
+具体构建和启动校验见下文“1h 原生输入历史包”。国内期货启动使用国内行情 gRPC，
+实时接续使用公司 ZMQ，见 [国内期货 CTA](cta_cn_futures.md#数据接续)。
 
 交易分位不足 24 个有效 z 或当前原始因子无效时输出未知并保持仓位。1h 的开多 / 平多
 默认阈值为严格高于 0.90 / 严格低于 0.30；开空 / 平空为严格低于 0.10 / 严格高于 0.70。
@@ -618,7 +619,7 @@ cta-hourly-history minute-state --config /path/to/cta_factor_spread.toml \
   --output /path/to/minute_formula_state.json
 ```
 
-这是本进程计算状态的延续，不替代任何 1h 的 Tardis 预热，也不重建历史持仓。
+这是本进程计算状态的延续。加密 CTA 的 1h 因子仍须导入 Tardis 历史，历史持仓不重建。
 `--minute-state /path/to/file` 可用于离线预检/回放时明确指定检查点；生产默认读取
 `history_dir` 下的文件。`state.json.minute_formulas_restored.active/candidate` 给出恢复数量。
 

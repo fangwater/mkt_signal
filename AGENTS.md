@@ -262,13 +262,28 @@ Prefer existing config loaders and Redis sync/print scripts over ad hoc parsing.
 
 ## CTA Hourly Factor Warm-Up
 
-Whenever a CTA deployment, factor-list change, or replay includes `1h` factors,
-build and validate native hourly warm-up inputs locally from the matching
-market's Tardis history before publishing the change. Kline is a valid input
-format: construct its historical hourly bars from Tardis trades, adding Tardis
-`incremental_book_L2` when the factor, BBO-based NQ, or spread requires it.
-This applies to every market, including Binance and OKX, and to each hourly
-formula, NQ dependency, and both legs of an hourly spread. These hourly inputs are local synthesis products, not official Tardis hourly bars.
+### Domestic Futures CTA
+
+`cta-cn-futures` uses the domestic futures market gRPC service for startup
+history. Read the native contract's minute bars, trading sessions, and monthly
+size thresholds, then construct hourly bars using the strategy's domestic
+session aggregation. Use the environment-local preflight to verify that all
+enabled rules are ready and the factual position ledger is preserved before
+replacing the worker. Live readiness requires matching the first complete ZMQ
+minute to the finalized gRPC minute, then consuming the subsequent buffered ZMQ
+minutes in order. See [Domestic futures CTA](docs/cta_cn_futures.md#数据接续).
+
+### Crypto CTA
+
+The Tardis archive and Kafka continuity requirements in this section apply to
+crypto CTA. Whenever a crypto CTA deployment, factor-list change, or replay
+includes `1h` factors, build and validate native hourly warm-up inputs locally
+from the matching venue's Tardis history before publishing the change. Kline is
+a valid input format. Construct historical hourly bars from Tardis trades and
+add Tardis `incremental_book_L2` when the factor, BBO-based NQ, or spread
+requires it. This applies to every crypto venue, including Binance and OKX, and
+covers each hourly formula, NQ dependency, and both legs of an hourly spread.
+The hourly inputs are synthesized locally from Tardis raw data.
 
 Do not substitute exchange REST Klines, Kafka retention plus future live
 accumulation, another venue's history, or precomputed factor scores for this
@@ -277,7 +292,7 @@ quantity units and factual previous-month size classification. Build enough
 history to validate the requested factors with the real engine; investigate
 unready or null-valued outputs rather than weakening readiness gates.
 
-Before stopping any current worker, validate the archive's market/symbol
+Before stopping the current crypto worker, validate the archive's market/symbol
 coverage, SHA-256 hashes, closed-hour bounds and continuity through the first
 retained Kafka source hour. Missing files or an uncovered interval must block
 the replacement, with the current live generation and position ledgers retained.
@@ -285,6 +300,9 @@ Preserve already-warm ordinary minute normalization/rank windows when
 restarting a shared worker. A minute checkpoint may continue only this
 worker's factual live state with matching definitions and size thresholds;
 it is never a substitute for Tardis hourly inputs.
+
+### All CTA Workers
+
 Historical warm-up must not publish past targets, reconstruct historical
 positions or enable a disabled strategy. Keep an explicit deployment receipt
 of per-market inputs, per-frequency readiness and preserved live state.

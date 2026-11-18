@@ -64,6 +64,9 @@ PM2 管理。范围为 `SHFE/SN`，支持 `1min / 5min / 15min / 1h`；各频率
 
 ## 数据接续
 
+国内期货 CTA 按原生合约和交易时段计算。启动时用国内行情 gRPC 的分钟数据、时段和分桶阈值
+预热各频段，接续完成后使用公司 ZMQ 实时行情。Tardis 小时归档和 Kafka 接续是加密 CTA 的预热要求。
+
 1. 启动后立即订阅公司 ZMQ `tcp://10.61.20.12:13005`，在内存中持续接收。
 2. 从 REST `http://127.0.0.1:18313/api/v1/dominant` 选择 `xsge/SN` 的原生合约。
    下一原生交易日只采用明确的 `scheduled_next`，不推算交割月份。
@@ -165,8 +168,8 @@ cd /home/fanghaizhou/cta-cn_futures-01
 ./scripts/cta_cn_futures_process.sh restart --execute
 ```
 
-省略 `--execute` 只打印计划。preflight 在临时目录仅复制事实账本，通过 gRPC
-验证新参数接口、输入和启用频率的因子就绪，并复制各频率事实账本；失败则不停止现有进程。支持
+省略 `--execute` 只打印计划。preflight 在临时目录使用各频率事实账本的副本，通过国内行情 gRPC
+验证历史分钟、交易时段、分桶阈值和启用频率的因子就绪。预检失败时保留现有进程。支持
 `preflight --binary <候选文件> --config <候选配置> --execute`，便于安装前检查。
 停止或重启前保存日志与账本，不使用裸 PM2 命令操作环境。
 
