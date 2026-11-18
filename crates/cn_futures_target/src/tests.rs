@@ -1,6 +1,6 @@
 use super::wire::{
     manager_plans_server::{ManagerPlans, ManagerPlansServer},
-    PlanSubscription, PlanUpdate, PositionTarget,
+    PlanStatus, PlanSubscription, PlanUpdate, PositionTarget,
 };
 use super::{ingress::now_us, wire::Admission, *};
 use std::sync::{
@@ -136,11 +136,20 @@ impl ManagerPlans for Arc<MockManager> {
         assert_eq!(request.get_ref().source_id, "account-a");
         assert_eq!(request.get_ref().observe_only, self.observation);
         let mut plans = self.plan.subscribe();
+        let observation = self.observation;
         self.subscriptions.fetch_add(1, Ordering::Release);
         let updates = async_stream::stream! {
             loop {
                 let target = plans.borrow_and_update().clone();
-                yield Ok(PlanUpdate { target });
+                let (status, batch_id, target_revision) = match &target {
+                    Some(target) => (
+                        if observation { PlanStatus::NoExternalDemand } else { PlanStatus::Ready },
+                        target.batch_id.clone(),
+                        target.target_revision,
+                    ),
+                    None => (PlanStatus::NoBatch, String::new(), 0),
+                };
+                yield Ok(PlanUpdate { target, status: status.into(), batch_id, target_revision });
                 if plans.changed().await.is_err() { break; }
             }
         };
@@ -251,4 +260,27 @@ async fn read_only_subscription_observes_existing_targets_without_an_execution_l
     })
     .await;
     server.abort();
+}
+
+#[test]
+fn blocked_and_observational_statuses_cannot_carry_executable_targets() {
+    let decision = now_us();
+    let target = target(2, decision).into_wire(decision);
+    let mut update = PlanUpdate {
+        status: PlanStatus::AccountNotReady.into(),
+        batch_id: target.batch_id.clone(),
+        target_revision: target.target_revision,
+        target: None,
+    };
+    assert_eq!(
+        manager::update_status(&update, false).unwrap(),
+        PlanStatus::AccountNotReady
+    );
+    update.target = Some(target);
+    assert!(manager::update_status(&update, false).is_err());
+    update.status = PlanStatus::Ready.into();
+    assert!(manager::update_status(&update, false).is_ok());
+    assert!(manager::update_status(&update, true).is_err());
+    update.status = PlanStatus::Unspecified.into();
+    assert!(manager::update_status(&update, false).is_err());
 }

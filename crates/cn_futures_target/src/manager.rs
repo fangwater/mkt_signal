@@ -1,6 +1,10 @@
 use super::{
     ingress::{now_us, Service, MAX_WIRE_SIZE},
-    wire::{manager_plans_client::ManagerPlansClient, Admission, PlanSubscription, PositionTarget},
+    valid_id,
+    wire::{
+        manager_plans_client::ManagerPlansClient, Admission, PlanStatus, PlanSubscription,
+        PlanUpdate, PositionTarget,
+    },
 };
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
@@ -13,6 +17,44 @@ use tonic::{
 };
 
 const INITIAL_BACKOFF: Duration = Duration::from_millis(25);
+
+pub(super) fn update_status(update: &PlanUpdate, observation: bool) -> Result<PlanStatus> {
+    let status = PlanStatus::try_from(update.status).context("unknown Manager plan status")?;
+    ensure!(
+        status != PlanStatus::Unspecified,
+        "Manager plan status is missing"
+    );
+    if status == PlanStatus::NoBatch {
+        ensure!(
+            update.batch_id.is_empty() && update.target_revision == 0,
+            "empty Manager plan status refers to a batch"
+        );
+    } else {
+        ensure!(
+            valid_id(&update.batch_id) && update.target_revision > 0,
+            "invalid Manager plan status identity"
+        );
+    }
+    let expect_target = if observation {
+        matches!(
+            status,
+            PlanStatus::ObserveOnly | PlanStatus::NoExternalDemand
+        )
+    } else {
+        status == PlanStatus::Ready
+    };
+    ensure!(
+        update.target.is_some() == expect_target,
+        "Manager target payload does not match its status and subscription mode"
+    );
+    if let Some(target) = &update.target {
+        ensure!(
+            target.batch_id == update.batch_id && target.target_revision == update.target_revision,
+            "Manager target identity does not match its status"
+        );
+    }
+    Ok(status)
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -68,6 +110,13 @@ pub(crate) struct PlanReader {
     observation: bool,
 }
 
+struct SubscriptionState {
+    admitted: Option<PositionTarget>,
+    last_status: Option<(PlanStatus, String, i64)>,
+    last_error: Option<String>,
+    reconnect: Duration,
+}
+
 impl PlanReader {
     pub(crate) fn from_env(
         config: &ManagerPlanConfig,
@@ -100,31 +149,33 @@ impl PlanReader {
     }
 
     pub(crate) async fn run(self, service: Service) -> Result<()> {
-        let mut admitted = None;
-        let mut last_error = None;
-        let mut reconnect = Duration::from_millis(100);
+        let mut state = SubscriptionState {
+            admitted: None,
+            last_status: None,
+            last_error: None,
+            reconnect: Duration::from_millis(100),
+        };
         loop {
-            let outcome = self
-                .read_stream(&service, &mut admitted, &mut reconnect)
-                .await;
+            let outcome = self.read_stream(&service, &mut state).await;
             let error = outcome.err().map(|error| format!("{error:#}"));
-            if error != last_error {
+            if error != state.last_error {
                 if let Some(error) = &error {
-                    eprintln!("Manager target stream: {error}");
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({
+                            "type":"manager_plan_transport_error", "source_id":self.source_id,
+                            "level":"warn", "error":error,
+                        })
+                    );
                 }
-                last_error = error;
+                state.last_error = error;
             }
-            sleep(reconnect).await;
-            reconnect = (reconnect * 2).min(Duration::from_secs(2));
+            sleep(state.reconnect).await;
+            state.reconnect = (state.reconnect * 2).min(Duration::from_secs(2));
         }
     }
 
-    async fn read_stream(
-        &self,
-        service: &Service,
-        admitted: &mut Option<PositionTarget>,
-        reconnect: &mut Duration,
-    ) -> Result<()> {
+    async fn read_stream(&self, service: &Service, state: &mut SubscriptionState) -> Result<()> {
         let channel = self
             .endpoint
             .connect()
@@ -164,13 +215,35 @@ impl PlanReader {
                 biased;
                 update = stream.message() => {
                     let update = update?.context("Manager plan subscription closed")?;
-                    *reconnect = Duration::from_millis(100);
+                    let status = update_status(&update, self.observation)?;
+                    state.reconnect = Duration::from_millis(100);
                     if first_update {
                         eprintln!("Manager target subscription connected: source={} observe_only={}",
                             self.source_id, self.observation);
+                        if state.last_error.take().is_some() {
+                            eprintln!("{}", serde_json::json!({
+                                "type":"manager_plan_transport_recovered","level":"info",
+                                "source_id":self.source_id,
+                            }));
+                        }
                         first_update = false;
                     }
-                    let next = update.target.filter(|plan| admitted.as_ref() != Some(plan));
+                    let status_key = (status, update.batch_id, update.target_revision);
+                    if state.last_status.as_ref() != Some(&status_key) {
+                        let level = match status {
+                            PlanStatus::Ready | PlanStatus::NoBatch | PlanStatus::NoExternalDemand |
+                            PlanStatus::ObserveOnly | PlanStatus::Refreshing => "info",
+                            _ => "warn",
+                        };
+                        eprintln!("{}", serde_json::json!({
+                            "type":"manager_plan_status","level":level,"source_id":self.source_id,
+                            "observe_only":self.observation,"batch_id":status_key.1,
+                            "target_revision":status_key.2,
+                            "status":status.as_str_name().trim_start_matches("PLAN_STATUS_").to_ascii_lowercase(),
+                        }));
+                        state.last_status = Some(status_key);
+                    }
+                    let next = update.target.filter(|plan| state.admitted.as_ref() != Some(plan));
                     if next != pending {
                         pending = next;
                         delay = INITIAL_BACKOFF;
@@ -184,7 +257,7 @@ impl PlanReader {
                         Some(receipt) if receipt.admission == Admission::Accepted as i32 => {
                             eprintln!("Manager target delivered: source={} batch={} revision={} observe_only={}",
                                 receipt.source_id, receipt.batch_id, receipt.target_revision, self.observation);
-                            *admitted = pending.take();
+                            state.admitted = pending.take();
                         }
                         Some(receipt) => {
                             if rejection.as_ref() != Some(&receipt.reason) {

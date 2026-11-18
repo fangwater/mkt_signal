@@ -71,6 +71,14 @@ or previously recorded batch, and logs `ctaker_target_observed` inside the
 business loop. Observations have a zero execution lease. Executable
 subscriptions require a live lease and the existing account and market gates.
 
+Each subscription update includes the batch identity and a machine-readable
+plan status. The execution subscriber queues `ready` updates for admission.
+Status transitions are emitted as `manager_plan_status` JSON log events.
+Idle and read-only statuses use `info`. Blocking statuses such as
+`lease_expired` or `account_snapshot_stale` use `warn`. Connection or
+protocol errors emit `manager_plan_transport_error`. Deploy the Manager
+that emits plan statuses before upgrading its Exec subscribers.
+
 For an account configured to read Manager plans, use the matching
 `[ctaker].source_id`, and set `target_max_age_ms = 60000` to admit the full
 Manager lease promptly. Add the target reader to the Trader TOML.

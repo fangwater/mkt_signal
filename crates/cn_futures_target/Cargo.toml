@@ -11,6 +11,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 libc = "0.2"
 prost = "0.13"
 serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
 tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { version = "0.12", features = ["transport", "tls-webpki-roots"] }

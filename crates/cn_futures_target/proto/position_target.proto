@@ -19,6 +19,27 @@ message PlanUpdate {
   // An absent target clears pending delivery. An admitted target keeps its lease.
   // Observational targets have expires_at_us=0 and may omit the native day.
   PositionTarget target = 1;
+  PlanStatus status = 2;
+  string batch_id = 3;
+  int64 target_revision = 4;
+}
+
+enum PlanStatus {
+  PLAN_STATUS_UNSPECIFIED = 0;
+  PLAN_STATUS_READY = 1;
+  PLAN_STATUS_NO_BATCH = 2;
+  PLAN_STATUS_NO_EXTERNAL_DEMAND = 3;
+  PLAN_STATUS_OBSERVE_ONLY = 4;
+  PLAN_STATUS_MISSING_TRADING_DAY = 5;
+  PLAN_STATUS_LEASE_EXPIRED = 6;
+  PLAN_STATUS_DECISION_IN_FUTURE = 7;
+  PLAN_STATUS_REPLICA_NOT_READY = 8;
+  PLAN_STATUS_ACCOUNT_NOT_READY = 9;
+  PLAN_STATUS_ACCOUNT_SNAPSHOT_STALE = 10;
+  PLAN_STATUS_TRADING_DAY_MISMATCH = 11;
+  PLAN_STATUS_ACCOUNT_POSITIONS_UNCONFIRMED = 12;
+  PLAN_STATUS_EVIDENCE_ERROR = 13;
+  PLAN_STATUS_REFRESHING = 14;
 }
 
 message PositionTarget {
