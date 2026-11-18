@@ -1321,6 +1321,41 @@ impl MktChannel {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn arb_backward_queries_wait_for_market_cache() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                assert!(!MktChannel::is_initialized());
+                let (drained_tx, mut drained_rx) = tokio::sync::oneshot::channel();
+                let mut drained_tx = Some(drained_tx);
+                crate::arb_decision::spawn_backward_listener_loop("startup_test", move || {
+                    if let Some(drained_tx) = drained_tx.take() {
+                        let _ = drained_tx.send(());
+                    }
+                    false
+                });
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(15), &mut drained_rx)
+                        .await
+                        .is_err()
+                );
+
+                MKT_CHANNEL.with(|cache| {
+                    *cache.borrow_mut() = Some(MktChannelInner {
+                        quotes: Default::default(),
+                        funding_rates: Default::default(),
+                        mark_prices: Default::default(),
+                        index_prices: Default::default(),
+                    });
+                });
+                tokio::time::timeout(Duration::from_secs(1), drained_rx)
+                    .await
+                    .expect("queued query should be drained after the market cache is ready")
+                    .expect("backward listener stayed alive");
+            })
+            .await;
+    }
+
     #[test]
     fn askbid_dirty_symbol_keeps_latest_timestamp() {
         let mut dirty_symbols = HashMap::new();

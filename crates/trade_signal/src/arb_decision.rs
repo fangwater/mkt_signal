@@ -966,6 +966,11 @@ where
 {
     let fast_poll = crate::runtime_flags::enable_ipc_fast_poll();
     tokio::task::spawn_local(async move {
+        // Existing pre_trade workers may send queries while the signal
+        // process is still loading its initial configuration.
+        while !MktChannel::is_initialized() {
+            crate::runtime_flags::idle_poll_wait(false).await;
+        }
         log::info!("{source} backward listener started");
         loop {
             let has_message = drain_pending();
@@ -1077,7 +1082,6 @@ pub async fn attach_runtime_shell<FApply, FReceive, FReloadGet, FReloadSet>(
     refresh_min_qty_tables(source, venues, apply_tables).await;
     spawn_backward_listener_loop(source, drain_pending);
     spawn_tlen_threshold_reload_loop(source, reload_state, reload_set_local);
-    log::info!("{source} backward listener started");
 }
 
 pub async fn init_shell_runtime<T, FBuild, FApply, FReceive, FReloadGet, FReloadSet>(
