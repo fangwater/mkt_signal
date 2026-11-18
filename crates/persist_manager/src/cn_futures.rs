@@ -65,6 +65,9 @@ impl NativeStore {
                 write_buffer_size_bytes: Some(1024 * 1024),
                 db_write_buffer_size_bytes: Some(16 * 1024 * 1024),
                 max_write_buffer_number: Some(2),
+                // A collector may finish a fixed audit cut after the active
+                // WAL rotated. Retain ten minutes for factual incremental sync.
+                wal_ttl_seconds: Some(600),
             },
         )?;
         if let Some(existing) = store.get(META, b"identity")? {

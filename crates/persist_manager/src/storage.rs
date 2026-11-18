@@ -14,10 +14,14 @@ pub struct RocksDbTuning {
     pub write_buffer_size_bytes: Option<usize>,
     pub db_write_buffer_size_bytes: Option<usize>,
     pub max_write_buffer_number: Option<i32>,
+    pub wal_ttl_seconds: Option<u64>,
 }
 
 impl RocksDbTuning {
     fn apply_db_options(&self, opts: &mut Options) {
+        if let Some(seconds) = self.wal_ttl_seconds {
+            opts.set_wal_ttl_seconds(seconds);
+        }
         if let Some(size) = self.db_write_buffer_size_bytes {
             opts.set_db_write_buffer_size(size);
         }
@@ -584,6 +588,55 @@ mod tests {
             std::process::id(),
             unique
         ))
+    }
+
+    #[test]
+    fn retained_wal_survives_flush_rotation_and_reopen() {
+        let path = temp_db_path("native_wal_retention");
+        let tuning = RocksDbTuning {
+            wal_ttl_seconds: Some(600),
+            ..Default::default()
+        };
+        {
+            let store = RocksDbStore::open_with_tuning(
+                path.to_str().unwrap(),
+                &["cn_trading_events"],
+                true,
+                &tuning,
+            )
+            .unwrap();
+            for sequence in 1u64..=4 {
+                store
+                    .put("cn_trading_events", &sequence.to_be_bytes(), &[42; 4096])
+                    .unwrap();
+                store
+                    .db
+                    .flush_cf(store.db.cf_handle("cn_trading_events").unwrap())
+                    .unwrap();
+            }
+            assert!(std::fs::read_dir(path.join("archive"))
+                .unwrap()
+                .next()
+                .is_some());
+        }
+        let store = RocksDbStore::open_with_tuning(
+            path.to_str().unwrap(),
+            &["cn_trading_events"],
+            true,
+            &tuning,
+        )
+        .unwrap();
+        let mut wal = store.db.get_updates_since(0).unwrap();
+        for expected in 1u64..=4 {
+            let (sequence, batch) = wal.next().unwrap().unwrap();
+            assert_eq!(sequence, expected);
+            assert_eq!(batch.len(), 1);
+        }
+        assert!(wal.next().is_none());
+        wal.status().unwrap();
+        drop(wal);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
