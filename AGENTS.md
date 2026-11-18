@@ -209,7 +209,7 @@ SID_MARKETS = {
 The Tonglian domestic-futures replay and export pipeline (`cn_futures_l2`:
 RocksDB, 1s / 1min / ylabel / HFQ parquet) and the continuous-session trimmer
 (`cn_futures_trim`) moved to the post-market repository `market_replay`
-(GitHub `fangwater/market_replay`, local `/home/fanghaizhou/cn_futures_db`) on
+(GitHub `fangwater/market_replay`, local `/home/fanghaizhou/market_replay`) on
 2026-11-14. Do not restore them here; production runs and their rules
 (PostgreSQL multipliers only, no inline maps, panic on missing product) are
 documented there. The former root binary `tonglian_baseline_replay` stays
@@ -235,7 +235,7 @@ LSEG US-stock replay crates (`usstock_replay`, `usstock_lseg_mbp_replay`,
 `usstock_lseg_raw_replay`, `usstock_lseg_rawll2_replay`,
 `usstock_nasdaq_baseline`, `usstock_aggregate_baseline`) and their configs,
 scripts and docs moved to the post-market repository `market_replay`
-(GitHub `fangwater/market_replay`, local `/home/fanghaizhou/cn_futures_db`) on
+(GitHub `fangwater/market_replay`, local `/home/fanghaizhou/market_replay`) on
 2026-11-15. Run and maintain them there; their rules (keep the three LSEG
 source products separate, data contracts in `../preprocess/data_format/lseg/`)
 are documented there. `cme_roll_metadata` lives in that repository's shared
