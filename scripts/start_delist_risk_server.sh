@@ -245,7 +245,9 @@ fi
 if [[ "${DELIST_AUTO_DUMP_POSITION_RISK:-1}" == "1" ]]; then
   ARGS+=(--auto-dump-position-risk)
 fi
-if [[ "${DELIST_AUTO_FLATTEN_POSITION_RISK:-0}" == "1" ]]; then
+if [[ "${DELIST_AUTO_MAKER_CLOSE:-0}" == "1" ]]; then
+  ARGS+=(--auto-maker-close)
+elif [[ "${DELIST_AUTO_FLATTEN_POSITION_RISK:-0}" == "1" ]]; then
   ARGS+=(--auto-flatten-position-risk)
 fi
 

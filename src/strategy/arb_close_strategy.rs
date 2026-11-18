@@ -18,6 +18,7 @@ use order_common::TradeUpdate;
 use order_common::TradingVenue;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use signal_common::common::TradingLeg;
+use signal_common::delist_close::DELIST_CLOSE_FROM_KEY;
 use signal_common::open_signal::{ArbOpenCtx, ArbOpenCtxView};
 use signal_common::tick_math::QuantizedValue;
 use signal_common::trade_signal::{SignalType, TradeSignal};
@@ -94,6 +95,39 @@ impl ArbCloseStrategy {
 
     pub fn close_side(&self) -> Option<Side> {
         self.open_side()
+    }
+
+    pub(super) fn maintain_delist_close_at_l1(
+        &mut self,
+        side: Side,
+        price: f64,
+        expires: i64,
+        now: i64,
+    ) {
+        if self.force_taker_taker {
+            // The emergency order is already taker and must be reconciled first.
+            return;
+        }
+        if self.open_state.from_key == DELIST_CLOSE_FROM_KEY
+            && self.close_side() == Some(side)
+            && self.open_state.price_qv.get_val() == price
+        {
+            self.open_state.order.open_expire_ts = Some(expires);
+            return;
+        }
+        let Some(cancel_side) = self.close_side() else {
+            return;
+        };
+        self.handle_open_cancel_signal_common(OpenCancelInput {
+            signal_name: "DelistForceCloseReprice",
+            target_strategy_id: self.strategy_id(),
+            target_client_order_id: 0,
+            cancel_side,
+            cancel_reason: "delist_force_close",
+            trigger_ts: now,
+            from_key: DELIST_CLOSE_FROM_KEY.to_vec(),
+            mkt_ts: 0,
+        });
     }
 
     pub fn handle_unimmr_recover_cancel(&mut self, trigger_ts: i64) -> bool {
@@ -378,6 +412,9 @@ impl ArbCloseStrategy {
                     return;
                 }
             };
+            if ctx.from_key.as_ref() == DELIST_CLOSE_FROM_KEY {
+                MonitorChannel::instance().mark_delist_close(client_order_id);
+            }
             if granted_base_qty + ARB_CLOSE_QTY_EPS < order_qty * qty_multiplier {
                 let aligned = MonitorChannel::instance().align_close_order_by_venue(
                     venue,

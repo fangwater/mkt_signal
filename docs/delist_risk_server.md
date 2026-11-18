@@ -1556,6 +1556,17 @@ Returns the latest automatic open-to-dump audit rows from PostgreSQL table
 `redis_symbol_dump_audit`, including the triggering event, snapshot timestamp,
 both leg notionals, applied threshold, Redis key changes, and result.
 
+### 下架前 L1 maker 平仓
+
+`DELIST_AUTO_MAKER_CLOSE=1` 启用最后 24 小时的下架平仓。Delist 根据已确认的下架时间和
+账户快照，将币对移入平仓名单并发布当期截止时间。该模式适用于所有符合条件的仓位，包括
+超过 1,000 USDT 的仓位。启用后由 FR 策略执行，同一标的由页面脚本清仓需先结束策略接管。
+
+`trade_signal` 跳过价差和因子条件。首腿在同侧 L1 下 post-only 单，方向由 `pre_trade`
+根据实际持仓校验。盘口变价时先撤旧单，确认终态后再挂新单。首腿实际成交后，对冲腿按实际
+可减仓的数量用 taker 对冲。订单金额沿用 FR 配置，交易所最小量、行情有效期和配对敞口限制
+继续生效。任一市场停止交易时结束配对下单，剩余仓位以 Delist 快照为准。
+
 ### Final-24-hour flatten
 
 `GET /flatten-candidates` returns positioned FR symbols whose actual `delist`

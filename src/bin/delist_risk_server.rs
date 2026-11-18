@@ -38,7 +38,7 @@ use mkt_signal::common::bitget_announcement::{
 use mkt_signal::common::delist_accounts::{
     build_account_views, fetch_nav_accounts, load_fr_dump_symbols, load_fr_symbol_list,
     load_universes, nav_login, summarize, AccountRiskResponse, AccountRiskView, AccountSpec,
-    FrSymbolListState, NAV_UNAUTHORIZED,
+    FrSymbolListState, RedisSite, NAV_UNAUTHORIZED,
 };
 use mkt_signal::common::delist_dump::{
     apply_redis_dump, position_close_statuses, position_dump_candidates, prepare_redis_dump,
@@ -68,6 +68,7 @@ use parking_lot::Mutex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use signal_common::delist_close::{self, DelistCloseSchedule};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -208,6 +209,10 @@ struct Args {
     /// Clear small FR positions during the final delist window.
     #[arg(long)]
     auto_flatten_position_risk: bool,
+
+    /// During the final delist window, use L1 maker with a reducing taker hedge.
+    #[arg(long, conflicts_with = "auto_flatten_position_risk")]
+    auto_maker_close: bool,
 
     /// Final window before the actual delist deadline.
     #[arg(long, default_value_t = 24)]
@@ -355,6 +360,8 @@ struct AppState {
     auto_remove_redis: bool,
     auto_dump_position_risk: bool,
     auto_flatten_position_risk: bool,
+    auto_maker_close: bool,
+    maker_close_lease_secs: u64,
     position_risk_threshold_usdt: f64,
     position_snapshot_max_age_ms: i64,
     flatten_window_ms: i64,
@@ -541,8 +548,8 @@ async fn main() -> Result<()> {
             None
         }
     };
-    if args.auto_flatten_position_risk && store.is_none() {
-        anyhow::bail!("automatic delist flatten requires PostgreSQL");
+    if (args.auto_flatten_position_risk || args.auto_maker_close) && store.is_none() {
+        anyhow::bail!("automatic delist close requires PostgreSQL");
     }
     let flatten_api_token = std::env::var("DELIST_FLATTEN_API_TOKEN")
         .ok()
@@ -597,6 +604,8 @@ async fn main() -> Result<()> {
         auto_remove_redis: args.auto_remove_redis,
         auto_dump_position_risk: args.auto_dump_position_risk,
         auto_flatten_position_risk: args.auto_flatten_position_risk,
+        auto_maker_close: args.auto_maker_close,
+        maker_close_lease_secs: args.position_risk_interval_secs.max(60).saturating_mul(3),
         position_risk_threshold_usdt: args.position_risk_threshold_usdt,
         position_snapshot_max_age_ms: (args.position_snapshot_max_age_secs as i64)
             .saturating_mul(1_000),
@@ -1176,7 +1185,7 @@ async fn main() -> Result<()> {
 
     let addr: SocketAddr = args.bind.parse().context("invalid --bind")?;
     info!(
-        "delist_risk_server listening at http://{addr} official={}s listings={}s announcements={}s nav_strategies={}s auto_remove_redis={} auto_dump_position_risk={} auto_flatten_position_risk={} position_scan={}s dump_threshold={}U flatten_window={}h manual_threshold={}U data_persistence={}s",
+        "delist_risk_server listening at http://{addr} official={}s listings={}s announcements={}s nav_strategies={}s auto_remove_redis={} auto_dump_position_risk={} auto_flatten_position_risk={} auto_maker_close={} position_scan={}s dump_threshold={}U flatten_window={}h manual_threshold={}U data_persistence={}s",
         args.official_interval_secs,
         args.listing_interval_secs,
         args.announcement_interval_secs,
@@ -1184,6 +1193,7 @@ async fn main() -> Result<()> {
         args.auto_remove_redis,
         args.auto_dump_position_risk,
         args.auto_flatten_position_risk,
+        args.auto_maker_close,
         args.position_risk_interval_secs,
         args.position_risk_threshold_usdt,
         args.flatten_window_hours,
@@ -1738,21 +1748,25 @@ async fn query_flatten_candidates(State(state): State<AppState>) -> Response {
     }
     let views = items
         .into_iter()
-        .map(|candidate| {
+        .map(|mut candidate| {
             let key = (
                 candidate.account_slug.clone(),
                 candidate.symbol.clone(),
                 candidate.deadline_ms,
             );
-            FlattenCandidateView {
-                candidate,
-                latest: latest.remove(&key),
-            }
+            let latest = if state.auto_maker_close {
+                candidate.disposition = "maker_taker".into();
+                None
+            } else {
+                latest.remove(&key)
+            };
+            FlattenCandidateView { candidate, latest }
         })
         .collect::<Vec<_>>();
     Json(json!({
         "ok": true,
         "auto_flatten_position_risk": state.auto_flatten_position_risk,
+        "auto_maker_close": state.auto_maker_close,
         "window_ms": state.flatten_window_ms,
         "manual_threshold_usdt": state.flatten_manual_threshold_usdt,
         "position_closed_threshold_usdt": POSITION_CLOSED_THRESHOLD_USDT,
@@ -1821,6 +1835,13 @@ async fn manual_flatten(
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"ok": false, "error": "invalid manual flatten token"})),
+        )
+            .into_response();
+    }
+    if state.auto_maker_close {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"ok": false, "error": "final-window close is managed by the L1 maker strategy"})),
         )
             .into_response();
     }
@@ -2289,7 +2310,7 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
             persist(&backfill_state).await;
         });
     }
-    if state.auto_dump_position_risk || state.auto_flatten_position_risk {
+    if state.auto_dump_position_risk || state.auto_flatten_position_risk || state.auto_maker_close {
         run_position_risk_scan(&state).await;
     }
     let mut unimmr_watch = UnimmrListWatch::default();
@@ -2331,7 +2352,7 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
                 }
                 persist(&state).await;
             }
-            _ = position_risk.tick(), if state.auto_dump_position_risk || state.auto_flatten_position_risk => {
+            _ = position_risk.tick(), if state.auto_dump_position_risk || state.auto_flatten_position_risk || state.auto_maker_close => {
                 run_position_risk_scan(&state).await;
             }
             _ = unimmr_list.tick() => {
@@ -2342,7 +2363,7 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
                     if state.auto_remove_redis {
                         run_confirmed_delist_prune(&state).await;
                     }
-                    if state.auto_dump_position_risk || state.auto_flatten_position_risk {
+                    if state.auto_dump_position_risk || state.auto_flatten_position_risk || state.auto_maker_close {
                         run_position_risk_scan(&state).await;
                     }
                 }
@@ -2658,25 +2679,30 @@ async fn collect_flatten_candidates(
     Ok((candidates, snapshot_errors, positioned))
 }
 
+async fn mark_position_scan_error(state: &AppState, message: &str) {
+    mark_err(state, "redis_delist_dump", "mutation", message).await;
+    if state.auto_maker_close {
+        mark_err(state, "delist_maker_close", "mutation", message).await;
+    } else if state.auto_flatten_position_risk {
+        mark_err(state, "delist_flatten", "execution", message).await;
+    }
+}
+
 async fn run_position_risk_scan(state: &AppState) {
     let Some(store) = state.store.as_ref() else {
-        let message = "postgres is required before automatic FR position handling";
-        if state.auto_dump_position_risk {
-            mark_err(state, "redis_delist_dump", "mutation", message).await;
-        }
-        if state.auto_flatten_position_risk {
-            mark_err(state, "delist_flatten", "execution", message).await;
-        }
+        mark_position_scan_error(
+            state,
+            "postgres is required before automatic FR position handling",
+        )
+        .await;
         return;
     };
     if !nav_accounts_ready(state).await {
-        let message = "NAV strategy catalog is not current; automatic position handling paused";
-        if state.auto_dump_position_risk {
-            mark_err(state, "redis_delist_dump", "mutation", message).await;
-        }
-        if state.auto_flatten_position_risk {
-            mark_err(state, "delist_flatten", "execution", message).await;
-        }
+        mark_position_scan_error(
+            state,
+            "NAV strategy catalog is not current; automatic position handling paused",
+        )
+        .await;
         return;
     }
     let accounts = state.accounts.read().await.clone();
@@ -2684,13 +2710,7 @@ async fn run_position_risk_scan(state: &AppState) {
         match collect_position_candidates(state, &accounts, 0.0).await {
             Ok(result) => result,
             Err(err) => {
-                let message = format!("{err:#}");
-                if state.auto_dump_position_risk {
-                    mark_err(state, "redis_delist_dump", "mutation", &message).await;
-                }
-                if state.auto_flatten_position_risk {
-                    mark_err(state, "delist_flatten", "execution", &message).await;
-                }
+                mark_position_scan_error(state, &format!("{err:#}")).await;
                 return;
             }
         };
@@ -2704,6 +2724,7 @@ async fn run_position_risk_scan(state: &AppState) {
     let mut errors = snapshot_errors.clone();
     let mut changed = 0usize;
     let mut dump_keys = BTreeSet::new();
+    let mut dumped = BTreeSet::new();
     let flatten_keys = flatten
         .iter()
         .map(|candidate| (candidate.account_slug.as_str(), candidate.symbol.as_str()))
@@ -2711,7 +2732,7 @@ async fn run_position_risk_scan(state: &AppState) {
     for candidate in &positioned {
         let normal_dump = state.auto_dump_position_risk
             && candidate.impacted_position_usdt > state.position_risk_threshold_usdt;
-        let final_window_dump = state.auto_flatten_position_risk
+        let final_window_dump = (state.auto_flatten_position_risk || state.auto_maker_close)
             && flatten_keys.contains(&(candidate.account_slug.as_str(), candidate.symbol.as_str()));
         if !normal_dump && !final_window_dump {
             continue;
@@ -2726,14 +2747,17 @@ async fn run_position_risk_scan(state: &AppState) {
             0.0
         };
         match dump_position_candidate(state, store, &candidate).await {
-            Ok(did_change) => changed += usize::from(did_change),
+            Ok(did_change) => {
+                changed += usize::from(did_change);
+                dumped.insert((candidate.account_slug, candidate.symbol));
+            }
             Err(err) => errors.push(format!(
                 "account={} symbol={}: {err:#}",
                 candidate.account_slug, candidate.symbol
             )),
         }
     }
-    if state.auto_dump_position_risk || state.auto_flatten_position_risk {
+    if state.auto_dump_position_risk || state.auto_flatten_position_risk || state.auto_maker_close {
         if errors.is_empty() {
             mark_ok(state, "redis_delist_dump", "mutation").await;
         } else {
@@ -2752,7 +2776,20 @@ async fn run_position_risk_scan(state: &AppState) {
         );
     }
 
-    if state.auto_flatten_position_risk {
+    if state.auto_maker_close {
+        let mut schedule_errors = errors;
+        schedule_errors.extend(
+            publish_maker_close_schedules(state, &accounts, &flatten, &dumped, &snapshot_errors)
+                .await,
+        );
+        if schedule_errors.is_empty() {
+            mark_ok(state, "delist_maker_close", "mutation").await;
+        } else {
+            let message = schedule_errors.join("; ");
+            warn!("FR Delist maker close scan degraded: {message}");
+            mark_err(state, "delist_maker_close", "mutation", &message).await;
+        }
+    } else if state.auto_flatten_position_risk {
         let mut flatten_errors = snapshot_errors;
         for candidate in &flatten {
             let result = if candidate.disposition == "manual" {
@@ -2784,6 +2821,85 @@ async fn run_position_risk_scan(state: &AppState) {
             mark_err(state, "delist_flatten", "execution", &message).await;
         }
     }
+}
+
+async fn publish_maker_close_schedules(
+    state: &AppState,
+    accounts: &[AccountSpec],
+    candidates: &[FlattenCandidate],
+    dumped: &BTreeSet<(String, String)>,
+    snapshot_errors: &[String],
+) -> Vec<String> {
+    let now = Utc::now().timestamp_micros();
+    let lease = i64::try_from(state.maker_close_lease_secs)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(1_000_000);
+    let mut errors = Vec::new();
+    for account in accounts.iter().filter(|account| {
+        account.kind == "funding_rate"
+            && matches!(
+                account.exchange.as_str(),
+                "binance" | "bitget" | "bybit" | "gate"
+            )
+    }) {
+        if snapshot_errors.iter().any(|error| {
+            error
+                .strip_prefix(&account.slug)
+                .is_some_and(|detail| detail.starts_with(':'))
+        }) {
+            // A failed snapshot does not replace a valid lease with an empty schedule.
+            continue;
+        }
+        let redis_url = match account.site {
+            RedisSite::Jp => Some(state.jp_redis.as_str()),
+            RedisSite::Sg => state.sg_redis.as_deref(),
+            RedisSite::Unsupported => continue,
+        };
+        let deadlines_us = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.account_slug == account.slug
+                    && dumped.contains(&(candidate.account_slug.clone(), candidate.symbol.clone()))
+            })
+            .map(|candidate| {
+                (
+                    candidate.symbol.clone(),
+                    candidate.deadline_ms.saturating_mul(1_000),
+                )
+            })
+            .filter(|(_, deadline)| *deadline > now)
+            .collect();
+        let schedule = DelistCloseSchedule {
+            valid_until_us: now.saturating_add(lease),
+            deadlines_us,
+        };
+        let exchange = &account.exchange;
+        let key = delist_close::redis_key(
+            &account.slug,
+            &format!("{exchange}-margin_{exchange}-futures"),
+        );
+        let result: Result<()> = async {
+            let url = redis_url.context("Redis site is not configured")?;
+            let client = redis::Client::open(url).context("open Redis for Delist maker close")?;
+            let mut conn = client.get_multiplexed_async_connection().await?;
+            redis::cmd("SET")
+                .arg(&key)
+                .arg(serde_json::to_string(&schedule)?)
+                .arg("EX")
+                .arg(state.maker_close_lease_secs)
+                .query_async::<()>(&mut conn)
+                .await?;
+            Ok(())
+        }
+        .await;
+        if let Err(err) = result {
+            errors.push(format!(
+                "account={} maker close schedule: {err:#}",
+                account.slug
+            ));
+        }
+    }
+    errors
 }
 
 async fn ensure_positioned_symbol_dumped(
@@ -4176,6 +4292,8 @@ mod tests {
             auto_remove_redis: false,
             auto_dump_position_risk: false,
             auto_flatten_position_risk: false,
+            auto_maker_close: false,
+            maker_close_lease_secs: 180,
             position_risk_threshold_usdt: 50.0,
             position_snapshot_max_age_ms: 120_000,
             flatten_window_ms: 86_400_000,

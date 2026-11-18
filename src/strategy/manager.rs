@@ -825,6 +825,46 @@ impl StrategyManager {
             .collect()
     }
 
+    /// Keep at most one Delist maker working. A replacement waits for the
+    /// previous strategy's terminal order update, including on takeover.
+    pub(crate) fn maintain_delist_close_at_l1(
+        &mut self,
+        symbol: &str,
+        side: Side,
+        price: f64,
+        expires: i64,
+        now: i64,
+    ) -> bool {
+        let ids: Vec<_> = self
+            .ids_for_normalized_symbol(symbol)
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect();
+        let mut working = false;
+        for id in ids {
+            let Some(strategy) = self.strategies.get_mut(&id) else {
+                continue;
+            };
+            if let Some(close) = strategy.as_any_mut().downcast_mut::<ArbCloseStrategy>() {
+                close.maintain_delist_close_at_l1(side, price, expires, now);
+                working = true;
+            } else if let Some(open) = strategy.as_any().downcast_ref::<ArbOpenStrategy>() {
+                if let Some(open_side) = open.open_side() {
+                    self.cancel_arb_open_by_id_with_signal(
+                        id,
+                        open_side,
+                        "delist_force_close",
+                        now,
+                        "DelistForceClose",
+                    );
+                    working = true;
+                }
+            }
+        }
+        working
+    }
+
     /// UniMMR recover 专用：给指定 ArbClose 策略走 common cancel 生命周期。
     pub fn cancel_arb_close_for_unimmr_recover_by_id(
         &mut self,

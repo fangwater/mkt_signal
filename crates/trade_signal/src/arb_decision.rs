@@ -35,6 +35,7 @@ use runtime_common::time_util::get_timestamp_us;
 use signal_common::arb_signal::{ArbBackwardQueryMsg, ArbCancelCandidateQueryMsg};
 use signal_common::bbo::Bbo;
 use signal_common::common::{SignalBytes, TradingLeg};
+use signal_common::delist_close::{DELIST_CLOSE_FROM_KEY, DELIST_CLOSE_QUOTE_MAX_AGE_US};
 use signal_common::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use signal_common::open_signal::ArbOpenCtx;
 use signal_common::tick_math::QuantizedValue;
@@ -1299,6 +1300,17 @@ fn drive_funding_decision(
     let hedge_symbol_key = hedge_symbol_key_storage
         .as_deref()
         .unwrap_or(open_symbol_key);
+    if let Some(deadline) = symbol_list.delist_close_deadline(open_symbol_key, now) {
+        return emit_delist_close_at_l1(
+            &mut decision.runtime,
+            open_symbol_key,
+            hedge_symbol_key,
+            open_venue,
+            hedge_venue,
+            now,
+            deadline,
+        );
+    }
     let membership = symbol_list.membership_canonical(open_symbol_key);
     // 心跳计数：活跃 symbol 每 tick 记一条 fr_seen，保证 summary 不会空表早退。
     if membership.is_online() {
@@ -3490,6 +3502,116 @@ fn emit_spread_arb_close_signals(
         plan.qty_tick
     );
     Ok(sent > 0)
+}
+
+fn emit_delist_close_at_l1(
+    runtime: &mut ArbShellRuntime,
+    open_symbol: &str,
+    hedge_symbol: &str,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+    now: i64,
+    deadline: i64,
+) -> Result<Option<SignalType>> {
+    if !arb_open_legs_tradable(
+        FUNDING_ARB_SHELL_NAME,
+        runtime,
+        open_venue,
+        open_symbol,
+        hedge_venue,
+        hedge_symbol,
+    ) {
+        return Ok(None);
+    }
+    let Some((open_quote, hedge_quote)) =
+        ArbDecision::load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue)
+    else {
+        return Ok(None);
+    };
+    if ![open_quote, hedge_quote].iter().all(|quote| {
+        quote.bid.is_finite()
+            && quote.ask.is_finite()
+            && quote.ts > 0
+            && now.abs_diff(quote.ts) <= DELIST_CLOSE_QUOTE_MAX_AGE_US as u64
+    }) {
+        return Ok(None);
+    }
+
+    let key = min_qty_symbol_key(open_venue, open_symbol);
+    let (Some(qty_tick), Some(price_tick)) = (
+        runtime.open_min_qty_table.step_size(&key),
+        runtime.open_min_qty_table.price_tick(&key),
+    ) else {
+        return Ok(None);
+    };
+    let order_amount = ArbDecision::with_state_mut(|arb| arb.resolve_order_amount_u(open_symbol))
+        .unwrap_or_default();
+    let expiry = deadline.min(
+        open_quote
+            .ts
+            .min(hedge_quote.ts)
+            .saturating_add(DELIST_CLOSE_QUOTE_MAX_AGE_US),
+    );
+    if expiry <= now {
+        return Ok(None);
+    }
+
+    // The execution owner validates the side against live inventory.
+    let opening_leg = TradingLeg::new_with_qty(
+        open_venue,
+        open_quote.bid,
+        open_quote.bid_qty,
+        open_quote.ask,
+        open_quote.ask_qty,
+        open_quote.ts,
+    );
+    let hedging_leg = TradingLeg::new_with_qty(
+        hedge_venue,
+        hedge_quote.bid,
+        hedge_quote.bid_qty,
+        hedge_quote.ask,
+        hedge_quote.ask_qty,
+        hedge_quote.ts,
+    );
+    let mut emitted = false;
+    for (side, price) in [(Side::Buy, open_quote.bid), (Side::Sell, open_quote.ask)] {
+        let Some(CloseGateOutcome::Pass(gate)) = ArbDecision::with_state_mut(|arb| {
+            arb.evaluate_close_cooldown_for_side(
+                open_symbol,
+                hedge_symbol,
+                open_venue,
+                hedge_venue,
+                side,
+                now,
+            )
+        }) else {
+            continue;
+        };
+        let mut ctx = ArbOpenCtx::new();
+        ctx.opening_leg = opening_leg;
+        ctx.hedging_leg = hedging_leg;
+        ctx.set_opening_symbol(open_symbol);
+        ctx.set_hedging_symbol(hedge_symbol);
+        ctx.set_side(side);
+        ctx.set_order_type(order_common::OrderType::Limit);
+        ctx.set_price_with_tick_floor(price, price_tick);
+        ctx.set_amount_with_tick_floor(order_amount / price, qty_tick);
+        ctx.create_ts = now;
+        ctx.exp_time = expiry;
+        ctx.set_from_key(DELIST_CLOSE_FROM_KEY.to_vec());
+        if ctx.price_count() <= 0 || ctx.amount_count() <= 0 {
+            continue;
+        }
+        super::arb_emit::emit_levels_as_signals(
+            &runtime.signal_pub,
+            SignalType::ArbClose,
+            now,
+            [ctx],
+        )?;
+        let _ = ArbDecision::with_state_mut(|arb| arb.mark_close_triggered(gate.key, now));
+        emitted = true;
+    }
+    Ok(emitted.then_some(SignalType::ArbClose))
 }
 
 fn emit_funding_open_close_signals(

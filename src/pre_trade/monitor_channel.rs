@@ -4122,6 +4122,34 @@ impl MonitorChannel {
         })
     }
 
+    pub(crate) fn mark_delist_close(&self, id: i64) {
+        Self::with_inner(|inner| {
+            inner
+                .close_inventory
+                .borrow_mut()
+                .exposure
+                .mark_delist_close(id)
+        });
+    }
+
+    pub(crate) fn is_delist_close(&self, id: i64) -> bool {
+        Self::try_with_inner(|inner| inner.close_inventory.borrow().exposure.is_delist_close(id))
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn has_live_paired_close_first(&self, symbol: &str) -> bool {
+        let Some(asset) = extract_base_asset_key(symbol) else {
+            return false;
+        };
+        Self::with_inner(|inner| {
+            inner
+                .close_inventory
+                .borrow()
+                .exposure
+                .has_live_first(asset.as_ref())
+        })
+    }
+
     pub(crate) fn is_paired_close(&self, id: i64) -> bool {
         Self::try_with_inner(|inner| inner.close_inventory.borrow().exposure.contains(id))
             .unwrap_or(false)

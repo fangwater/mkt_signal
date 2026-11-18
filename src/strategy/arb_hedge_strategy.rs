@@ -201,6 +201,7 @@ fn is_direct_taker_from_key(from_key: &[u8]) -> bool {
     from_key.starts_with(b"arb_hedge_force_taker_direct|")
         || from_key.starts_with(b"arb_hedge_lazy_model_direct|")
         || from_key.starts_with(b"arb_hedge_unimmr_force_close_direct|")
+        || from_key.starts_with(b"arb_hedge_delist_force_close_direct|")
         || from_key.starts_with(b"arb_hedge_intra_stop_loss_direct|")
         || from_key.starts_with(b"arb_hedge_intra_take_profit_direct|")
         || from_key.starts_with(b"arb_hedge_adl_spot_direct|")
@@ -1549,6 +1550,8 @@ impl ArbHedgeStrategy {
         target_open_id: Option<i64>,
     ) -> bool {
         let force_close = target_open_id.is_some_and(|id| self.force_close_open_ids.contains(&id));
+        let reducing_exit = force_close
+            || target_open_id.is_some_and(|id| MonitorChannel::instance().is_paired_close(id));
         if !force_close && self.coalesce_while_hedge_query_inflight(now_ts, source) {
             return false;
         }
@@ -1580,7 +1583,7 @@ impl ArbHedgeStrategy {
         } else {
             Side::Buy
         };
-        if self.is_binance_position_limit_blocked(hedge_side, now_ts) && !force_close {
+        if self.is_binance_position_limit_blocked(hedge_side, now_ts) && !reducing_exit {
             self.next_query_ts_us = self.binance_position_limit_block_until_us;
             warn!(
                 "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because Binance position-limit block is active hedge_side={} until_us={}",
@@ -1593,7 +1596,7 @@ impl ArbHedgeStrategy {
             return false;
         }
         if self.is_hedge_open_failure_blocked(hedge_side, now_ts)
-            && !force_close
+            && !reducing_exit
             && !self.hyperliquid_reduce_only_hedge(hedge_side, due_hedge_qty.abs())
         {
             self.next_query_ts_us = self.hedge_open_failure_block_until_us;
@@ -1607,7 +1610,7 @@ impl ArbHedgeStrategy {
             );
             return false;
         }
-        if self.is_bitget_position_tier_limit_blocked(hedge_side, now_ts) && !force_close {
+        if self.is_bitget_position_tier_limit_blocked(hedge_side, now_ts) && !reducing_exit {
             self.next_query_ts_us = self.bitget_position_tier_limit_block_until_us;
             warn!(
                 "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because Bitget position-tier block is active hedge_side={} until_us={}",
@@ -2136,8 +2139,22 @@ impl ArbHedgeStrategy {
         }
         if let Some(executable_qty) = self.executable_paired_close_qty(now_ts) {
             if executable_qty > ARB_HEDGE_QTY_EPS {
-                if let Some(lot) = self.paired_close_due_lots(now_ts).first() {
+                let lots = self.paired_close_due_lots(now_ts);
+                if let Some(lot) = lots.first() {
                     let due = lot.qv.signum() * executable_qty;
+                    let delist_lot = lots.iter().find(|lot| {
+                        MonitorChannel::instance()
+                            .is_delist_close(lot.open_client_order_id.unwrap_or(0))
+                    });
+                    if let Some(delist_lot) = delist_lot {
+                        return self.send_targeted_taker_hedge_direct(
+                            now_ts,
+                            due,
+                            "delist_force_close",
+                            None,
+                            delist_lot.open_client_order_id,
+                        );
+                    }
                     if self.send_hedge_query(now_ts, due, lot.open_client_order_id) {
                         return true;
                     }

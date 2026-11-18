@@ -35,6 +35,7 @@ struct PairedClose {
     // This releases a reservation without inventing an exchange fill.
     hedge_netted: f64,
     first_finished: bool,
+    delist_close: bool,
 }
 
 #[derive(Debug, Default)]
@@ -45,6 +46,22 @@ pub(crate) struct CloseExposureLedger {
 impl CloseExposureLedger {
     pub fn contains(&self, id: i64) -> bool {
         self.orders.contains_key(&id)
+    }
+
+    pub fn mark_delist_close(&mut self, id: i64) {
+        if let Some(order) = self.orders.get_mut(&id) {
+            order.delist_close = true;
+        }
+    }
+
+    pub fn is_delist_close(&self, id: i64) -> bool {
+        self.orders.get(&id).is_some_and(|order| order.delist_close)
+    }
+
+    pub fn has_live_first(&self, asset: &str) -> bool {
+        self.orders
+            .values()
+            .any(|order| order.asset == asset && !order.first_finished)
     }
 
     pub fn matches_asset(&self, id: i64, asset: &str) -> bool {
@@ -108,6 +125,7 @@ impl CloseExposureLedger {
                 hedge_filled: 0.0,
                 hedge_netted: 0.0,
                 first_finished: false,
+                delist_close: false,
             },
         );
         Ok(granted)
@@ -231,6 +249,28 @@ mod tests {
             total_limit_usdt: 1_000.0,
         }
     }
+    #[test]
+    fn delist_first_leg_blocks_replacement_and_keeps_hedge_credit_after_cancel() {
+        let mut ledger = CloseExposureLedger::default();
+        ledger.reserve(request(1, 10.0), |_| Some(1.0)).unwrap();
+        ledger.mark_delist_close(1);
+        assert!(ledger.has_live_first("FIL"));
+        assert!(!ledger.has_live_first("BTC"));
+
+        ledger.first_fill(1, 2.0);
+        ledger.finish_first(1);
+        assert!(!ledger.has_live_first("FIL"));
+        assert!(ledger.is_delist_close(1));
+        assert!(ledger
+            .check_hedge(1, TradingVenue::GateFutures, Side::Buy, 2.0, -150.0)
+            .is_ok());
+        assert!(ledger
+            .check_hedge(1, TradingVenue::GateFutures, Side::Buy, 2.1, -150.0)
+            .is_err());
+        ledger.hedge_fill(1, 2.0);
+        assert!(!ledger.is_delist_close(1));
+    }
+
     #[test]
     fn netted_work_releases_only_unfilled_credit_without_inventing_fills() {
         let mut ledger = CloseExposureLedger::default();
