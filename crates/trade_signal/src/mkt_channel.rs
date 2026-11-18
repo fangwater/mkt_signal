@@ -153,6 +153,9 @@ fn should_trigger_decision(symbol: &str) -> bool {
     symbol_list.is_in_dump_list(symbol)
         || symbol_list.is_in_fwd_trade_list(symbol)
         || symbol_list.is_in_bwd_trade_list(symbol)
+        || symbol_list
+            .delist_close_deadline(symbol, get_timestamp_us())
+            .is_some()
 }
 
 fn funding_rate_data_for_venue(venue: TradingVenue) -> FundingRateData {

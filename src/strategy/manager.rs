@@ -835,6 +835,19 @@ impl StrategyManager {
         expires: i64,
         now: i64,
     ) -> bool {
+        self.cancel_or_reprice_delist_orders(symbol, Some((side, price, expires)), now)
+    }
+
+    pub(crate) fn drain_delist_orders(&mut self, symbol: &str, now: i64) -> bool {
+        self.cancel_or_reprice_delist_orders(symbol, None, now)
+    }
+
+    fn cancel_or_reprice_delist_orders(
+        &mut self,
+        symbol: &str,
+        l1: Option<(Side, f64, i64)>,
+        now: i64,
+    ) -> bool {
         let ids: Vec<_> = self
             .ids_for_normalized_symbol(symbol)
             .into_iter()
@@ -847,7 +860,7 @@ impl StrategyManager {
                 continue;
             };
             if let Some(close) = strategy.as_any_mut().downcast_mut::<ArbCloseStrategy>() {
-                close.maintain_delist_close_at_l1(side, price, expires, now);
+                close.maintain_delist_close_at_l1(l1, now);
                 working = true;
             } else if let Some(open) = strategy.as_any().downcast_ref::<ArbOpenStrategy>() {
                 if let Some(open_side) = open.open_side() {

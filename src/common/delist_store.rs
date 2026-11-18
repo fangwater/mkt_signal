@@ -137,6 +137,14 @@ pub struct FlattenExecutionAudit {
     pub notification_status: Option<String>,
 }
 
+pub struct FlattenMonitorItem {
+    pub id: i64,
+    pub account_slug: String,
+    pub symbol: String,
+    pub delist_utc: String,
+    pub status: String,
+}
+
 #[derive(Clone, Default)]
 pub struct StatusBook {
     sources: BTreeMap<String, SourceStatus>,
@@ -424,6 +432,8 @@ impl DelistStore {
                         error TEXT,
                         notification_status TEXT
                     );
+                    ALTER TABLE delist_flatten_audit
+                        ADD COLUMN IF NOT EXISTS monitor_pending BOOLEAN NOT NULL DEFAULT FALSE;
                     CREATE INDEX IF NOT EXISTS delist_flatten_audit_requested_idx
                         ON delist_flatten_audit (requested_ms DESC);
                     CREATE TABLE IF NOT EXISTS exchange_symbol_snapshot_runs (
@@ -928,7 +938,6 @@ impl DelistStore {
         position_usdt: f64,
         manual_threshold_usdt: f64,
         command: Value,
-        initial_status: &str,
     ) -> Result<Option<i64>> {
         let requested_ms = chrono::Utc::now().timestamp_millis();
         let dedup_key = dedup_key.to_string();
@@ -937,7 +946,6 @@ impl DelistStore {
         let exchange = exchange.to_string();
         let symbol = symbol.to_string();
         let delist_utc = delist_utc.to_string();
-        let initial_status = initial_status.to_string();
         self.run(move |client| async move {
             let row = client
                 .query_opt(
@@ -946,10 +954,10 @@ impl DelistStore {
                         requested_ms, dedup_key, trigger, account_slug, exchange,
                         symbol, delist_utc, deadline_ms, snapshot_ms, open_usdt,
                         hedge_usdt, position_usdt, manual_threshold_usdt, command,
-                        status
+                        status, monitor_pending
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                        $13, $14, $15
+                        $13, $14, 'running', TRUE
                     )
                     ON CONFLICT (dedup_key) DO NOTHING
                     RETURNING id
@@ -969,7 +977,6 @@ impl DelistStore {
                         &position_usdt,
                         &manual_threshold_usdt,
                         &command,
-                        &initial_status,
                     ],
                 )
                 .await
@@ -988,23 +995,31 @@ impl DelistStore {
         stdout: Option<&str>,
         stderr: Option<&str>,
         error: Option<&str>,
-        notification_status: Option<&str>,
     ) -> Result<()> {
         let completed_ms = chrono::Utc::now().timestamp_millis();
         let status = status.to_string();
         let stdout = stdout.map(truncate_output);
         let stderr = stderr.map(truncate_output);
         let error = error.map(truncate_error);
-        let notification_status = notification_status.map(str::to_string);
         self.run(move |client| async move {
             client
                 .execute(
                     r#"
-                    UPDATE delist_flatten_audit
-                    SET completed_ms = $2, status = $3, exit_code = $4,
-                        stdout = $5, stderr = $6, error = $7,
-                        notification_status = $8
-                    WHERE id = $1
+                    WITH finished AS (
+                        UPDATE delist_flatten_audit
+                        SET completed_ms = $2, status = $3, exit_code = $4,
+                            stdout = $5, stderr = $6, error = $7,
+                            monitor_pending = monitor_pending AND $3 <> 'success'
+                        WHERE id = $1
+                        RETURNING account_slug, symbol
+                    )
+                    UPDATE delist_flatten_audit previous
+                    SET monitor_pending = FALSE
+                    FROM finished
+                    WHERE $3 = 'success'
+                      AND previous.id < $1 AND previous.monitor_pending
+                      AND previous.account_slug = finished.account_slug
+                      AND previous.symbol = finished.symbol
                     "#,
                     &[
                         &id,
@@ -1014,7 +1029,6 @@ impl DelistStore {
                         &stdout,
                         &stderr,
                         &error,
-                        &notification_status,
                     ],
                 )
                 .await
@@ -1075,23 +1089,36 @@ impl DelistStore {
         .await
     }
 
-    pub async fn flatten_execution_state(
+    pub async fn flatten_monitor_items(
         &self,
-        dedup_key: &str,
-    ) -> Result<Option<(i64, String, Option<String>)>> {
-        let dedup_key = dedup_key.to_string();
+        running_before_ms: i64,
+    ) -> Result<Vec<FlattenMonitorItem>> {
         self.run(move |client| async move {
-            let row = client
-                .query_opt(
-                    "SELECT id, status, notification_status FROM delist_flatten_audit WHERE dedup_key = $1",
-                    &[&dedup_key],
+            let rows = client
+                .query(
+                    r#"
+                SELECT DISTINCT ON (account_slug, symbol)
+                       id, account_slug, symbol, delist_utc, status
+                FROM delist_flatten_audit
+                WHERE monitor_pending
+                  AND (status = 'failed' OR (status = 'running' AND requested_ms < $1))
+                ORDER BY account_slug, symbol, id DESC
+                "#,
+                    &[&running_before_ms],
                 )
                 .await
-                .context("query delist flatten audit status failed")?;
-            Ok((
-                client,
-                row.map(|row| (row.get(0), row.get(1), row.get(2))),
-            ))
+                .context("load unresolved delist flatten executions")?;
+            let items = rows
+                .into_iter()
+                .map(|row| FlattenMonitorItem {
+                    id: row.get(0),
+                    account_slug: row.get(1),
+                    symbol: row.get(2),
+                    delist_utc: row.get(3),
+                    status: row.get(4),
+                })
+                .collect();
+            Ok((client, items))
         })
         .await
     }

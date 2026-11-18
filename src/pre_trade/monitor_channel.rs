@@ -4137,6 +4137,24 @@ impl MonitorChannel {
             .unwrap_or(false)
     }
 
+    pub(crate) fn drain_delist_orders(&self, symbol: &str, now: i64) -> bool {
+        if self
+            .strategy_mgr()
+            .borrow_mut()
+            .drain_delist_orders(symbol, now)
+        {
+            return false;
+        }
+        Self::with_inner(|inner| {
+            !inner
+                .order_manager
+                .borrow()
+                .active_orders()
+                .any(|order| normalize_symbol_for_internal(&order.symbol) == symbol)
+        }) && !self.orphan_strategy_mgr().borrow().has_symbol(symbol)
+            && !self.has_live_paired_close_first(symbol)
+    }
+
     pub(crate) fn has_live_paired_close_first(&self, symbol: &str) -> bool {
         let Some(asset) = extract_base_asset_key(symbol) else {
             return false;

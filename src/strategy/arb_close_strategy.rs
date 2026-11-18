@@ -97,23 +97,19 @@ impl ArbCloseStrategy {
         self.open_side()
     }
 
-    pub(super) fn maintain_delist_close_at_l1(
-        &mut self,
-        side: Side,
-        price: f64,
-        expires: i64,
-        now: i64,
-    ) {
+    pub(super) fn maintain_delist_close_at_l1(&mut self, l1: Option<(Side, f64, i64)>, now: i64) {
         if self.force_taker_taker {
             // The emergency order is already taker and must be reconciled first.
             return;
         }
-        if self.open_state.from_key == DELIST_CLOSE_FROM_KEY
-            && self.close_side() == Some(side)
-            && self.open_state.price_qv.get_val() == price
-        {
-            self.open_state.order.open_expire_ts = Some(expires);
-            return;
+        if let Some((side, price, expires)) = l1 {
+            if self.open_state.from_key == DELIST_CLOSE_FROM_KEY
+                && self.close_side() == Some(side)
+                && self.open_state.price_qv.get_val() == price
+            {
+                self.open_state.order.open_expire_ts = Some(expires);
+                return;
+            }
         }
         let Some(cancel_side) = self.close_side() else {
             return;

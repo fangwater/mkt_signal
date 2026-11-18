@@ -1311,6 +1311,9 @@ fn drive_funding_decision(
             deadline,
         );
     }
+    if symbol_list.is_in_delist_dump(open_symbol_key) {
+        return Ok(None);
+    }
     let membership = symbol_list.membership_canonical(open_symbol_key);
     // 心跳计数：活跃 symbol 每 tick 记一条 fr_seen，保证 summary 不会空表早退。
     if membership.is_online() {

@@ -5,6 +5,9 @@ use crate::pre_trade::binance_std_cm_margin_guard::BinanceStdCmMarginGuard;
 use crate::pre_trade::binance_std_um_margin_guard::BinanceStdUmMarginGuard;
 use crate::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
 use crate::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
+use crate::pre_trade::fr_position_concentration_guard::{
+    delist_dump_contains, delist_flatten_requested,
+};
 use crate::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use crate::pre_trade::leverage_guard::LeverageGuard;
 use crate::pre_trade::log_throttle::{
@@ -1155,6 +1158,9 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 return;
             }
             let hedging_symbol = normalize_fixed_symbol_for_internal_cow(&open_ctx.hedging_symbol);
+            if delist_dump_contains(&symbol) || delist_dump_contains(&hedging_symbol) {
+                return;
+            }
             let Some(side) = open_ctx.get_side() else {
                 warn!("ArbOpen: invalid side {}", open_ctx.side);
                 return;
@@ -1713,6 +1719,11 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                     let hedging_pos =
                         MonitorChannel::instance().get_position_qty(&hedging_symbol, hedging_venue);
                     let delist_close = close_ctx_view.from_key == DELIST_CLOSE_FROM_KEY;
+                    if delist_flatten_requested(&opening_symbol)
+                        || (!delist_close && delist_dump_contains(&opening_symbol))
+                    {
+                        return;
+                    }
                     if delist_close {
                         if MonitorChannel::instance().arb_mode() != ArbMode::FundingArb
                             || opening_symbol != hedging_symbol

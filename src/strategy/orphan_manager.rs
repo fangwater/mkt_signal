@@ -34,6 +34,16 @@ impl OrphanStrategyManager {
         self.strategies.contains_key(&strategy_id)
     }
 
+    pub(crate) fn has_symbol(&self, symbol: &str) -> bool {
+        self.symbol_index.get(symbol).is_some_and(|ids| {
+            ids.iter().any(|id| {
+                self.strategies
+                    .get(id)
+                    .is_some_and(|strategy| strategy.is_active())
+            })
+        })
+    }
+
     pub fn len(&self) -> usize {
         self.strategies.len()
     }

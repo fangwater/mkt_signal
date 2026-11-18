@@ -22,7 +22,8 @@ use mkt_parsers::symbol_match::{
 use order_common::TradingVenue;
 use runtime_common::exchange::Exchange;
 use runtime_common::redis_client::RedisClient;
-use signal_common::delist_close::{self, DelistCloseSchedule};
+use runtime_common::time_util::get_timestamp_us;
+use signal_common::delist_close::{self, DelistDumpList};
 use std::borrow::Cow;
 
 const DEFAULT_SYMBOL_NAMESPACE: &str = "fr";
@@ -60,7 +61,7 @@ struct SymbolListInner {
 
     /// 平仓列表
     dump_symbols: FastHashSet<String>,
-    delist_close: DelistCloseSchedule,
+    delist_dump: DelistDumpList,
 
     /// FR 仓位集中度风控维护的隐式平仓列表。
     pos_dump_symbols: FastHashSet<String>,
@@ -115,7 +116,7 @@ impl SymbolList {
             current_exchange: None,
             canonical_filter_keys: false,
             dump_symbols: fast_hash_set(),
-            delist_close: DelistCloseSchedule::default(),
+            delist_dump: DelistDumpList::default(),
             pos_dump_symbols: fast_hash_set(),
             fwd_trade_symbols: fast_hash_set(),
             bwd_trade_symbols: fast_hash_set(),
@@ -204,21 +205,20 @@ impl SymbolList {
         if let Some(prefix) = key_prefix.as_deref().filter(|_| ns == "fr") {
             let key = delist_close::redis_key(prefix, &key_suffix);
             match client.get_string(&key).await {
-                Ok(Some(raw)) => match serde_json::from_str::<DelistCloseSchedule>(&raw) {
-                    Ok(mut schedule) => {
-                        schedule.deadlines_us = schedule
-                            .deadlines_us
+                Ok(Some(raw)) => match serde_json::from_str::<DelistDumpList>(&raw) {
+                    Ok(list) => {
+                        let list = list
                             .into_iter()
                             .map(|(symbol, deadline)| {
                                 (Self::normalize_for_filtering(&symbol), deadline)
                             })
                             .collect();
-                        Self::with_inner_mut(|inner| inner.delist_close = schedule);
+                        Self::with_inner_mut(|inner| inner.delist_dump = list);
                     }
                     Err(err) => warn!("Invalid Delist close schedule key={key}: {err}"),
                 },
                 Ok(None) => Self::with_inner_mut(|inner| {
-                    inner.delist_close = DelistCloseSchedule::default();
+                    inner.delist_dump = DelistDumpList::default();
                 }),
                 Err(err) => warn!("Read Delist close schedule key={key}: {err:#}"),
             }
@@ -440,13 +440,15 @@ impl SymbolList {
 
     pub(crate) fn delist_close_deadline(&self, symbol: &str, now_us: i64) -> Option<i64> {
         Self::with_inner(|inner| {
-            let schedule = &inner.delist_close;
             let key = Self::normalize_for_filtering_cow(symbol);
-            if now_us >= schedule.valid_until_us {
-                return None;
-            }
-            let deadline = *schedule.deadlines_us.get(key.as_ref())?;
-            (now_us < deadline).then_some(deadline.min(schedule.valid_until_us))
+            inner.delist_dump.get(key.as_ref())?.maker_deadline(now_us)
+        })
+    }
+
+    pub(crate) fn is_in_delist_dump(&self, symbol: &str) -> bool {
+        Self::with_inner(|inner| {
+            let key = Self::normalize_for_filtering_cow(symbol);
+            inner.delist_dump.contains_key(key.as_ref())
         })
     }
 
@@ -618,6 +620,14 @@ impl SymbolList {
     fn collect_online(inner: &SymbolListInner) -> Vec<String> {
         let mut online_set = fast_hash_set();
         online_set.extend(inner.dump_symbols.iter().cloned());
+        let now_us = get_timestamp_us();
+        online_set.extend(
+            inner
+                .delist_dump
+                .iter()
+                .filter(|(_, entry)| entry.maker_deadline(now_us).is_some())
+                .map(|(symbol, _)| symbol.clone()),
+        );
         online_set.extend(inner.pos_dump_symbols.iter().cloned());
         online_set.extend(inner.fwd_trade_symbols.iter().cloned());
         online_set.extend(inner.bwd_trade_symbols.iter().cloned());
@@ -754,16 +764,20 @@ mod tests {
     #[test]
     fn delist_dump_requires_both_a_live_lease_and_a_future_deadline() {
         SymbolList::init_singleton().unwrap();
+        use signal_common::delist_close::DelistDumpEntry;
         SymbolList::with_inner_mut(|inner| {
-            inner.delist_close.valid_until_us = 200;
+            let entry = |deadline_us, flatten_requested_us| DelistDumpEntry {
+                deadline_us,
+                valid_until_us: 200,
+                flatten_requested_us,
+            };
             inner
-                .delist_close
-                .deadlines_us
-                .insert("BGSCUSDT".into(), 150);
+                .delist_dump
+                .insert("BGSCUSDT".into(), entry(150, None));
+            inner.delist_dump.insert("FILUSDT".into(), entry(300, None));
             inner
-                .delist_close
-                .deadlines_us
-                .insert("FILUSDT".into(), 300);
+                .delist_dump
+                .insert("ETHUSDT".into(), entry(300, Some(120)));
         });
         let symbols = SymbolList::instance();
         assert_eq!(symbols.delist_close_deadline("BGSC_USDT", 149), Some(150));
@@ -771,6 +785,9 @@ mod tests {
         assert_eq!(symbols.delist_close_deadline("FILUSDT", 199), Some(200));
         assert_eq!(symbols.delist_close_deadline("FILUSDT", 200), None);
         assert_eq!(symbols.delist_close_deadline("BTCUSDT", 100), None);
+        assert_eq!(symbols.delist_close_deadline("ETHUSDT", 150), None);
+        assert!(symbols.is_in_delist_dump("ETHUSDT"));
+        assert!(!symbols.is_in_dump_list("ETHUSDT"));
     }
 
     #[test]

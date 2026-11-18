@@ -3,7 +3,9 @@ use log::{debug, info, warn};
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
 use runtime_common::redis_client::{BlockingRedisClient, RedisSettings};
+use runtime_common::time_util::get_timestamp_us;
 use serde_json::Value;
+use signal_common::delist_close::{self, DelistDumpList, FlattenDrain, FlattenReady};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
@@ -26,6 +28,8 @@ const UNCHANGED_NOTIFICATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
 struct GuardConfig {
     redis: RedisSettings,
     dump_key: String,
+    delist_dump_key: String,
+    flatten_ready_key: String,
     pos_dump_key: String,
     unimmr_key: String,
     env_name: String,
@@ -151,6 +155,66 @@ struct ConcentrationEvent {
     recovered: bool,
 }
 
+thread_local! {
+    static DELIST_DUMP: RefCell<DelistDumpList> = const { RefCell::new(BTreeMap::new()) };
+    static DELIST_DRAINED: RefCell<BTreeMap<String, FlattenDrain>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+pub(crate) fn delist_dump_contains(symbol: &str) -> bool {
+    DELIST_DUMP.with(|list| list.borrow().contains_key(symbol))
+}
+
+pub(crate) fn delist_flatten_requested(symbol: &str) -> bool {
+    DELIST_DUMP.with(|list| {
+        list.borrow()
+            .get(symbol)
+            .is_some_and(|entry| entry.flatten_requested_us.is_some())
+    })
+}
+
+fn refresh_delist_dump(client: &mut BlockingRedisClient, config: &GuardConfig) -> Result<()> {
+    let raw = client.get_string(&config.delist_dump_key)?;
+    let list: DelistDumpList = raw
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .context("decode FR delist dump list")?
+        .unwrap_or_default();
+    DELIST_DUMP.with(|current| *current.borrow_mut() = list.clone());
+    let previous = DELIST_DRAINED.with(|drained| std::mem::take(&mut *drained.borrow_mut()));
+    let now = get_timestamp_us();
+    let mut requests = BTreeMap::new();
+    let mut has_request = false;
+    let monitor = MonitorChannel::instance();
+    for (symbol, entry) in &list {
+        let Some(requested_us) = entry.flatten_requested_us else {
+            continue;
+        };
+        has_request = true;
+        if now < entry.deadline_us && monitor.drain_delist_orders(symbol, now) {
+            let drained = previous
+                .get(symbol)
+                .copied()
+                .filter(|previous| previous.requested_us == requested_us)
+                .unwrap_or(FlattenDrain {
+                    requested_us,
+                    confirmed_us: now,
+                });
+            requests.insert(symbol.clone(), drained);
+        }
+    }
+    if has_request || !previous.is_empty() {
+        let ready = FlattenReady {
+            checked_us: now,
+            requests,
+        };
+        let result = client.set_json(&config.flatten_ready_key, &ready);
+        DELIST_DRAINED.with(|drained| *drained.borrow_mut() = ready.requests);
+        result.context("publish FR flatten readiness")?;
+    }
+    Ok(())
+}
+
 pub struct FrPositionConcentrationGuard;
 
 impl FrPositionConcentrationGuard {
@@ -190,6 +254,8 @@ impl FrPositionConcentrationGuard {
         let config = GuardConfig {
             redis: settings.clone(),
             dump_key: format!("{env_name}:fr_dump_symbols:{suffix}"),
+            delist_dump_key: delist_close::redis_key(&env_name, &suffix),
+            flatten_ready_key: delist_close::flatten_ready_key(&env_name, &suffix),
             pos_dump_key: format!("{env_name}:fr_pos_dump_symbols:{suffix}"),
             unimmr_key: format!("{env_name}:fr_unimmr_close_symbols:{suffix}"),
             env_name,
@@ -198,6 +264,7 @@ impl FrPositionConcentrationGuard {
 
         let mut client = BlockingRedisClient::connect(settings)
             .context("connect Redis for FR position concentration guard")?;
+        refresh_delist_dump(&mut client, &config)?;
         let dump_values = load_symbol_list(&mut client, &config.dump_key)?;
         let pos_dump_values = load_symbol_list(&mut client, &config.pos_dump_key)?;
         let pos_dump_symbols = normalized_set(pos_dump_values.iter().map(String::as_str));
@@ -276,6 +343,7 @@ impl FrPositionConcentrationGuard {
 
         let mut client = BlockingRedisClient::connect(config.redis.clone())
             .context("connect Redis for FR position concentration refresh")?;
+        refresh_delist_dump(&mut client, &config)?;
         let dump_values = load_symbol_list(&mut client, &config.dump_key)?;
         let pos_dump_values = load_symbol_list(&mut client, &config.pos_dump_key)?;
         let unimmr_values = load_symbol_list(&mut client, &config.unimmr_key)?;
@@ -772,6 +840,8 @@ mod tests {
     fn test_config() -> GuardConfig {
         GuardConfig {
             redis: RedisSettings::default(),
+            delist_dump_key: "test:fr_delist_dump_symbols".to_string(),
+            flatten_ready_key: "test:fr_delist_flatten_ready".to_string(),
             dump_key: String::new(),
             pos_dump_key: String::new(),
             unimmr_key: String::new(),

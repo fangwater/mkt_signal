@@ -4,6 +4,7 @@ use crate::pre_trade::account_open_block::{
     BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US,
 };
 use crate::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
+use crate::pre_trade::fr_position_concentration_guard::delist_flatten_requested;
 use crate::pre_trade::lazy_taker_action::publish_lazy_taker_action;
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -626,6 +627,9 @@ impl ArbHedgeStrategy {
         order: &Order,
         now_ts: i64,
     ) -> bool {
+        if delist_flatten_requested(&self.symbol) {
+            return false;
+        }
         if !Self::should_retry_gate_market_forbidden_reduce_only(response, order) {
             return false;
         }
@@ -1549,6 +1553,9 @@ impl ArbHedgeStrategy {
         ret_qtl: Option<f64>,
         target_open_id: Option<i64>,
     ) -> bool {
+        if delist_flatten_requested(&self.symbol) {
+            return false;
+        }
         let force_close = target_open_id.is_some_and(|id| self.force_close_open_ids.contains(&id));
         let reducing_exit = force_close
             || target_open_id.is_some_and(|id| MonitorChannel::instance().is_paired_close(id));
@@ -1896,6 +1903,9 @@ impl ArbHedgeStrategy {
         due_hedge_qty: f64,
         paired_open_id: Option<i64>,
     ) -> bool {
+        if delist_flatten_requested(&self.symbol) {
+            return false;
+        }
         self.last_hedge_ts_ms = Some(now_ts / 1000);
         let risk_loader = PreTradeParamsLoader::instance();
         let symbol_exposure_u = risk_loader
@@ -2408,6 +2418,10 @@ impl ArbHedgeStrategy {
     }
 
     pub fn handle_arb_hedge_ctx_with_symbol(&mut self, ctx: ArbHedgeCtx, symbol: String) {
+        if delist_flatten_requested(&self.symbol) {
+            self.inflight_hedge_query = None;
+            return;
+        }
         let Some(inflight) = self.inflight_hedge_query.as_ref() else {
             warn!(
                 "ArbHedgeStrategy: strategy_id={} drop unexpected ArbHedge reply without pending query: symbol={} request_seq={}",

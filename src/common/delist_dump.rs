@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use signal_common::delist_close::{self, DelistDumpEntry, DelistDumpList, FlattenReady};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::common::delist_accounts::{
@@ -61,8 +62,8 @@ pub struct RedisDumpPlan {
 #[derive(Debug, Clone)]
 struct RedisMutation {
     key: String,
-    expected: String,
-    replacement: String,
+    expected: Option<String>,
+    replacement: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +90,7 @@ pub async fn position_dump_candidates(
     risk: &RiskQueryResponse,
     threshold_usdt: f64,
     max_snapshot_age_ms: i64,
+    ordinary_dump: &BTreeMap<String, BTreeSet<String>>,
 ) -> (Vec<PositionDumpCandidate>, Vec<String>) {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let mut candidates = Vec::new();
@@ -144,7 +146,10 @@ pub async fn position_dump_candidates(
             ));
             continue;
         }
-        let position_symbols = positions.keys().cloned().collect::<BTreeSet<_>>();
+        let mut position_symbols = positions.keys().cloned().collect::<BTreeSet<_>>();
+        if let Some(symbols) = ordinary_dump.get(&spec.slug) {
+            position_symbols.extend(symbols.iter().cloned());
+        }
         let mut events_by_symbol: BTreeMap<String, Vec<AccountHitEvent>> = BTreeMap::new();
         for event in actionable_events {
             for symbol in matched_symbols(event, &position_symbols) {
@@ -172,7 +177,11 @@ pub async fn position_dump_candidates(
                 .map(|event| event.utc.as_str())
                 .min()
                 .map(str::to_string);
-            let position = positions.get(&symbol).expect("matched position symbol");
+            let position = positions.get(&symbol).copied().unwrap_or(PositionRow {
+                snapshot_ms,
+                open_usdt: 0.0,
+                hedge_usdt: 0.0,
+            });
             let impacted_position_usdt = actionable.iter().fold(0.0_f64, |max, event| {
                 let value = if event.venue.ends_with("-margin") {
                     position.open_usdt.abs()
@@ -321,6 +330,7 @@ fn positions_from_snapshot(
 pub async fn prepare_redis_dump(
     redis_url: &str,
     candidate: &PositionDumpCandidate,
+    delist_entry: Option<DelistDumpEntry>,
 ) -> Result<Option<RedisDumpPlan>> {
     let suffix = format!(
         "{}-margin_{}-futures",
@@ -330,6 +340,7 @@ pub async fn prepare_redis_dump(
         format!("{}:fr_dump_symbols:{suffix}", candidate.account_slug),
         format!("{}:fr_fwd_trade_symbols:{suffix}", candidate.account_slug),
         format!("{}:fr_bwd_trade_symbols:{suffix}", candidate.account_slug),
+        delist_close::redis_key(&candidate.account_slug, &suffix),
     ];
     let client = redis::Client::open(redis_url).context("open Redis for delist dump")?;
     let mut conn = client
@@ -341,52 +352,101 @@ pub async fn prepare_redis_dump(
         .query_async(&mut conn)
         .await
         .context("read Redis FR symbol lists for delist dump")?;
-    if values.iter().any(Option::is_none) {
+    plan_redis_dump(keys, values, &candidate.symbol, delist_entry)
+}
+
+fn plan_redis_dump(
+    keys: [String; 4],
+    values: Vec<Option<String>>,
+    symbol: &str,
+    delist_entry: Option<DelistDumpEntry>,
+) -> Result<Option<RedisDumpPlan>> {
+    if values.len() != keys.len() || values[..3].iter().any(Option::is_none) {
         bail!("one or more FR dump/fwd/bwd Redis keys are missing");
     }
+    let mut delist: DelistDumpList = values[3]
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .context("parse FR delist dump list")?
+        .unwrap_or_default();
+    let symbol = normalize_symbol(symbol);
+    let current = delist.get(&symbol).copied();
+    // A normal risk scan must never move a migrated symbol back to regular dump.
+    if delist_entry.is_none() && current.is_some() {
+        return Ok(None);
+    }
 
-    let mut mutations = Vec::new();
     let mut changes = Vec::new();
-    for (index, (key, raw)) in keys.into_iter().zip(values).enumerate() {
-        let raw = raw.expect("checked above");
-        let add = index == 0;
-        let Some((replacement, before_count, after_count)) =
-            update_symbol_list(&raw, &candidate.symbol, add)
-                .with_context(|| format!("parse Redis symbol list key={key}"))?
-        else {
-            continue;
+    let mut mutations = Vec::new();
+    for (index, (key, expected)) in keys.into_iter().zip(values).enumerate() {
+        let replacement = if index < 3 {
+            let add = index == 0 && delist_entry.is_none();
+            let updated = update_symbol_list(expected.as_deref().unwrap(), &symbol, add)
+                .with_context(|| format!("parse Redis symbol list key={key}"))?;
+            updated.map(|(replacement, before_count, after_count)| {
+                changes.push(RedisDumpChange {
+                    key: key.clone(),
+                    before_count,
+                    after_count,
+                    added_count: after_count.saturating_sub(before_count),
+                    removed_count: before_count.saturating_sub(after_count),
+                });
+                replacement
+            })
+        } else if let Some(mut entry) = delist_entry {
+            let before_count = delist.len();
+            if let Some(current) = current {
+                // Ownership stays with the script through retries and snapshot failures.
+                entry.flatten_requested_us =
+                    current.flatten_requested_us.or(entry.flatten_requested_us);
+            }
+            delist.insert(symbol.clone(), entry);
+            if current.is_none_or(|previous| {
+                previous.deadline_us != entry.deadline_us
+                    || previous.flatten_requested_us != entry.flatten_requested_us
+            }) {
+                changes.push(RedisDumpChange {
+                    key: key.clone(),
+                    before_count,
+                    after_count: delist.len(),
+                    added_count: delist.len() - before_count,
+                    removed_count: 0,
+                });
+            }
+            Some(serde_json::to_string(&delist)?)
+        } else {
+            None
         };
-        changes.push(RedisDumpChange {
-            key: key.clone(),
-            before_count,
-            after_count,
-            added_count: after_count.saturating_sub(before_count),
-            removed_count: before_count.saturating_sub(after_count),
-        });
+        // Even unchanged keys participate in the comparison.
         mutations.push(RedisMutation {
             key,
-            expected: raw,
+            expected,
             replacement,
         });
     }
-    if mutations.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(RedisDumpPlan { mutations, changes }))
-    }
+    Ok(mutations
+        .iter()
+        .any(|item| item.replacement.is_some())
+        .then_some(RedisDumpPlan { mutations, changes }))
 }
 
 pub async fn apply_redis_dump(redis_url: &str, plan: &RedisDumpPlan) -> Result<()> {
     const CAS_SCRIPT: &str = r#"
 for i = 1, #KEYS do
-  if redis.call('GET', KEYS[i]) ~= ARGV[(i - 1) * 2 + 1] then
+  local j = (i - 1) * 4
+  local expected = ARGV[j + 1] == '1' and ARGV[j + 2] or false
+  if redis.call('GET', KEYS[i]) ~= expected then
     return 0
   end
 end
 for i = 1, #KEYS do
-  redis.call('SET', KEYS[i], ARGV[(i - 1) * 2 + 2])
+  local j = (i - 1) * 4
+  if ARGV[j + 3] == '1' then
+    redis.call('SET', KEYS[i], ARGV[j + 4])
+  end
 end
-return #KEYS
+return 1
 "#;
     let client = redis::Client::open(redis_url).context("open Redis for delist dump")?;
     let mut conn = client
@@ -399,16 +459,58 @@ return #KEYS
         command.arg(&mutation.key);
     }
     for mutation in &plan.mutations {
-        command.arg(&mutation.expected).arg(&mutation.replacement);
+        command
+            .arg(u8::from(mutation.expected.is_some()))
+            .arg(mutation.expected.as_deref().unwrap_or_default())
+            .arg(u8::from(mutation.replacement.is_some()))
+            .arg(mutation.replacement.as_deref().unwrap_or_default());
     }
     let changed: i64 = command
         .query_async(&mut conn)
         .await
-        .context("atomically move FR symbol from open lists to dump")?;
-    if changed != plan.mutations.len() as i64 {
+        .context("atomically update FR dump lists")?;
+    if changed != 1 {
         bail!("Redis symbol lists changed concurrently; retry on next position scan");
     }
     Ok(())
+}
+
+pub async fn flatten_handoff_ready(
+    redis_url: &str,
+    candidate: &PositionDumpCandidate,
+    deadline_us: i64,
+    max_age_us: i64,
+) -> Result<bool> {
+    let suffix = format!(
+        "{}-margin_{}-futures",
+        candidate.exchange, candidate.exchange
+    );
+    let keys = [
+        delist_close::redis_key(&candidate.account_slug, &suffix),
+        delist_close::flatten_ready_key(&candidate.account_slug, &suffix),
+    ];
+    let values = crate::common::delist_accounts::mget_strings(redis_url, &keys).await?;
+    let [Some(list), Some(ready)] = values.as_slice() else {
+        return Ok(false);
+    };
+    let list: DelistDumpList = serde_json::from_str(list).context("parse FR delist dump list")?;
+    let ready: FlattenReady = serde_json::from_str(ready).context("parse FR flatten readiness")?;
+    let now = chrono::Utc::now().timestamp_micros();
+    Ok(list.get(&candidate.symbol).is_some_and(|entry| {
+        entry.deadline_us == deadline_us
+            && now < entry.deadline_us
+            && entry.flatten_requested_us.is_some_and(|requested| {
+                (0..=max_age_us).contains(&now.saturating_sub(ready.checked_us))
+                    && ready
+                        .requests
+                        .get(&candidate.symbol)
+                        .is_some_and(|drained| {
+                            drained.requested_us == requested
+                                && (requested..=ready.checked_us).contains(&drained.confirmed_us)
+                                && drained.confirmed_us / 1_000 < candidate.snapshot_ms
+                        })
+            })
+    }))
 }
 
 fn update_symbol_list(
@@ -448,6 +550,58 @@ fn update_symbol_list(
 mod tests {
     use super::*;
     use crate::common::delist_risk::{ExchangeRisk, RiskEventView};
+
+    #[test]
+    fn delist_dump_migration_updates_regular_lists_and_keeps_script_ownership() {
+        let keys = ["dump", "fwd", "bwd", "delist"].map(str::to_owned);
+        let mut values = vec![
+            Some(r#"["BTCUSDT","FIL_USDT"]"#.into()),
+            Some(r#"["FILUSDT"]"#.into()),
+            Some(r#"["FILUSDT","ETHUSDT"]"#.into()),
+            None,
+        ];
+        let entry = DelistDumpEntry {
+            deadline_us: 1_000,
+            valid_until_us: 300,
+            flatten_requested_us: None,
+        };
+        let plan = plan_redis_dump(keys.clone(), values.clone(), "FILUSDT", Some(entry))
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.changes.len(), 4);
+        for (value, update) in values.iter_mut().zip(plan.mutations) {
+            *value = update.replacement;
+        }
+        assert_eq!(values[0].as_deref(), Some(r#"["BTCUSDT"]"#));
+        assert_eq!(values[1].as_deref(), Some("[]"));
+        assert_eq!(values[2].as_deref(), Some(r#"["ETHUSDT"]"#));
+        assert!(
+            plan_redis_dump(keys.clone(), values.clone(), "FILUSDT", None)
+                .unwrap()
+                .is_none()
+        );
+
+        let handoff = DelistDumpEntry {
+            flatten_requested_us: Some(200),
+            ..entry
+        };
+        let plan = plan_redis_dump(keys.clone(), values.clone(), "FILUSDT", Some(handoff))
+            .unwrap()
+            .unwrap();
+        values[3] = plan.mutations[3].replacement.clone();
+        let next = DelistDumpEntry {
+            valid_until_us: 500,
+            ..entry
+        };
+        let plan = plan_redis_dump(keys, values, "FILUSDT", Some(next))
+            .unwrap()
+            .unwrap();
+        assert!(plan.changes.is_empty());
+        let list: DelistDumpList =
+            serde_json::from_str(plan.mutations[3].replacement.as_deref().unwrap()).unwrap();
+        assert_eq!(list["FILUSDT"].flatten_requested_us, Some(200));
+        assert_eq!(list["FILUSDT"].maker_deadline(300), None);
+    }
     use axum::{routing::get, Json, Router};
 
     fn gate_fr_account(slug: &str) -> AccountSpec {
@@ -600,8 +754,15 @@ mod tests {
                 .collect(),
         )
         .unwrap();
-        let (candidates, errors) =
-            position_dump_candidates(&snapshots, &accounts, &risk, 50.0, 120_000).await;
+        let (candidates, errors) = position_dump_candidates(
+            &snapshots,
+            &accounts,
+            &risk,
+            50.0,
+            120_000,
+            &BTreeMap::new(),
+        )
+        .await;
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].account_slug, "bybit_fr_arb01");
         assert_eq!(candidates[0].redis_site, "sg");
@@ -684,8 +845,15 @@ mod tests {
                 .collect(),
         )
         .unwrap();
-        let (candidates, errors) =
-            position_dump_candidates(&snapshots, &accounts, &risk, 50.0, 120_000).await;
+        let (candidates, errors) = position_dump_candidates(
+            &snapshots,
+            &accounts,
+            &risk,
+            50.0,
+            120_000,
+            &BTreeMap::new(),
+        )
+        .await;
         assert!(errors.is_empty());
         assert_eq!(candidates.len(), 2);
         assert!(candidates
