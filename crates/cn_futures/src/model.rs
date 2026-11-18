@@ -72,6 +72,7 @@ pub struct ExecutionScope {
     pub venues: HashSet<Venue>,
     pub reference_limit: u64,
     pub require_market_status: bool,
+    pub require_bootstrap_instruments: bool,
     pub cancel_requires_system_id: bool,
     pub allow_implicit_fill_reference: bool,
     pub allow_options: bool,
@@ -180,7 +181,10 @@ pub(crate) fn validate_snapshot(s: &Snapshot, scope: &ExecutionScope) -> Result<
             rule.symbol
         );
     }
-    ensure!(!symbols.is_empty(), "empty instrument snapshot");
+    ensure!(
+        !scope.require_bootstrap_instruments || !symbols.is_empty(),
+        "empty instrument snapshot"
+    );
     let mut positions = HashSet::new();
     for p in &s.positions {
         ensure!(

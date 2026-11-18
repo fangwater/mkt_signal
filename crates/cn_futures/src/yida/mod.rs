@@ -36,6 +36,7 @@ pub fn scope() -> ExecutionScope {
         venues: [Venue::Shfe, Venue::Ine].into_iter().collect(),
         reference_limit: i32::MAX as u64,
         require_market_status: false,
+        require_bootstrap_instruments: true,
         cancel_requires_system_id: false,
         allow_implicit_fill_reference: false,
         allow_options: true,

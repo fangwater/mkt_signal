@@ -385,6 +385,7 @@ pub fn scope() -> ExecutionScope {
         venues: Venue::ALL.into_iter().collect(),
         reference_limit: 999_999_999_999,
         require_market_status: true,
+        require_bootstrap_instruments: false,
         cancel_requires_system_id: false,
         allow_implicit_fill_reference: true,
         allow_options: false,

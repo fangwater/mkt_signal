@@ -260,7 +260,28 @@ fn unrelated_catalogue_rows_do_not_trigger_rate_queries() {
             break;
         }
     }
-    assert!(snapshot.unwrap().instruments.is_empty());
+    let snapshot = snapshot.unwrap();
+    assert!(snapshot.instruments.is_empty());
+    let mut core = crate::core::TradingCore::new(config().risk, super::super::scope()).unwrap();
+    core.set_trading_status(Venue::Cffex, "IF", true);
+    core.restore(snapshot).unwrap();
+    assert!(core.is_ready());
+    assert_eq!(core.position(Venue::Cffex, "IF2612", Side::Buy).total(), 3);
+    let open = Intent {
+        venue: Venue::Cffex,
+        symbol: "IF2612".into(),
+        side: Side::Buy,
+        offset: Offset::Open,
+        lots: 1,
+        price_type: PriceType::Limit,
+        price_ticks: 20_000,
+        time_in_force: TimeInForce::Day,
+        execution_route: None,
+    };
+    assert_eq!(
+        core.prepare(open, now).unwrap_err().to_string(),
+        "symbol absent from complete rule snapshot"
+    );
     session
         .require_active_future(Venue::Cffex, "IF2612")
         .unwrap();
