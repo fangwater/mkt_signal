@@ -1,0 +1,50 @@
+syntax = "proto3";
+package cn_futures_target;
+
+service PositionTargets {
+  // One persistent stream. Receipts follow request order within the stream.
+  rpc Push(stream PositionTarget) returns (stream TargetReceipt);
+}
+
+service ManagerPlans {
+  rpc Watch(PlanSubscription) returns (stream PlanUpdate);
+}
+
+message PlanSubscription {
+  string source_id = 1;
+}
+
+message PlanUpdate {
+  // An absent target clears pending delivery. An admitted target keeps its lease.
+  PositionTarget target = 1;
+}
+
+message PositionTarget {
+  string source_id = 1;
+  string batch_id = 2;
+  int64 target_revision = 3;
+  string trading_day = 4;
+  uint64 expires_at_us = 5;
+  repeated ContractTarget net_targets = 6;
+  uint64 decision_us = 7; // Immutable creation time from the account target producer.
+}
+
+message ContractTarget {
+  string market = 1; // Exchange and exact native delivery contract, e.g. SHFE:zn2701.
+  sint32 lots = 2;
+}
+
+message TargetReceipt {
+  string source_id = 1;
+  string batch_id = 2;
+  int64 target_revision = 3;
+  Admission admission = 4;
+  string reason = 5;
+}
+
+enum Admission {
+  ADMISSION_UNSPECIFIED = 0;
+  ADMISSION_ACCEPTED = 1; // Accepted by the Exec loop; no exchange acknowledgement is implied.
+  ADMISSION_REJECTED = 2;
+  ADMISSION_BUSY = 3;     // Queue full or request elapsed before confirmation.
+}

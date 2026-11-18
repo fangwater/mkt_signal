@@ -270,6 +270,7 @@ pub struct Engine {
     transforms: Vec<Transform>,
     nq: Nq,
     pub ledger: Ledger,
+    pub last_decision_day: Option<u32>,
     pub latest: Vec<RuleState>,
     pub last_end_ms: i64,
     pub hours: usize,
@@ -305,6 +306,7 @@ impl Engine {
                 .collect(),
             nq: Nq::new(&parameters(interval, true)),
             ledger,
+            last_decision_day: None,
             latest: Vec::new(),
             last_end_ms: 0,
             hours: 0,
@@ -324,6 +326,7 @@ impl Engine {
             next.ledger == self.ledger,
             "configuration warm-up changed factual positions"
         );
+        next.last_decision_day = self.last_decision_day;
         Ok(next)
     }
     pub fn ready(&self) -> bool {
@@ -524,6 +527,7 @@ impl Engine {
         }
         if publish {
             self.ledger.last_decision_ms = hour.end_ms;
+            self.last_decision_day = Some(hour.trading_day);
         }
         self.observations
             .push_back((hour.clone(), contract.into(), multiple));

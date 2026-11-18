@@ -553,6 +553,7 @@ pub async fn run() -> Result<()> {
             publisher.observe(
                 &engine,
                 stream.extras.as_ref().context("missing frequency states")?,
+                current.trading_day,
                 ready,
             )?;
         }

@@ -28,6 +28,8 @@ pub struct Config {
     /// Defaults to flow_directory/persist_manager. Never shared across accounts.
     pub persistence_directory: Option<PathBuf>,
     pub position_ipc: Option<cn_futures_state::Config>,
+    pub ctaker: Option<crate::ctp::ctaker::Settings>,
+    pub position_target_ingress: Option<cn_futures_target::Config>,
     /// Read-only L1 for held/configured contracts, independent of trading permissions.
     #[serde(default)]
     pub observation_l1: bool,
@@ -96,6 +98,27 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
+        if let Some(ctaker) = &self.ctaker {
+            ctaker.validate(&self.risk)?;
+            ensure!(
+                self.observation_l1
+                    && self.symbols.len() <= cn_futures_target::MAX_CONTRACTS
+                    && self
+                        .symbols
+                        .iter()
+                        .all(|s| is_future_symbol(s.venue, &s.symbol)),
+                "Yida ctaker requires live L1 and explicit futures-only contract scope"
+            );
+        }
+        if let Some(ingress) = &self.position_target_ingress {
+            ingress.validate()?;
+            ensure!(
+                self.ctaker
+                    .as_ref()
+                    .is_some_and(|ctaker| ctaker.source_id == ingress.source_id),
+                "position_target_ingress requires ctaker with the same source_id"
+            );
+        }
         if let Some(ipc) = &self.position_ipc {
             ipc.validate()?;
         }

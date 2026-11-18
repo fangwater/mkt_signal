@@ -29,6 +29,18 @@ pub struct Extras {
     slots: BTreeMap<Interval, Slot>,
 }
 impl Extras {
+    pub(super) fn last_live_decision(&self) -> Option<(i64, u32)> {
+        self.slots
+            .values()
+            .filter_map(|slot| {
+                Some((
+                    slot.engine.ledger.last_decision_ms,
+                    slot.engine.last_decision_day?,
+                ))
+            })
+            .max_by_key(|&(at, _)| at)
+    }
+
     pub fn publication_positions(
         &self,
     ) -> Result<BTreeMap<String, super::publication::StrategyPosition>> {

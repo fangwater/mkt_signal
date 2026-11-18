@@ -1,6 +1,10 @@
 use super::{config::Config, sdk::YidaTrader, session::Session, *};
 use crate::{
     core::{SingleLoop, TradingCore},
+    ctp::{
+        ctaker::Ctaker,
+        strategy::{self, Actions, Strategy, StrategyContext},
+    },
     runtime::{command_order_keys, input_commands, lock_flow, Command, Journal},
 };
 use anyhow::Result;
@@ -13,6 +17,10 @@ use std::{
 pub fn run(config: Config, execute: bool) -> Result<()> {
     config.validate()?;
     config.validate_sdk_config()?;
+    anyhow::ensure!(
+        config.ctaker.is_none() || execute,
+        "Yida ctaker requires --execute"
+    );
     // Bind before queues, core and database allocations, and before SDK creation.
     let placement = config
         .placement
@@ -83,6 +91,31 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
     let mut session = Session::default();
     let mut market = observation::MarketBook::default();
     let input = on_background(placement.as_ref(), input_commands)?;
+    let mut ctaker = config
+        .ctaker
+        .clone()
+        .map(|settings| {
+            Ctaker::with_scope(
+                settings,
+                &config.risk,
+                config.symbols.iter().map(|s| (s.venue, s.symbol.as_str())),
+            )
+        })
+        .transpose()?;
+    let target_ingress = config
+        .position_target_ingress
+        .as_ref()
+        .map(|cfg| {
+            on_background(placement.as_ref(), || {
+                cn_futures_target::Ingress::start(cfg)
+            })
+        })
+        .transpose()?;
+    let mut actions = Actions::default();
+    let mut l1_generation = None;
+    let mut latest_l1_generation = 0;
+    let mut checked_l1_drops = 0;
+    let mut commands_open = true;
     journal.record(json!({"type":"runtime_start","adapter":"yida","sdk_reference":SDK_REFERENCE,"trading_protocol":config.trading_protocol,"public_simulation":config.public_simulation,"placement":config.placement,"idle_sleep_us":config.idle_sleep_us,"execute":execute,"venues":["SHFE","INE"]}),true)?;
     crate::position_ipc::publish(
         &mut position_ipc,
@@ -119,11 +152,19 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                 let e = received.event;
                 journal.yida_event(&e, received.received_us, false)?;
                 if e.kind == CONNECTED {
+                    if let Some(taker) = &mut ctaker {
+                        taker.on_market_state(false, 0)?;
+                    }
+                    l1_generation = None;
                     transport_seen_ready = false;
                     runtime.core.connected();
                     recovery_since = Instant::now();
                 }
                 if e.kind == DISCONNECTED {
+                    if let Some(taker) = &mut ctaker {
+                        taker.on_market_state(false, 0)?;
+                    }
+                    l1_generation = None;
                     transport_seen_ready = false;
                     runtime.core.disconnect();
                     recovery_since = Instant::now();
@@ -208,7 +249,47 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                 runtime.core.block("native order/cancel response timed out; retain reservation and reconcile; no automatic retry");
                 journal.record(json!({"type":"trading_blocked","request":request,"error":"native order/cancel response timed out; reservation retained; no automatic retry"}),true)?;
             }
-            if runtime.trader.events.is_empty() {
+            if let Some(taker) = &mut ctaker {
+                let drops = runtime.trader.l1_dropped.load(Ordering::Acquire);
+                if drops != checked_l1_drops
+                    || !runtime.core.is_ready()
+                    || !runtime.trader.transport_ready()
+                    || !runtime.trader.l1_connected.load(Ordering::Acquire)
+                {
+                    taker.on_market_state(false, 0)?;
+                    l1_generation = None;
+                    checked_l1_drops = drops;
+                }
+                if let Some(ingress) = &target_ingress {
+                    anyhow::ensure!(!ingress.is_finished(), "position target ingress stopped");
+                    if runtime.trader.events.is_empty() {
+                        let mut audit_error = None;
+                        let can_trade = l1_generation.is_some()
+                            && runtime.trader.l1_events.is_empty()
+                            && runtime.trader.transport_ready()
+                            && runtime.trader.l1_connected.load(Ordering::Acquire);
+                        work |= ingress.poll(|target| {
+                            let admitted = taker.accept(
+                                target,
+                                StrategyContext {
+                                    core: &runtime.core,
+                                    can_trade,
+                                },
+                                crate::persistence::now_us(),
+                            )?;
+                            if let Err(error) = journal.target_accepted(admitted) {
+                                audit_error = Some(error);
+                                anyhow::bail!("target audit unavailable; Exec is stopping");
+                            }
+                            Ok(())
+                        });
+                        if let Some(error) = audit_error {
+                            return Err(error);
+                        }
+                    }
+                }
+            }
+            if commands_open && runtime.trader.events.is_empty() {
                 match input.try_recv() {
                     Ok(command) => {
                         work = true;
@@ -220,9 +301,26 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                             .unwrap_or_default();
                         let result = (|| -> Result<serde_json::Value> {
                             match command? {
-                                Command::CtakerTarget { .. } => anyhow::bail!(
-                                    "ctaker target execution is configured on the CTP runtime only"
-                                ),
+                                Command::CtakerTarget { target } => {
+                                    let taker = ctaker.as_mut().ok_or_else(|| {
+                                        anyhow::anyhow!("ctaker is not configured")
+                                    })?;
+                                    let can_trade = l1_generation.is_some()
+                                        && runtime.trader.l1_events.is_empty()
+                                        && runtime.trader.transport_ready()
+                                        && runtime.trader.l1_connected.load(Ordering::Acquire);
+                                    let target = taker.accept(
+                                        target,
+                                        StrategyContext {
+                                            core: &runtime.core,
+                                            can_trade,
+                                        },
+                                        crate::persistence::now_us(),
+                                    )?;
+                                    Ok(
+                                        json!({"type":"ctaker_target_accepted","target":target,"venue_accepted":false}),
+                                    )
+                                }
                                 Command::State {} => {
                                     let transport_ready = runtime.trader.transport_ready();
                                     Ok(
@@ -234,6 +332,10 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                                     Ok(json!({"type":"shutdown","venue_orders_cancelled":false}))
                                 }
                                 Command::Reconcile {} => {
+                                    if let Some(taker) = &mut ctaker {
+                                        taker.on_market_state(false, 0)?;
+                                    }
+                                    l1_generation = None;
                                     runtime.core.disconnect();
                                     session.ready = false;
                                     on_sdk(placement.as_ref(), || {
@@ -242,6 +344,13 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                                     })?;
                                     recovery_since = Instant::now();
                                     Ok(json!({"type":"reconciling"}))
+                                }
+                                Command::Submit { .. } | Command::SubmitBatch { .. }
+                                    if ctaker.is_some() =>
+                                {
+                                    anyhow::bail!(
+                                        "ctaker owns account targets; manual submits are disabled"
+                                    )
                                 }
                                 Command::Submit { intent } => {
                                     runtime.trader.ensure_transport_ready()?;
@@ -300,7 +409,10 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                             true,
                         )?;
                     }
-                    Err(crossbeam_channel::TryRecvError::Disconnected) => stopping = true,
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                        commands_open = false;
+                        stopping = target_ingress.is_none();
+                    }
                     Err(crossbeam_channel::TryRecvError::Empty) => {}
                 }
             }
@@ -315,6 +427,61 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     if Instant::now() >= next_l1_warning {
                         eprintln!("Yida L1 observation skipped: {error:#}");
                         next_l1_warning = Instant::now() + Duration::from_secs(5);
+                    }
+                    continue;
+                }
+                if let Some(taker) = &mut ctaker {
+                    let can_trade = execute
+                        && runtime.core.is_ready()
+                        && runtime.trader.transport_ready()
+                        && runtime.trader.l1_connected.load(Ordering::Acquire)
+                        && runtime.trader.events.is_empty()
+                        && runtime.trader.l1_events.is_empty()
+                        && runtime.trader.l1_dropped.load(Ordering::Acquire) == checked_l1_drops;
+                    let Some(bbo) = quote.execution_quote(runtime.core.trading_day()) else {
+                        continue;
+                    };
+                    if !can_trade || bbo.generation < latest_l1_generation {
+                        continue;
+                    }
+                    if l1_generation != Some(bbo.generation) {
+                        taker.on_market_state(true, bbo.generation)?;
+                        latest_l1_generation = bbo.generation;
+                        l1_generation = Some(bbo.generation);
+                    }
+                    taker.on_quote(
+                        bbo,
+                        StrategyContext {
+                            core: &runtime.core,
+                            can_trade,
+                        },
+                        &mut actions,
+                        crate::persistence::now_us(),
+                    )?;
+                    for action in actions.drain() {
+                        let allowed = runtime.trader.transport_ready()
+                            && runtime.trader.events.is_empty()
+                            && runtime.trader.l1_events.is_empty()
+                            && runtime.trader.l1_connected.load(Ordering::Acquire)
+                            && runtime.trader.l1_dropped.load(Ordering::Acquire)
+                                == checked_l1_drops
+                            && !journal.failed.load(Ordering::Acquire)
+                            && !runtime.trader.fault.load(Ordering::Acquire);
+                        let result = strategy::dispatch(
+                            &mut runtime,
+                            &journal,
+                            action,
+                            allowed,
+                            Instant::now(),
+                        )?;
+                        taker.on_result(
+                            &result,
+                            StrategyContext {
+                                core: &runtime.core,
+                                can_trade: allowed,
+                            },
+                        )?;
+                        journal.strategy_result(result)?;
                     }
                 }
             }

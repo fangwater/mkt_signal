@@ -49,12 +49,61 @@ synchronous disk wait. Abnormal termination may lose unflushed audit records;
 recovery must block unresolved outcomes. Local SDK acceptance is never reported
 as a factual venue fill. No maker/taker fee classification is invented.
 
-The strategy hooks do bounded CPU work only. There is no HTTP, disk access or
-lock inside ctaker. The private command channel is an operator/Exec ingress;
-it is **not yet** an authenticated remote Manager execution transport. Manager
-netting plans require a separate reviewed delivery adapter and exact native
-order/batch evidence joins before automated remote publication/fill allocation.
-Do not reuse the read-only sync token as execution authorization.
+## Manager delivery
+
+The CTP Exec I/O worker opens an authenticated, source-scoped gRPC
+`ManagerPlans.Watch` subscription. Manager checks the current plan on connect
+and after each committed batch or attribution update. While an active plan
+awaits current account evidence, Manager retries within that plan's original
+lease. An idle subscription waits for changes.
+
+The I/O worker queues new plans for admission inside the existing Exec loop.
+It retries a pending plan while its original lease is valid and deduplicates
+admitted plans across reconnects. The `ctaker_target_accepted` audit records
+admission by Exec. Factual fills and exchange outcomes come from the native
+order journal. The JSON `ctaker-plan` GET remains available for diagnostics.
+The CTP Trader's `idle_sleep_us` controls the fixed wait after an empty loop
+iteration. Zero keeps the loop spinning.
+
+For an account configured to read Manager plans, use the matching
+`[ctaker].source_id`, and set `target_max_age_ms = 60000` to admit the full
+Manager lease promptly. Add the target reader to the Trader TOML.
+
+```toml
+[position_target_ingress]
+source_id = "ctp_live01"
+
+[position_target_ingress.manager_plan]
+grpc_url = "http://127.0.0.1:18202"
+token_env = "CN_CTA_CTP_LIVE01_PLAN_TOKEN"
+```
+
+Configure the same account and environment credential in Manager's
+`[ctaker_plan_readers]`. Enable `publication.include_trading_day` in the
+signal publisher so the batch carries its native trading day. Manager serves
+gRPC on the same loopback port as the web API. For cross-host access, forward
+only the subscription route from the gateway's private HTTP/2 listener to
+Manager's loopback port. For example, in the gateway's private Nginx server
+block with HTTP/2 enabled:
+
+```nginx
+location = /cn_futures_target.ManagerPlans/Watch {
+    grpc_pass grpc://127.0.0.1:18202;
+    grpc_read_timeout 1h;
+}
+```
+
+Set `grpc_url` to the gateway's origin. An `http://` origin uses plaintext
+HTTP/2 and `https://` uses TLS. Both carry the source-scoped plan token.
+
+The CTP loop publishes
+settled position snapshots every five seconds while the Manager reader is
+enabled. The existing journal worker serializes and persists them, and Manager
+reads them through its local secondary or the configured replica.
+
+Private Unix socket IPC and mTLS gRPC remain available as Exec target inputs
+using the same admission queue. Manager's plan endpoint currently supports
+configured CTP sources.
 
 Compilation may run on the development host. All CTP code/tests, including
 SDK-free/FakeTrader tests, run only on the designated external `sh_dev` host.

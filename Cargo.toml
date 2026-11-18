@@ -6,6 +6,7 @@ members = [
     "crates/cn_futures",
     "crates/cn_futures_pbs",
     "crates/cn_futures_state",
+    "crates/cn_futures_target",
     "crates/account_monitor_common",
     "crates/depth_pub",
     "crates/factor_engine",

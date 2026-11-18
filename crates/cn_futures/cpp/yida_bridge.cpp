@@ -89,6 +89,7 @@ public:
                 if (m->TimeStamp>=0) text(e.native_time,api->timeStamp2String(static_cast<unsigned>(m->TimeStamp),time_buffer));
                 if (m->LastTradeTimeStamp>=0) text(e.last_trade_time,api->timeStamp2String(static_cast<unsigned>(m->LastTradeTimeStamp),time_buffer));
                 e.last_price=m->LastPrice; e.bid_price=m->BidPrice; e.ask_price=m->AskPrice;
+                e.lower_limit=m->LowerLimitPrice; e.upper_limit=m->UpperLimitPrice;
                 e.bid_lots=m->BidVolume; e.ask_lots=m->AskVolume; e.market_flags=m->MarketDataFlag;
             }
             l1_callback(l1_context,&e);

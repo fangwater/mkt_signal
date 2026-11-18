@@ -32,6 +32,7 @@ struct Desired {
     signature: String,
     positions: BTreeMap<String, StrategyPosition>,
     trigger_us: i64,
+    trading_day: Option<u32>,
     live_ready: bool,
     quotes: BTreeMap<String, Quote>,
 }
@@ -138,30 +139,46 @@ impl Publisher {
             }
         }
     }
-    pub fn observe(&mut self, engine: &Engine, extras: &Extras, live_ready: bool) -> Result<()> {
+    pub fn observe(
+        &mut self,
+        engine: &Engine,
+        extras: &Extras,
+        active_trading_day: u32,
+        live_ready: bool,
+    ) -> Result<()> {
         let positions = positions(engine, extras)?;
         let current = signature(&positions)?;
         if current != self.baseline {
             // Only a factual new decision can replace the startup baseline;
             // historical formula warm-up never publishes old targets.
-            let trigger_us = positions
-                .values()
-                .map(|p| p.decision_ms)
-                .max()
-                .unwrap_or(0)
+            let trigger_ms = positions.values().map(|p| p.decision_ms).max().unwrap_or(0);
+            let trigger_us = trigger_ms
                 .checked_mul(1000)
                 .context("native decision time overflow")?;
+            let trading_day = engine
+                .last_decision_day
+                .filter(|_| engine.ledger.last_decision_ms == trigger_ms)
+                .or_else(|| {
+                    extras
+                        .last_live_decision()
+                        .filter(|&(at, _)| at == trigger_ms)
+                        .map(|(_, day)| day)
+                });
             self.latest = Some(Desired {
                 signature: current.clone(),
                 positions,
                 trigger_us,
+                trading_day,
                 live_ready,
                 quotes: self.quotes.clone(),
             });
             self.baseline = current;
         }
         if let Some(latest) = &mut self.latest {
-            latest.live_ready = live_ready;
+            latest.live_ready = live_ready
+                && latest
+                    .trading_day
+                    .is_none_or(|day| day == active_trading_day);
             latest.quotes = self.quotes.clone();
             self.tx.send_replace(Some(latest.clone()));
         }

@@ -54,6 +54,8 @@ PM2 管理。范围为 `SHFE/SN`，支持 `1min / 5min / 15min / 1h`；各频率
 
 发送端先读取 `netting/publication?strategy_group=cn-futures-01` 的组名单、完整合约范围和 revision，补齐合约零目标后，原子 POST `target-batches`。批次含 `strategy_group / batch_id / expected_revision / decision_us / signal_times / strategies / quotes`。`signal_times` 留存各子策略的真实 bar 决策时间；外层 `decision_us` 是整批发布时点。BBO 来自当前公司 ZMQ，原生合约和价格观测时间原样保留。
 
+准备由 Exec 消费轧差目标的账户启用 `publication.include_trading_day`。发布批次附带本次实时决策的原生交易日，Manager 校验该日与当前账户快照一致。执行侧配置见 [Manager 目标交付](native_ctaker.md#manager-delivery)。
+
 首次启动仅记录既有决策基线，历史预热不发过去目标；实际新决策才可触发推送。断网时保留最新完整目标；已派发但结果未知的请求在 `data/manager_publication.json` 中持久化，重启后逐字重试原批次，不能改写它的 revision、价格或部分策略。Manager 409 表示该请求未接纳，才重新获取 CAS；过期且已明确拒绝的信号不重放。任何未落盘的待发请求不得发送。
 
 01 组首次启用逐因子发布时，已核对 Manager 只有空仓初始化记录，并归档旧的 +3 手本地信号目标。2026-11-18 从空信号账本启动，历史分钟和小时只用于因子预热，目标从接续完成后的首个有效实时小时决策开始计算。后续例行重启继续从已保存的实时决策接续。

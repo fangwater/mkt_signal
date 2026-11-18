@@ -71,6 +71,15 @@ struct Record {
 #[allow(clippy::large_enum_variant)] // Intentional preallocated inline audit storage.
 enum AuditPayload {
     Json(Value),
+    CtakerTargetAccepted(Arc<crate::ctp::ctaker::Target>),
+    #[cfg(feature = "ctp-sdk")]
+    SettledAccount {
+        observed_us: u64,
+        trading_day: cn_futures_state::Text<16>,
+        available_local_budget: f64,
+        positions: Vec<cn_futures_state::PositionRow>,
+        can_trade: bool,
+    },
     Yida {
         event: crate::yida::RawEvent,
         received_us: u64,
@@ -100,9 +109,35 @@ enum AuditPayload {
     },
 }
 impl AuditPayload {
+    fn observation_time(&self) -> Option<u64> {
+        match self {
+            #[cfg(feature = "ctp-sdk")]
+            Self::SettledAccount { observed_us, .. } => Some(*observed_us),
+            _ => None,
+        }
+    }
+
     fn materialize(self, mut mutation: NativeMutation) -> (Value, NativeMutation) {
         let value = match self {
             Self::Json(value) => value,
+            Self::CtakerTargetAccepted(target) => {
+                serde_json::json!({"type":"ctaker_target_accepted","target":target,"venue_accepted":false})
+            }
+            #[cfg(feature = "ctp-sdk")]
+            Self::SettledAccount {
+                trading_day,
+                available_local_budget,
+                positions,
+                can_trade,
+                ..
+            } => {
+                serde_json::json!({
+                    "type": "state", "transport_ready": true, "can_trade": can_trade,
+                    "state": {"ready":true,"connected":true,"trading_day":trading_day,
+                        "available_local_budget":available_local_budget,"positions":positions,
+                        "orders":[]}
+                })
+            }
             Self::Yida {
                 event,
                 received_us,
@@ -309,13 +344,18 @@ impl Journal {
                                     }
                                 }
                                 for record in records.drain(..) {
+                                    let observed_us = record.payload.observation_time();
                                     let (mut value, mutation) =
                                         record.payload.materialize(record.mutation);
                                     redact(&mut value, &redactions);
                                     let line = (record.display || text_audit.is_some())
                                         .then(|| serde_json::to_string(&value))
                                         .transpose()?;
-                                    events.push((crate::persistence::now_us(), value, mutation));
+                                    events.push((
+                                        observed_us.unwrap_or_else(crate::persistence::now_us),
+                                        value,
+                                        mutation,
+                                    ));
                                     output.push((record.display, record.ack, line));
                                 }
                                 let result = store.append_batch(events.drain(..));
@@ -412,6 +452,14 @@ impl Journal {
     }
     pub fn record(&self, value: Value, display: bool) -> Result<()> {
         self.record_with(value, display, NativeMutation::default(), false)
+    }
+    pub fn target_accepted(&self, target: Arc<crate::ctp::ctaker::Target>) -> Result<()> {
+        self.enqueue(
+            AuditPayload::CtakerTargetAccepted(target),
+            true,
+            NativeMutation::default(),
+            false,
+        )
     }
     pub fn strategy_result(&self, outcome: crate::ctp::strategy::ActionOutcome) -> Result<()> {
         self.enqueue(
@@ -627,6 +675,25 @@ impl Journal {
             AuditPayload::OrderProjection(SmallVec::new()),
             false,
             crate::persistence::projection(core, observed, false),
+            false,
+        )
+    }
+    #[cfg(feature = "ctp-sdk")]
+    fn settled_account(
+        &self,
+        snapshot: &mut cn_futures_state::Snapshot,
+        can_trade: bool,
+    ) -> Result<()> {
+        self.enqueue(
+            AuditPayload::SettledAccount {
+                observed_us: crate::persistence::now_us(),
+                trading_day: snapshot.trading_day,
+                available_local_budget: snapshot.available_local_budget,
+                positions: std::mem::take(&mut snapshot.positions),
+                can_trade,
+            },
+            false,
+            NativeMutation::default(),
             false,
         )
     }
@@ -910,6 +977,17 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
             credentials.investor.as_bytes(),
         ],
     );
+    let mut plan_snapshot = config
+        .position_target_ingress
+        .as_ref()
+        .filter(|cfg| cfg.manager_plan.is_some())
+        .map(|_| {
+            cn_futures_state::Snapshot::empty(
+                cn_futures_state::Adapter::Ctp,
+                &identity.account_hash,
+            )
+        })
+        .transpose()?;
     let mut position_ipc = placement.on_background(|| {
         config
             .position_ipc
@@ -948,6 +1026,15 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
         execute,
     };
     let input = placement.on_background(input_commands)?;
+    let target_ingress = if let Some(cfg) = &config.position_target_ingress {
+        anyhow::ensure!(
+            execute && market_data.is_some(),
+            "position target ingress requires an enabled combined execution runtime"
+        );
+        Some(placement.on_background(|| cn_futures_target::Ingress::start(cfg))?)
+    } else {
+        None
+    };
     let sdk_version = placement.on_sdk(|| ctp::sdk::version(&config.sdk_library))?;
     journal.record(json!({"type":"runtime_start","execute":execute,"exchanges":crate::model::Venue::ALL.map(|v|v.as_str()),"production_mode":config.production_mode,"sdk":sdk_version}), true)?;
     crate::position_ipc::publish(
@@ -977,6 +1064,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     let mut commands_open = true;
     let mut transport_online = false;
     let mut transport_progress = Instant::now();
+    let mut next_plan_snapshot = Instant::now();
     let mut recovery: Option<DurabilityTicket> = None;
     let outcome = (|| -> Result<()> {
         while !stopping && !stop.load(Ordering::Acquire) {
@@ -1289,6 +1377,36 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                 }
             }
             // Never submit an opening decision ahead of a known backlog of venue events.
+            if runtime.trader.events.is_empty() {
+                if let Some(ingress) = &target_ingress {
+                    anyhow::ensure!(!ingress.is_finished(), "position target ingress stopped");
+                    let can_trade = !feed_failed
+                        && execute
+                        && runtime.core.is_ready()
+                        && feed
+                            .as_ref()
+                            .is_some_and(|md| md.ready() && !md.has_backlog());
+                    let mut audit_error = None;
+                    work |= ingress.poll(|target| {
+                        let admitted = strategy.on_target(
+                            target,
+                            StrategyContext {
+                                core: &runtime.core,
+                                can_trade,
+                            },
+                            crate::persistence::now_us(),
+                        )?;
+                        if let Err(error) = journal.target_accepted(admitted) {
+                            audit_error = Some(error);
+                            anyhow::bail!("target audit unavailable; Exec is stopping");
+                        }
+                        Ok(())
+                    });
+                    if let Some(error) = audit_error {
+                        return Err(error);
+                    }
+                }
+            }
             if commands_open && runtime.trader.events.is_empty() {
                 match input.try_recv() {
                     Ok(command) => {
@@ -1306,8 +1424,8 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     && feed
                                         .as_ref()
                                         .is_some_and(|md| md.ready() && !md.has_backlog());
-                                strategy.on_target(target.clone(), StrategyContext { core: &runtime.core, can_trade }, crate::persistence::now_us())
-                                    .map(|_|json!({"type":"ctaker_target_accepted","target":target,"venue_accepted":false}))
+                                strategy.on_target(target, StrategyContext { core: &runtime.core, can_trade }, crate::persistence::now_us())
+                                    .map(|target|json!({"type":"ctaker_target_accepted","target":target,"venue_accepted":false}))
                             }
                             Ok(Command::State {}) => Ok(
                                 json!({"type":"state","state":runtime.core.view(),"account":session.account(),"settlement_confirmed":session.settlement_confirmed()}),
@@ -1381,15 +1499,29 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                 && feed
                     .as_ref()
                     .is_none_or(|md| md.ready() && !md.has_backlog());
+            let can_trade = runtime.execute
+                && runtime.core.is_ready()
+                && transport_online
+                && md_ready
+                && runtime.trader.events.is_empty();
+            if let Some(snapshot) = &mut plan_snapshot {
+                if batch_now >= next_plan_snapshot
+                    && transport_online
+                    && runtime.core.is_ready()
+                    && runtime.trader.events.is_empty()
+                {
+                    next_plan_snapshot = batch_now + Duration::from_secs(5);
+                    if runtime.core.orders_settled() {
+                        runtime.core.capture_positions(snapshot)?;
+                        journal.settled_account(snapshot, can_trade)?;
+                    }
+                }
+            }
             crate::position_ipc::publish(
                 &mut position_ipc,
                 &runtime.core,
                 transport_online,
-                runtime.execute
-                    && runtime.core.is_ready()
-                    && transport_online
-                    && md_ready
-                    && runtime.trader.events.is_empty(),
+                can_trade,
                 cn_futures_state::RuntimeStatus::Running,
                 false,
                 crate::position_ipc::Observation {
@@ -1398,7 +1530,11 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                 },
             );
             if !work {
-                std::hint::spin_loop();
+                if config.idle_sleep_us == 0 {
+                    std::hint::spin_loop();
+                } else {
+                    std::thread::sleep(Duration::from_micros(config.idle_sleep_us));
+                }
             }
         }
         Ok(())

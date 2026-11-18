@@ -14,6 +14,7 @@ fn settings() -> PublicationConfig {
         manager_url: "http://127.0.0.1:18202/api".into(),
         source_id: "native-account".into(),
         token_env: "CN_CTA_01_PUBLISH_TOKEN".into(),
+        include_trading_day: false,
         per_factor_intervals: BTreeSet::from(["1h".into()]),
     }
 }

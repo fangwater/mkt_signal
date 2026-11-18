@@ -3,8 +3,12 @@
 use super::{market_data::TickRecord, strategy::*};
 use crate::model::*;
 use anyhow::{ensure, Context, Result};
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
+pub use cn_futures_target::Target;
+use serde::Deserialize;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,25 +38,9 @@ impl Settings {
     }
 }
 
-/// A complete account target frozen under one Manager batch. It carries no
-/// inferred strategy name. Native child order keys are audited against this ID.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Target {
-    pub source_id: String,
-    pub batch_id: String,
-    pub target_revision: i64,
-    pub trading_day: String,
-    pub expires_at_us: u64,
-    pub net_targets: BTreeMap<String, i32>,
-}
 fn identifier(value: &str) -> Result<()> {
     ensure!(
-        !value.is_empty()
-            && value.len() <= 128
-            && value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':')),
+        cn_futures_target::valid_id(value),
         "invalid ctaker source/batch identifier"
     );
     Ok(())
@@ -61,6 +49,7 @@ fn identifier(value: &str) -> Result<()> {
 pub struct Ctaker {
     settings: Settings,
     scope: BTreeMap<String, (Venue, String)>,
+    markets: HashMap<Venue, HashMap<String, String>>,
     target: Option<Arc<Target>>,
     last: Option<Arc<Target>>,
     generation: Option<u64>,
@@ -71,29 +60,42 @@ pub struct Ctaker {
 impl Ctaker {
     pub fn new(config: &crate::config::Config) -> Result<Self> {
         let settings = config.ctaker.clone().context("ctaker not configured")?;
-        settings.validate(&config.risk)?;
-        ensure!(
-            !config.symbols.is_empty() && config.symbols.len() <= 128,
-            "ctaker requires 1..128 explicit contracts"
-        );
+        Self::with_scope(
+            settings,
+            &config.risk,
+            config.symbols.iter().map(|s| (s.venue, s.symbol.as_str())),
+        )
+    }
+
+    pub(crate) fn with_scope<'a>(
+        settings: Settings,
+        risk: &RiskLimits,
+        contracts: impl IntoIterator<Item = (Venue, &'a str)>,
+    ) -> Result<Self> {
+        settings.validate(risk)?;
         let mut scope = BTreeMap::new();
-        for symbol in &config.symbols {
-            let venue = serde_json::to_value(symbol.venue)?;
-            let market = format!(
-                "{}:{}",
-                venue.as_str().context("native venue")?,
-                symbol.symbol
-            );
+        let mut markets: HashMap<Venue, HashMap<String, String>> = HashMap::new();
+        for (venue, symbol) in contracts {
+            let market = format!("{}:{symbol}", venue.as_str());
             ensure!(
                 scope
-                    .insert(market, (symbol.venue, symbol.symbol.clone()))
+                    .insert(market.clone(), (venue, symbol.to_owned()))
                     .is_none(),
                 "duplicate ctaker contract"
             );
+            markets
+                .entry(venue)
+                .or_default()
+                .insert(symbol.to_owned(), market);
         }
+        ensure!(
+            (1..=cn_futures_target::MAX_CONTRACTS).contains(&scope.len()),
+            "ctaker requires 1..128 explicit contracts"
+        );
         Ok(Self {
             settings,
             scope,
+            markets,
             target: None,
             last: None,
             generation: None,
@@ -107,7 +109,7 @@ impl Ctaker {
         target: Target,
         context: StrategyContext<'_>,
         now_us: u64,
-    ) -> Result<()> {
+    ) -> Result<Arc<Target>> {
         identifier(&target.source_id)?;
         identifier(&target.batch_id)?;
         ensure!(
@@ -139,7 +141,7 @@ impl Ctaker {
                     self.target.is_some() && !self.halted,
                     "ctaker requires a renewed target after disconnect/rejection"
                 );
-                return Ok(());
+                return Ok(last.clone());
             }
             ensure!(
                 target.target_revision > last.target_revision && target.batch_id != last.batch_id,
@@ -154,14 +156,41 @@ impl Ctaker {
         );
         let target = Arc::new(target);
         self.target = Some(target.clone());
-        self.last = Some(target);
+        self.last = Some(target.clone());
         self.next_attempt_us.clear();
         self.halted = false;
-        Ok(())
+        Ok(target)
     }
     fn decide(
         &mut self,
         tick: &TickRecord,
+        context: StrategyContext<'_>,
+        actions: &mut Actions,
+        now_us: u64,
+    ) -> Result<()> {
+        self.on_quote(
+            Quote {
+                venue: tick.venue,
+                symbol: super::text_ref(&tick.symbol)?,
+                trading_day: super::text_ref(&tick.trading_day)?,
+                generation: tick.connection_generation,
+                received_us: tick.received_us,
+                bid: tick.bid[0],
+                ask: tick.ask[0],
+                bid_lots: tick.bid_volume[0],
+                ask_lots: tick.ask_volume[0],
+                lower_limit: tick.lower_limit,
+                upper_limit: tick.upper_limit,
+            },
+            context,
+            actions,
+            now_us,
+        )
+    }
+
+    pub(crate) fn on_quote(
+        &mut self,
+        quote: Quote<'_>,
         context: StrategyContext<'_>,
         actions: &mut Actions,
         now_us: u64,
@@ -172,24 +201,24 @@ impl Ctaker {
         if self.halted
             || !context.can_trade
             || !context.core.is_ready()
-            || self.generation != Some(tick.connection_generation)
+            || self.generation != Some(quote.generation)
             || now_us >= target.expires_at_us
-            || tick.received_us > now_us
-            || now_us - tick.received_us > self.settings.quote_max_age_ms * 1000
-            || super::text_ref(&tick.trading_day)? != target.trading_day
+            || quote.received_us > now_us
+            || now_us - quote.received_us > self.settings.quote_max_age_ms * 1000
+            || quote.trading_day != target.trading_day
             || target.trading_day != context.core.trading_day()
         {
             return Ok(());
         }
-        let symbol = super::text_ref(&tick.symbol)?;
-        let Some((market, _)) = self
-            .scope
-            .iter()
-            .find(|(_, (venue, name))| *venue == tick.venue && name == symbol)
+        let symbol = quote.symbol;
+        let Some(market) = self
+            .markets
+            .get(&quote.venue)
+            .and_then(|markets| markets.get(symbol))
         else {
             return Ok(());
         };
-        if context.core.has_working_orders(tick.venue, symbol)
+        if context.core.has_working_orders(quote.venue, symbol)
             || self
                 .next_attempt_us
                 .get(market)
@@ -197,8 +226,8 @@ impl Ctaker {
         {
             return Ok(());
         }
-        let long = context.core.position(tick.venue, symbol, Side::Buy);
-        let short = context.core.position(tick.venue, symbol, Side::Sell);
+        let long = context.core.position(quote.venue, symbol, Side::Buy);
+        let short = context.core.position(quote.venue, symbol, Side::Sell);
         let delta = i64::from(target.net_targets[market]) - (long.total() - short.total());
         if delta == 0 {
             return Ok(());
@@ -207,20 +236,20 @@ impl Ctaker {
         let opposite = if side == Side::Buy { &short } else { &long };
         let rule = context
             .core
-            .instrument(tick.venue, symbol)
+            .instrument(quote.venue, symbol)
             .context("ctaker contract rule unavailable")?;
         if !rule.active {
             return Ok(());
         }
-        let (bid, ask) = (tick.bid[0], tick.ask[0]);
-        if ![bid, ask, tick.lower_limit, tick.upper_limit]
+        let (bid, ask) = (quote.bid, quote.ask);
+        if ![bid, ask, quote.lower_limit, quote.upper_limit]
             .iter()
             .all(|p| p.is_finite() && *p > 0.0)
             || ask < bid
-            || tick.lower_limit > bid
-            || ask > tick.upper_limit
-            || tick.bid_volume[0] <= 0
-            || tick.ask_volume[0] <= 0
+            || quote.lower_limit > bid
+            || ask > quote.upper_limit
+            || quote.bid_lots <= 0
+            || quote.ask_lots <= 0
         {
             return Ok(());
         }
@@ -254,7 +283,7 @@ impl Ctaker {
             tag,
             target: target.clone(),
             intent: Intent {
-                venue: tick.venue,
+                venue: quote.venue,
                 symbol: symbol.into(),
                 side,
                 offset,
@@ -273,6 +302,20 @@ impl Ctaker {
         Ok(())
     }
 }
+
+pub(crate) struct Quote<'a> {
+    pub venue: Venue,
+    pub symbol: &'a str,
+    pub trading_day: &'a str,
+    pub generation: u64,
+    pub received_us: u64,
+    pub bid: f64,
+    pub ask: f64,
+    pub bid_lots: i32,
+    pub ask_lots: i32,
+    pub lower_limit: f64,
+    pub upper_limit: f64,
+}
 impl Strategy for Ctaker {
     fn on_tick(
         &mut self,
@@ -287,7 +330,7 @@ impl Strategy for Ctaker {
         target: Target,
         context: StrategyContext<'_>,
         now_us: u64,
-    ) -> Result<()> {
+    ) -> Result<Arc<Target>> {
         self.accept(target, context, now_us)
     }
     fn on_market_state(&mut self, ready: bool, generation: u64) -> Result<()> {

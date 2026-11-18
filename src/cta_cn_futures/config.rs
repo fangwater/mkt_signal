@@ -47,6 +47,8 @@ pub struct PublicationConfig {
     pub manager_url: String,
     pub source_id: String,
     pub token_env: String,
+    #[serde(default)]
+    pub include_trading_day: bool,
     pub per_factor_intervals: BTreeSet<String>,
 }
 

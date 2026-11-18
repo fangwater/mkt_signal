@@ -9,6 +9,8 @@ pub(super) struct Request {
     pub batch_id: String,
     pub expected_revision: i64,
     pub decision_us: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trading_day: Option<String>,
     pub signal_times: BTreeMap<String, i64>,
     pub strategies: BTreeMap<String, Targets>,
     pub quotes: BTreeMap<String, Quote>,
@@ -185,11 +187,23 @@ impl Client {
                 && now - desired.trigger_us <= 120_000_000,
             "waiting for a fresh factual native decision"
         );
+        let trading_day = if self.settings.include_trading_day {
+            Some(
+                desired
+                    .trading_day
+                    .filter(|day| (10_000_000..=99_999_999).contains(day))
+                    .context("native decision is missing its trading day")?
+                    .to_string(),
+            )
+        } else {
+            None
+        };
         let request = Request {
             strategy_group: self.group.clone(),
             batch_id: format!("{}-{}-{}", self.group, now, &desired.signature[..16]),
             expected_revision: watermark.revision,
             decision_us: now,
+            trading_day,
             signal_times,
             strategies,
             quotes: desired

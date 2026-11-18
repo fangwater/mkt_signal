@@ -5,6 +5,8 @@ use std::collections::HashSet;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
+const MAX_IDLE_SLEEP_US: u64 = 100_000;
+
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -34,9 +36,12 @@ pub struct Config {
     pub event_capacity: usize,
     pub query_interval_ms: u64,
     pub response_timeout_ms: u64,
+    #[serde(default)]
+    pub idle_sleep_us: u64,
     pub symbols: Vec<SymbolConfig>,
     pub risk: RiskLimits,
     pub ctaker: Option<crate::ctp::ctaker::Settings>,
+    pub position_target_ingress: Option<cn_futures_target::Config>,
 }
 
 #[cfg(test)]
@@ -62,14 +67,26 @@ mod tests {
     #[test]
     fn blocking_ctp_configuration_knobs_are_rejected() {
         let trade = include_str!("../../../config/ctp_trade.example.toml");
-        for knob in [
-            "sync_before_send = true\n",
-            "sync_before_send = false\n",
-            "idle_sleep_us = 0\n",
-            "idle_sleep_us = 100\n",
-        ] {
+        for knob in ["sync_before_send = true\n", "sync_before_send = false\n"] {
             assert!(toml::from_str::<Config>(&format!("{knob}{trade}")).is_err());
         }
+    }
+    #[test]
+    fn idle_sleep_is_optional_and_bounded() {
+        let trade = include_str!("../../../config/ctp_trade.example.toml");
+        let mut example: Config = toml::from_str(trade).unwrap();
+        assert_eq!(example.idle_sleep_us, 64_000);
+        example.validate().unwrap();
+
+        let mut table: toml::Table = toml::from_str(trade).unwrap();
+        table.remove("idle_sleep_us");
+        let default: Config = toml::Value::Table(table).try_into().unwrap();
+        assert_eq!(default.idle_sleep_us, 0);
+
+        example.idle_sleep_us = MAX_IDLE_SLEEP_US;
+        example.validate().unwrap();
+        example.idle_sleep_us += 1;
+        assert!(example.validate().is_err());
     }
 }
 #[derive(Clone, Deserialize)]
@@ -142,6 +159,15 @@ impl Config {
                 "ctaker scope exceeds 128 contracts"
             );
         }
+        if let Some(ingress) = &self.position_target_ingress {
+            ingress.validate()?;
+            ensure!(
+                self.ctaker
+                    .as_ref()
+                    .is_some_and(|ctaker| ctaker.source_id == ingress.source_id),
+                "position_target_ingress requires ctaker with the same source_id"
+            );
+        }
         if let Some(ipc) = &self.position_ipc {
             ipc.validate()?;
         }
@@ -180,6 +206,10 @@ impl Config {
             "CTP query interval must be at least 1000 ms"
         );
         ensure!(self.response_timeout_ms >= 5000, "invalid response timeout");
+        ensure!(
+            self.idle_sleep_us <= MAX_IDLE_SLEEP_US,
+            "idle_sleep_us must be 0..{MAX_IDLE_SLEEP_US}"
+        );
         ensure!(
             self.flow_directory.is_absolute() && self.sdk_library.is_absolute(),
             "SDK and flow paths must be absolute"

@@ -58,6 +58,7 @@ fn desired() -> Desired {
         signature: signature(&positions).unwrap(),
         positions,
         trigger_us: now,
+        trading_day: Some(20261118),
         live_ready: true,
         quotes: BTreeMap::from([(
             "SHFE:sn2612".into(),
@@ -99,6 +100,7 @@ fn settings(url: String) -> PublicationConfig {
         manager_url: url,
         source_id: "native-account".into(),
         token_env: "unused_test_env".into(),
+        include_trading_day: true,
         per_factor_intervals: BTreeSet::from(["1h".into()]),
     }
 }
@@ -124,6 +126,7 @@ async fn ten_factors_are_one_request_with_a_complete_contract_vector() {
     assert!(request["strategies"].get("cn-futures-01-1h").is_none());
     assert_eq!(request["signal_times"].as_object().unwrap().len(), 10);
     assert_eq!(request["expected_revision"], 7);
+    assert_eq!(request["trading_day"], "20261118");
     for value in request["strategies"].as_object().unwrap().values() {
         assert_eq!(value["SHFE:sn2611"], 0);
     }

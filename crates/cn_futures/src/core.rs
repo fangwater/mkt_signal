@@ -234,6 +234,18 @@ impl TradingCore {
             .id(venue, symbol)
             .is_some_and(|id| !self.working_by_symbol[id.0].is_empty())
     }
+    #[cfg(feature = "ctp-sdk")]
+    pub(crate) fn orders_settled(&self) -> bool {
+        self.working_lots == 0
+            && self.orders.slots.iter().all(|order| {
+                order.status.terminal()
+                    && !order.cancel_pending
+                    && order.reported_filled == order.filled
+                    && order.reserved_today == 0
+                    && order.reserved_yesterday == 0
+                    && order.remaining() == 0
+            })
+    }
     /// Copy only account state/positions into a cold-preallocated observation
     /// buffer. No order/instrument projection, JSON, I/O or mutable-core borrow
     /// crosses into the publisher thread.

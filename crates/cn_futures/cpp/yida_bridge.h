@@ -53,7 +53,7 @@ struct CnYidaL1 {
     uint64_t generation;
     int32_t initial, connected, product_class, contract_multiple, trading_day;
     int32_t native_timestamp, last_trade_timestamp, bid_lots, ask_lots, market_flags;
-    double last_price, bid_price, ask_price;
+    double last_price, bid_price, ask_price, lower_limit, upper_limit;
     char symbol[64], exchange[12], native_time[24], last_trade_time[24];
 };
 using CnYidaL1Callback = void (*)(void*, const CnYidaL1*);

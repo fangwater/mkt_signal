@@ -4,6 +4,7 @@ use crate::core::{SubmitReceipt, TradingCore};
 use crate::model::{Intent, OrderKey};
 use anyhow::{ensure, Result};
 use smallvec::SmallVec;
+use std::sync::Arc;
 
 pub const MAX_ACTIONS_PER_TICK: usize = 8;
 pub struct StrategyContext<'a> {
@@ -39,7 +40,7 @@ impl Actions {
         self.values.push(action);
         Ok(())
     }
-    #[cfg(any(feature = "ctp-sdk", test))]
+    #[cfg(any(feature = "ctp-sdk", feature = "yida-sdk", test))]
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = Action> + '_ {
         self.values.drain(..)
     }
@@ -57,7 +58,7 @@ pub trait Strategy {
         _target: super::ctaker::Target,
         _context: StrategyContext<'_>,
         _now_us: u64,
-    ) -> Result<()> {
+    ) -> Result<Arc<super::ctaker::Target>> {
         anyhow::bail!("target execution is not configured")
     }
     fn on_tick(
@@ -105,7 +106,7 @@ impl Strategy for ConfiguredStrategy {
         target: super::ctaker::Target,
         context: StrategyContext<'_>,
         now_us: u64,
-    ) -> Result<()> {
+    ) -> Result<Arc<super::ctaker::Target>> {
         self.0
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("ctaker is not configured"))?
@@ -125,7 +126,7 @@ impl Strategy for ConfiguredStrategy {
     }
 }
 
-#[cfg(any(feature = "ctp-sdk", test))]
+#[cfg(any(feature = "ctp-sdk", feature = "yida-sdk", test))]
 pub(crate) fn dispatch<T: crate::model::Trader>(
     runtime: &mut crate::core::SingleLoop<T>,
     journal: &crate::runtime::Journal,

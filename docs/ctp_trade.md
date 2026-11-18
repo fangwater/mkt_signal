@@ -64,7 +64,7 @@ SDK 注册主/备用前置并负责传输重连，每次重新连接仍重新认
 
 行情驱动交易采用[固定四核布局](ctp_layout.md)：行情消费、策略、风控、OMS 和报撤单调用共用一个业务核，Trader/Md SDK 各一核，后台 I/O 一核。两个配置的业务核、后台核和 NUMA 节点相同，SDK 核不同；合并检查四个域不共享 SMT 物理核。配置字段 `sdk_cpus` 和 `background_cpus` 均只允许一个 CPU。仍强制 `MPOL_BIND | MPOL_F_STATIC_NODES`，失败退出，不放宽策略。
 
-CTP 固定异步发送审计和忙轮询，已移除 `sync_before_send`、`idle_sleep_us` 与交易端 `reconnect_backoff_ms`；旧私有配置需删除这些字段。恢复屏障改为非阻塞 checkpoint 轮询，未完成时禁止交易，同时继续处理行情和回报；成功后才发布 `reconciled`。共享易达配置的同步选项保持独立。
+CTP 保持异步发送审计和单核轮询。Trader TOML 的 `idle_sleep_us` 默认 0，表示纯自旋。设为 1–100000 时，整轮无柜台回报、行情、目标或其他工作才按该微秒数固定休眠。示例设置为 `64000`（64 ms）。实际唤醒时间受操作系统调度影响。`sync_before_send` 与交易端 `reconnect_backoff_ms` 已移除。恢复屏障使用非阻塞 checkpoint 轮询，未完成时继续处理行情和回报，成功后才发布 `reconciled`。
 
 高频回报仍使用 328 字节紧凑事件，928 字节控制响应池化，后台审计持有槽引用至序列化结束；尺寸为编译期结果。报撤单复用不可变模板，避免逐笔构造固定字段字符串。请求 ID 使用每页 1024 项直接索引，`preallocated_requests` 默认 16384，只是初始容量提示，仍保留迟到响应和跨会话歧义检查。
 
