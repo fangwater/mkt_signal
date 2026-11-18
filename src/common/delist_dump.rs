@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use signal_common::delist_close::{self, DelistDumpEntry, DelistDumpList, FlattenReady};
+use signal_common::delist_close::{self, DelistDumpEntry, DelistDumpList};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::common::delist_accounts::{
@@ -475,41 +475,23 @@ return 1
     Ok(())
 }
 
-pub async fn flatten_handoff_ready(
+pub async fn delist_script_requested(
     redis_url: &str,
     candidate: &PositionDumpCandidate,
     deadline_us: i64,
-    max_age_us: i64,
 ) -> Result<bool> {
     let suffix = format!(
         "{}-margin_{}-futures",
         candidate.exchange, candidate.exchange
     );
-    let keys = [
-        delist_close::redis_key(&candidate.account_slug, &suffix),
-        delist_close::flatten_ready_key(&candidate.account_slug, &suffix),
-    ];
-    let values = crate::common::delist_accounts::mget_strings(redis_url, &keys).await?;
-    let [Some(list), Some(ready)] = values.as_slice() else {
+    let key = delist_close::redis_key(&candidate.account_slug, &suffix);
+    let values = crate::common::delist_accounts::mget_strings(redis_url, &[key]).await?;
+    let [Some(raw)] = values.as_slice() else {
         return Ok(false);
     };
-    let list: DelistDumpList = serde_json::from_str(list).context("parse FR delist dump list")?;
-    let ready: FlattenReady = serde_json::from_str(ready).context("parse FR flatten readiness")?;
-    let now = chrono::Utc::now().timestamp_micros();
+    let list: DelistDumpList = serde_json::from_str(raw).context("parse FR delist dump list")?;
     Ok(list.get(&candidate.symbol).is_some_and(|entry| {
-        entry.deadline_us == deadline_us
-            && now < entry.deadline_us
-            && entry.flatten_requested_us.is_some_and(|requested| {
-                (0..=max_age_us).contains(&now.saturating_sub(ready.checked_us))
-                    && ready
-                        .requests
-                        .get(&candidate.symbol)
-                        .is_some_and(|drained| {
-                            drained.requested_us == requested
-                                && (requested..=ready.checked_us).contains(&drained.confirmed_us)
-                                && drained.confirmed_us / 1_000 < candidate.snapshot_ms
-                        })
-            })
+        entry.deadline_us == deadline_us && entry.flatten_requested_us.is_some()
     }))
 }
 

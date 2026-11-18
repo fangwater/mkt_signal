@@ -1569,15 +1569,15 @@ both leg notionals, applied threshold, Redis key changes, and result.
 ### 下架前 12 小时脚本收口
 
 `DELIST_AUTO_FLATTEN_POSITION_RISK=1` 时，距下架 12 小时以内且两腿绝对
-名义金额的较大值在 1 至 1,000 USDT 之间（含边界），Delist 请求脚本接管。
-`pre_trade` 停止该币的订单提交，撤掉已有策略挂单并确认未完成订单和孤儿单均已
-处理。Delist 收到确认及其后的新持仓快照才运行原账户清仓脚本。超过 1,000 USDT
-的仓位继续走策略平仓，达到门槛后才交接。
+名义金额的较大值在 1 至 1,000 USDT 之间（含边界），Delist 在名单中标记该币对
+进入脚本收口，并直接执行账户原有的 `--mode clear --execute` 脚本做 taker-taker。
+`trade_signal` 读到标记后停止发该币对的新平仓信号，已发订单沿用原来的生命周期。
+超过 1,000 USDT 的仓位继续走策略平仓，达到门槛后由脚本收口。
 
 脚本的执行结果写入 PostgreSQL。脚本执行失败、超时或结果未写入时，monitor
 每分钟告警一次。同一账户和标的后续收口成功后结束告警，余额尾量仍在看板上显示。
 收口是否成功以交易所对应脚本的执行结果为准。失败的脚本不会自动重跑。
-`POST /flatten` 允许在接管完成后人工补做，仍须通过账户、标的、快照和操作口令校验。
+`POST /flatten` 允许对已标记脚本收口的币对人工补做，仍须通过账户、标的、快照和操作口令校验。
 
 `GET /flatten-candidates` 显示 24 小时窗口内有仓位的标的和最近执行审计。
 `position_statuses` 同时读取普通 dump 和下架 dump 名单。

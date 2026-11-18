@@ -1,6 +1,5 @@
 //! Pre-trade owned UniMMR emergency close execution for funding arbitrage.
 
-use crate::pre_trade::fr_position_concentration_guard::delist_flatten_requested;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::strategy::arb_close_strategy::ArbCloseStrategy;
@@ -182,9 +181,6 @@ impl UnimmrForceClose {
         now_us: i64,
     ) -> usize {
         let symbol = normalize_symbol_for_internal(symbol);
-        if delist_flatten_requested(&symbol) {
-            return 0;
-        }
         let monitor = MonitorChannel::instance();
         let open_venue = monitor.open_venue();
         let hedge_venue = monitor.hedge_venue();

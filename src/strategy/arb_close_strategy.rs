@@ -96,26 +96,6 @@ impl ArbCloseStrategy {
         self.open_side()
     }
 
-    pub(super) fn cancel_for_delist_flatten(&mut self, now: i64) {
-        if self.force_taker_taker {
-            // The emergency taker order must reach a terminal state first.
-            return;
-        }
-        let Some(cancel_side) = self.close_side() else {
-            return;
-        };
-        self.handle_open_cancel_signal_common(OpenCancelInput {
-            signal_name: "DelistFlattenHandoff",
-            target_strategy_id: self.strategy_id(),
-            target_client_order_id: 0,
-            cancel_side,
-            cancel_reason: "delist_flatten_handoff",
-            trigger_ts: now,
-            from_key: Vec::new(),
-            mkt_ts: 0,
-        });
-    }
-
     pub fn handle_unimmr_recover_cancel(&mut self, trigger_ts: i64) -> bool {
         let Some(cancel_side) = self.close_side() else {
             return false;

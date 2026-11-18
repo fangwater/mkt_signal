@@ -41,7 +41,7 @@ use mkt_signal::common::delist_accounts::{
     FrSymbolListState, NAV_UNAUTHORIZED,
 };
 use mkt_signal::common::delist_dump::{
-    apply_redis_dump, flatten_handoff_ready, position_close_statuses, position_dump_candidates,
+    apply_redis_dump, delist_script_requested, position_close_statuses, position_dump_candidates,
     prepare_redis_dump, snapshot_symbol_is_flat, PositionDumpCandidate,
     POSITION_REMOVAL_THRESHOLD_USDT,
 };
@@ -1897,13 +1897,15 @@ async fn manual_flatten(
         )
             .into_response();
     };
-    match script_handoff_ready(&state, &candidate, &positioned).await {
+    match script_flatten_requested(&state, &candidate, &positioned).await {
         Ok(true) => {}
-        Ok(false) => return (
-            StatusCode::CONFLICT,
-            Json(json!({"ok": false, "error": "pre_trade has not confirmed the flatten handoff"})),
-        )
-            .into_response(),
+        Ok(false) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"ok": false, "error": "symbol has no current script flatten request"})),
+            )
+                .into_response()
+        }
         Err(err) => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -2820,17 +2822,7 @@ async fn run_position_risk_scan(state: &AppState) {
         if let Some(final_candidate) =
             final_candidate.filter(|candidate| auto_flatten_due(state, candidate))
         {
-            match script_handoff_ready(state, final_candidate, &candidate).await {
-                Ok(true) => ready_to_flatten.push(((*final_candidate).clone(), candidate)),
-                Ok(false) => info!(
-                    "FR delist flatten waiting for pre_trade account={} symbol={}",
-                    candidate.account_slug, candidate.symbol
-                ),
-                Err(err) => errors.push(format!(
-                    "account={} symbol={} flatten handoff: {err:#}",
-                    candidate.account_slug, candidate.symbol
-                )),
-            }
+            ready_to_flatten.push(((*final_candidate).clone(), candidate));
         }
     }
     if !ready_to_flatten.is_empty() {
@@ -2883,24 +2875,22 @@ fn position_redis_url<'a>(
     }
 }
 
-async fn script_handoff_ready(
+async fn script_flatten_requested(
     state: &AppState,
     candidate: &FlattenCandidate,
     positioned: &PositionDumpCandidate,
 ) -> Result<bool> {
-    let age_ms = Utc::now()
-        .timestamp_millis()
-        .saturating_sub(positioned.snapshot_ms);
-    if candidate.remaining_ms > FLATTEN_WINDOW_MS
+    let now_ms = Utc::now().timestamp_millis();
+    let age_ms = now_ms.saturating_sub(positioned.snapshot_ms);
+    if !(1..=FLATTEN_WINDOW_MS).contains(&candidate.deadline_ms.saturating_sub(now_ms))
         || age_ms.unsigned_abs() > state.position_snapshot_max_age_ms.max(0) as u64
     {
         return Ok(false);
     }
-    flatten_handoff_ready(
+    delist_script_requested(
         position_redis_url(state, positioned)?,
         positioned,
         candidate.deadline_ms.saturating_mul(1_000),
-        state.position_snapshot_max_age_ms.saturating_mul(1_000),
     )
     .await
 }
@@ -2960,8 +2950,8 @@ async fn execute_flatten_with_audit(
     trigger: &str,
     dedup_key: &str,
 ) -> Result<Option<(i64, FlattenRunOutput)>> {
-    if !script_handoff_ready(state, candidate, positioned).await? {
-        anyhow::bail!("pre_trade flatten handoff is no longer current");
+    if !script_flatten_requested(state, candidate, positioned).await? {
+        anyhow::bail!("delist script flatten request is no longer current");
     }
     let account = current_flatten_account(state, candidate).await?;
     let command = serde_json::to_value(state.flatten_executor.command(candidate, &account)?)?;

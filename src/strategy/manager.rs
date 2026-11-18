@@ -825,38 +825,6 @@ impl StrategyManager {
             .collect()
     }
 
-    /// Drain the strategy before the account script takes over this symbol.
-    pub(crate) fn drain_delist_orders(&mut self, symbol: &str, now: i64) -> bool {
-        let ids: Vec<_> = self
-            .ids_for_normalized_symbol(symbol)
-            .into_iter()
-            .flatten()
-            .copied()
-            .collect();
-        let mut working = false;
-        for id in ids {
-            let Some(strategy) = self.strategies.get_mut(&id) else {
-                continue;
-            };
-            if let Some(close) = strategy.as_any_mut().downcast_mut::<ArbCloseStrategy>() {
-                close.cancel_for_delist_flatten(now);
-                working = true;
-            } else if let Some(open) = strategy.as_any().downcast_ref::<ArbOpenStrategy>() {
-                if let Some(open_side) = open.open_side() {
-                    self.cancel_arb_open_by_id_with_signal(
-                        id,
-                        open_side,
-                        "delist_flatten_handoff",
-                        now,
-                        "DelistFlattenHandoff",
-                    );
-                    working = true;
-                }
-            }
-        }
-        working
-    }
-
     /// UniMMR recover 专用：给指定 ArbClose 策略走 common cancel 生命周期。
     pub fn cancel_arb_close_for_unimmr_recover_by_id(
         &mut self,

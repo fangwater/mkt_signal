@@ -1,4 +1,4 @@
-//! FR delist dump list and the handoff from pre_trade to the flatten script.
+//! FR delist dump list shared by Delist and trade_signal.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -23,22 +23,6 @@ impl DelistDumpEntry {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct FlattenReady {
-    pub checked_us: i64,
-    pub requests: BTreeMap<String, FlattenDrain>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct FlattenDrain {
-    pub requested_us: i64,
-    pub confirmed_us: i64,
-}
-
 pub fn redis_key(account: &str, venue_pair: &str) -> String {
     format!("{account}:fr_{DELIST_DUMP_LIST}:{venue_pair}")
-}
-
-pub fn flatten_ready_key(account: &str, venue_pair: &str) -> String {
-    format!("{account}:fr_delist_flatten_ready:{venue_pair}")
 }
