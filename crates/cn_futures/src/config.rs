@@ -48,15 +48,16 @@ mod tests {
             toml::from_str(include_str!("../../../config/ctp_trade.example.toml")).unwrap();
         let mut md: crate::ctp::market_data::Config =
             toml::from_str(include_str!("../../../config/ctp_market_data.example.toml")).unwrap();
-        trade.validate_market_data(&md).unwrap();
+        trade.validate_market_data(&md, true).unwrap();
         md.placement.business_cpu = 9;
-        assert!(trade.validate_market_data(&md).is_err());
+        assert!(trade.validate_market_data(&md, false).is_err());
         md.placement = crate::placement::PlacementConfig {
             sdk_cpus: vec![2],
             ..trade.placement.clone()
         };
         md.symbols.retain(|s| s.symbol != "IF2612");
-        assert!(trade.validate_market_data(&md).is_err());
+        trade.validate_market_data(&md, false).unwrap();
+        assert!(trade.validate_market_data(&md, true).is_err());
     }
     #[test]
     fn blocking_ctp_configuration_knobs_are_rejected() {
@@ -94,7 +95,11 @@ fn default_preallocated_requests() -> usize {
 }
 
 impl Config {
-    pub fn validate_market_data(&self, md: &crate::ctp::market_data::Config) -> Result<()> {
+    pub fn validate_market_data(
+        &self,
+        md: &crate::ctp::market_data::Config,
+        execute: bool,
+    ) -> Result<()> {
         self.validate()?;
         md.validate()?;
         self.placement.validate_combined(&md.placement)?;
@@ -109,10 +114,15 @@ impl Config {
             "Md and Trader require separate flow directories"
         );
         ensure!(
-            self.symbols.iter().all(|symbol| md
-                .symbols
-                .iter()
-                .any(|s| s.venue == symbol.venue && s.symbol == symbol.symbol)),
+            !execute || md.shfe_dominant_url.is_none(),
+            "SHFE dominant MD subscriptions are read-only; execution requires explicit symbols"
+        );
+        ensure!(
+            !execute
+                || self.symbols.iter().all(|symbol| md
+                    .symbols
+                    .iter()
+                    .any(|s| s.venue == symbol.venue && s.symbol == symbol.symbol)),
             "every trading symbol must have an explicit MD subscription"
         );
         Ok(())

@@ -11,6 +11,10 @@ event_capacity = 8192
 response_timeout_ms = 30000
 reconnect_backoff_ms = 5000
 
+# For read-only ctp-trader, shfe_dominant_url can replace all [[symbols]].
+# The process requests the SHFE list after MdApi reports its trading day.
+# shfe_dominant_url = "http://127.0.0.1:18313/api/v1/dominant"
+
 [[symbols]]
 venue = "CFFEX"
 symbol = "IF2612"

@@ -20,9 +20,12 @@ pub struct Config {
     pub event_capacity: usize,
     pub response_timeout_ms: u64,
     pub reconnect_backoff_ms: u64,
+    /// Market Replay HTTP endpoint for read-only SHFE dominant subscriptions.
+    pub shfe_dominant_url: Option<String>,
+    #[serde(default)]
     pub symbols: Vec<Subscription>,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Subscription {
     pub venue: Venue,
@@ -72,11 +75,25 @@ impl Config {
                 "invalid MD credential variable name"
             );
         }
-        let mut symbols = HashSet::new();
+        if let Some(url) = &self.shfe_dominant_url {
+            ensure!(
+                self.symbols.is_empty(),
+                "choose explicit MD symbols or shfe_dominant_url"
+            );
+            #[cfg(feature = "ctp-sdk")]
+            dominant::endpoint(url)?;
+            #[cfg(not(feature = "ctp-sdk"))]
+            ensure!(
+                url.starts_with("http://") || url.starts_with("https://"),
+                "shfe_dominant_url must be an HTTP(S) endpoint"
+            );
+            return Ok(());
+        }
         ensure!(
             !self.symbols.is_empty() && self.symbols.len() <= 1000,
             "require 1..1000 MD subscriptions"
         );
+        let mut symbols = HashSet::new();
         for s in &self.symbols {
             ensure!(
                 is_future_symbol(s.venue, &s.symbol) && symbols.insert(&s.symbol),
@@ -228,6 +245,8 @@ pub struct Session {
     pub logged_in: bool,
     pub generation: u64,
     login_request: Option<i32>,
+    trading_day: Option<String>,
+    dynamic: bool,
 }
 impl Session {
     pub fn new(config: &Config) -> Self {
@@ -242,6 +261,8 @@ impl Session {
             logged_in: false,
             generation: 0,
             login_request: None,
+            trading_day: None,
+            dynamic: config.shfe_dominant_url.is_some(),
         }
     }
     pub fn connected(&mut self, request: i32) -> Result<()> {
@@ -249,9 +270,8 @@ impl Session {
             .generation
             .checked_add(1)
             .context("MD generation exhausted")?;
+        self.disconnect();
         self.connected = true;
-        self.logged_in = false;
-        self.subscribed.clear();
         self.login_request = Some(request);
         Ok(())
     }
@@ -260,9 +280,18 @@ impl Session {
         self.logged_in = false;
         self.subscribed.clear();
         self.login_request = None;
+        self.trading_day = None;
+        if self.dynamic {
+            self.allowed.clear();
+        }
     }
     pub fn login(&mut self, event: &RawEvent) -> Result<bool> {
-        if self.login_request != Some(event.request) {
+        let Some(request) = self.login_request else {
+            return Ok(false);
+        };
+        // Production Md fronts can return zero instead of echoing the login ID.
+        // Accept that response only for this connection's single pending login.
+        if event.request != request && event.request != 0 {
             return Ok(false);
         }
         ensure!(
@@ -278,9 +307,30 @@ impl Session {
             day.len() == 8 && day.bytes().all(|b| b.is_ascii_digit()),
             "invalid MD trading day"
         );
+        self.trading_day = Some(day);
         self.logged_in = true;
         self.login_request = None;
         Ok(true)
+    }
+    #[cfg(feature = "ctp-sdk")]
+    pub(super) fn trading_day(&self) -> Option<&str> {
+        self.trading_day.as_deref()
+    }
+    #[cfg(any(feature = "ctp-sdk", test))]
+    pub(super) fn install_dominant(&mut self, day: &str, symbols: &[Subscription]) -> Result<()> {
+        ensure!(
+            self.dynamic
+                && self.logged_in
+                && self.trading_day.as_deref() == Some(day)
+                && self.allowed.is_empty()
+                && !symbols.is_empty(),
+            "dominant subscriptions do not match the pending MD session"
+        );
+        self.allowed = symbols
+            .iter()
+            .map(|s| (s.symbol.clone(), s.venue))
+            .collect();
+        Ok(())
     }
     pub fn subscribed(&mut self, event: &RawEvent) -> Result<()> {
         ensure!(
@@ -297,7 +347,10 @@ impl Session {
         Ok(())
     }
     pub fn ready(&self) -> bool {
-        self.connected && self.logged_in && self.subscribed.len() == self.allowed.len()
+        self.connected
+            && self.logged_in
+            && !self.allowed.is_empty()
+            && self.subscribed.len() == self.allowed.len()
     }
     pub fn tick_venue(&self, e: &RawEvent) -> Result<Venue> {
         ensure!(
@@ -330,6 +383,8 @@ impl Session {
     }
 }
 
+#[cfg(feature = "ctp-sdk")]
+mod dominant;
 #[cfg(feature = "ctp-sdk")]
 mod feed;
 #[cfg(feature = "ctp-sdk")]
@@ -407,6 +462,73 @@ mod tests {
         s.subscribed(&sub).unwrap();
         assert!(s.ready());
         assert_eq!(s.generation, 2);
+    }
+    #[test]
+    fn zero_id_login_requires_pending_connection_and_fresh_subscriptions() {
+        let mut c = config();
+        c.symbols.truncate(1);
+        let mut s = Session::new(&c);
+        assert!(!s.login(&login(0)).unwrap());
+        s.connected(7).unwrap();
+        let mut response = login(0);
+        response.last = 0;
+        assert!(!s.login(&response).unwrap());
+        assert!(!s.ready());
+        assert!(s.login(&login(0)).unwrap());
+        assert!(!s.login(&login(0)).unwrap());
+        assert!(!s.ready());
+        let mut sub = RawEvent {
+            present: 1,
+            ..RawEvent::default()
+        };
+        sub.symbol[..6].copy_from_slice(b"IF2612");
+        s.subscribed(&sub).unwrap();
+        assert!(s.ready());
+        s.disconnect();
+        assert!(!s.login(&login(0)).unwrap());
+        s.connected(8).unwrap();
+        assert!(!s.login(&login(7)).unwrap());
+        assert!(s.login(&login(0)).unwrap());
+        assert!(!s.ready());
+        s.subscribed(&sub).unwrap();
+        assert!(s.ready());
+    }
+    #[test]
+    fn zero_id_login_still_rejects_errors_and_missing_response() {
+        for missing in [false, true] {
+            let mut s = Session::new(&config());
+            s.connected(1).unwrap();
+            let mut response = login(0);
+            if missing {
+                response.present = 0;
+            } else {
+                response.error = 3;
+            }
+            assert!(s.login(&response).is_err());
+            assert!(!s.ready());
+        }
+    }
+    #[test]
+    fn dominant_list_must_be_installed_for_each_broker_login() {
+        let mut config = config();
+        let symbols = std::mem::take(&mut config.symbols);
+        config.shfe_dominant_url = Some("http://localhost/api/v1/dominant".into());
+        config.validate().unwrap();
+        let mut session = Session::new(&config);
+        session.connected(1).unwrap();
+        assert!(session.login(&login(0)).unwrap());
+        assert!(!session.ready());
+        assert!(session.install_dominant("20261112", &symbols).is_err());
+        session.install_dominant("20261111", &symbols).unwrap();
+        session.disconnect();
+        assert!(session.allowed.is_empty());
+        session.connected(2).unwrap();
+        let mut next_day = login(0);
+        next_day.trading_day[..8].copy_from_slice(b"20261112");
+        assert!(session.login(&next_day).unwrap());
+        assert!(!session.ready());
+        assert!(session.install_dominant("20261111", &symbols).is_err());
+        session.install_dominant("20261112", &symbols).unwrap();
     }
     #[test]
     fn no_invented_prices_and_wrong_venue_is_rejected() {

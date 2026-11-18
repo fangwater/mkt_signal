@@ -135,6 +135,15 @@ impl Native {
             symbol_pointers,
         })
     }
+    pub(super) fn set_symbols(&mut self, subscriptions: &[Subscription]) -> Result<()> {
+        let symbols: Vec<CString> = subscriptions
+            .iter()
+            .map(|s| CString::new(s.symbol.as_str()))
+            .collect::<std::result::Result<_, _>>()?;
+        self.symbol_pointers = symbols.iter().map(|s| s.as_ptr()).collect();
+        self._symbols = symbols;
+        Ok(())
+    }
     pub(super) fn start(&self, config: &Config) -> Result<()> {
         let fronts = CString::new(config.fronts.join(","))?;
         ensure!(
@@ -333,6 +342,10 @@ impl Drop for Output {
 
 pub fn run(config: Config, duration: Option<Duration>, stop: &AtomicBool) -> Result<()> {
     config.validate()?;
+    ensure!(
+        config.shfe_dominant_url.is_none(),
+        "use ctp-trader for HTTP dominant subscriptions; this diagnostic requires explicit symbols"
+    );
     let placement = Placement::enter(&config.placement)?;
     let _lock = crate::runtime::lock_flow(&config.flow_directory)?;
     let broker = CString::new(config.broker_id.as_str())?;

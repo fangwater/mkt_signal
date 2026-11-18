@@ -5,7 +5,7 @@ edition.workspace = true
 
 [features]
 default = []
-ctp-sdk = ["dep:cc"]
+ctp-sdk = ["dep:cc", "dep:chrono", "dep:reqwest"]
 yida-sdk = ["dep:cc"]
 latency-metrics = []
 
@@ -14,6 +14,8 @@ cn_futures_state = { path = "../cn_futures_state" }
 persist_common = { path = "../persist_common" }
 persist_manager = { path = "../persist_manager", features = ["embedded"] }
 anyhow.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"], optional = true }
+reqwest = { version = "0.12.19", default-features = false, features = ["blocking", "rustls-tls"], optional = true }
 sha2 = "0.10"
 crossbeam-channel = "0.5"
 encoding_rs = "0.8"

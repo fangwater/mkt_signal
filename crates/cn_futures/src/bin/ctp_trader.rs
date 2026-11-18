@@ -20,6 +20,7 @@ fn run() -> Result<()> {
     let mut market_data_config: Option<PathBuf> = None;
     let mut connect = false;
     let mut execute = false;
+    let mut read_only = false;
     let mut confirm_settlement = false;
     let mut check_config = false;
     let mut sdk_version: Option<PathBuf> = None;
@@ -43,11 +44,12 @@ fn run() -> Result<()> {
                 ))
             }
             "--connect" => connect = true,
+            "--read-only" => read_only = true,
             "--execute" => execute = true,
             "--confirm-settlement" => confirm_settlement = true,
             "--check-config" => check_config = true,
             "--help" | "-h" => {
-                println!("ctp-trader --config PATH [--market-data-config MD_PATH] [--check-config] [--connect [--execute] [--confirm-settlement]]\nctp-trader --sdk-version /absolute/path/libthosttraderapi_se.so\n\nDefault: validate configuration only; no network or credentials required.\n--market-data-config consumes MdApi on the trading business thread; strategy defaults to NoStrategy; an explicit [ctaker] section enables bounded limit/FAK target execution.\n--connect logs in and queries account state without confirming settlement.\n--confirm-settlement explicitly permits confirming the broker settlement.\n--execute additionally permits explicit JSON-line submit/cancel commands.\nWithout --execute, no order placement or cancellation is permitted.\nCommands: state, reconcile, ctaker_target, submit, cancel, shutdown. EOF stops trade-only mode; combined MD mode continues. SIGINT/SIGTERM request shutdown.\nExisting venue orders are never automatically cancelled on startup or exit.");
+                println!("ctp-trader --config PATH [--market-data-config MD_PATH] [--read-only] [--check-config] [--connect [--execute] [--confirm-settlement]]\nctp-trader --sdk-version /absolute/path/libthosttraderapi_se.so\n\nDefault: validate configuration only; no network or credentials required.\n--market-data-config consumes MdApi on the trading business thread; strategy defaults to NoStrategy; an explicit [ctaker] section enables bounded limit/FAK target execution.\n--read-only rejects execution, ctaker and settlement confirmation.\n--connect logs in and queries account state.\n--confirm-settlement explicitly permits confirming the broker settlement.\n--execute additionally permits explicit JSON-line submit/cancel commands.\nWithout --execute, no order placement or cancellation is permitted.\nCommands: state, reconcile, ctaker_target, submit, cancel, shutdown. EOF stops trade-only mode; combined MD mode continues. SIGINT/SIGTERM request shutdown.\nExisting venue orders are never automatically cancelled on startup or exit.");
                 return Ok(());
             }
             _ => bail!("unknown argument; use --help"),
@@ -74,11 +76,19 @@ fn run() -> Result<()> {
         }
     }
     let mut config = Config::load(&config.context("--config is required; use --help")?)?;
+    anyhow::ensure!(
+        !read_only
+            || !(execute
+                || confirm_settlement
+                || config.confirm_settlement
+                || config.ctaker.is_some()),
+        "--read-only requires execution, ctaker and settlement confirmation to be disabled"
+    );
     let market_data = market_data_config
         .map(|path| cn_futures::ctp::market_data::Config::load(&path))
         .transpose()?;
     if let Some(md) = &market_data {
-        config.validate_market_data(md)?;
+        config.validate_market_data(md, execute)?;
     }
     anyhow::ensure!(
         config.ctaker.is_none() || market_data.is_some(),

@@ -868,7 +868,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     use serde_json::json;
     config.validate()?;
     if let Some(md) = &market_data {
-        config.validate_market_data(md)?;
+        config.validate_market_data(md, execute)?;
     }
     let placement = if let Some(md) = &market_data {
         crate::placement::Placement::enter_combined(&config.placement, &md.placement)?
@@ -959,6 +959,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
         .as_ref()
         .map(|md| ctp::market_data::Feed::new(md, &placement))
         .transpose()?;
+    let mut feed_failed = false;
     let mut actions = Actions::default();
     let mut stopping = false;
     let mut commands_open = true;
@@ -1175,8 +1176,25 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
             // Tick consumption, strategy, risk, OMS and the SDK call all use this thread.
             if let Some(md) = &mut feed {
                 for _ in 0..256 {
+                    if feed_failed {
+                        break;
+                    }
                     let queued = md.has_backlog();
-                    let event = md.poll(Instant::now())?;
+                    let event = match md.poll(Instant::now()) {
+                        Ok(event) => event,
+                        Err(error) if !execute => {
+                            // Keep the SDK owner until cold shutdown. Release/Init must not
+                            // run on this business loop, and an MD failure must not hide funds.
+                            feed_failed = true;
+                            strategy.on_market_state(false, md.generation())?;
+                            journal.record(
+                                json!({"type":"md_unavailable","error":error.to_string(),"account_observation_continues":true}),
+                                true,
+                            )?;
+                            break;
+                        }
+                        Err(error) => return Err(error),
+                    };
                     work |= queued;
                     let Some(event) = event else {
                         if queued {
@@ -1242,6 +1260,18 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                             strategy.on_market_state(true, generation)?;
                             journal
                                 .record(json!({"type":"md_ready","generation":generation}), true)?;
+                        }
+                        ctp::market_data::FeedEvent::DominantSelected(list) => {
+                            journal.record(
+                                json!({"type":"md_dominant_selected","trading_day":list.trading_day,"latest_trading_day":list.latest_trading_day,"source":list.source,"calendar_verified":list.calendar_verified,"subscriptions":list.symbols,"generation":md.generation()}),
+                                true,
+                            )?;
+                        }
+                        ctp::market_data::FeedEvent::DominantUnavailable { error, trading_day } => {
+                            journal.record(
+                                json!({"type":"md_dominant_unavailable","trading_day":trading_day,"error":error.to_string(),"retrying":true}),
+                                true,
+                            )?;
                         }
                     }
                 }
@@ -1335,9 +1365,10 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     Err(crossbeam_channel::TryRecvError::Empty) => {}
                 }
             }
-            let md_ready = feed
-                .as_ref()
-                .is_none_or(|md| md.ready() && !md.has_backlog());
+            let md_ready = !feed_failed
+                && feed
+                    .as_ref()
+                    .is_none_or(|md| md.ready() && !md.has_backlog());
             crate::position_ipc::publish(
                 &mut position_ipc,
                 &runtime.core,
