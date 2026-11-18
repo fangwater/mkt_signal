@@ -69,7 +69,7 @@ Ubuntu 用户 systemd 服务为 `ctp_chuangyuan01-trader.service`，
 - `config/trade.toml` / `config/md.toml` 保存环境专属配置；凭据从 `env.sh` 读取。
 - 官方库位于 `sdk/6.7.11/`；主程序为 `bin/ctp-trader` 和独立诊断工具 `bin/ctp-md`。
 - Trader/Md 分别使用 `data/trade-flow` / `data/md-flow`，主库为 `data/persist_manager`。
-- 交易审计保存在 RocksDB `cn_trading_events`。停机前仅将 `logs/trader.log` 归档到 `data/stops/`，已有 `data/events.jsonl` 留作历史文件。
+- 交易审计保存在 RocksDB `cn_trading_events`。停机前仅将 `logs/trader.log` 归档到 `data/stops/`。2026-11-18 核验新版只读对账后，清理旧 `data/events.jsonl` 和 12 份停机副本，释放约 34.5 GB。RocksDB 使用原库。
 - 账户资金和持仓观察使用独立 IPC namespace `ctp_chuangyuan01`，接入现有 `yida_paper01` 的 8811 Viz；CTP／易达独立切换，不合并资金或持仓。
 
 按该主机实际拓扑配置 NUMA 0、业务 CPU 0、Trader SDK CPU 1、
