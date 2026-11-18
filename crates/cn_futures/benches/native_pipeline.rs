@@ -218,7 +218,7 @@ fn main() -> Result<()> {
         None
     } else {
         Some(Journal::start(
-            &config.journal,
+            Some(&config.journal),
             config.event_capacity,
             vec![
                 "fixture-only".into(),

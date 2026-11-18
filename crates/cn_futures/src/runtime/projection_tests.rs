@@ -12,7 +12,7 @@ fn fixture(label: &str) -> (std::path::PathBuf, Journal, TradingCore) {
         crate::persistence::now_us()
     ));
     let journal = Journal::start(
-        &path.join("audit.jsonl"),
+        None,
         64,
         vec![],
         &path.join("db"),

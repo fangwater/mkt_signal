@@ -198,7 +198,7 @@ def main():
         subprocess.run(["c++", "-std=c++17", "-shared", "-fPIC", "-isystem", str(args.sdk_dir), str(source), "-o", str(library)], check=True)
         config = (root / "config/ctp_trade.example.toml").read_text()
         config=config[:config.index("[placement]")]+placement_table
-        for old, new in [('/opt/ctp/6.7.11/libthosttraderapi_se.so', str(library)), ('/tmp/mkt_ctp_sim/flow', str(temp / 'flow')), ('/tmp/mkt_ctp_sim/events.jsonl', str(temp / 'events.jsonl')), ('broker_id = "REPLACE"', 'broker_id = "TEST"'), ('cash_budget_per_open_lot = 250000.0', 'cash_budget_per_open_lot = 10000.0'), ('max_order_lots = 1', 'max_order_lots = 10'), ('max_working_lots = 2', 'max_working_lots = 10'), ('max_actions_per_second = 2', 'max_actions_per_second = 20'), ('enable_fak_fok = false', 'enable_fak_fok = true')]:
+        for old, new in [('/opt/ctp/6.7.11/libthosttraderapi_se.so', str(library)), ('/tmp/mkt_ctp_sim/flow', str(temp / 'flow')), ('broker_id = "REPLACE"', 'broker_id = "TEST"'), ('cash_budget_per_open_lot = 250000.0', 'cash_budget_per_open_lot = 10000.0'), ('max_order_lots = 1', 'max_order_lots = 10'), ('max_working_lots = 2', 'max_working_lots = 10'), ('max_actions_per_second = 2', 'max_actions_per_second = 20'), ('enable_fak_fok = false', 'enable_fak_fok = true')]:
             config = config.replace(old, new)
         config=config.replace('venue = "CFFEX"',f'venue = "{args.venue}"').replace('symbol = "IF2612"',f'symbol = "{args.symbol}"')
         if args.transport_timeout: config=config.replace("response_timeout_ms = 30000","response_timeout_ms = 5000")
@@ -243,12 +243,23 @@ def main():
             assert receipt["all_submitted_locally"]
             return receipt["children"][0]["key"]
 
+        def audited_events():
+            export = temp / "db-export"
+            persisted = verify_persistence(
+                temp / "flow" / "persist_manager", args.binary.resolve().parent / "cn_order_export", export
+            )
+            assert sorted(p.name for p in temp.glob("*.jsonl")) == []
+            lines = (export / "cn_trading_events.jsonl").read_text()
+            assert "fixture-only" not in lines
+            print(json.dumps(persisted))
+            return [json.loads(line)["value"] for line in lines.splitlines()]
+
         try:
             if args.transport_timeout:
                 wait("restart_required",timeout=15)
                 wait("runtime_stopped")
                 assert process.wait(timeout=10)!=0
-                events=[json.loads(line) for line in (temp/"events.jsonl").read_text().splitlines()]
+                events = audited_events()
                 assert not any(e.get("type")=="prepared_submit" or e.get("event",{}).get("kind")==5 for e in events)
                 print(json.dumps({"transport_timeout":True,"supervisor_restart_required":True,"trade_blocked":True,"settlement_confirmations":0,"orders_sent":0}))
                 return
@@ -258,7 +269,7 @@ def main():
                 send({"op":"submit","intent":{"venue":args.venue,"symbol":args.symbol,"side":"buy","offset":"open","lots":1,"price_ticks":20000,"time_in_force":"day"}})
                 wait("command_rejected")
                 send({"op":"shutdown"});wait("runtime_stopped");assert process.wait(timeout=10)==0
-                events=[json.loads(line) for line in (temp/"events.jsonl").read_text().splitlines()]
+                events = audited_events()
                 assert not any(e.get("type")=="prepared_submit" or e.get("event",{}).get("kind")==5 for e in events)
                 print(json.dumps({"unconfirmed_settlement":True,"account_and_rules_readable":True,"trade_blocked":True,"settlement_confirmations":0,"orders_sent":0}))
                 return
@@ -293,16 +304,12 @@ def main():
             send({"op": "shutdown"})
             wait("runtime_stopped")
             assert process.wait(timeout=10) == 0
-            events = [json.loads(line) for line in (temp / "events.jsonl").read_text().splitlines()]
+            events = audited_events()
             assert any(e.get("event", {}).get("error_code") == 31 for e in events)
             assert not any(e.get("event",{}).get("kind")==5 for e in events)
             assert not any(e.get("type") == "trading_blocked" for e in events)
-            assert "fixture-only" not in (temp / "events.jsonl").read_text()
             print(json.dumps({"bridge": "official header ABI + synthetic SDK", "native_network_connections": 0, "venue":args.venue, "bootstrap": True, "limit_cancel": True, "fak_fok": True, "duplicate_fills": True, "close": True, "async_rejection": True, "reconcile": True, "journal_events": len(events)}))
         finally:
-            if process.returncode == 0:
-                persisted = verify_persistence(temp / "flow" / "persist_manager", args.binary.resolve().parent / "cn_order_export", temp / "db-export")
-                print(json.dumps(persisted))
             if process.poll() is None:
                 process.kill()
                 process.wait()

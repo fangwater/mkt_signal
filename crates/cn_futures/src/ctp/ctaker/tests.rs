@@ -411,7 +411,7 @@ fn fake_transport_keeps_acceptance_factual_and_blocks_before_sdk_when_audit_fail
             crate::persistence::now_us()
         ));
         let journal = Journal::start(
-            &root.join("journal.jsonl"),
+            None,
             64,
             vec![],
             &root.join("db"),

@@ -13,7 +13,6 @@ pub struct Config {
     #[serde(default = "default_preallocated_requests")]
     pub preallocated_requests: usize,
     pub flow_directory: PathBuf,
-    pub journal: PathBuf,
     /// Defaults to flow_directory/persist_manager. Never shared across accounts.
     pub persistence_directory: Option<PathBuf>,
     pub position_ipc: Option<cn_futures_state::Config>,
@@ -172,10 +171,8 @@ impl Config {
         );
         ensure!(self.response_timeout_ms >= 5000, "invalid response timeout");
         ensure!(
-            self.flow_directory.is_absolute()
-                && self.journal.is_absolute()
-                && self.sdk_library.is_absolute(),
-            "SDK, flow and journal paths must be absolute"
+            self.flow_directory.is_absolute() && self.sdk_library.is_absolute(),
+            "SDK and flow paths must be absolute"
         );
         ensure!(
             !self.symbols.is_empty(),

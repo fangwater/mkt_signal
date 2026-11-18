@@ -378,7 +378,7 @@ fn main() -> Result<()> {
         persistence::now_us()
     ));
     let j = Journal::start(
-        &path.join("audit.jsonl"),
+        None,
         8192,
         vec![],
         &path.join("db"),

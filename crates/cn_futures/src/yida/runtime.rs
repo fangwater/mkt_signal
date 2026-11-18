@@ -58,7 +58,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
     })?;
     let journal = on_background(placement.as_ref(), || {
         Journal::start(
-            &config.journal,
+            Some(&config.journal),
             config.event_capacity,
             redactions,
             &database,

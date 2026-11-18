@@ -246,7 +246,7 @@ pub struct Journal {
 }
 impl Journal {
     pub fn start(
-        path: &Path,
+        text_audit: Option<&Path>,
         capacity: usize,
         redactions: Vec<String>,
         database: &Path,
@@ -255,17 +255,23 @@ impl Journal {
     ) -> Result<Self> {
         let mut store = NativeStore::open(database, &identity)?;
         let reference_floors = store.reference_floors();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).context("create native journal directory")?;
-        }
-        let mut options = OpenOptions::new();
-        options.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let file = options.open(path).context("open native trading journal")?;
+        let mut text_audit = text_audit
+            .map(|path| -> Result<_> {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).context("create text audit directory")?;
+                }
+                let mut options = OpenOptions::new();
+                options.create(true).append(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600);
+                }
+                Ok(BufWriter::new(
+                    options.open(path).context("open text audit")?,
+                ))
+            })
+            .transpose()?;
         let (sender, receiver) = crossbeam_channel::bounded::<Record>(capacity);
         let failed = Arc::new(AtomicBool::new(false));
         let flag = failed.clone();
@@ -274,8 +280,7 @@ impl Journal {
         let worker = std::thread::Builder::new()
             .name("cn-futures-journal".into())
             .spawn(move || {
-                let write = || -> Result<()> {
-                    let mut writer = BufWriter::new(file);
+                let mut write = || -> Result<()> {
                     let mut last_sync = Instant::now();
                     const MAX_BATCH: usize = 64;
                     let mut records = Vec::with_capacity(MAX_BATCH);
@@ -295,7 +300,9 @@ impl Journal {
                                     let (mut value, mutation) =
                                         record.payload.materialize(record.mutation);
                                     redact(&mut value, &redactions);
-                                    let line = serde_json::to_string(&value)?;
+                                    let line = (record.display || text_audit.is_some())
+                                        .then(|| serde_json::to_string(&value))
+                                        .transpose()?;
                                     events.push((crate::persistence::now_us(), value, mutation));
                                     output.push((record.display, record.ack, line));
                                 }
@@ -332,14 +339,18 @@ impl Journal {
                                         };
                                         let _ = ack.send(result);
                                     }
-                                    if index < committed {
-                                        writeln!(writer, "{line}")?;
-                                    }
-                                    if display && index < good {
-                                        let stdout = std::io::stdout();
-                                        let mut out = stdout.lock();
-                                        writeln!(out, "{line}")?;
-                                        out.flush()?;
+                                    if let Some(line) = line {
+                                        if let Some(writer) =
+                                            text_audit.as_mut().filter(|_| index < committed)
+                                        {
+                                            writeln!(writer, "{line}")?;
+                                        }
+                                        if display && index < good {
+                                            let stdout = std::io::stdout();
+                                            let mut out = stdout.lock();
+                                            writeln!(out, "{line}")?;
+                                            out.flush()?;
+                                        }
                                     }
                                 }
                                 if let Some(error) = failure {
@@ -348,12 +359,17 @@ impl Journal {
                             }
                             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                                writer.flush()?;
-                                writer.get_ref().sync_all()?;
+                                if let Some(writer) = &mut text_audit {
+                                    writer.flush()?;
+                                    writer.get_ref().sync_all()?;
+                                }
                                 return Ok(());
                             }
                         }
-                        if last_sync.elapsed() >= Duration::from_millis(100) {
+                        if let Some(writer) = text_audit
+                            .as_mut()
+                            .filter(|_| last_sync.elapsed() >= Duration::from_millis(100))
+                        {
                             writer.flush()?;
                             writer.get_ref().sync_data()?;
                             last_sync = Instant::now();
@@ -897,7 +913,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     })?;
     let mut journal = placement.on_background(|| {
         Journal::start(
-            &config.journal,
+            None,
             config.event_capacity,
             redactions,
             &database,
@@ -1546,7 +1562,7 @@ mod persistence_tests {
     }
     fn journal(path: &Path) -> Journal {
         Journal::start(
-            &path.join("audit.jsonl"),
+            None,
             64,
             vec!["fixture-secret".into()],
             &path.join("db"),
@@ -1676,6 +1692,7 @@ mod persistence_tests {
         }
         journal.prepared_submit("20261110", &prepared()).unwrap();
         journal.finish().unwrap();
+        assert_eq!(std::fs::read_dir(&path).unwrap().count(), 1);
         let store = persist_manager::RocksDbStore::open_read_only(
             path.join("db").to_str().unwrap(),
             COLUMN_FAMILIES,
@@ -1803,7 +1820,7 @@ mod deferred_audit_tests {
             crate::persistence::now_us()
         ));
         let j = Journal::start(
-            &path.join("audit.jsonl"),
+            Some(&path.join("audit.jsonl")),
             64,
             vec!["fixture-secret".into()],
             &path.join("db"),
