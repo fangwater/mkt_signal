@@ -77,6 +77,16 @@ UDP / XTCP 发单仍由 SDK `insertOrder` / `cancelOrder` 在调用线程完成�
 
 默认交易运行时关闭易达行情连接；显式启用 `observation_l1=true` 时，原生配置使用 `ConnectTCPMarketData=yes` 并在 SDK CPU 域配置 `TCPMarketDataCPUID`，UDP 行情仍为 no。L1 使用独立有损队列，只服务持仓观察；原交易回报、白名单与执行门控独立保留。`RecalcMode=off` 避免在缺少行情时假装持续重算保证金 / 浮盈亏；因此 SDK 本地 `Available` / `usable()` 不能当作独立、实时的柜台风险模型。需要按实际保证金、手续费和价格风险配置保守 `cash_budget_per_open_lot`，并在仿真中核对。资金事件只收紧本地预算，完整恢复才建立新基准。
 
+### 账户资金证据
+
+既有易达账户回报和追平快照被动记录原生 CNY 资金字段，位置是 `cn_trading_events` 的 `value.event.account`（原生事件 `kind=8`）。读取时用 `event.day` 标记柜台交易日，`value.received_us` 表示本机接收回报时间。恢复过程的账户样本在同一交易日成功追平后可用。旧记录缺少此对象，SDK 未提供的数值保持为空。字段不包含账户编号或登录资料。
+
+- `balance` 是 `YDExtendedAccount.Balance`，即易达指南 §4.1.2 的单套柜台今余额。`pre_balance` 为易达转换后的昨余额。`pre_cash_balance` 为昨余额按 `max_money_usage` 分配所得昨资金权益，`pre_market_value` 另含 `pre_position_market_value` 所报昨期权市值。
+- `deposit`、`withdraw`、`frozen_withdraw` 分别保留累计入金、累计出金和冻结出金。`cash_in` 包含期权权利金、相关买单冻结以及适用的现货收支。`commission` 保留 SDK 账户费用读数，成交审计另保留逐笔手续费。
+- `sdk_cash_balance`、`sdk_market_value`、`position_profit`、`position_market_value`、`margin` 为 SDK 读数。`valuation_basis=sdk_mark_time_unverified` 表示其估值时点未验证。`margin` 的易达口径含报单和持仓保证金。当前进程没有调用 SDK 资金重算，已有 `event.available` 继续提供原生 `usable()` 值用于保守下单预算。
+
+要独立重建同交易日市值权益，期货今仓用先开先平后的开仓成本，昨仓用昨结算价，按每个方向的手数、合约乘数和同交易日完整行情计算持仓盈亏。期权用各原生合约的有符号市值，权利金保留在 `cash_in`。还需要与持仓及行情同一观测截面的成交费用、平仓盈亏及资金数据。2026-11-18 只读核对中，纸账户原生交易日是 `20261117`，对应的 30 个持仓合约均有同日易达 L1 最新价。旧 producer 的资金快照未采集上述账户字段，仍缺少核对全账户权益所需的其他数据。
+
 `idle_sleep_us=0` 使用忙轮询。统一的 `[placement]` 包含 `numa_node`、`business_cpu`、`sdk_cpus`、`background_cpus`，替代原来的 `business_core`。部署时按目标主机拓扑配置；省略 placement 时保留操作系统默认调度，不能声称已隔离或绑定 NUMA。配置后会在创建队列、核心与数据库前绑定线程和后续分配的内存页：业务、SDK、后台三域在同一 NUMA 节点，且不同域不共享 SMT 物理核。SDK 创建、启动、登录、重连和销毁在 SDK CPU 集合中进行，输入与写盘线程继承后台集合；同步报单回调保持业务核，原生工作线程回调强制进入 SDK 域。任一拓扑、亲和性或 `MPOL_BIND` 失败立即返回错误，没有降级。已有内存页不会自动迁移。
 
 原生配置必须明确给出 `TCPTradingCPUID`、`TimerCPUID`，XTCP 还需给出 `XTCPTradingCPUID`，这些 CPU 都必须属于 `placement.sdk_cpus`。配置检查只做字段与 CPUID 校验，不设置线程策略；真正连接时才验证系统拓扑并绑定。SDK 和后台集合可以包含多个同节点物理核，CTP 的固定布局仍单独要求每域一个核。`TradingServerTimeout=-1` 可使 SDK 回报线程忙轮询，会额外占用核。实际编号见 [配置示例](../config/yida_trade.example.toml)，尚无真实柜台延迟指标。

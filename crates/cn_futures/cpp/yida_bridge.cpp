@@ -6,6 +6,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
+#include <initializer_list>
 #include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
@@ -26,6 +27,7 @@ constexpr int market_price_unavailable = 9903; // Missing native daily price-lim
 enum { Connected=1, Disconnected, ReadyLogin, Login, Init, Begin, Instrument, Account,
        Position, Order, Trade, End, FailedCancel, Invalidated, Segment, Fatal, Transport, Connection };
 static_assert(std::is_standard_layout_v<CnYidaEvent>);
+static_assert(std::is_standard_layout_v<CnYidaAccount>);
 // Pin the production headers as well as the loaded library. In 1.502.55 the
 // long instrument ID moved and account/position fields shifted in place.
 static_assert(sizeof(YDInstrument::InstrumentID)==64, "1.502.55.35 requires the full instrument ID");
@@ -57,6 +59,51 @@ struct Library {
 };
 template<typename T> struct ResultDeleter { void operator()(YDQueryResult<T>* p) const { if (p) p->destroy(); } };
 template<typename T> using Query = std::unique_ptr<YDQueryResult<T>, ResultDeleter<T>>;
+
+bool account_amounts_present(std::initializer_list<double> values) {
+    return std::all_of(values.begin(), values.end(), [](double amount) {
+        return std::isfinite(amount) && std::abs(amount) < std::numeric_limits<double>::max();
+    });
+}
+
+CnYidaAccount account_funds(const YDAccount& a, const YDExtendedAccount& x) {
+    CnYidaAccount out{};
+    if (x.m_pAccount != &a) return out;
+    out.present=1;
+    out.balance=x.Balance;
+    out.pre_balance=a.PreBalance;
+    out.pre_position_market_value=x.PrePositionMarketValue;
+    out.deposit=a.Deposit;
+    out.withdraw=a.Withdraw;
+    out.frozen_withdraw=a.FrozenWithdraw;
+    out.max_money_usage=a.MaxMoneyUsage;
+    out.available=x.Available;
+    out.close_profit=x.CloseProfit;
+    out.other_close_profit=x.OtherCloseProfit;
+    out.cash_in=x.CashIn;
+    out.commission=x.Commission;
+    out.message_commission=x.MessageCommission;
+    out.margin=x.Margin;
+    out.margin2=x.Margin2;
+    out.position_profit=x.PositionProfit;
+    out.position_market_value=x.PositionMarketValue;
+    out.exec_margin=x.ExecMargin;
+    out.exec_allocated_amount=x.ExecAllocatedAmount;
+    out.exec_allocated_frozen_amount=x.ExecAllocatedFrozenAmount;
+    const double missing=std::numeric_limits<double>::quiet_NaN();
+    const bool valid_usage=std::isfinite(a.MaxMoneyUsage) && a.MaxMoneyUsage>=0 && a.MaxMoneyUsage<=1;
+    const bool pre_cash_present=valid_usage && account_amounts_present({a.PreBalance});
+    const bool sdk_cash_present=pre_cash_present && account_amounts_present({
+        a.Deposit, a.Withdraw, x.CloseProfit, x.PositionProfit, x.CashIn, x.Commission
+    });
+    out.pre_cash_balance=pre_cash_present ? x.preCashBalance() : missing;
+    out.pre_market_value=pre_cash_present && account_amounts_present({x.PrePositionMarketValue})
+        ? x.preMarketValue() : missing;
+    out.sdk_cash_balance=sdk_cash_present ? x.cashBalance() : missing;
+    out.sdk_market_value=sdk_cash_present && account_amounts_present({x.PositionMarketValue})
+        ? x.marketValue() : missing;
+    return out;
+}
 
 class Bridge final: public YDListener, public YDExtendedListener {
 public:
@@ -195,6 +242,7 @@ public:
         const auto* a=api->getMyAccount(); const auto* x=api->getExtendedAccount();
         if (!a || !x) throw std::runtime_error("missing trader account");
         CnYidaEvent e{}; e.kind=Account; e.replay=replay; e.day=api->getTradingDay(); e.available=x->usable();
+        e.account=account_funds(*a,*x);
         e.right=a->TradingRight; e.login_count=a->LoginCount; send(e);
     }
     int right(const YDInstrument* i) {

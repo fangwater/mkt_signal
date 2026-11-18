@@ -86,6 +86,10 @@ public:
         if(std::getenv("YIDA_FIXTURE_CLOSE_ONLY"))account.TradingRight=YD_TR_CloseOnly;
         cash.m_pAccount=&account;cash.Available=std::getenv("YIDA_FIXTURE_OPTION_TRADING")?100000000:1000000;for(int& ref:group_max)ref=100;
         cash.Margin=1234.5;cash.Margin2=9876.25;cash.Balance=2000001.0;
+        account.PreBalance=2000000.0;account.MaxMoneyUsage=.5;
+        account.Deposit=1000.0;account.Withdraw=150.0;account.FrozenWithdraw=25.0;
+        cash.CloseProfit=75.0;cash.OtherCloseProfit=333.0;cash.CashIn=-500.0;cash.Commission=125.0;
+        cash.PrePositionMarketValue=700.0;cash.PositionMarketValue=-45.0;
         if(std::getenv("YIDA_FIXTURE_ACCOUNT_LOSS"))cash.PositionProfit=-125.5;
         if(std::getenv("YIDA_FIXTURE_ACCOUNT_PROFIT"))cash.PositionProfit=45.25;
         for(int k=0;k<2;++k){
@@ -387,6 +391,20 @@ def run_fixture(args,protocol,scenario='normal'):
                     send({'op':'cancel','key':initial['orders'][0]['key']});assert 'read-only' in wait('command_rejected')['error']
                     assert len(state()['orders'])==2
                     send({'op':'shutdown'});wait('runtime_stopped');assert process.wait(timeout=10)==0
+                    events=[json.loads(line) for line in (temp/'events.jsonl').read_text().splitlines()]
+                    raw=[line['event'] for line in events if line.get('type')=='yida_event']
+                    assert all('account' not in event for event in raw if event['kind']!=8)
+                    row=next(event for event in raw if event['kind']==8 and event['replay']==1)
+                    funds=row['account']
+                    pnl={'account_loss':-125.5,'account_profit':45.25}.get(scenario,0.0)
+                    assert row['day']==20261109 and row['available']==initial['available_local_budget']
+                    assert funds['currency']=='CNY' and funds['valuation_basis']=='sdk_mark_time_unverified'
+                    assert funds['balance']==2000001.0 and funds['pre_balance']==2000000.0
+                    assert funds['pre_cash_balance']==1000000.0 and funds['pre_market_value']==1000700.0
+                    assert funds['deposit']==1000.0 and funds['withdraw']==150.0 and funds['frozen_withdraw']==25.0
+                    assert funds['available']==1000000.0 and funds['position_profit']==pnl
+                    assert funds['other_close_profit']==333.0 and funds['cash_in']==-500.0
+                    assert funds['sdk_cash_balance']==999875.0+pnl and funds['sdk_market_value']==999830.0+pnl
                     print(json.dumps({'protocol':protocol,'scenario':scenario,'no_send':True}));return
                 if scenario=='close_only':
                     assert submit()['children'][0]['outcome']=='rejected_locally'

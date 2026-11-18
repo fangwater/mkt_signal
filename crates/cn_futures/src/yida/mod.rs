@@ -9,7 +9,7 @@ pub mod session;
 
 use crate::model::*;
 use anyhow::{bail, ensure, Result};
-use serde::Serialize;
+use serde::{ser::SerializeMap, Serialize};
 
 pub const CONNECTED: i32 = 1;
 pub const DISCONNECTED: i32 = 2;
@@ -79,6 +79,87 @@ pub fn parse_group_key(key: &OrderKey) -> Result<(i32, i32, i32)> {
     Ok((day, group, reference))
 }
 
+/// Passive SDK copies. The mark time behind the derived SDK values is unknown.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RawAccount {
+    present: u64,
+    balance: f64,
+    pre_balance: f64,
+    pre_cash_balance: f64,
+    pre_market_value: f64,
+    pre_position_market_value: f64,
+    deposit: f64,
+    withdraw: f64,
+    frozen_withdraw: f64,
+    max_money_usage: f64,
+    available: f64,
+    close_profit: f64,
+    other_close_profit: f64,
+    cash_in: f64,
+    commission: f64,
+    message_commission: f64,
+    margin: f64,
+    margin2: f64,
+    position_profit: f64,
+    position_market_value: f64,
+    exec_margin: f64,
+    exec_allocated_amount: f64,
+    exec_allocated_frozen_amount: f64,
+    sdk_cash_balance: f64,
+    sdk_market_value: f64,
+}
+
+impl RawAccount {
+    fn is_absent(&self) -> bool {
+        self.present != 1
+    }
+}
+
+impl Serialize for RawAccount {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let mut values = serializer.serialize_map(Some(26))?;
+        values.serialize_entry("currency", "CNY")?;
+        values.serialize_entry("valuation_basis", "sdk_mark_time_unverified")?;
+        for (name, amount) in [
+            ("balance", self.balance),
+            ("pre_balance", self.pre_balance),
+            ("pre_cash_balance", self.pre_cash_balance),
+            ("pre_market_value", self.pre_market_value),
+            ("pre_position_market_value", self.pre_position_market_value),
+            ("deposit", self.deposit),
+            ("withdraw", self.withdraw),
+            ("frozen_withdraw", self.frozen_withdraw),
+            ("max_money_usage", self.max_money_usage),
+            ("available", self.available),
+            ("close_profit", self.close_profit),
+            ("other_close_profit", self.other_close_profit),
+            ("cash_in", self.cash_in),
+            ("commission", self.commission),
+            ("message_commission", self.message_commission),
+            ("margin", self.margin),
+            ("margin2", self.margin2),
+            ("position_profit", self.position_profit),
+            ("position_market_value", self.position_market_value),
+            ("exec_margin", self.exec_margin),
+            ("exec_allocated_amount", self.exec_allocated_amount),
+            (
+                "exec_allocated_frozen_amount",
+                self.exec_allocated_frozen_amount,
+            ),
+            ("sdk_cash_balance", self.sdk_cash_balance),
+            ("sdk_market_value", self.sdk_market_value),
+        ] {
+            let amount = (amount.is_finite() && amount.abs() < f64::MAX).then_some(amount);
+            values.serialize_entry(name, &amount)?;
+        }
+        values.end()
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Serialize)]
 pub struct RawEvent {
@@ -143,6 +224,8 @@ pub struct RawEvent {
     #[serde(serialize_with = "serialize_bytes")]
     pub underlying: [u8; 64],
     pub underlying_exchange: [u8; 12],
+    #[serde(skip_serializing_if = "RawAccount::is_absent")]
+    pub account: RawAccount,
 }
 fn serialize_bytes<S: serde::Serializer>(
     bytes: &[u8; 64],

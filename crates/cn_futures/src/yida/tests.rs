@@ -15,6 +15,44 @@ fn long_instrument_identifiers_remain_complete_in_raw_audit() {
     event.symbol[63] = b'x';
     assert!(text(&event.symbol).is_err());
 }
+
+#[test]
+fn passive_account_audit_keeps_sdk_equity_separate_from_the_risk_budget() {
+    let mut event = RawEvent {
+        kind: ACCOUNT,
+        day: 20261117,
+        replay: 1,
+        available: 12.0,
+        ..RawEvent::default()
+    };
+    assert!(serde_json::to_value(event)
+        .unwrap()
+        .get("account")
+        .is_none());
+    event.account.present = 1;
+    event.account.balance = 20.0;
+    event.account.pre_cash_balance = 25.0;
+    event.account.pre_market_value = 30.0;
+    event.account.frozen_withdraw = 7.0;
+    event.account.cash_in = -8.0;
+    event.account.position_market_value = -3.0;
+    event.account.sdk_market_value = f64::NAN;
+    event.account.margin2 = f64::MAX;
+    let value = serde_json::to_value(event).unwrap();
+    assert_eq!(value["day"], 20261117);
+    assert_eq!(value["available"], 12.0);
+    let account = &value["account"];
+    assert_eq!(account["valuation_basis"], "sdk_mark_time_unverified");
+    assert_eq!(account["currency"], "CNY");
+    assert_eq!(account["balance"], 20.0);
+    assert_eq!(account["pre_cash_balance"], 25.0);
+    assert_eq!(account["pre_market_value"], 30.0);
+    assert_eq!(account["frozen_withdraw"], 7.0);
+    assert_eq!(account["cash_in"], -8.0);
+    assert_eq!(account["position_market_value"], -3.0);
+    assert!(account["sdk_market_value"].is_null());
+    assert!(account["margin2"].is_null());
+}
 use session::Session;
 fn config() -> config::Config {
     toml::from_str(include_str!("../../../../config/yida_trade.example.toml")).unwrap()
