@@ -56,6 +56,14 @@ pub struct GrpcConfig {
 }
 
 impl Config {
+    pub fn validate_observer(&self) -> Result<()> {
+        ensure!(
+            self.manager_plan.is_some() && self.ipc_socket.is_none() && self.grpc.is_none(),
+            "read-only target observation requires only a Manager subscription"
+        );
+        self.validate()
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(
             valid_id(&self.source_id),
@@ -141,10 +149,19 @@ pub struct Ingress {
 
 impl Ingress {
     pub fn start(config: &Config) -> Result<Self> {
+        Self::start_with_mode(config, false)
+    }
+
+    pub fn start_observer(config: &Config) -> Result<Self> {
+        config.validate_observer()?;
+        Self::start_with_mode(config, true)
+    }
+
+    fn start_with_mode(config: &Config, observation: bool) -> Result<Self> {
         let manager = config
             .manager_plan
             .as_ref()
-            .map(|manager| PlanReader::from_env(manager, &config.source_id))
+            .map(|manager| PlanReader::from_env(manager, &config.source_id, observation))
             .transpose()?;
         Self::start_with_reader(config, manager)
     }
@@ -228,7 +245,7 @@ impl Ingress {
         };
         if !request.reply.is_closed()
             && Instant::now() < request.expires
-            && now_us() < request.target.expires_at_us
+            && (request.target.expires_at_us == 0 || now_us() < request.target.expires_at_us)
         {
             let _ = request
                 .reply
@@ -297,14 +314,14 @@ impl PositionTargets for Service {
         Ok(Response::new(Box::pin(async_stream::try_stream! {
             let _permit = permit;
             while let Some(message) = stream.message().await? {
-                yield service.submit(message).await;
+                yield service.submit(message, false).await;
             }
         })))
     }
 }
 
 impl Service {
-    pub(crate) async fn submit(&self, message: PositionTarget) -> TargetReceipt {
+    pub(crate) async fn submit(&self, message: PositionTarget, observation: bool) -> TargetReceipt {
         let mut receipt = TargetReceipt {
             source_id: message.source_id.clone(),
             batch_id: message.batch_id.clone(),
@@ -313,15 +330,21 @@ impl Service {
             reason: String::new(),
         };
         let now = now_us();
-        if !(self.started_us..=now).contains(&message.decision_us)
-            || message.expires_at_us <= now
-            || message.expires_at_us > message.decision_us.saturating_add(MAX_LEASE_US)
+        if !observation
+            && (!(self.started_us..=now).contains(&message.decision_us)
+                || message.expires_at_us <= now
+                || message.expires_at_us > message.decision_us.saturating_add(MAX_LEASE_US))
         {
             receipt.reason =
                 "target is expired, future-dated, or predates this Exec runtime".into();
             return receipt;
         }
-        let target = match Target::try_from(message) {
+        let decoded = if observation {
+            Target::from_message(message, true)
+        } else {
+            Target::try_from(message)
+        };
+        let target = match decoded {
             Ok(target) if target.source_id == self.source_id => target,
             Ok(_) => {
                 receipt.reason = "wrong execution source".into();

@@ -73,6 +73,8 @@ enum AuditPayload {
     Json(Value),
     CtakerTargetAccepted(Arc<crate::ctp::ctaker::Target>),
     #[cfg(feature = "ctp-sdk")]
+    CtakerTargetObserved(crate::ctp::ctaker::Target),
+    #[cfg(feature = "ctp-sdk")]
     SettledAccount {
         observed_us: u64,
         trading_day: cn_futures_state::Text<16>,
@@ -122,6 +124,10 @@ impl AuditPayload {
             Self::Json(value) => value,
             Self::CtakerTargetAccepted(target) => {
                 serde_json::json!({"type":"ctaker_target_accepted","target":target,"venue_accepted":false})
+            }
+            #[cfg(feature = "ctp-sdk")]
+            Self::CtakerTargetObserved(target) => {
+                serde_json::json!({"type":"ctaker_target_observed","target":target,"execution_enabled":false})
             }
             #[cfg(feature = "ctp-sdk")]
             Self::SettledAccount {
@@ -946,6 +952,16 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     use crate::ctp::{self, sdk::CtpTrader, session::Session};
     use serde_json::json;
     config.validate()?;
+    if let Some(ingress) = &config.position_target_ingress {
+        if execute {
+            anyhow::ensure!(
+                config.ctaker.is_some() && market_data.is_some(),
+                "executable target ingress requires ctaker and combined market data"
+            );
+        } else {
+            ingress.validate_observer()?;
+        }
+    }
     if let Some(md) = &market_data {
         config.validate_market_data(md, execute)?;
     }
@@ -980,7 +996,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     let mut plan_snapshot = config
         .position_target_ingress
         .as_ref()
-        .filter(|cfg| cfg.manager_plan.is_some())
+        .filter(|cfg| execute && cfg.manager_plan.is_some())
         .map(|_| {
             cn_futures_state::Snapshot::empty(
                 cn_futures_state::Adapter::Ctp,
@@ -1027,11 +1043,13 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     };
     let input = placement.on_background(input_commands)?;
     let target_ingress = if let Some(cfg) = &config.position_target_ingress {
-        anyhow::ensure!(
-            execute && market_data.is_some(),
-            "position target ingress requires an enabled combined execution runtime"
-        );
-        Some(placement.on_background(|| cn_futures_target::Ingress::start(cfg))?)
+        Some(placement.on_background(|| {
+            if execute {
+                cn_futures_target::Ingress::start(cfg)
+            } else {
+                cn_futures_target::Ingress::start_observer(cfg)
+            }
+        })?)
     } else {
         None
     };
@@ -1388,15 +1406,25 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                             .is_some_and(|md| md.ready() && !md.has_backlog());
                     let mut audit_error = None;
                     work |= ingress.poll(|target| {
-                        let admitted = strategy.on_target(
-                            target,
-                            StrategyContext {
-                                core: &runtime.core,
-                                can_trade,
-                            },
-                            crate::persistence::now_us(),
-                        )?;
-                        if let Err(error) = journal.target_accepted(admitted) {
+                        let recorded = if execute {
+                            let admitted = strategy.on_target(
+                                target,
+                                StrategyContext {
+                                    core: &runtime.core,
+                                    can_trade,
+                                },
+                                crate::persistence::now_us(),
+                            )?;
+                            journal.target_accepted(admitted)
+                        } else {
+                            journal.enqueue(
+                                AuditPayload::CtakerTargetObserved(target),
+                                true,
+                                NativeMutation::default(),
+                                false,
+                            )
+                        };
+                        if let Err(error) = recorded {
                             audit_error = Some(error);
                             anyhow::bail!("target audit unavailable; Exec is stopping");
                         }

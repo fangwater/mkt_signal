@@ -12,10 +12,12 @@ service ManagerPlans {
 
 message PlanSubscription {
   string source_id = 1;
+  bool observe_only = 2; // Request the current Manager target with no execution lease.
 }
 
 message PlanUpdate {
   // An absent target clears pending delivery. An admitted target keeps its lease.
+  // Observational targets have expires_at_us=0 and may omit the native day.
   PositionTarget target = 1;
 }
 

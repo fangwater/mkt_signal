@@ -38,16 +38,23 @@ impl TryFrom<wire::PositionTarget> for Target {
     type Error = anyhow::Error;
 
     fn try_from(value: wire::PositionTarget) -> Result<Self> {
+        Self::from_message(value, false)
+    }
+}
+
+impl Target {
+    fn from_message(value: wire::PositionTarget, observation: bool) -> Result<Self> {
         ensure!(
             valid_id(&value.source_id) && valid_id(&value.batch_id),
             "invalid source or batch id"
         );
         ensure!(
-            value.target_revision > 0 && value.expires_at_us > 0,
+            value.target_revision > 0 && (value.expires_at_us == 0) == observation,
             "invalid revision or lease"
         );
         ensure!(
-            value.trading_day.len() == 8 && value.trading_day.bytes().all(|v| v.is_ascii_digit()),
+            (value.trading_day.len() == 8 && value.trading_day.bytes().all(|v| v.is_ascii_digit()))
+                || (observation && value.trading_day.is_empty()),
             "invalid trading day"
         );
         ensure!(
@@ -82,9 +89,7 @@ impl TryFrom<wire::PositionTarget> for Target {
             net_targets,
         })
     }
-}
 
-impl Target {
     pub fn into_wire(self, decision_us: u64) -> wire::PositionTarget {
         wire::PositionTarget {
             source_id: self.source_id,

@@ -160,13 +160,15 @@ impl Config {
             );
         }
         if let Some(ingress) = &self.position_target_ingress {
-            ingress.validate()?;
-            ensure!(
-                self.ctaker
-                    .as_ref()
-                    .is_some_and(|ctaker| ctaker.source_id == ingress.source_id),
-                "position_target_ingress requires ctaker with the same source_id"
-            );
+            if let Some(ctaker) = &self.ctaker {
+                ingress.validate()?;
+                ensure!(
+                    ctaker.source_id == ingress.source_id,
+                    "position_target_ingress requires ctaker with the same source_id"
+                );
+            } else {
+                ingress.validate_observer()?;
+            }
         }
         if let Some(ipc) = &self.position_ipc {
             ipc.validate()?;

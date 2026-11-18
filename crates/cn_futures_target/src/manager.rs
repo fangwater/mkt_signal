@@ -65,15 +65,25 @@ pub(crate) struct PlanReader {
     endpoint: Endpoint,
     token: MetadataValue<Ascii>,
     source_id: String,
+    observation: bool,
 }
 
 impl PlanReader {
-    pub(crate) fn from_env(config: &ManagerPlanConfig, source_id: &str) -> Result<Self> {
+    pub(crate) fn from_env(
+        config: &ManagerPlanConfig,
+        source_id: &str,
+        observation: bool,
+    ) -> Result<Self> {
         let token = std::env::var(&config.token_env).context("missing Manager plan credential")?;
-        Self::new(config, source_id, &token)
+        Self::new(config, source_id, &token, observation)
     }
 
-    pub(crate) fn new(config: &ManagerPlanConfig, source_id: &str, token: &str) -> Result<Self> {
+    pub(crate) fn new(
+        config: &ManagerPlanConfig,
+        source_id: &str,
+        token: &str,
+        observation: bool,
+    ) -> Result<Self> {
         ensure!(
             (32..=256).contains(&token.len()) && token.bytes().all(|b| b.is_ascii_graphic()),
             "invalid Manager plan credential"
@@ -85,6 +95,7 @@ impl PlanReader {
             endpoint: config.endpoint()?,
             source_id: source_id.to_owned(),
             token,
+            observation,
         })
     }
 
@@ -121,6 +132,7 @@ impl PlanReader {
             .context("connect Manager gRPC")?;
         let mut request = Request::new(PlanSubscription {
             source_id: self.source_id.clone(),
+            observe_only: self.observation,
         });
         request
             .metadata_mut()
@@ -138,20 +150,26 @@ impl PlanReader {
         let mut delay = INITIAL_BACKOFF;
         let mut retry_at = Instant::now();
         let mut rejection = None;
+        let mut first_update = true;
         loop {
             let attempt = async {
                 sleep_until(retry_at).await;
                 let plan = pending.as_ref().expect("admission requires a pending plan");
-                if plan.expires_at_us <= now_us() {
+                if !self.observation && plan.expires_at_us <= now_us() {
                     return None;
                 }
-                Some(service.submit(plan.clone()).await)
+                Some(service.submit(plan.clone(), self.observation).await)
             };
             tokio::select! {
                 biased;
                 update = stream.message() => {
                     let update = update?.context("Manager plan subscription closed")?;
                     *reconnect = Duration::from_millis(100);
+                    if first_update {
+                        eprintln!("Manager target subscription connected: source={} observe_only={}",
+                            self.source_id, self.observation);
+                        first_update = false;
+                    }
                     let next = update.target.filter(|plan| admitted.as_ref() != Some(plan));
                     if next != pending {
                         pending = next;
@@ -164,8 +182,8 @@ impl PlanReader {
                     match receipt {
                         None => pending = None,
                         Some(receipt) if receipt.admission == Admission::Accepted as i32 => {
-                            eprintln!("Manager target admitted: source={} batch={} revision={}",
-                                receipt.source_id, receipt.batch_id, receipt.target_revision);
+                            eprintln!("Manager target delivered: source={} batch={} revision={} observe_only={}",
+                                receipt.source_id, receipt.batch_id, receipt.target_revision, self.observation);
                             *admitted = pending.take();
                         }
                         Some(receipt) => {

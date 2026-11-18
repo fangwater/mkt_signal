@@ -65,6 +65,12 @@ order journal. The JSON `ctaker-plan` GET remains available for diagnostics.
 The CTP Trader's `idle_sleep_us` controls the fixed wait after an empty loop
 iteration. Zero keeps the loop spinning.
 
+With `--read-only`, the Manager-only ingress can subscribe without a
+`[ctaker]` section. It reads the current account target, including a flat
+or previously recorded batch, and logs `ctaker_target_observed` inside the
+business loop. Observations have a zero execution lease. Executable
+subscriptions require a live lease and the existing account and market gates.
+
 For an account configured to read Manager plans, use the matching
 `[ctaker].source_id`, and set `target_max_age_ms = 60000` to admit the full
 Manager lease promptly. Add the target reader to the Trader TOML.

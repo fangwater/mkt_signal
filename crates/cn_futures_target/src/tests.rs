@@ -118,6 +118,7 @@ fn manager_plan_allows_a_plaintext_cross_host_origin() {
 struct MockManager {
     plan: watch::Sender<Option<PositionTarget>>,
     subscriptions: AtomicUsize,
+    observation: bool,
 }
 
 #[tonic::async_trait]
@@ -133,6 +134,7 @@ impl ManagerPlans for Arc<MockManager> {
             PLAN_TOKEN
         );
         assert_eq!(request.get_ref().source_id, "account-a");
+        assert_eq!(request.get_ref().observe_only, self.observation);
         let mut plans = self.plan.subscribe();
         self.subscriptions.fetch_add(1, Ordering::Release);
         let updates = async_stream::stream! {
@@ -156,30 +158,42 @@ async fn wait_for(mut ready: impl FnMut() -> bool) {
     .expect("Manager plan delivery did not progress");
 }
 
-#[tokio::test]
-async fn manager_stream_delivers_changes_and_retries_only_until_admitted() {
+async fn mock_manager(
+    observation: bool,
+) -> (Arc<MockManager>, Ingress, tokio::task::JoinHandle<()>) {
     let manager = Arc::new(MockManager {
         plan: watch::channel(None).0,
         subscriptions: AtomicUsize::new(0),
+        observation,
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let settings = ManagerPlanConfig {
         grpc_url: format!("http://{}", listener.local_addr().unwrap()),
         token_env: "CTAKER_PLAN_TEST_TOKEN".into(),
     };
-    let server = tokio::spawn(
+    let mock = manager.clone();
+    let server = tokio::spawn(async move {
         tonic::transport::Server::builder()
-            .add_service(ManagerPlansServer::new(manager.clone()))
-            .serve_with_incoming(TcpListenerStream::new(listener)),
-    );
+            .add_service(ManagerPlansServer::new(mock))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await
+            .unwrap()
+    });
     let cfg = Config {
         source_id: "account-a".into(),
         ipc_socket: None,
         grpc: None,
         manager_plan: Some(settings.clone()),
     };
-    let reader = manager::PlanReader::new(&settings, &cfg.source_id, PLAN_TOKEN).unwrap();
+    let reader =
+        manager::PlanReader::new(&settings, &cfg.source_id, PLAN_TOKEN, observation).unwrap();
     let ingress = Ingress::start_with_reader(&cfg, Some(reader)).unwrap();
+    (manager, ingress, server)
+}
+
+#[tokio::test]
+async fn manager_stream_delivers_changes_and_retries_only_until_admitted() {
+    let (manager, ingress, server) = mock_manager(false).await;
     let subscriptions = || manager.subscriptions.load(Ordering::Acquire);
     wait_for(|| subscriptions() == 1).await;
     assert!(!ingress.poll(|_| panic!("empty subscription produced a target")));
@@ -217,5 +231,24 @@ async fn manager_stream_delivers_changes_and_retries_only_until_admitted() {
     sleep(Duration::from_millis(80)).await;
     assert!(!ingress.poll(|_| panic!("an admitted Manager plan was queued again")));
     assert_eq!(subscriptions(), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn read_only_subscription_observes_existing_targets_without_an_execution_lease() {
+    let (manager, ingress, server) = mock_manager(true).await;
+    let mut archived = target(1, 1);
+    archived.expires_at_us = 0;
+    archived.trading_day.clear();
+    let message = archived.clone().into_wire(1);
+    assert!(Target::try_from(message.clone()).is_err());
+    manager.plan.send_replace(Some(message));
+    wait_for(|| {
+        ingress.poll(|target| {
+            assert_eq!(target, archived);
+            Ok(())
+        })
+    })
+    .await;
     server.abort();
 }
