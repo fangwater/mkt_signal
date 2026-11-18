@@ -243,18 +243,30 @@ fn partial_query_error_and_timeout_do_not_create_ready_state() {
     assert!(s.request_due(now + Duration::from_secs(60)).is_err());
 }
 #[test]
-fn missing_allowlisted_contract_is_a_complete_snapshot_failure() {
-    let (mut s, mut now) = begin();
-    for id in 1..=4 {
-        let (kind, mut e) = dispatch(&mut s, &mut now, id);
+fn unrelated_catalogue_rows_do_not_trigger_rate_queries() {
+    let (mut session, mut now) = begin();
+    let mut snapshot = None;
+    for id in 1..=16 {
+        let (kind, e) = dispatch(&mut session, &mut now, id);
+        assert!(!matches!(kind, COMMISSION | MARGIN | EXCHANGE_MARGIN));
         if kind == INSTRUMENT {
-            e.present = 0;
-            assert!(s.on_raw_event(&e, now).is_err());
-        } else {
-            s.on_raw_event(&e, now).unwrap();
+            let mut unrelated = e;
+            unrelated.product_class = i32::from(b'2');
+            unrelated.last = 0;
+            session.on_raw_event(&unrelated, now).unwrap();
+        }
+        if let Some(value) = session.on_raw_event(&e, now).unwrap() {
+            snapshot = Some(value);
+            break;
         }
     }
-    assert!(!s.ready());
+    assert!(snapshot.unwrap().instruments.is_empty());
+    session
+        .require_active_future(Venue::Cffex, "IF2612")
+        .unwrap();
+    assert!(session
+        .require_active_future(Venue::Shfe, "sn2612")
+        .is_err());
 }
 #[test]
 fn concurrent_live_event_invalidates_snapshot_pass() {
@@ -341,9 +353,24 @@ fn disconnect_abandons_old_correlation_and_requires_new_login() {
 #[test]
 fn relative_margin_adds_the_exchange_base_and_preserves_full_account_fields() {
     let (mut session, mut now) = begin();
-    let mut snapshot = None;
-    for id in 1..=30 {
+    for id in 1..=20 {
         let (kind, mut e) = dispatch(&mut session, &mut now, id);
+        if kind == ACCOUNT {
+            e.account_values[17] = 1_200_000.0;
+            e.account_values[18] = e.available;
+            e.account_values[14] = 52.5;
+        }
+        if session.on_raw_event(&e, now).unwrap().is_some() {
+            break;
+        }
+    }
+    assert!(session.ready());
+    session.request_rates(Venue::Cffex, "IF2612", now);
+    session.request_rates(Venue::Cffex, "IF2612", now);
+    for (id, expected) in [(91, COMMISSION), (92, MARGIN), (93, EXCHANGE_MARGIN)] {
+        let (kind, mut e) = dispatch(&mut session, &mut now, id);
+        assert_eq!(kind, expected);
+        assert_eq!(session.query_target(), Some((Venue::Cffex, "IF2612")));
         if kind == MARGIN {
             e.relative = 1;
             e.margin_rates = [0.02, 2.0, 0.03, 3.0];
@@ -351,17 +378,12 @@ fn relative_margin_adds_the_exchange_base_and_preserves_full_account_fields() {
         if kind == EXCHANGE_MARGIN {
             e.margin_rates = [0.10, 1.0, 0.11, 1.0];
         }
-        if kind == ACCOUNT {
-            e.account_values[17] = 1_200_000.0;
-            e.account_values[18] = e.available;
-            e.account_values[14] = 52.5;
-        }
-        if let Some(value) = session.on_raw_event(&e, now).unwrap() {
-            snapshot = Some(value);
-            break;
-        }
+        session.on_raw_event(&e, now).unwrap();
     }
-    let rule = &snapshot.unwrap().instruments[0];
+    assert!(session.query_target().is_none());
+    let rules = session.take_rule_update().unwrap();
+    let rule = &rules[0];
+    assert_eq!(rule.cash_budget_per_open_lot, 0.0);
     let rate = rule.margin.unwrap();
     assert!((rate.long_by_money - 0.12).abs() < 1e-12);
     assert!((rate.short_by_money - 0.14).abs() < 1e-12);
@@ -410,20 +432,24 @@ fn read_only_bootstrap_never_confirms_an_unconfirmed_settlement() {
 #[test]
 fn missing_fee_rows_do_not_release_trading_and_late_rates_cannot_match() {
     let (mut session, mut now) = begin();
-    for id in 1..=10 {
-        let (kind, mut e) = dispatch(&mut session, &mut now, id);
-        if kind == COMMISSION {
-            let mut late = e;
-            late.request -= 1;
-            assert!(session.on_raw_event(&late, now).unwrap().is_none());
-            e.present = 0;
-            assert!(session.on_raw_event(&e, now).is_err());
-            assert!(!session.ready());
-            return;
+    for id in 1..=20 {
+        let (_, e) = dispatch(&mut session, &mut now, id);
+        if session.on_raw_event(&e, now).unwrap().is_some() {
+            break;
         }
-        session.on_raw_event(&e, now).unwrap();
     }
-    panic!("commission query was not scheduled");
+    session.request_rates(Venue::Cffex, "IF2612", now);
+    let (kind, mut e) = dispatch(&mut session, &mut now, 100);
+    assert_eq!(kind, COMMISSION);
+    let mut late = e;
+    late.request -= 1;
+    session.on_raw_event(&late, now).unwrap();
+    e.present = 0;
+    session.on_raw_event(&e, now).unwrap();
+    assert!(session.take_rule_update().unwrap().is_empty());
+    assert!(session.ready());
+    session.request_rates(Venue::Cffex, "IF2612", now);
+    assert!(session.query_target().is_none());
 }
 
 impl Session {

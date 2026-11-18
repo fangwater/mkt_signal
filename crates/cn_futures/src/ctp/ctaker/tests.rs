@@ -1,18 +1,10 @@
 use super::*;
-use crate::{
-    config::{Config, SymbolConfig},
-    core::TradingCore,
-};
+use crate::{config::Config, core::TradingCore};
 use std::time::Instant;
 const NOW: u64 = 1_794_877_200_000_000;
 fn config() -> Config {
     let mut c: Config =
         toml::from_str(include_str!("../../../../../config/ctp_trade.example.toml")).unwrap();
-    c.symbols = vec![SymbolConfig {
-        venue: Venue::Shfe,
-        symbol: "cu2612".into(),
-        cash_budget_per_open_lot: 1000.0,
-    }];
     c.risk.max_order_lots = 3;
     c.risk.max_position_lots_per_side = 10;
     c.risk.max_working_lots = 10;
@@ -193,6 +185,36 @@ fn identical_targets_are_idempotent_and_revisions_cannot_conflict_or_go_backward
     next.batch_id = "batch-02".into();
     s.accept(next, context(&c), NOW).unwrap();
     assert!(s.accept(target(1), context(&c), NOW).is_err());
+}
+#[test]
+fn roll_uses_exact_target_contracts_and_requires_zero_for_the_held_month() {
+    let mut c = core(1, 0);
+    let old = c.instrument(Venue::Shfe, "cu2612").unwrap().clone();
+    let mut new = old.clone();
+    new.symbol = "cu2701".into();
+    c.replace_instruments(vec![old, new]).unwrap();
+    let mut s = strategy(&c, 1);
+    let mut roll = target(0);
+    roll.target_revision = 2;
+    roll.batch_id = "roll".into();
+    roll.net_targets = BTreeMap::from([("SHFE:cu2701".into(), 1)]);
+    assert!(s.accept(roll.clone(), context(&c), NOW).is_err());
+
+    roll.net_targets.insert("SHFE:cu2612".into(), 0);
+    s.accept(roll, context(&c), NOW).unwrap();
+    let (close, _) = request(decide(&mut s, &c, tick(NOW), NOW).remove(0));
+    assert_eq!(
+        (close.symbol.as_str(), close.side, close.offset),
+        ("cu2612", Side::Sell, Offset::Close)
+    );
+
+    let mut new_tick = tick(NOW);
+    new_tick.symbol[..6].copy_from_slice(b"cu2701");
+    let (open, _) = request(decide(&mut s, &c, new_tick, NOW).remove(0));
+    assert_eq!(
+        (open.symbol.as_str(), open.side, open.offset),
+        ("cu2701", Side::Buy, Offset::Open)
+    );
 }
 #[test]
 fn aggressive_bbo_limit_fak_uses_integer_ticks_and_chunk_bounds_with_frozen_batch_identity() {

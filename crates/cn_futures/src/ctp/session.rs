@@ -13,7 +13,10 @@ pub struct Session {
     waiting: Option<(i32, i32, Instant)>,
     next_send: Instant,
     login: Option<(String, i32, i32, u64)>,
+    catalogue: HashMap<(Venue, String), Instrument>,
     instruments: HashMap<(Venue, String), Instrument>,
+    rate_rule: Option<Instrument>,
+    rate_retry_after: HashMap<(Venue, String), Instant>,
     products: HashMap<(Venue, String), String>,
     rate_targets: VecDeque<(Venue, String)>,
     rate_seen: bool,
@@ -46,7 +49,10 @@ impl Session {
             waiting: None,
             next_send: now,
             login: None,
+            catalogue: HashMap::new(),
             instruments: HashMap::new(),
+            rate_rule: None,
+            rate_retry_after: HashMap::new(),
             products: HashMap::new(),
             rate_targets: VecDeque::new(),
             rate_seen: false,
@@ -87,6 +93,30 @@ impl Session {
     pub fn settlement_confirmed(&self) -> bool {
         self.settlement_confirmed
     }
+    pub fn require_active_future(&self, venue: Venue, symbol: &str) -> Result<()> {
+        ensure!(
+            self.next_kind != Some(INSTRUMENT),
+            "CTP instrument catalogue refresh pending"
+        );
+        ensure!(
+            self.catalogue.contains_key(&(venue, symbol.to_owned())),
+            "CTP catalogue has no active future {}:{symbol}",
+            venue.as_str()
+        );
+        Ok(())
+    }
+    pub fn request_rates(&mut self, venue: Venue, symbol: &str, now: Instant) {
+        let key = (venue, symbol.to_owned());
+        if !self.instruments.contains_key(&key)
+            && !self.rate_targets.contains(&key)
+            && !self
+                .rate_retry_after
+                .get(&key)
+                .is_some_and(|retry| now < *retry)
+        {
+            self.rate_targets.push_back(key);
+        }
+    }
     pub fn query_target(&self) -> Option<(Venue, &str)> {
         self.rate_targets
             .front()
@@ -123,12 +153,20 @@ impl Session {
             if now.saturating_duration_since(self.last_rule_poll) >= Duration::from_secs(60) {
                 self.maintenance = true;
                 self.next_kind = Some(INSTRUMENT);
-                self.instruments.clear();
+                self.catalogue.clear();
                 self.products.clear();
             } else if now.saturating_duration_since(self.last_cash_poll) >= Duration::from_secs(5) {
                 self.maintenance = true;
                 self.next_kind = Some(ACCOUNT);
                 self.available = None;
+            } else if let Some(key) = self.rate_targets.front() {
+                self.rate_rule = Some(
+                    self.catalogue
+                        .get(key)
+                        .context("rate contract absent from catalogue")?
+                        .clone(),
+                );
+                self.next_kind = Some(COMMISSION);
             }
         }
         Ok(if now >= self.next_send {
@@ -166,10 +204,41 @@ impl Session {
         self.rule_update = None;
         self.previous = None;
         self.passes = 0;
-        self.instruments.clear();
+        self.reset_rules();
         self.clear_pass();
         self.next_kind = Some(INSTRUMENT);
         self.next_send = now;
+        Ok(())
+    }
+    fn reset_rules(&mut self) {
+        self.catalogue.clear();
+        self.instruments.clear();
+        self.products.clear();
+        self.rate_targets.clear();
+        self.rate_retry_after.clear();
+        self.rate_rule = None;
+        self.rate_seen = false;
+        self.relative_margin = false;
+    }
+    fn finish_rates(&mut self, now: Instant, complete: bool) -> Result<()> {
+        let key = self
+            .rate_targets
+            .pop_front()
+            .context("missing rate target")?;
+        let rule = self.rate_rule.take().context("missing pending rates")?;
+        if complete {
+            rule.validate()?;
+            self.instruments.insert(key.clone(), rule);
+            self.rate_retry_after.remove(&key);
+        } else {
+            self.instruments.remove(&key);
+            self.rate_retry_after
+                .insert(key, now + Duration::from_secs(60));
+        }
+        self.rule_update = Some(self.instruments.values().cloned().collect());
+        self.next_kind = None;
+        self.rate_seen = false;
+        self.relative_margin = false;
         Ok(())
     }
     fn clear_pass(&mut self) {
@@ -203,11 +272,10 @@ impl Session {
             self.account_funds = None;
             self.account_not_ready_retries = 0;
             self.settlement_confirmed = false;
-            self.rate_targets.clear();
+            self.reset_rules();
             self.waiting = None;
             self.previous = None;
             self.passes = 0;
-            self.instruments.clear();
             self.clear_pass();
             self.next_kind = Some(if self.config.require_authentication {
                 AUTHENTICATED
@@ -225,7 +293,7 @@ impl Session {
             self.account = None;
             self.account_funds = None;
             self.settlement_confirmed = false;
-            self.rate_targets.clear();
+            self.reset_rules();
             return Ok(None);
         }
         if matches!(e.kind, ORDER | TRADE) {
@@ -281,43 +349,45 @@ impl Session {
                 self.login = Some((day, e.front, e.session, max_ref));
             }
             INSTRUMENT if e.present != 0 => {
-                let symbol = text(&e.symbol)?;
-                let venue = Venue::parse(&text(&e.exchange)?)?;
-                if let Some(config) = self
-                    .config
-                    .symbols
-                    .iter()
-                    .find(|s| s.venue == venue && s.symbol == symbol)
-                {
-                    ensure!(
-                        e.control()?.product_class == i32::from(b'1'),
-                        "configured contract is not a native future"
-                    );
-                    let expiry = e.control()?.expiry;
-                    let instrument = Instrument {
-                        option: None,
-                        venue,
-                        symbol: symbol.clone(),
-                        price_tick: e.control()?.price_tick,
-                        contract_multiple: e.control()?.contract_multiple,
-                        expiry_date: e.control()?.expiry,
-                        commission: None,
-                        margin: None,
-                        min_lots: e.control()?.minimum,
-                        max_lots: e.control()?.maximum,
-                        market_lots: None,
-                        active: e.control()?.active != 0
+                let control = e.control()?;
+                if control.product_class == i32::from(b'1') && control.active != 0 {
+                    if let Ok(venue) = Venue::parse(text_ref(&e.exchange)?) {
+                        let symbol = text_ref(&e.symbol)?;
+                        let expiry = control.expiry;
+                        if is_future_symbol(venue, symbol)
                             && self.login.as_ref().is_some_and(|login| {
                                 login.0.parse::<i32>().is_ok_and(|day| expiry >= day)
-                            }),
-                        cash_budget_per_open_lot: config.cash_budget_per_open_lot,
-                    };
-                    instrument.validate()?;
-                    let key = (venue, symbol);
-                    self.products
-                        .insert(key.clone(), text(&e.control()?.product)?);
-                    if let Some(old) = self.instruments.insert(key, instrument.clone()) {
-                        ensure!(old == instrument, "conflicting duplicate instrument row");
+                            })
+                            && control.price_tick.is_finite()
+                            && control.price_tick > 0.0
+                            && control.contract_multiple > 0
+                            && control.minimum > 0
+                            && control.maximum >= control.minimum
+                        {
+                            let instrument = Instrument {
+                                option: None,
+                                venue,
+                                symbol: symbol.to_owned(),
+                                price_tick: control.price_tick,
+                                contract_multiple: control.contract_multiple,
+                                expiry_date: expiry,
+                                commission: None,
+                                margin: None,
+                                min_lots: control.minimum,
+                                max_lots: control.maximum,
+                                market_lots: None,
+                                active: true,
+                                cash_budget_per_open_lot: 0.0,
+                            };
+                            let key = (venue, symbol.to_owned());
+                            let product = text(&control.product)?;
+                            if let Some(old) = self.products.insert(key.clone(), product.clone()) {
+                                ensure!(old == product, "conflicting duplicate instrument product");
+                            }
+                            if let Some(old) = self.catalogue.insert(key, instrument.clone()) {
+                                ensure!(old == instrument, "conflicting duplicate instrument row");
+                            }
+                        }
                     }
                 }
             }
@@ -380,10 +450,7 @@ impl Session {
                 }
                 ensure!(!self.rate_seen, "ambiguous duplicate CTP rate row");
                 self.rate_seen = true;
-                let rule = self
-                    .instruments
-                    .get_mut(&key)
-                    .context("rate contract absent")?;
+                let rule = self.rate_rule.as_mut().context("rate contract absent")?;
                 if kind == COMMISSION {
                     let r = e.control()?.commission_rates;
                     let rate = CommissionRate {
@@ -500,53 +567,50 @@ impl Session {
             return Ok(None);
         }
         self.waiting = None;
-        if matches!(kind, INSTRUMENT | COMMISSION | MARGIN | EXCHANGE_MARGIN) {
-            if kind == INSTRUMENT {
-                if !self.maintenance {
-                    ensure!(
-                        self.instruments.len() == self.config.symbols.len(),
-                        "complete instrument response omitted an allowlisted contract"
-                    );
-                }
-                let mut targets: Vec<_> = self
-                    .instruments
-                    .iter()
-                    .filter(|(_, rule)| rule.active)
-                    .map(|(key, _)| key.clone())
-                    .collect();
-                targets.sort_by(|a, b| (a.0.as_str(), &a.1).cmp(&(b.0.as_str(), &b.1)));
-                self.rate_targets = targets.into();
-            } else {
-                ensure!(
-                    self.rate_seen,
-                    "empty CTP fee/margin query; trading stays blocked"
-                );
-                if kind == COMMISSION {
-                    self.rate_seen = false;
-                    self.next_kind = Some(MARGIN);
-                    return Ok(None);
-                }
-                if kind == MARGIN && self.relative_margin {
-                    self.rate_seen = false;
-                    self.next_kind = Some(EXCHANGE_MARGIN);
-                    return Ok(None);
-                }
-                self.rate_targets.pop_front();
-            }
-            self.rate_seen = false;
-            self.relative_margin = false;
-            if !self.rate_targets.is_empty() {
-                self.next_kind = Some(COMMISSION);
-                return Ok(None);
-            }
-            self.last_rule_poll = now;
+        if kind == INSTRUMENT {
+            // Preserve rates for unchanged instruments while refreshing them serially.
+            // Drop omitted/changed rules before another order can use them.
             if self.maintenance {
+                for key in self.instruments.keys() {
+                    if self.catalogue.contains_key(key) && !self.rate_targets.contains(key) {
+                        self.rate_targets.push_back(key.clone());
+                    }
+                }
+                self.rate_targets
+                    .retain(|key| self.catalogue.contains_key(key));
+                self.rate_retry_after
+                    .retain(|key, _| self.catalogue.contains_key(key));
+                self.instruments.retain(|key, rule| {
+                    self.catalogue.get(key).is_some_and(|new| {
+                        new.price_tick == rule.price_tick
+                            && new.contract_multiple == rule.contract_multiple
+                            && new.expiry_date == rule.expiry_date
+                            && new.min_lots == rule.min_lots
+                            && new.max_lots == rule.max_lots
+                    })
+                });
                 self.rule_update = Some(self.instruments.values().cloned().collect());
                 self.maintenance = false;
                 self.next_kind = None;
             } else {
                 self.clear_pass();
                 self.next_kind = Some(ACCOUNT);
+            }
+            self.last_rule_poll = now;
+            return Ok(None);
+        }
+        if matches!(kind, COMMISSION | MARGIN | EXCHANGE_MARGIN) {
+            if !self.rate_seen {
+                self.finish_rates(now, false)?;
+            } else if kind == COMMISSION || (kind == MARGIN && self.relative_margin) {
+                self.rate_seen = false;
+                self.next_kind = Some(if kind == COMMISSION {
+                    MARGIN
+                } else {
+                    EXCHANGE_MARGIN
+                });
+            } else {
+                self.finish_rates(now, true)?;
             }
             return Ok(None);
         }
@@ -555,10 +619,6 @@ impl Session {
                 ACCOUNT => {
                     self.cash_update = Some(self.available.context("empty CNY account poll")?);
                     self.last_cash_poll = now;
-                }
-                INSTRUMENT => {
-                    self.rule_update = Some(self.instruments.values().cloned().collect());
-                    self.last_rule_poll = now;
                 }
                 _ => anyhow::bail!("unexpected maintenance request"),
             }
@@ -577,14 +637,6 @@ impl Session {
                 }
             }
             SETTLED => INSTRUMENT,
-            INSTRUMENT => {
-                ensure!(
-                    self.instruments.len() == self.config.symbols.len(),
-                    "complete instrument response omitted an allowlisted contract"
-                );
-                self.clear_pass();
-                ACCOUNT
-            }
             ACCOUNT => {
                 ensure!(self.available.is_some(), "empty CNY account snapshot");
                 QUERY_ORDER

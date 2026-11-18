@@ -938,6 +938,60 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
     )
 }
 
+#[cfg(feature = "ctp-sdk")]
+fn prepare_ctp_contracts(
+    session: &mut crate::ctp::session::Session,
+    core: &crate::core::TradingCore,
+    market_data: Option<&mut crate::ctp::market_data::Feed>,
+    contracts: &[(crate::model::Venue, &str)],
+    now: std::time::Instant,
+) -> Result<()> {
+    anyhow::ensure!(
+        core.is_ready(),
+        "CTP account recovery or settlement pending"
+    );
+    for &(venue, symbol) in contracts {
+        session.require_active_future(venue, symbol)?;
+    }
+    for &(venue, symbol) in contracts {
+        session.request_rates(venue, symbol, now);
+    }
+    if let Some(feed) = market_data {
+        anyhow::ensure!(
+            feed.subscribe_contracts(contracts, now)?,
+            "CTP market data subscription acknowledgement pending"
+        );
+    }
+    anyhow::ensure!(
+        contracts
+            .iter()
+            .all(|&(venue, symbol)| core.instrument(venue, symbol).is_some()),
+        "CTP account commission and margin query pending"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "ctp-sdk")]
+fn prepare_ctp_target(
+    settings: &crate::ctp::ctaker::Settings,
+    target: &crate::ctp::ctaker::Target,
+    session: &mut crate::ctp::session::Session,
+    core: &crate::core::TradingCore,
+    feed: Option<&mut crate::ctp::market_data::Feed>,
+    now: std::time::Instant,
+    now_us: u64,
+) -> Result<()> {
+    let contracts = crate::ctp::ctaker::validate_target(settings, target, core, now_us, false)?;
+    let required: Vec<_> = contracts
+        .into_iter()
+        .filter(|&(venue, symbol, lots)| {
+            crate::ctp::ctaker::needs_contract(core, venue, symbol, lots)
+        })
+        .map(|(venue, symbol, _)| (venue, symbol))
+        .collect();
+    prepare_ctp_contracts(session, core, feed, &required, now)
+}
+
 /// Strategy hooks, feed consumption, risk and order submission share this caller thread.
 #[cfg(feature = "ctp-sdk")]
 pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
@@ -963,7 +1017,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
         }
     }
     if let Some(md) = &market_data {
-        config.validate_market_data(md, execute)?;
+        config.validate_market_data(md)?;
     }
     let placement = if let Some(md) = &market_data {
         crate::placement::Placement::enter_combined(&config.placement, &md.placement)?
@@ -1163,6 +1217,9 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     runtime.core.constrain_cash(available)?;
                 }
                 if let Some(rules) = session.take_rule_update() {
+                    for rule in &rules {
+                        runtime.trader.prepare_contract(rule.venue, &rule.symbol)?;
+                    }
                     runtime.core.replace_instruments(rules)?;
                 }
                 if session.ready() {
@@ -1407,13 +1464,30 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     let mut audit_error = None;
                     work |= ingress.poll(|target| {
                         let recorded = if execute {
+                            anyhow::ensure!(
+                                can_trade,
+                                "ctaker target admission requires recovered account and ready MD"
+                            );
+                            let now_us = crate::persistence::now_us();
+                            prepare_ctp_target(
+                                config
+                                    .ctaker
+                                    .as_ref()
+                                    .context("target execution is not configured")?,
+                                &target,
+                                &mut session,
+                                &runtime.core,
+                                feed.as_mut(),
+                                now,
+                                now_us,
+                            )?;
                             let admitted = strategy.on_target(
                                 target,
                                 StrategyContext {
                                     core: &runtime.core,
                                     can_trade,
                                 },
-                                crate::persistence::now_us(),
+                                now_us,
                             )?;
                             journal.target_accepted(admitted)
                         } else {
@@ -1447,13 +1521,39 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                             .unwrap_or_default();
                         let result = match command {
                             Ok(Command::CtakerTarget { target }) => {
+                                let now_us = crate::persistence::now_us();
                                 let can_trade = execute
                                     && runtime.core.is_ready()
                                     && feed
                                         .as_ref()
                                         .is_some_and(|md| md.ready() && !md.has_backlog());
-                                strategy.on_target(target, StrategyContext { core: &runtime.core, can_trade }, crate::persistence::now_us())
-                                    .map(|target|json!({"type":"ctaker_target_accepted","target":target,"venue_accepted":false}))
+                                let admit = |settings| {
+                                    prepare_ctp_target(
+                                        settings,
+                                        &target,
+                                        &mut session,
+                                        &runtime.core,
+                                        feed.as_mut(),
+                                        now,
+                                        now_us,
+                                    )
+                                };
+                                let prepared = if can_trade {
+                                    config
+                                        .ctaker
+                                        .as_ref()
+                                        .context("target execution is not configured")
+                                        .and_then(admit)
+                                } else {
+                                    Err(anyhow::anyhow!("ctaker target admission requires recovered account and ready MD"))
+                                };
+                                prepared.and_then(|()| {
+                                    strategy.on_target(
+                                        target,
+                                        StrategyContext { core: &runtime.core, can_trade },
+                                        now_us,
+                                    )
+                                }).map(|target| json!({"type":"ctaker_target_accepted","target":target,"venue_accepted":false}))
                             }
                             Ok(Command::State {}) => Ok(
                                 json!({"type":"state","state":runtime.core.view(),"account":session.account(),"settlement_confirmed":session.settlement_confirmed()}),
@@ -1482,11 +1582,19 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     "MD is not ready; opening decisions are blocked"
                                 ))
                             }
-                            Ok(Command::Submit { intent }) => runtime
-                                .submit_planned_with(intent, Instant::now(), |prepared| {
+                            Ok(Command::Submit { intent }) => (|| {
+                                anyhow::ensure!(execute, "execution is disabled");
+                                prepare_ctp_contracts(
+                                    &mut session,
+                                    &runtime.core,
+                                    feed.as_mut(),
+                                    &[(intent.venue, &intent.symbol)],
+                                    now,
+                                )?;
+                                runtime.submit_planned_with(intent, Instant::now(), |prepared| {
                                     journal.prepared_submit(&day, prepared)
-                                })
-                                .map(|receipt| json!({"type":"submit_receipt","receipt":receipt})),
+                                }).map(|receipt| json!({"type":"submit_receipt","receipt":receipt}))
+                            })(),
                             Ok(Command::Cancel {
                                 key,
                                 execution_route: None,

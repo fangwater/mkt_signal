@@ -20,7 +20,7 @@ pub struct Config {
     pub event_capacity: usize,
     pub response_timeout_ms: u64,
     pub reconnect_backoff_ms: u64,
-    /// Market Replay HTTP endpoint for read-only SHFE dominant subscriptions.
+    /// Optional Market Replay HTTP endpoint for baseline SHFE dominant subscriptions.
     pub shfe_dominant_url: Option<String>,
     #[serde(default)]
     pub symbols: Vec<Subscription>,
@@ -90,8 +90,8 @@ impl Config {
             return Ok(());
         }
         ensure!(
-            !self.symbols.is_empty() && self.symbols.len() <= 1000,
-            "require 1..1000 MD subscriptions"
+            self.symbols.len() <= 1000,
+            "at most 1000 baseline MD subscriptions"
         );
         let mut symbols = HashSet::new();
         for s in &self.symbols {
@@ -101,6 +101,14 @@ impl Config {
                 s.symbol
             );
         }
+        Ok(())
+    }
+    pub fn validate_standalone(&self) -> Result<()> {
+        self.validate()?;
+        ensure!(
+            self.shfe_dominant_url.is_none() && !self.symbols.is_empty(),
+            "standalone MD requires explicit subscriptions"
+        );
         Ok(())
     }
 }
@@ -239,6 +247,7 @@ fn value(price: f64) -> Option<f64> {
 }
 
 pub struct Session {
+    baseline: HashMap<String, Venue>,
     allowed: HashMap<String, Venue>,
     subscribed: HashSet<String>,
     pub connected: bool,
@@ -250,12 +259,14 @@ pub struct Session {
 }
 impl Session {
     pub fn new(config: &Config) -> Self {
+        let baseline: HashMap<_, _> = config
+            .symbols
+            .iter()
+            .map(|s| (s.symbol.clone(), s.venue))
+            .collect();
         Self {
-            allowed: config
-                .symbols
-                .iter()
-                .map(|s| (s.symbol.clone(), s.venue))
-                .collect(),
+            allowed: baseline.clone(),
+            baseline,
             subscribed: HashSet::new(),
             connected: false,
             logged_in: false,
@@ -281,9 +292,7 @@ impl Session {
         self.subscribed.clear();
         self.login_request = None;
         self.trading_day = None;
-        if self.dynamic {
-            self.allowed.clear();
-        }
+        self.allowed.clone_from(&self.baseline);
     }
     pub fn login(&mut self, event: &RawEvent) -> Result<bool> {
         let Some(request) = self.login_request else {
@@ -332,6 +341,26 @@ impl Session {
             .collect();
         Ok(())
     }
+    #[cfg(any(feature = "ctp-sdk", test))]
+    pub(super) fn add_contracts(
+        &mut self,
+        contracts: &[(Venue, &str)],
+    ) -> Result<Vec<Subscription>> {
+        ensure!(self.ready(), "MD subscription acknowledgement pending");
+        let mut missing = HashMap::new();
+        for &(venue, symbol) in contracts {
+            if let Some(existing) = self.allowed.get(symbol).or_else(|| missing.get(symbol)) {
+                ensure!(*existing == venue, "ambiguous MD subscription for {symbol}");
+            } else {
+                missing.insert(symbol.to_owned(), venue);
+            }
+        }
+        self.allowed.extend(missing.clone());
+        Ok(missing
+            .into_iter()
+            .map(|(symbol, venue)| Subscription { venue, symbol })
+            .collect())
+    }
     pub fn subscribed(&mut self, event: &RawEvent) -> Result<()> {
         ensure!(
             self.logged_in && event.error == 0 && event.present != 0,
@@ -349,7 +378,7 @@ impl Session {
     pub fn ready(&self) -> bool {
         self.connected
             && self.logged_in
-            && !self.allowed.is_empty()
+            && (!self.dynamic || !self.allowed.is_empty())
             && self.subscribed.len() == self.allowed.len()
     }
     pub fn tick_venue(&self, e: &RawEvent) -> Result<Venue> {
@@ -462,6 +491,34 @@ mod tests {
         s.subscribed(&sub).unwrap();
         assert!(s.ready());
         assert_eq!(s.generation, 2);
+    }
+    #[test]
+    fn combined_md_adds_exact_contracts_and_requires_new_ack_after_reconnect() {
+        let mut c = config();
+        c.symbols.clear();
+        let mut s = Session::new(&c);
+        s.connected(1).unwrap();
+        s.login(&login(1)).unwrap();
+        assert!(s.ready());
+        let contracts = [(Venue::Shfe, "sn2612")];
+        assert_eq!(s.add_contracts(&contracts).unwrap()[0].symbol, "sn2612");
+        assert!(!s.ready());
+        let mut ack = RawEvent {
+            present: 1,
+            ..RawEvent::default()
+        };
+        ack.symbol[..6].copy_from_slice(b"sn2612");
+        s.subscribed(&ack).unwrap();
+        assert!(s.ready());
+        assert!(s.add_contracts(&contracts).unwrap().is_empty());
+
+        s.connected(2).unwrap();
+        s.login(&login(2)).unwrap();
+        assert!(s.ready());
+        assert_eq!(s.add_contracts(&contracts).unwrap().len(), 1);
+        assert!(!s.ready());
+        s.subscribed(&ack).unwrap();
+        assert!(s.ready());
     }
     #[test]
     fn zero_id_login_requires_pending_connection_and_fresh_subscriptions() {

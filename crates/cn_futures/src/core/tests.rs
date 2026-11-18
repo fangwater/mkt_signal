@@ -174,7 +174,7 @@ fn czce_three_digit_contract_uses_its_native_product_status_and_symbol_override(
 }
 
 #[test]
-fn queried_margin_and_opening_fee_can_only_increase_the_configured_cash_floor() {
+fn queried_margin_and_opening_fee_cover_positions_with_or_without_a_cash_floor() {
     let mut image = snapshot();
     let rule = &mut image.instruments[0];
     rule.margin = Some(MarginRate {
@@ -193,11 +193,18 @@ fn queried_margin_and_opening_fee_can_only_increase_the_configured_cash_floor() 
     });
     let mut core = TradingCore::new(limits(), crate::ctp::scope()).unwrap();
     core.set_trading_status(Venue::Cffex, "IF", true);
-    core.restore(image).unwrap();
-    let prepared = core
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .unwrap();
-    assert!((core.order(&prepared.key).unwrap().cash_reserved_per_lot - 144029.6).abs() < 1e-8);
+    for floor in [0.0, 10_000.0] {
+        image.instruments[0].cash_budget_per_open_lot = floor;
+        core.restore(image.clone()).unwrap();
+        let prepared = core
+            .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
+            .unwrap();
+        assert!((core.order(&prepared.key).unwrap().cash_reserved_per_lot - 144029.6).abs() < 1e-8);
+        core.reject(&prepared.key).unwrap();
+    }
+    image.instruments[0].cash_budget_per_open_lot = 0.0;
+    image.instruments[0].margin = None;
+    assert!(core.restore(image).is_err());
 }
 fn intent(side: Side, offset: Offset, lots: i32) -> Intent {
     Intent {

@@ -59,6 +59,7 @@ fn run() -> Result<()> {
         }
     }
     let config = Config::load(&config.context("--config required")?)?;
+    config.validate_standalone()?;
     if !connect {
         println!(
             "CTP MD configuration valid; {} subscriptions; no network connection",

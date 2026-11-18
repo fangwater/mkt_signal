@@ -168,7 +168,7 @@ pub struct Instrument {
     /// None means unavailable/unsupported, never fall back to limit-order quantity rules.
     pub market_lots: Option<LotLimits>,
     pub active: bool,
-    /// Local cash-budget requirement, explicitly configured; not an exchange margin quote.
+    /// Optional configured floor when complete venue margin and commission rates are available.
     pub cash_budget_per_open_lot: f64,
     pub option: Option<OptionContract>,
 }
@@ -407,7 +407,12 @@ impl Instrument {
             );
         }
         ensure!(
-            self.cash_budget_per_open_lot.is_finite() && self.cash_budget_per_open_lot > 0.0,
+            self.cash_budget_per_open_lot.is_finite()
+                && (self.cash_budget_per_open_lot > 0.0
+                    || (self.cash_budget_per_open_lot == 0.0
+                        && self.option.is_none()
+                        && self.margin.is_some()
+                        && self.commission.is_some())),
             "missing positive cash budget for {}",
             self.symbol
         );

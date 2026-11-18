@@ -38,6 +38,57 @@ impl Settings {
     }
 }
 
+pub(crate) fn validate_target<'a>(
+    settings: &Settings,
+    target: &'a Target,
+    core: &crate::core::TradingCore,
+    now_us: u64,
+    allow_options: bool,
+) -> Result<Vec<(Venue, &'a str, i32)>> {
+    identifier(&target.source_id)?;
+    identifier(&target.batch_id)?;
+    ensure!(
+        target.source_id == settings.source_id && target.trading_day == core.trading_day(),
+        "ctaker target belongs to another source/trading day"
+    );
+    ensure!(
+        target.target_revision > 0
+            && target.expires_at_us > now_us
+            && target.expires_at_us - now_us <= settings.target_max_age_ms * 1000,
+        "ctaker target revision/lease invalid"
+    );
+    ensure!(
+        (1..=cn_futures_target::MAX_CONTRACTS).contains(&target.net_targets.len()),
+        "ctaker requires a bounded native contract vector including zeros"
+    );
+    target
+        .net_targets
+        .iter()
+        .map(|(market, &lots)| {
+            let (exchange, symbol) = market.split_once(':').context("missing target venue")?;
+            let venue = Venue::parse(exchange)?;
+            ensure!(
+                (is_future_symbol(venue, symbol)
+                    || (allow_options && option_symbol_parts(venue, symbol).is_some()))
+                    && i64::from(lots).abs() <= i64::from(settings.max_target_lots),
+                "invalid ctaker native contract or target lots: {market}"
+            );
+            Ok((venue, symbol, lots))
+        })
+        .collect()
+}
+
+pub(crate) fn needs_contract(
+    core: &crate::core::TradingCore,
+    venue: Venue,
+    symbol: &str,
+    lots: i32,
+) -> bool {
+    lots != 0
+        || core.position(venue, symbol, Side::Buy).total()
+            != core.position(venue, symbol, Side::Sell).total()
+}
+
 fn identifier(value: &str) -> Result<()> {
     ensure!(
         cn_futures_target::valid_id(value),
@@ -48,7 +99,7 @@ fn identifier(value: &str) -> Result<()> {
 
 pub struct Ctaker {
     settings: Settings,
-    scope: BTreeMap<String, (Venue, String)>,
+    fixed_scope: Option<BTreeMap<String, (Venue, String)>>,
     markets: HashMap<Venue, HashMap<String, String>>,
     target: Option<Arc<Target>>,
     last: Option<Arc<Target>>,
@@ -60,13 +111,11 @@ pub struct Ctaker {
 impl Ctaker {
     pub fn new(config: &crate::config::Config) -> Result<Self> {
         let settings = config.ctaker.clone().context("ctaker not configured")?;
-        Self::with_scope(
-            settings,
-            &config.risk,
-            config.symbols.iter().map(|s| (s.venue, s.symbol.as_str())),
-        )
+        settings.validate(&config.risk)?;
+        Ok(Self::from_scope(settings, None))
     }
 
+    #[cfg(feature = "yida-sdk")]
     pub(crate) fn with_scope<'a>(
         settings: Settings,
         risk: &RiskLimits,
@@ -74,35 +123,35 @@ impl Ctaker {
     ) -> Result<Self> {
         settings.validate(risk)?;
         let mut scope = BTreeMap::new();
-        let mut markets: HashMap<Venue, HashMap<String, String>> = HashMap::new();
         for (venue, symbol) in contracts {
             let market = format!("{}:{symbol}", venue.as_str());
             ensure!(
-                scope
-                    .insert(market.clone(), (venue, symbol.to_owned()))
-                    .is_none(),
+                scope.insert(market, (venue, symbol.to_owned())).is_none(),
                 "duplicate ctaker contract"
             );
-            markets
-                .entry(venue)
-                .or_default()
-                .insert(symbol.to_owned(), market);
         }
         ensure!(
             (1..=cn_futures_target::MAX_CONTRACTS).contains(&scope.len()),
             "ctaker requires 1..128 explicit contracts"
         );
-        Ok(Self {
+        Ok(Self::from_scope(settings, Some(scope)))
+    }
+
+    fn from_scope(
+        settings: Settings,
+        fixed_scope: Option<BTreeMap<String, (Venue, String)>>,
+    ) -> Self {
+        Self {
             settings,
-            scope,
-            markets,
+            fixed_scope,
+            markets: HashMap::new(),
             target: None,
             last: None,
             generation: None,
             next_attempt_us: BTreeMap::new(),
             next_tag: 0,
             halted: false,
-        })
+        }
     }
     pub fn accept(
         &mut self,
@@ -110,31 +159,36 @@ impl Ctaker {
         context: StrategyContext<'_>,
         now_us: u64,
     ) -> Result<Arc<Target>> {
-        identifier(&target.source_id)?;
-        identifier(&target.batch_id)?;
         ensure!(
             context.can_trade && context.core.is_ready() && self.generation.is_some(),
             "ctaker target admission requires recovered account and ready MD"
         );
-        ensure!(
-            target.source_id == self.settings.source_id
-                && target.trading_day == context.core.trading_day(),
-            "ctaker target belongs to another source/trading day"
-        );
-        ensure!(
-            target.target_revision > 0
-                && target.expires_at_us > now_us
-                && target.expires_at_us - now_us <= self.settings.target_max_age_ms * 1000,
-            "ctaker target revision/lease invalid"
-        );
-        ensure!(
-            target.net_targets.keys().eq(self.scope.keys())
-                && target
-                    .net_targets
-                    .values()
-                    .all(|v| i64::from(*v).abs() <= i64::from(self.settings.max_target_lots)),
-            "ctaker requires the complete bounded native contract vector including zeros"
-        );
+        let contracts = validate_target(
+            &self.settings,
+            &target,
+            context.core,
+            now_us,
+            self.fixed_scope.is_some(),
+        )?;
+        if let Some(scope) = &self.fixed_scope {
+            ensure!(
+                target.net_targets.keys().eq(scope.keys()),
+                "ctaker requires the complete fixed native contract vector including zeros"
+            );
+        } else {
+            for &(venue, symbol, lots) in &contracts {
+                if needs_contract(context.core, venue, symbol, lots) {
+                    ensure!(
+                        context
+                            .core
+                            .instrument(venue, symbol)
+                            .is_some_and(|rule| rule.active),
+                        "ctaker contract rule unavailable: {}:{symbol}",
+                        venue.as_str()
+                    );
+                }
+            }
+        }
         if let Some(last) = &self.last {
             if target == **last {
                 ensure!(
@@ -148,12 +202,33 @@ impl Ctaker {
                 "ctaker rejects old or conflicting target batches"
             );
         }
-        ensure!(
-            self.scope
-                .values()
-                .all(|(venue, symbol)| !context.core.has_working_orders(*venue, symbol)),
-            "ctaker cannot replace a target while order/fill outcomes are unresolved"
-        );
+        if self.fixed_scope.is_none() {
+            for (&venue, markets) in &self.markets {
+                for (symbol, market) in markets {
+                    ensure!(
+                        !context.core.has_working_orders(venue, symbol),
+                        "ctaker cannot replace a target while order/fill outcomes are unresolved"
+                    );
+                    ensure!(
+                        target.net_targets.contains_key(market)
+                            || !needs_contract(context.core, venue, symbol, 0),
+                        "ctaker target omits held contract {market}; send an explicit zero"
+                    );
+                }
+            }
+        }
+        let mut markets: HashMap<Venue, HashMap<String, String>> = HashMap::new();
+        for (venue, symbol, _) in contracts {
+            ensure!(
+                !context.core.has_working_orders(venue, symbol),
+                "ctaker cannot replace a target while order/fill outcomes are unresolved"
+            );
+            markets
+                .entry(venue)
+                .or_default()
+                .insert(symbol.to_owned(), format!("{}:{symbol}", venue.as_str()));
+        }
+        self.markets = markets;
         let target = Arc::new(target);
         self.target = Some(target.clone());
         self.last = Some(target.clone());
@@ -234,10 +309,9 @@ impl Ctaker {
         }
         let side = if delta > 0 { Side::Buy } else { Side::Sell };
         let opposite = if side == Side::Buy { &short } else { &long };
-        let rule = context
-            .core
-            .instrument(quote.venue, symbol)
-            .context("ctaker contract rule unavailable")?;
+        let Some(rule) = context.core.instrument(quote.venue, symbol) else {
+            return Ok(());
+        };
         if !rule.active {
             return Ok(());
         }

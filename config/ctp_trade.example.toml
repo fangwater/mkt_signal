@@ -26,14 +26,6 @@ response_timeout_ms = 30000
 # Fixed sleep after an empty business-loop iteration, 64 ms in this example. Zero spins.
 idle_sleep_us = 64000
 
-[[symbols]]
-venue = "CFFEX"
-# Replace with a currently listed, authorized domestic future before connecting.
-symbol = "IF2612"
-# Explicit conservative local budget, not an exchange-quoted margin requirement.
-# Choose from the actual broker requirements plus fees/buffer; do not treat this sample as current metadata.
-cash_budget_per_open_lot = 250000.0
-
 [risk]
 max_order_lots = 1
 max_position_lots_per_side = 2

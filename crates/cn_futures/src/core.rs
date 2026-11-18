@@ -686,6 +686,10 @@ impl TradingCore {
             cash_unit = rule.cash_budget_per_open_lot;
             if let (Some(margin), Some(commission)) = (rule.margin, rule.commission) {
                 let margin_cash = margin.estimate(intent.side, price, rule.contract_multiple, 1)?;
+                ensure!(
+                    cash_unit > 0.0 || margin_cash > 0.0,
+                    "positive opening margin required without a configured cash floor"
+                );
                 let opening_fee =
                     commission.estimate(Offset::Open, price, rule.contract_multiple, 1)?;
                 ensure!(

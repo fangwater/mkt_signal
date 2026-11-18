@@ -341,11 +341,7 @@ impl Drop for Output {
 }
 
 pub fn run(config: Config, duration: Option<Duration>, stop: &AtomicBool) -> Result<()> {
-    config.validate()?;
-    ensure!(
-        config.shfe_dominant_url.is_none(),
-        "use ctp-trader for HTTP dominant subscriptions; this diagnostic requires explicit symbols"
-    );
+    config.validate_standalone()?;
     let placement = Placement::enter(&config.placement)?;
     let _lock = crate::runtime::lock_flow(&config.flow_directory)?;
     let broker = CString::new(config.broker_id.as_str())?;

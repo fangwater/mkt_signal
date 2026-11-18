@@ -88,7 +88,7 @@ fn run() -> Result<()> {
         .map(|path| cn_futures::ctp::market_data::Config::load(&path))
         .transpose()?;
     if let Some(md) = &market_data {
-        config.validate_market_data(md, execute)?;
+        config.validate_market_data(md)?;
     }
     anyhow::ensure!(
         config.ctaker.is_none() || market_data.is_some(),
@@ -100,10 +100,7 @@ fn run() -> Result<()> {
     }
     if !connect {
         anyhow::ensure!(!execute, "--execute also requires --connect");
-        println!(
-            "CTP configuration valid; {} domestic futures contracts; no connection started",
-            config.symbols.len()
-        );
+        println!("CTP configuration valid; no connection started");
         return Ok(());
     }
     #[cfg(feature = "ctp-sdk")]

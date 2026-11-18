@@ -198,9 +198,8 @@ def main():
         subprocess.run(["c++", "-std=c++17", "-shared", "-fPIC", "-isystem", str(args.sdk_dir), str(source), "-o", str(library)], check=True)
         config = (root / "config/ctp_trade.example.toml").read_text()
         config=config[:config.index("[placement]")]+placement_table
-        for old, new in [('/opt/ctp/6.7.11/libthosttraderapi_se.so', str(library)), ('/tmp/mkt_ctp_sim/flow', str(temp / 'flow')), ('broker_id = "REPLACE"', 'broker_id = "TEST"'), ('cash_budget_per_open_lot = 250000.0', 'cash_budget_per_open_lot = 10000.0'), ('max_order_lots = 1', 'max_order_lots = 10'), ('max_working_lots = 2', 'max_working_lots = 10'), ('max_actions_per_second = 2', 'max_actions_per_second = 20'), ('enable_fak_fok = false', 'enable_fak_fok = true')]:
+        for old, new in [('/opt/ctp/6.7.11/libthosttraderapi_se.so', str(library)), ('/tmp/mkt_ctp_sim/flow', str(temp / 'flow')), ('broker_id = "REPLACE"', 'broker_id = "TEST"'), ('max_order_lots = 1', 'max_order_lots = 10'), ('max_working_lots = 2', 'max_working_lots = 10'), ('max_actions_per_second = 2', 'max_actions_per_second = 20'), ('enable_fak_fok = false', 'enable_fak_fok = true')]:
             config = config.replace(old, new)
-        config=config.replace('venue = "CFFEX"',f'venue = "{args.venue}"').replace('symbol = "IF2612"',f'symbol = "{args.symbol}"')
         if args.transport_timeout: config=config.replace("response_timeout_ms = 30000","response_timeout_ms = 5000")
         config_path = temp / "config.toml"
         config_path.write_text(config)
@@ -216,6 +215,7 @@ def main():
             process.stdin.flush()
 
         def wait(kind, timeout=30):
+            kinds = (kind,) if isinstance(kind, str) else kind
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 try:
@@ -225,7 +225,7 @@ def main():
                         stderr.seek(0)
                         raise AssertionError(stderr.read())
                     continue
-                if value.get("type") == kind:
+                if value.get("type") in kinds:
                     return value
                 if value.get("type") in ("trading_blocked", "command_rejected"):
                     raise AssertionError(value)
@@ -238,10 +238,19 @@ def main():
             return result["state"]
 
         def submit(tif="day", side="buy", offset="open", lots=1, ticks=20000):
-            send({"op": "submit", "intent": {"venue": args.venue, "symbol": args.symbol, "side": side, "offset": offset, "lots": lots, "price_ticks": ticks, "time_in_force": tif}})
-            receipt = wait("submit_receipt")["receipt"]
-            assert receipt["all_submitted_locally"]
-            return receipt["children"][0]["key"]
+            for _ in range(40):
+                send({"op": "submit", "intent": {"venue": args.venue, "symbol": args.symbol, "side": side, "offset": offset, "lots": lots, "price_ticks": ticks, "time_in_force": tif}})
+                result = wait(("submit_receipt", "command_rejected"))
+                if result["type"] == "submit_receipt":
+                    receipt = result["receipt"]
+                    assert receipt["all_submitted_locally"]
+                    return receipt["children"][0]["key"]
+                assert result["error"] in (
+                    "CTP account commission and margin query pending",
+                    "CTP instrument catalogue refresh pending",
+                ), result
+                time.sleep(.25)
+            raise AssertionError("contract preparation did not complete")
 
         def audited_events():
             export = temp / "db-export"
@@ -265,7 +274,7 @@ def main():
                 return
             if args.unconfirmed_settlement:
                 assert not wait("reconciled")["state"]["ready"]
-                assert state()["instruments"][0]["contract_multiple"]==300
+                assert state()["instruments"] == []
                 send({"op":"submit","intent":{"venue":args.venue,"symbol":args.symbol,"side":"buy","offset":"open","lots":1,"price_ticks":20000,"time_in_force":"day"}})
                 wait("command_rejected")
                 send({"op":"shutdown"});wait("runtime_stopped");assert process.wait(timeout=10)==0
@@ -274,11 +283,12 @@ def main():
                 print(json.dumps({"unconfirmed_settlement":True,"account_and_rules_readable":True,"trade_blocked":True,"settlement_confirmations":0,"orders_sent":0}))
                 return
             assert wait("reconciled")["state"]["ready"]
+            assert state()["instruments"] == []
+            day = submit(lots=2)
             rule=state()["instruments"][0]
             assert rule["contract_multiple"]==300 and rule["expiry_date"]==20261218
             assert abs(rule["margin"]["long_by_money"]-.12)<1e-12
             assert rule["commission"]["close_today_by_money"]==.00023
-            day = submit(lots=2)
             send({"op": "cancel", "key": day})
             wait("cancel_submitted_locally")
             assert next(o for o in state()["orders"] if o["key"] == day)["status"] == "cancelled"

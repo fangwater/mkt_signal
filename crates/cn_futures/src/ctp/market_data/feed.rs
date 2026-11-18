@@ -1,5 +1,5 @@
 //! MdApi ingress consumed directly by the trader's single business loop.
-use super::{dominant, native::Native, Config, Session, TickRecord};
+use super::{dominant, native::Native, Config, Session, Subscription, TickRecord};
 use crate::placement::Placement;
 use anyhow::{bail, ensure, Context, Result};
 use std::ffi::CString;
@@ -39,6 +39,7 @@ pub struct Feed {
     progress: Instant,
     timeout: Duration,
     dominant: Option<dominant::Lookup>,
+    baseline: Vec<Subscription>,
     _flow: File,
 }
 impl Feed {
@@ -93,6 +94,7 @@ impl Feed {
             progress: Instant::now(),
             timeout: Duration::from_millis(config.response_timeout_ms),
             dominant,
+            baseline: config.symbols.clone(),
             _flow: flow,
         })
     }
@@ -106,6 +108,20 @@ impl Feed {
     }
     pub fn generation(&self) -> u64 {
         self.session.generation
+    }
+    /// A ready connection can extend its subscriptions without resetting its generation.
+    pub(crate) fn subscribe_contracts(
+        &mut self,
+        contracts: &[(crate::model::Venue, &str)],
+        now: Instant,
+    ) -> Result<bool> {
+        let missing = self.session.add_contracts(contracts)?;
+        if !missing.is_empty() {
+            self.native.set_symbols(&missing)?;
+            self.native.subscribe()?;
+            self.progress = now;
+        }
+        Ok(self.ready())
     }
     pub fn poll(&mut self, now: Instant) -> Result<Option<FeedEvent>> {
         ensure!(
@@ -181,7 +197,12 @@ impl Feed {
                     if let Some(lookup) = &mut self.dominant {
                         let day = self.session.trading_day().context("missing MD login day")?;
                         lookup.begin(self.session.generation, day, now);
+                    } else if self.baseline.is_empty() {
+                        return Ok(Some(FeedEvent::Ready {
+                            generation: self.session.generation,
+                        }));
                     } else {
+                        self.native.set_symbols(&self.baseline)?;
                         self.native.subscribe()?;
                     }
                 }
@@ -198,10 +219,9 @@ impl Feed {
                 }
             }
             22 => {
-                if self.dominant.is_some()
-                    && (!self.session.ready()
-                        || Some(super::super::text_ref(&event.trading_day)?)
-                            != self.session.trading_day())
+                if !self.session.ready()
+                    || Some(super::super::text_ref(&event.trading_day)?)
+                        != self.session.trading_day()
                 {
                     return Ok(None);
                 }

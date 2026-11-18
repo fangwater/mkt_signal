@@ -1,7 +1,6 @@
-use crate::model::{is_future_symbol, RiskLimits, Venue};
+use crate::model::RiskLimits;
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
-use std::collections::HashSet;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
@@ -38,7 +37,6 @@ pub struct Config {
     pub response_timeout_ms: u64,
     #[serde(default)]
     pub idle_sleep_us: u64,
-    pub symbols: Vec<SymbolConfig>,
     pub risk: RiskLimits,
     pub ctaker: Option<crate::ctp::ctaker::Settings>,
     pub position_target_ingress: Option<cn_futures_target::Config>,
@@ -53,16 +51,15 @@ mod tests {
             toml::from_str(include_str!("../../../config/ctp_trade.example.toml")).unwrap();
         let mut md: crate::ctp::market_data::Config =
             toml::from_str(include_str!("../../../config/ctp_market_data.example.toml")).unwrap();
-        trade.validate_market_data(&md, true).unwrap();
+        trade.validate_market_data(&md).unwrap();
         md.placement.business_cpu = 9;
-        assert!(trade.validate_market_data(&md, false).is_err());
+        assert!(trade.validate_market_data(&md).is_err());
         md.placement = crate::placement::PlacementConfig {
             sdk_cpus: vec![2],
             ..trade.placement.clone()
         };
-        md.symbols.retain(|s| s.symbol != "IF2612");
-        trade.validate_market_data(&md, false).unwrap();
-        assert!(trade.validate_market_data(&md, true).is_err());
+        md.symbols.clear();
+        trade.validate_market_data(&md).unwrap();
     }
     #[test]
     fn blocking_ctp_configuration_knobs_are_rejected() {
@@ -89,14 +86,6 @@ mod tests {
         assert!(example.validate().is_err());
     }
 }
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SymbolConfig {
-    pub venue: Venue,
-    pub symbol: String,
-    pub cash_budget_per_open_lot: f64,
-}
-
 /// Intentionally not Debug / Serialize. Secrets are only passed to the official SDK.
 pub struct Credentials {
     pub broker: CString,
@@ -112,11 +101,7 @@ fn default_preallocated_requests() -> usize {
 }
 
 impl Config {
-    pub fn validate_market_data(
-        &self,
-        md: &crate::ctp::market_data::Config,
-        execute: bool,
-    ) -> Result<()> {
+    pub fn validate_market_data(&self, md: &crate::ctp::market_data::Config) -> Result<()> {
         self.validate()?;
         md.validate()?;
         self.placement.validate_combined(&md.placement)?;
@@ -130,18 +115,6 @@ impl Config {
             self.flow_directory != md.flow_directory,
             "Md and Trader require separate flow directories"
         );
-        ensure!(
-            !execute || md.shfe_dominant_url.is_none(),
-            "SHFE dominant MD subscriptions are read-only; execution requires explicit symbols"
-        );
-        ensure!(
-            !execute
-                || self.symbols.iter().all(|symbol| md
-                    .symbols
-                    .iter()
-                    .any(|s| s.venue == symbol.venue && s.symbol == symbol.symbol)),
-            "every trading symbol must have an explicit MD subscription"
-        );
         Ok(())
     }
     pub fn load(path: &Path) -> Result<Self> {
@@ -154,10 +127,6 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         if let Some(ctaker) = &self.ctaker {
             ctaker.validate(&self.risk)?;
-            ensure!(
-                self.symbols.len() <= 128,
-                "ctaker scope exceeds 128 contracts"
-            );
         }
         if let Some(ingress) = &self.position_target_ingress {
             if let Some(ctaker) = &self.ctaker {
@@ -216,23 +185,6 @@ impl Config {
             self.flow_directory.is_absolute() && self.sdk_library.is_absolute(),
             "SDK and flow paths must be absolute"
         );
-        ensure!(
-            !self.symbols.is_empty(),
-            "explicit domestic futures contract allowlist required"
-        );
-        let mut symbols = HashSet::new();
-        for s in &self.symbols {
-            ensure!(
-                is_future_symbol(s.venue, &s.symbol) && symbols.insert((s.venue, &s.symbol)),
-                "invalid or duplicate domestic future {}",
-                s.symbol
-            );
-            ensure!(
-                s.cash_budget_per_open_lot.is_finite() && s.cash_budget_per_open_lot > 0.0,
-                "positive local cash budget required for {}",
-                s.symbol
-            );
-        }
         for name in [
             &self.user_id_env,
             &self.password_env,
