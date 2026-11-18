@@ -631,6 +631,24 @@ pub struct AccountSnapshot {
     pub option_value: f64,
 }
 impl AccountSnapshot {
+    pub fn funds(&self, observed_us: u64) -> Result<cn_futures_state::AccountFunds> {
+        let funds = cn_futures_state::AccountFunds {
+            observed_us,
+            currency: cn_futures_state::Text::new(&self.currency)?,
+            balance: self.balance,
+            available: self.available,
+            withdraw_quota: self.withdraw_quota,
+            curr_margin: self.curr_margin,
+            frozen_margin: self.frozen_margin,
+            frozen_cash: self.frozen_cash,
+            frozen_commission: self.frozen_commission,
+            position_profit: self.position_profit,
+            close_profit: self.close_profit,
+            commission: self.commission,
+        };
+        funds.validate()?;
+        Ok(funds)
+    }
     pub fn from_event(e: &RawEvent) -> Result<Self> {
         ensure!(
             e.account_values.iter().all(|v| v.is_finite()),

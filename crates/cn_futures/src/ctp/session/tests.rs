@@ -28,6 +28,63 @@ fn background_cash_and_complete_rule_queries_keep_business_session_ready() {
     assert!(session.ready());
 }
 
+#[test]
+fn account_not_ready_retries_are_correlated_bounded_and_keep_old_funds_time() {
+    let (mut s, mut now) = begin();
+    for id in 1..=20 {
+        let (_, e) = dispatch(&mut s, &mut now, id);
+        if s.on_raw_event(&e, now).unwrap().is_some() {
+            break;
+        }
+    }
+    let previous = *s.account_funds().unwrap();
+    now += Duration::from_secs(6);
+    let mut error = response(ERROR, 100);
+    error.error = 90;
+    for id in 100..=103 {
+        assert_eq!(s.request_due(now).unwrap(), Some(ACCOUNT));
+        s.sent(ACCOUNT, id, 0, now).unwrap();
+        error.request = id;
+        assert!(!s.retries_account_query(id + 1, 90));
+        assert!(!s.retries_account_query(id, 3));
+        assert!(s.retries_account_query(id, 90));
+        if id == 103 {
+            assert!(s.on_raw_event(&error, now).is_err());
+        } else {
+            s.on_raw_event(&error, now).unwrap();
+            assert!(s
+                .request_due(now + Duration::from_millis(1000))
+                .unwrap()
+                .is_none());
+            assert_eq!(s.account_funds().unwrap().observed_us, previous.observed_us);
+            now += Duration::from_secs(2);
+        }
+    }
+}
+
+#[test]
+fn account_retry_success_resets_limit_and_other_errors_still_fail() {
+    let (mut s, mut now) = begin();
+    for id in 1..=20 {
+        let (kind, e) = dispatch(&mut s, &mut now, id);
+        if kind == ACCOUNT {
+            let mut error = response(ERROR, id);
+            error.error = 90;
+            s.on_raw_event(&error, now).unwrap();
+            now += Duration::from_secs(2);
+            s.sent(ACCOUNT, 100, 0, now).unwrap();
+            s.on_raw_event(&response(ACCOUNT, 100), now).unwrap();
+            assert_eq!(s.account_not_ready_retries, 0);
+            break;
+        }
+        s.on_raw_event(&e, now).unwrap();
+    }
+    let (kind, mut e) = dispatch(&mut s, &mut now, 101);
+    assert_ne!(kind, ACCOUNT);
+    e.error = 90;
+    assert!(s.on_raw_event(&e, now).is_err());
+}
+
 fn config() -> Config {
     toml::from_str(include_str!("../../../../../config/ctp_trade.example.toml")).unwrap()
 }
@@ -314,6 +371,21 @@ fn relative_margin_adds_the_exchange_base_and_preserves_full_account_fields() {
     assert_eq!(rule.expiry_date, 20261218);
     assert_eq!(session.account().unwrap().balance, 1_200_000.0);
     assert_eq!(session.account().unwrap().commission, 52.5);
+    let funds = *session.account_funds().unwrap();
+    assert_eq!(funds.balance, 1_200_000.0);
+    assert_eq!(funds.commission, 52.5);
+    assert!(funds.observed_us > 0);
+    // A late response must not refresh the displayed query time.
+    session.on_raw_event(&response(ACCOUNT, 999), now).unwrap();
+    assert_eq!(
+        session.account_funds().unwrap().observed_us,
+        funds.observed_us
+    );
+    session
+        .on_raw_event(&response(DISCONNECTED, 1000), now)
+        .unwrap();
+    assert!(session.account().is_none());
+    assert!(session.account_funds().is_none());
 }
 
 #[test]

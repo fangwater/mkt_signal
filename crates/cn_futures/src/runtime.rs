@@ -929,7 +929,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
         false,
         cn_futures_state::RuntimeStatus::Running,
         true,
-        crate::position_ipc::MarketState::default(),
+        crate::position_ipc::Observation::default(),
     );
     placement.on_sdk(|| {
         runtime.trader.start(
@@ -1011,6 +1011,8 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                         event.status == i32::from(b'2'),
                     );
                 }
+                let account_retry = event.kind == ctp::ERROR
+                    && session.retries_account_query(event.request, event.error);
                 if let Some(snapshot) = session.on_event(event.as_ref(), batch_now, &decoded)? {
                     let trades = snapshot.trades.clone();
                     runtime.core.restore(snapshot)?;
@@ -1050,7 +1052,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                             .trader
                             .response_key(&event)
                             .map(|key| runtime.core.cancel_failed(&key)),
-                        ctp::ERROR if event.error != 0 => Err(anyhow::anyhow!(
+                        ctp::ERROR if event.error != 0 && !account_retry => Err(anyhow::anyhow!(
                             "uncorrelated CTP error response {}; query before resubmitting",
                             event.error
                         )),
@@ -1331,7 +1333,10 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     && runtime.trader.events.is_empty(),
                 cn_futures_state::RuntimeStatus::Running,
                 false,
-                crate::position_ipc::MarketState::default(),
+                crate::position_ipc::Observation {
+                    account: session.account_funds(),
+                    ..Default::default()
+                },
             );
             if !work {
                 std::hint::spin_loop();
@@ -1390,7 +1395,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
             cn_futures_state::RuntimeStatus::Failed
         },
         true,
-        crate::position_ipc::MarketState::default(),
+        crate::position_ipc::Observation::default(),
     );
     journal.record(
         serde_json::json!({"type":"runtime_stopped","venue_orders_cancelled":false}),

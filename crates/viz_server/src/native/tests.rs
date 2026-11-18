@@ -42,6 +42,44 @@ fn frame(hub: &Hub) -> Value {
 }
 
 #[test]
+fn account_query_freshness_is_independent_of_snapshot_heartbeat_and_trade_permission() {
+    let mut source = source("ctp");
+    source.adapter = Adapter::Ctp;
+    let hub = Hub::new(std::slice::from_ref(&source), 15000);
+    let mut s = snapshot(&source, 100, 1);
+    s.ready = false;
+    s.reason = Text::new("settlement not confirmed; read-only queries remain available").unwrap();
+    s.account = Some(cn_futures_state::AccountFunds {
+        observed_us: s.observed_us - 1,
+        currency: Text::new("CNY").unwrap(),
+        balance: 499999.72,
+        available: 499999.72,
+        withdraw_quota: 499899.72,
+        curr_margin: 0.0,
+        frozen_margin: 0.0,
+        frozen_cash: 0.0,
+        frozen_commission: 0.0,
+        position_profit: 0.0,
+        close_profit: 0.0,
+        commission: 0.0,
+    });
+    hub.apply(&source, s.clone()).unwrap();
+    assert_eq!(frame(&hub)["entry"]["account"]["balance"], 499999.72);
+    assert_eq!(hub.health()["sources"][0]["account_fresh"], true);
+    s.sequence += 1;
+    s.observed_us = now_us();
+    s.account.as_mut().unwrap().observed_us = s.observed_us - 60_000_000;
+    hub.apply(&source, s.clone()).unwrap();
+    assert_eq!(hub.health()["sources"][0]["fresh"], true);
+    assert_eq!(hub.health()["sources"][0]["account_fresh"], false);
+    s.sequence += 1;
+    s.account = None;
+    hub.apply(&source, s).unwrap();
+    assert_eq!(hub.health()["sources"][0]["account_available"], false);
+    assert!(frame(&hub)["entry"]["account"].is_null());
+}
+
+#[test]
 fn relay_preserves_producer_fields_replaces_full_state_and_pins_identity() {
     let source = source("paper");
     let hub = Hub::new(std::slice::from_ref(&source), 1000);

@@ -157,6 +157,50 @@ impl InstrumentMark {
     }
 }
 
+/// Factual broker account values. The query time is independent of IPC heartbeats.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub struct AccountFunds {
+    pub observed_us: u64,
+    pub currency: Text<8>,
+    pub balance: f64,
+    pub available: f64,
+    pub withdraw_quota: f64,
+    pub curr_margin: f64,
+    pub frozen_margin: f64,
+    pub frozen_cash: f64,
+    pub frozen_commission: f64,
+    pub position_profit: f64,
+    pub close_profit: f64,
+    pub commission: f64,
+}
+impl AccountFunds {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(self.observed_us > 0, "account query time is missing");
+        ensure!(
+            self.currency.as_str() == "CNY",
+            "unsupported account currency"
+        );
+        ensure!(
+            [
+                self.balance,
+                self.available,
+                self.withdraw_quota,
+                self.curr_margin,
+                self.frozen_margin,
+                self.frozen_cash,
+                self.frozen_commission,
+                self.position_profit,
+                self.close_profit,
+                self.commission
+            ]
+            .iter()
+            .all(|value| value.is_finite()),
+            "nonfinite account funds"
+        );
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Snapshot {
     pub publisher_epoch: u64,
@@ -174,6 +218,7 @@ pub struct Snapshot {
     pub trading_day: Text<16>,
     pub reason: Text<512>,
     pub available_local_budget: f64,
+    pub account: Option<AccountFunds>,
     pub replaced_snapshots: u64,
     pub positions: Vec<PositionRow>,
     pub marks: Vec<InstrumentMark>,
@@ -198,6 +243,7 @@ impl Snapshot {
             trading_day: Text::default(),
             reason: Text::default(),
             available_local_budget: 0.0,
+            account: None,
             replaced_snapshots: 0,
             positions: Vec::with_capacity(MAX_POSITIONS),
             marks: Vec::with_capacity(MAX_POSITIONS),
@@ -207,6 +253,13 @@ impl Snapshot {
     }
     pub fn validate(&self) -> Result<()> {
         validate_hash(self.account_hash.as_str())?;
+        if let Some(account) = &self.account {
+            account.validate()?;
+            ensure!(
+                account.observed_us <= self.observed_us,
+                "account query is newer than capture"
+            );
+        }
         ensure!(
             self.publisher_epoch > 0 && self.sequence > 0 && self.observed_us > 0,
             "invalid native position envelope"

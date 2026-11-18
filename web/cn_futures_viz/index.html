@@ -81,7 +81,7 @@
       button { cursor: pointer; }
       button:hover { border-color: var(--cyan); }
       main { padding: 16px 18px 28px; display: grid; gap: 16px; }
-      .risk-band {
+      .risk-band, .account-band {
         display: grid;
         grid-template-columns: repeat(4, minmax(130px, 1fr));
         border: 1px solid var(--line);
@@ -166,7 +166,7 @@
       .status.wait { color: var(--amber); border-color: #82661d; }
       .empty { padding: 42px; text-align: center; color: var(--muted); }
       @media (max-width: 980px) {
-        .risk-band { grid-template-columns: repeat(2, 1fr); }
+        .risk-band, .account-band { grid-template-columns: repeat(2, 1fr); }
         .metric:nth-child(2n) { border-right: 0; }
         .metric:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
         .toolbar { margin-left: 0; width: 100%; }
@@ -176,7 +176,7 @@
         header, main { padding-left: 10px; padding-right: 10px; }
         .strategy-update-name { max-width: 210px; }
         #futures-amount, #options-amount { font-size:14px; }
-        .risk-band { grid-template-columns: repeat(2, 1fr); }
+        .risk-band, .account-band { grid-template-columns: repeat(2, 1fr); }
         .metric { border-bottom: 1px solid var(--line); }
         .metric:nth-child(2n) { border-right: 0; }
         .metric:nth-last-child(-n+2) { border-bottom: 0; }
@@ -190,6 +190,19 @@
       .status.error { color:var(--red); border-color:#8c3e50; }
       .positions-wrap { max-height:62vh; }
       .table-note { margin-top:8px; font-size:11px; }
+      .source-tabs { display:flex; gap:8px; margin-top:10px; }
+      .source-tabs button[aria-selected="true"] { color:var(--cyan); border-color:var(--cyan); }
+      .account-band.stale strong { color:var(--amber); }
+      @media (min-width:981px) {
+        .account-band { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+        .account-band .metric { grid-column:span 4; }
+        .account-band .metric:nth-child(-n+4) { grid-column:span 3; border-bottom:1px solid var(--line); }
+        .account-band .metric:nth-child(4) { border-right:0; }
+      }
+      @media (max-width:980px) {
+        .account-band .metric { border-bottom:1px solid var(--line); }
+        .account-band .metric:last-child { grid-column:1 / -1; border-bottom:0; }
+      }
       .quote-status { color:var(--muted); font-size:12px; }
       .quote-status.stale { color:var(--amber); }
       .valuation-basis { padding:10px; border-bottom:1px solid var(--line); color:var(--muted); font-size:12px; white-space:normal; }
@@ -208,9 +221,22 @@
       <input id="symbol" placeholder="中文名称 / 合约代码" aria-label="合约筛选">
       <button id="refresh" type="button">重新连接</button>
     </div>
+    <div id="source-tabs" class="source-tabs" role="tablist" aria-label="柜台来源" hidden></div>
     <div id="source-updates" class="strategy-updates" aria-label="运行状态和更新时间"></div>
   </header>
   <main>
+    <section aria-label="账户资金">
+      <div class="section-head"><h2>账户资金 · 人民币元</h2><span id="funds-status" class="meta">等待柜台资金查询</span></div>
+      <div id="account-funds" class="account-band">
+        <div class="metric"><label>账户权益</label><strong id="account-balance">--</strong></div>
+        <div class="metric"><label>可用资金</label><strong id="account-available">--</strong></div>
+        <div class="metric"><label>可取资金</label><strong id="account-withdrawable">--</strong></div>
+        <div class="metric"><label>占用保证金</label><strong id="account-margin">--</strong></div>
+        <div class="metric"><label>持仓盈亏</label><strong id="account-position-profit">--</strong></div>
+        <div class="metric"><label>平仓盈亏</label><strong id="account-close-profit">--</strong></div>
+        <div class="metric"><label>当日手续费</label><strong id="account-commission">--</strong></div>
+      </div>
+    </section>
     <section class="risk-band" aria-label="持仓概览">
       <div class="metric"><label>持仓合约数</label><strong id="contract-count">--</strong></div>
       <div class="metric"><label title="净名义金额＝净手数 × 合约乘数 × L1 最新价，不是保证金或盈亏">期货持仓金额 · 元</label><strong id="futures-amount">--</strong></div>
@@ -271,7 +297,7 @@
       const name=contractName(g.venue,g.symbol,g.source.entry?.trading_day);
       return `<span class="scope-label">${escape(name)}</span>${name===g.symbol?'':`<span class="contract-code">${escape(g.symbol)}</span>`}`;
     };
-    const state = { sources:new Map(), ws:null, timer:null, expanded:new Set(), groups:[] };
+    const state = { sources:new Map(), ws:null, timer:null, expanded:new Set(), groups:[], selectedSource:null, userSelected:false };
     const status = source => {
       const s = source.entry;
       if (source.error) return s ? 'unavailable' : 'waiting';
@@ -281,7 +307,8 @@
       if (age < 0 || age > source.stale_after_ms) return 'stale';
       if (!s.position_ready) return 'recovering';
       if (!s.connected) return 'disconnected';
-      if (!s.ready || !s.transport_ready) return 'unavailable';
+      const readOnlySettlement = !s.can_trade && s.reason === 'settlement not confirmed; read-only queries remain available';
+      if ((!s.ready && !readOnlySettlement) || !s.transport_ready) return 'unavailable';
       return 'observing';
     };
     const names = {waiting:'等待数据',unavailable:'来源不可用',stopped:'已停止',failed:'执行失败',recovering:'恢复中',disconnected:'已断线',stale:'数据延迟',observing:'已同步'};
@@ -334,23 +361,48 @@
     }
     function positionGroups(sources, filtered = true) {
       const groups = new Map();
+      const showZero = filtered && $('show-zero').checked;
       for (const source of sources) {
         const snapshot = source.entry;
         const marks=new Map((snapshot?.marks||[]).map(m=>[JSON.stringify([m.venue,m.symbol]),m]));
         for (const p of snapshot?.positions || []) {
           if (!snapshot.position_ready || (filtered && !match(p.venue, p.symbol, snapshot.trading_day))) continue;
+          const lots = p.position.today + p.position.yesterday;
+          if (!lots && !showZero) continue;
           const key = JSON.stringify([source.source_id, p.venue, p.symbol]);
-          if (!groups.has(key)) groups.set(key, {key,source,symbol:p.symbol,venue:p.venue,positions:[],mark:marks.get(JSON.stringify([p.venue,p.symbol])),long:0,short:0,frozenLong:0,frozenShort:0});
-          const g = groups.get(key), value = p.position, long = p.side === "buy";
+          if (!groups.has(key)) groups.set(key, {key,source,symbol:p.symbol,venue:p.venue,positions:[],mark:marks.get(JSON.stringify([p.venue,p.symbol])),long:0,short:0});
+          const g = groups.get(key);
           g.positions.push(p);
-          g[long ? "long" : "short"] += value.today + value.yesterday;
-          g[long ? "frozenLong" : "frozenShort"] += value.frozen_today + value.frozen_yesterday;
+          g[p.side === "buy" ? "long" : "short"] += lots;
         }
       }
-      for (const group of groups.values()) group.positions = group.positions.filter(p => $('show-zero').checked || p.position.today || p.position.yesterday || p.position.frozen_today || p.position.frozen_yesterday);
-      return [...groups.values()].filter(g => $('show-zero').checked || g.long || g.short || g.frozenLong || g.frozenShort).sort((a,b) => a.source.source_id.localeCompare(b.source.source_id) || a.venue.localeCompare(b.venue) || a.symbol.localeCompare(b.symbol));
+      return [...groups.values()].sort((a,b) => a.source.source_id.localeCompare(b.source.source_id) || a.venue.localeCompare(b.venue) || a.symbol.localeCompare(b.symbol));
     }
 
+    function renderFunds(source) {
+      const entry=source?.entry, account=entry?.account;
+      const values={
+        'account-balance':account?.balance, 'account-available':account?.available,
+        'account-withdrawable':account?.withdraw_quota, 'account-margin':account?.curr_margin,
+        'account-position-profit':account?.position_profit, 'account-close-profit':account?.close_profit,
+        'account-commission':account?.commission
+      };
+      const valid=account?.currency==='CNY' && Number(account.observed_us)>0;
+      for (const [id,value] of Object.entries(values)) $(id).textContent=valid && typeof value==='number'?yuan(value):'--';
+      const age=Date.now()-Number(account?.observed_us)/1000, captureAge=Date.now()-Number(entry?.observed_us)/1000;
+      const stale=valid && (source.error || entry.runtime_status!=='running' || !entry.connected || !entry.transport_ready || age<0 || age>30000 || captureAge>source.stale_after_ms);
+      $('account-funds').className='account-band'+(stale?' stale':'');
+      $('funds-status').className='meta'+(stale?' stale':'');
+      $('funds-status').textContent=!valid?'柜台资金尚未就绪':(stale?'保留上次查询':'柜台查询')+' · '+time(account.observed_us,true);
+    }
+    function selectedSources() {
+      const sources=[...state.sources.values()];
+      if (!state.sources.has(state.selectedSource)) state.selectedSource=(sources.find(s=>s.adapter==='ctp')||sources[0])?.source_id||null;
+      const tabs=sources.map(s=>`<button type="button" role="tab" data-source="${escape(s.source_id)}" aria-selected="${s.source_id===state.selectedSource}">${adapterName(s)}</button>`).join('');
+      if ($('source-tabs').innerHTML!==tabs) $('source-tabs').innerHTML=tabs;
+      $('source-tabs').hidden=sources.length<=1;
+      return sources.filter(s=>s.source_id===state.selectedSource);
+    }
     function renderOverview(sources,groups) {
       const known=sources.length && sources.every(s=>s.entry?.position_ready);
       $('contract-count').textContent=known?fmt(groups.length):'--';
@@ -368,7 +420,7 @@
       $('quote-status').title=historical?'含快照、暂停、断线、停更或原生时间较旧的行情；展开合约查看具体时刻':'金额按易达 L1 最新价计算';
       const captured=sources.map(s=>s.entry?.observed_us).filter(Boolean);
       $('updated').textContent=captured.length?'更新于 '+time(Math.min(...captured),true):'--';
-      $('mode').textContent=sources.length && sources.every(s=>s.entry && !s.entry.can_trade)?'当前不可交易':'持仓观察';
+      $('mode').textContent=sources.length && sources.every(s=>s.entry && !s.entry.can_trade)?'只读观察':'持仓观察';
       $('source-updates').innerHTML=sources.map(s=>`<div class="strategy-update"><span class="strategy-update-name">${adapterName(s)}</span>${badge(status(s))}<span>交易日 ${escape(s.entry?.trading_day)}</span><time>${time(s.entry?.observed_us)}</time></div>`).join('');
       const problems=sources.flatMap(s=>[s.error,status(s)==='observing'?null:s.entry?.reason,status(s)==='stale'?'持仓心跳过期，保留最后已知仓位':null].filter(Boolean).map(reason=>adapterName(s)+'：'+reason));
       $('notice').hidden=!problems.length; $('notice').textContent=problems.join(' · '); $('notice').className='meta stale';
@@ -387,11 +439,11 @@
         if (open) {
           const details = g.positions.map(p => {
             const v=p.position;
-            return `<tr><td>${side(p.side)}</td><td>${fmt(v.today+v.yesterday)}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${fmt(v.frozen_today)}</td><td>${fmt(v.frozen_yesterday)}</td><td>${fmt(v.today+v.yesterday-v.frozen_today-v.frozen_yesterday)}</td></tr>`;
+            return `<tr><td>${side(p.side)}</td><td>${fmt(v.today+v.yesterday)}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td></tr>`;
           }).join('');
           const v=valuation(g), mark=g.mark;
           const basis=mark?`${mark.kind==='option'?'净权利金市值':'净名义金额'}＝净手数 × 合约乘数 ${fmt(mark.contract_multiple)} × L1 最新价 ${mark.last_price==null?'--':escape(String(mark.last_price))}；行情交易日／时刻 ${escape(v.quoteTime||String(mark.trading_day||'--')+' '+(mark.native_time||'--'))} · ${escape(v.reason)}${v.historical?' · 历史行情':''}。金额不代表保证金、盈亏或期权标的敞口。`:'等待合约元数据与 L1 行情';
-          html += `<tr class="detail-row"><td colspan="6"><div class="position-detail"><div class="valuation-basis">${basis}</div><table aria-label="${escape(g.symbol)} 多空与今昨明细"><thead><tr><th>方向</th><th>持仓 · 手</th><th>今仓 · 手</th><th>昨仓 · 手</th><th>冻结今仓 · 手</th><th>冻结昨仓 · 手</th><th>可平 · 手</th></tr></thead><tbody>${details}</tbody></table></div></td></tr>`;
+          html += `<tr class="detail-row"><td colspan="6"><div class="position-detail"><div class="valuation-basis">${basis}</div><table aria-label="${escape(g.symbol)} 多空与今昨明细"><thead><tr><th>方向</th><th>持仓 · 手</th><th>今仓 · 手</th><th>昨仓 · 手</th></tr></thead><tbody>${details}</tbody></table></div></td></tr>`;
         }
         return html;
       }).join('');
@@ -400,12 +452,14 @@
     }
 
     function render() {
-      const sources=[...state.sources.values()], allGroups=positionGroups(sources,false).filter(g=>g.long||g.short||g.frozenLong||g.frozenShort);
-      renderOverview(sources,allGroups); renderPositions(sources,positionGroups(sources));
+      const sources=selectedSources(), allGroups=positionGroups(sources,false);
+      renderFunds(sources[0]); renderOverview(sources,allGroups); renderPositions(sources,positionGroups(sources));
     }
     function accept(frame) {
       if (frame.type!=='cn_futures_state' || !frame.source_id) return;
-      state.sources.set(frame.source_id,frame); render();
+      state.sources.set(frame.source_id,frame);
+      if (!state.userSelected && frame.adapter==='ctp') state.selectedSource=frame.source_id;
+      render();
     }
     function connect() {
       clearTimeout(state.timer);
@@ -418,6 +472,8 @@
       ws.onclose=()=>{connection('重连中','err');state.timer=setTimeout(connect,2000);};
     }
     document.addEventListener('click',event=>{
+      const sourceButton=event.target.closest('[data-source]');
+      if(sourceButton){state.selectedSource=sourceButton.dataset.source;state.userSelected=true;state.expanded.clear();render();return;}
       const button=event.target.closest('[data-group]'); if(!button)return;
       const key=state.groups[Number(button.dataset.group)]?.key; if(!key)return;
       state.expanded.has(key)?state.expanded.delete(key):state.expanded.add(key);render();

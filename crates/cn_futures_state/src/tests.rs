@@ -24,6 +24,44 @@ fn sample() -> Snapshot {
     });
     s
 }
+
+#[test]
+fn account_funds_codec_preserves_actual_values_and_query_time() {
+    let mut s = sample();
+    let account = AccountFunds {
+        observed_us: s.observed_us - 1,
+        currency: Text::new("CNY").unwrap(),
+        balance: 499999.72,
+        available: -10.25,
+        withdraw_quota: 499899.72,
+        curr_margin: 20.0,
+        frozen_margin: 1.0,
+        frozen_cash: 2.0,
+        frozen_commission: 0.5,
+        position_profit: -3.0,
+        close_profit: 4.0,
+        commission: 5.0,
+    };
+    s.account = Some(account);
+    s.validate().unwrap();
+    let encoded = bincode::serialize(&s).unwrap();
+    let mut frame = Vec::from((encoded.len() as u32).to_le_bytes());
+    frame.extend(encoded);
+    let decoded = transport::decode(&frame).unwrap().account.unwrap();
+    assert_eq!(decoded.available, -10.25);
+    assert_eq!(decoded.observed_us, account.observed_us);
+    assert_eq!(decoded.frozen_commission, 0.5);
+    s.account.as_mut().unwrap().balance = f64::NAN;
+    assert!(s.validate().is_err());
+    s.account = Some(AccountFunds {
+        observed_us: s.observed_us + 1,
+        ..account
+    });
+    assert!(s.validate().is_err());
+    s.account = None;
+    s.validate().unwrap();
+    assert!(serde_json::to_value(s).unwrap()["account"].is_null());
+}
 #[test]
 fn fixed_text_and_framed_codec_reject_truncation_and_invalid_positions() {
     let s = sample();

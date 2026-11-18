@@ -91,7 +91,8 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
         false,
         cn_futures_state::RuntimeStatus::Running,
         true,
-        crate::position_ipc::MarketState {
+        crate::position_ipc::Observation {
+            account: None,
             marks: market.marks(),
             connected: runtime.trader.l1_connected.load(Ordering::Acquire),
             dropped: runtime.trader.l1_dropped.load(Ordering::Relaxed),
@@ -328,7 +329,8 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     && runtime.trader.events.is_empty(),
                 cn_futures_state::RuntimeStatus::Running,
                 false,
-                crate::position_ipc::MarketState {
+                crate::position_ipc::Observation {
+                    account: None,
                     marks: market.marks(),
                     connected: runtime.trader.l1_connected.load(Ordering::Acquire),
                     dropped: runtime.trader.l1_dropped.load(Ordering::Relaxed),
@@ -392,7 +394,8 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
             cn_futures_state::RuntimeStatus::Failed
         },
         true,
-        crate::position_ipc::MarketState {
+        crate::position_ipc::Observation {
+            account: None,
             marks: market.marks(),
             connected: false,
             dropped: 0,

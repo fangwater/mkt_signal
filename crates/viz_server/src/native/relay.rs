@@ -105,11 +105,18 @@ impl Hub {
         let sources: Vec<_> = cache.values().map(|f| {
             let e = &f.value["entry"];
             let fresh = e["observed_us"].as_u64().is_some_and(|ts| now >= ts && now - ts <= f.value["stale_after_ms"].as_u64().unwrap_or(0) * 1000);
+            let account_fresh = fresh && f.value["error"].is_null()
+                && e["runtime_status"].as_str() == Some("running")
+                && e["connected"].as_bool() == Some(true)
+                && e["transport_ready"].as_bool() == Some(true)
+                && e["account"]["observed_us"].as_u64().is_some_and(|ts| now >= ts && now - ts <= 30_000_000);
             json!({"source_id":f.value["source_id"], "error":f.value["error"], "fresh":fresh,
                 "observed_us":e["observed_us"], "runtime_status":e["runtime_status"],
                 "position_ready":e["position_ready"], "connected":e["connected"], "ready":e["ready"],
                 "can_trade":e["can_trade"], "transport_ready":e["transport_ready"],
                 "trading_day":e["trading_day"], "position_rows":e["positions"].as_array().map(Vec::len),
+                "account_available":e["account"].is_object(), "account_fresh":account_fresh,
+                "account_observed_us":e["account"]["observed_us"],
                 "l1_connected":e["l1_connected"], "mark_rows":e["marks"].as_array().map(Vec::len)})
         }).collect();
         json!({"ok":true, "sources":sources})

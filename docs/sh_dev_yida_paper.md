@@ -1,10 +1,12 @@
 # sh_dev 易达 paper 与 Viz
 
-最后更新：2026-11-14
+最后更新：2026-11-18
 
-用户指定的部署主机为 `ssh sh_dev`，运行目录 `/home/ubuntu/yida_paper01`。当前已部署并启动易达官方 SHFE／INE paper 账户观察和国内期货 Viz，使用 SDK `1.502.55.35`。CTP 仍未部署。
+用户指定的部署主机为 `ssh sh_dev`，运行目录 `/home/ubuntu/yida_paper01`。本环境曾启动易达官方 SHFE／INE paper 账户观察和国内期货 Viz，使用 SDK `1.502.55.35`。
 
 ## 当前服务
+
+2026-11-18 更新 8811 Viz。资金区展示七项柜台资金指标，持仓展开显示方向、总手数和今昨仓。公网浏览器验证 CTP 资金经 WebSocket 更新。创元 CTP 只读进程继续运行。备份与部署收据位于 `data/stops/cn_viz_fields_20261118T022107Z/`。
 
 | 服务 | 配置／入口 | 状态与范围 |
 | --- | --- | --- |

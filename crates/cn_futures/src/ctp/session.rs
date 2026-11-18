@@ -19,6 +19,8 @@ pub struct Session {
     rate_seen: bool,
     relative_margin: bool,
     account: Option<AccountSnapshot>,
+    account_funds: Option<cn_futures_state::AccountFunds>,
+    account_not_ready_retries: u8,
     settlement_confirmed: bool,
     available: Option<f64>,
     orders: Vec<OrderUpdate>,
@@ -50,6 +52,8 @@ impl Session {
             rate_seen: false,
             relative_margin: false,
             account: None,
+            account_funds: None,
+            account_not_ready_retries: 0,
             settlement_confirmed: false,
             available: None,
             orders: Vec::new(),
@@ -69,6 +73,16 @@ impl Session {
     }
     pub fn account(&self) -> Option<&AccountSnapshot> {
         self.account.as_ref()
+    }
+    pub fn account_funds(&self) -> Option<&cn_futures_state::AccountFunds> {
+        self.account_funds.as_ref()
+    }
+    pub fn retries_account_query(&self, request: i32, error: i32) -> bool {
+        error == 90
+            && self.available.is_none()
+            && self
+                .waiting
+                .is_some_and(|(kind, id, _)| kind == ACCOUNT && id == request)
     }
     pub fn settlement_confirmed(&self) -> bool {
         self.settlement_confirmed
@@ -186,6 +200,8 @@ impl Session {
             self.rule_update = None;
             self.login = None;
             self.account = None;
+            self.account_funds = None;
+            self.account_not_ready_retries = 0;
             self.settlement_confirmed = false;
             self.rate_targets.clear();
             self.waiting = None;
@@ -207,6 +223,7 @@ impl Session {
             self.waiting = None;
             self.login = None;
             self.account = None;
+            self.account_funds = None;
             self.settlement_confirmed = false;
             self.rate_targets.clear();
             return Ok(None);
@@ -226,6 +243,18 @@ impl Session {
         if e.request != id {
             return Ok(None);
         } // Late response stays correlated to its original request.
+          // The broker explicitly asks to retry an account query that has delivered no rows.
+          // Retain the last factual funds timestamp; never turn a retry into a fresh balance.
+        if e.kind == ERROR && self.retries_account_query(e.request, e.error) {
+            ensure!(
+                self.account_not_ready_retries < 3,
+                "CTP account query remained unavailable after three retries"
+            );
+            self.account_not_ready_retries += 1;
+            self.waiting = None;
+            self.next_send = now + Duration::from_millis(self.config.query_interval_ms.max(2000));
+            return Ok(None);
+        }
         ensure!(
             e.error == 0,
             "CTP request {id} failed, kind={kind} error_code={}",
@@ -307,7 +336,10 @@ impl Session {
                     "account trading day changed; reconnect and reconcile"
                 );
                 ensure!(self.available.is_none(), "duplicate CNY account row");
-                self.account = Some(AccountSnapshot::from_event(e.control()?)?);
+                let account = AccountSnapshot::from_event(e.control()?)?;
+                self.account_funds = Some(account.funds(crate::persistence::now_us())?);
+                self.account_not_ready_retries = 0;
+                self.account = Some(account);
                 self.available = Some(e.control()?.available);
             }
             SETTLEMENT_STATUS => {
