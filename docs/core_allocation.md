@@ -1,6 +1,17 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-17 09:12 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新于 2026-11-18 13:35 UTC。**部署、迁移、下线任何绑核进程时，请同步更新本表。**
+
+2026-11-18 13:31–13:35 UTC，JP 逐盘发布 Binance FR arb02/03/04 和 Bitget FR
+arb01/02 的 `trade_signal`（`arbmm c29433b1`，与 Gate 验收产物相同）。
+Binance 新 PID 为 1302259/1303049/1303289，Bitget 为 1302602/1303478。
+五盘全线程继续使用 CPU0–5，行情订阅、初始费率、信号统计和账户快照均通过核验。
+Binance 与 Bitget 现货波动率覆盖分别为 363/363、277/277，五盘自动重启计数为 0。
+各盘原 `pre_trade`、`trade_engine` 和账户监控进程继续运行，Bitget arb03 仍停机。
+Delist PID 1260373 继续使用 CPU28，Redis 下架扫描和 monitor 通知健康检查通过，
+发布期间下架名单迁移和脚本收口审计均新增 0 条。回执位于
+`data/ops/binance_bitget_fr_signal_20261118T132635Z/`，旧产物和日志保存在 JP
+各账户的 `backups/binance_bitget_fr_signal_20261118T132635Z/`。
 
 2026-11-17，JP 新增 `binance_exec_sbh11` / `ba503d02`，授权 Manager 用户
 `sbh`，原生 Binance USD-M STANDARD，单向持仓、多资产模式。交易所只读核验
