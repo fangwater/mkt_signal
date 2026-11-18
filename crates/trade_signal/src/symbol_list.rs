@@ -441,7 +441,7 @@ impl SymbolList {
     pub(crate) fn delist_close_deadline(&self, symbol: &str, now_us: i64) -> Option<i64> {
         Self::with_inner(|inner| {
             let key = Self::normalize_for_filtering_cow(symbol);
-            inner.delist_dump.get(key.as_ref())?.maker_deadline(now_us)
+            inner.delist_dump.get(key.as_ref())?.close_deadline(now_us)
         })
     }
 
@@ -625,7 +625,7 @@ impl SymbolList {
             inner
                 .delist_dump
                 .iter()
-                .filter(|(_, entry)| entry.maker_deadline(now_us).is_some())
+                .filter(|(_, entry)| entry.close_deadline(now_us).is_some())
                 .map(|(symbol, _)| symbol.clone()),
         );
         online_set.extend(inner.pos_dump_symbols.iter().cloned());

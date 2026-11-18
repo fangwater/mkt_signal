@@ -50,7 +50,6 @@ use signal_common::arb_signal::{
 };
 use signal_common::cancel_signal::{ArbCancelCtx, MmCancelCtx};
 use signal_common::common::bytes_helper;
-use signal_common::delist_close::{DELIST_CLOSE_FROM_KEY, DELIST_CLOSE_QUOTE_MAX_AGE_US};
 use signal_common::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
 use signal_common::mm_signal::{
     MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
@@ -170,26 +169,6 @@ fn arb_close_side_matches_open_position(close_side: Side, opening_pos: f64) -> b
         Side::Sell => opening_pos > 0.0,
         Side::Buy => opening_pos < 0.0,
     }
-}
-
-fn delist_close_l1_is_current(ctx: &ArbOpenCtxView<'_>, side: Side, now: i64) -> bool {
-    let best = match side {
-        Side::Buy => ctx.opening_leg.bid0,
-        Side::Sell => ctx.opening_leg.ask0,
-    };
-    let price = ctx.price_value();
-    ctx.order_type == order_common::OrderType::Limit.to_u8()
-        && ctx.exp_time > now
-        && [ctx.opening_leg, ctx.hedging_leg].iter().all(|leg| {
-            leg.bid0.is_finite()
-                && leg.ask0.is_finite()
-                && leg.bid0 > 0.0
-                && leg.bid0 < leg.ask0
-                && leg.ts > 0
-                && now.abs_diff(leg.ts) <= DELIST_CLOSE_QUOTE_MAX_AGE_US as u64
-                && ctx.exp_time <= leg.ts.saturating_add(DELIST_CLOSE_QUOTE_MAX_AGE_US)
-        })
-        && (price - best).abs() <= best * 1e-10
 }
 
 fn arb_close_notional_meets_min_view(ctx: &ArbOpenCtxView<'_>) -> bool {
@@ -879,37 +858,6 @@ mod tests {
         assert!(is_retired_cta_open(b"model:cta_special=1"));
         assert!(!is_retired_cta_open(b"intra:binance:long"));
         assert!(!is_retired_cta_open(b""));
-    }
-
-    #[test]
-    fn delist_dump_requires_same_side_l1_and_fresh_quotes() {
-        use order_common::{OrderType, Side, TradingVenue};
-        use signal_common::common::{SignalBytes, TradingLeg};
-        use signal_common::open_signal::{ArbOpenCtx, ArbOpenCtxView};
-
-        let now = 40_000_000;
-        let mut ctx = ArbOpenCtx::new();
-        ctx.opening_leg = TradingLeg::new(TradingVenue::GateMargin, 11.0, 12.0, now);
-        // An arbitrarily bad cross-venue spread does not block the close.
-        ctx.hedging_leg = TradingLeg::new(TradingVenue::GateFutures, 20.0, 21.0, now);
-        ctx.set_order_type(OrderType::Limit);
-        ctx.set_price_with_tick_floor(12.0, 0.01);
-        ctx.exp_time = now + 1_000_000;
-        let check = |ctx: &ArbOpenCtx, side, at| {
-            let raw = ctx.to_bytes();
-            let view = ArbOpenCtxView::from_bytes(&raw).unwrap();
-            super::delist_close_l1_is_current(&view, side, at)
-        };
-        assert!(check(&ctx, Side::Sell, now));
-        assert!(!check(&ctx, Side::Buy, now));
-        ctx.set_price_with_tick_floor(11.0, 0.01);
-        assert!(check(&ctx, Side::Buy, now));
-        assert!(!check(&ctx, Side::Buy, ctx.exp_time));
-        ctx.set_order_type(OrderType::Market);
-        assert!(!check(&ctx, Side::Buy, now));
-        ctx.set_order_type(OrderType::Limit);
-        ctx.hedging_leg.ts -= 20_000_000;
-        assert!(!check(&ctx, Side::Buy, now));
     }
 
     fn fixed_symbol(value: &str) -> [u8; 32] {
@@ -1718,33 +1666,10 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                         MonitorChannel::instance().get_position_qty(&opening_symbol, opening_venue);
                     let hedging_pos =
                         MonitorChannel::instance().get_position_qty(&hedging_symbol, hedging_venue);
-                    let delist_close = close_ctx_view.from_key == DELIST_CLOSE_FROM_KEY;
-                    if delist_flatten_requested(&opening_symbol)
-                        || (!delist_close && delist_dump_contains(&opening_symbol))
-                    {
+                    if delist_flatten_requested(&opening_symbol) {
                         return;
                     }
-                    if delist_close {
-                        if MonitorChannel::instance().arb_mode() != ArbMode::FundingArb
-                            || opening_symbol != hedging_symbol
-                            || !delist_close_l1_is_current(&close_ctx_view, close_side, receive_us)
-                            || !arb_close_side_matches_open_position(close_side, opening_pos)
-                        {
-                            return;
-                        }
-                        let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                        if strategy_mgr.borrow_mut().maintain_delist_close_at_l1(
-                            &opening_symbol,
-                            close_side,
-                            close_ctx_view.price_value(),
-                            close_ctx_view.exp_time,
-                            receive_us,
-                        ) || MonitorChannel::instance()
-                            .has_live_paired_close_first(&opening_symbol)
-                        {
-                            return;
-                        }
-                    } else if !arb_close_side_matches_open_position(close_side, opening_pos) {
+                    if !arb_close_side_matches_open_position(close_side, opening_pos) {
                         log_arb_close_precheck_summary(
                             "side_position_mismatch",
                             Level::Warn,
@@ -1763,7 +1688,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                         );
                         return;
                     }
-                    if !delist_close && !arb_close_notional_meets_min_view(&close_ctx_view) {
+                    if !arb_close_notional_meets_min_view(&close_ctx_view) {
                         log_arb_close_precheck_summary(
                             "notional_below_min_or_non_finite",
                             Level::Warn,

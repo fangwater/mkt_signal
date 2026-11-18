@@ -1766,7 +1766,7 @@ async fn query_flatten_candidates(State(state): State<AppState>) -> Response {
             candidate.disposition = if auto_flatten_due(&state, &candidate) {
                 "auto"
             } else {
-                "maker_taker"
+                "arb_close"
             }
             .into();
             FlattenCandidateView { candidate, latest }

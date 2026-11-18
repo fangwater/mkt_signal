@@ -3,8 +3,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const DELIST_CLOSE_FROM_KEY: &[u8] = b"delist_force_close";
-pub const DELIST_CLOSE_QUOTE_MAX_AGE_US: i64 = 10_000_000;
 pub const DELIST_DUMP_LIST: &str = "delist_dump_symbols";
 pub const DELIST_DUMP_WINDOW_MS: i64 = 24 * 60 * 60 * 1_000;
 pub const FLATTEN_WINDOW_MS: i64 = 12 * 60 * 60 * 1_000;
@@ -19,7 +17,7 @@ pub struct DelistDumpEntry {
 }
 
 impl DelistDumpEntry {
-    pub fn maker_deadline(self, now_us: i64) -> Option<i64> {
+    pub fn close_deadline(self, now_us: i64) -> Option<i64> {
         let deadline = self.deadline_us.min(self.valid_until_us);
         (self.flatten_requested_us.is_none() && now_us < deadline).then_some(deadline)
     }

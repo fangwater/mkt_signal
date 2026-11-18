@@ -1556,17 +1556,15 @@ Returns the latest automatic open-to-dump audit rows from PostgreSQL table
 `redis_symbol_dump_audit`, including the triggering event, snapshot timestamp,
 both leg notionals, applied threshold, Redis key changes, and result.
 
-### 下架前 L1 maker 平仓
+### 下架前策略平仓
 
 距明确的下架时间还有 24 小时以内时，Delist 将普通 dump 中的币对迁入独立的
 `{account}:fr_delist_dump_symbols:{venue_pair}`，并移出两个开仓名单。具有至少
 1 USDT 持仓的下架币对也可直接进入该名单。名单按账户保存下架时间与行情平仓的
 有效期。普通 dump 和下架 dump 的名单更新通过一次 Redis 比较并交换完成，并记录审计。
 
-`trade_signal` 跳过价差和因子条件，在同侧 L1 发出 post-only 平仓信号。
-`pre_trade` 用实际持仓校验方向。盘口变价时先撤单，确认终态后再挂新单。
-首腿成交后按实际可减仓量用 taker 对冲。订单金额沿用 FR 配置，交易所最小量、行情
-有效期和配对敞口限制继续生效。
+`trade_signal` 发出普通 `ArbClose` 信号时跳过价差因子门槛。报价、订单数量、
+撤单和成交后的对冲均沿用普通 close。发信号仍受原有冷却时间和下架名单截止时间约束。
 
 ### 下架前 12 小时脚本收口
 
@@ -1574,7 +1572,7 @@ both leg notionals, applied threshold, Redis key changes, and result.
 名义金额的较大值在 1 至 1,000 USDT 之间（含边界），Delist 请求脚本接管。
 `pre_trade` 停止该币的订单提交，撤掉已有策略挂单并确认未完成订单和孤儿单均已
 处理。Delist 收到确认及其后的新持仓快照才运行原账户清仓脚本。超过 1,000 USDT
-的仓位继续走 L1 挂单，达到门槛后才交接。
+的仓位继续走策略平仓，达到门槛后才交接。
 
 脚本的执行结果写入 PostgreSQL。脚本执行失败、超时或结果未写入时，monitor
 每分钟告警一次。同一账户和标的后续收口成功后结束告警，余额尾量仍在看板上显示。

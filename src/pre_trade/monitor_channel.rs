@@ -4122,21 +4122,6 @@ impl MonitorChannel {
         })
     }
 
-    pub(crate) fn mark_delist_close(&self, id: i64) {
-        Self::with_inner(|inner| {
-            inner
-                .close_inventory
-                .borrow_mut()
-                .exposure
-                .mark_delist_close(id)
-        });
-    }
-
-    pub(crate) fn is_delist_close(&self, id: i64) -> bool {
-        Self::try_with_inner(|inner| inner.close_inventory.borrow().exposure.is_delist_close(id))
-            .unwrap_or(false)
-    }
-
     pub(crate) fn drain_delist_orders(&self, symbol: &str, now: i64) -> bool {
         if self
             .strategy_mgr()
@@ -4155,7 +4140,7 @@ impl MonitorChannel {
             && !self.has_live_paired_close_first(symbol)
     }
 
-    pub(crate) fn has_live_paired_close_first(&self, symbol: &str) -> bool {
+    fn has_live_paired_close_first(&self, symbol: &str) -> bool {
         let Some(asset) = extract_base_asset_key(symbol) else {
             return false;
         };

@@ -18,7 +18,6 @@ use order_common::TradeUpdate;
 use order_common::TradingVenue;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use signal_common::common::TradingLeg;
-use signal_common::delist_close::DELIST_CLOSE_FROM_KEY;
 use signal_common::open_signal::{ArbOpenCtx, ArbOpenCtxView};
 use signal_common::tick_math::QuantizedValue;
 use signal_common::trade_signal::{SignalType, TradeSignal};
@@ -97,31 +96,22 @@ impl ArbCloseStrategy {
         self.open_side()
     }
 
-    pub(super) fn maintain_delist_close_at_l1(&mut self, l1: Option<(Side, f64, i64)>, now: i64) {
+    pub(super) fn cancel_for_delist_flatten(&mut self, now: i64) {
         if self.force_taker_taker {
-            // The emergency order is already taker and must be reconciled first.
+            // The emergency taker order must reach a terminal state first.
             return;
-        }
-        if let Some((side, price, expires)) = l1 {
-            if self.open_state.from_key == DELIST_CLOSE_FROM_KEY
-                && self.close_side() == Some(side)
-                && self.open_state.price_qv.get_val() == price
-            {
-                self.open_state.order.open_expire_ts = Some(expires);
-                return;
-            }
         }
         let Some(cancel_side) = self.close_side() else {
             return;
         };
         self.handle_open_cancel_signal_common(OpenCancelInput {
-            signal_name: "DelistForceCloseReprice",
+            signal_name: "DelistFlattenHandoff",
             target_strategy_id: self.strategy_id(),
             target_client_order_id: 0,
             cancel_side,
-            cancel_reason: "delist_force_close",
+            cancel_reason: "delist_flatten_handoff",
             trigger_ts: now,
-            from_key: DELIST_CLOSE_FROM_KEY.to_vec(),
+            from_key: Vec::new(),
             mkt_ts: 0,
         });
     }
@@ -408,9 +398,6 @@ impl ArbCloseStrategy {
                     return;
                 }
             };
-            if ctx.from_key.as_ref() == DELIST_CLOSE_FROM_KEY {
-                MonitorChannel::instance().mark_delist_close(client_order_id);
-            }
             if granted_base_qty + ARB_CLOSE_QTY_EPS < order_qty * qty_multiplier {
                 let aligned = MonitorChannel::instance().align_close_order_by_venue(
                     venue,

@@ -600,7 +600,7 @@ mod tests {
         let list: DelistDumpList =
             serde_json::from_str(plan.mutations[3].replacement.as_deref().unwrap()).unwrap();
         assert_eq!(list["FILUSDT"].flatten_requested_us, Some(200));
-        assert_eq!(list["FILUSDT"].maker_deadline(300), None);
+        assert_eq!(list["FILUSDT"].close_deadline(300), None);
     }
     use axum::{routing::get, Json, Router};
 

@@ -825,29 +825,8 @@ impl StrategyManager {
             .collect()
     }
 
-    /// Keep at most one Delist maker working. A replacement waits for the
-    /// previous strategy's terminal order update, including on takeover.
-    pub(crate) fn maintain_delist_close_at_l1(
-        &mut self,
-        symbol: &str,
-        side: Side,
-        price: f64,
-        expires: i64,
-        now: i64,
-    ) -> bool {
-        self.cancel_or_reprice_delist_orders(symbol, Some((side, price, expires)), now)
-    }
-
+    /// Drain the strategy before the account script takes over this symbol.
     pub(crate) fn drain_delist_orders(&mut self, symbol: &str, now: i64) -> bool {
-        self.cancel_or_reprice_delist_orders(symbol, None, now)
-    }
-
-    fn cancel_or_reprice_delist_orders(
-        &mut self,
-        symbol: &str,
-        l1: Option<(Side, f64, i64)>,
-        now: i64,
-    ) -> bool {
         let ids: Vec<_> = self
             .ids_for_normalized_symbol(symbol)
             .into_iter()
@@ -860,16 +839,16 @@ impl StrategyManager {
                 continue;
             };
             if let Some(close) = strategy.as_any_mut().downcast_mut::<ArbCloseStrategy>() {
-                close.maintain_delist_close_at_l1(l1, now);
+                close.cancel_for_delist_flatten(now);
                 working = true;
             } else if let Some(open) = strategy.as_any().downcast_ref::<ArbOpenStrategy>() {
                 if let Some(open_side) = open.open_side() {
                     self.cancel_arb_open_by_id_with_signal(
                         id,
                         open_side,
-                        "delist_force_close",
+                        "delist_flatten_handoff",
                         now,
-                        "DelistForceClose",
+                        "DelistFlattenHandoff",
                     );
                     working = true;
                 }
