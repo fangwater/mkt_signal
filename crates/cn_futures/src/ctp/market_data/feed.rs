@@ -27,8 +27,8 @@ pub enum FeedEvent {
 }
 
 /// One owner, no output writer and no inter-process JSON hop. Create/Init happen
-/// before polling starts. The vendor handles reconnects; a lifecycle timeout
-/// fails closed instead of Release/Init on the running business thread.
+/// before polling starts. Combined runtimes let the vendor reconnect an offline
+/// front. A timeout during login or subscription still fails closed.
 pub struct Feed {
     native: Native,
     session: Session,
@@ -38,6 +38,7 @@ pub struct Feed {
     next_request: i32,
     progress: Instant,
     timeout: Duration,
+    wait_for_front: bool,
     dominant: Option<dominant::Lookup>,
     baseline: Vec<Subscription>,
     /// Bucket and sequence of the tick most recently returned by `poll`.
@@ -46,7 +47,7 @@ pub struct Feed {
 }
 impl Feed {
     pub fn new(config: &Config, placement: &Placement) -> Result<Self> {
-        Self::create(config, placement, || {
+        Self::create(config, placement, true, || {
             placement.on_market_data_sdk(|| {
                 let native = Native::new(config, placement.market_data_callback()?)?;
                 native.start(config)?;
@@ -56,7 +57,7 @@ impl Feed {
     }
     /// Independent IPC publisher: the SDK uses the standalone MD SDK domain.
     pub fn standalone(config: &Config, placement: &Placement) -> Result<Self> {
-        Self::create(config, placement, || {
+        Self::create(config, placement, false, || {
             placement.on_sdk(|| {
                 let native = Native::new(config, placement.callback())?;
                 native.start(config)?;
@@ -67,6 +68,7 @@ impl Feed {
     fn create(
         config: &Config,
         placement: &Placement,
+        wait_for_front: bool,
         create_native: impl FnOnce() -> Result<Native>,
     ) -> Result<Self> {
         config.validate()?;
@@ -95,6 +97,7 @@ impl Feed {
             next_request: 0,
             progress: Instant::now(),
             timeout: Duration::from_millis(config.response_timeout_ms),
+            wait_for_front,
             dominant,
             baseline: config.symbols.clone(),
             last_quote: None,
@@ -108,6 +111,9 @@ impl Feed {
     }
     pub fn has_backlog(&self) -> bool {
         !self.native.events.is_empty()
+    }
+    pub(crate) fn waiting_for_front(&self) -> bool {
+        self.wait_for_front && !self.session.connected
     }
     /// Queued MD events, for latency statistics only.
     pub fn queued(&self) -> usize {
@@ -175,7 +181,9 @@ impl Feed {
                 }
             }
             ensure!(
-                self.ready() || now.saturating_duration_since(self.progress) < self.timeout,
+                self.ready()
+                    || self.waiting_for_front()
+                    || now.saturating_duration_since(self.progress) < self.timeout,
                 "MD lifecycle timeout; supervisor restart required"
             );
             return Ok(None);

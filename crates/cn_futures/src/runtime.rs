@@ -1056,6 +1056,11 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     use crate::ctp::strategy::{Actions, StrategyContext};
     use crate::ctp::{self, sdk::CtpTrader, session::Session};
     use serde_json::json;
+    const WAITING_FOR_TRADER: &str = "CTP trader front offline; waiting for reconnection";
+    const WAITING_FOR_MD: &str = "CTP market-data front offline; waiting for reconnection";
+    const ACCOUNT_RECONCILIATION: &str = "CTP account query unavailable; reconciliation pending";
+    const ACCOUNT_COLD_RESTART: &str = "CTP account query unavailable; cold restart required";
+    let wait_for_front = market_data.is_some();
     config.validate()?;
     if let Some(ingress) = &config.position_target_ingress {
         if execute {
@@ -1141,6 +1146,9 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     let mut session = Session::new(config.clone(), investor.clone(), Instant::now());
     let mut core = TradingCore::new(config.risk.clone(), ctp::scope())?;
     core.reserve_orders(config.preallocated_orders)?;
+    if wait_for_front {
+        core.block(WAITING_FOR_TRADER);
+    }
     let mut runtime = SingleLoop {
         core,
         trader,
@@ -1190,6 +1198,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     let mut transport_progress = Instant::now();
     let mut next_plan_snapshot = Instant::now();
     let mut recovery: Option<DurabilityTicket> = None;
+    let mut reconcile_after_account_retry = false;
     let outcome = (|| -> Result<()> {
         while !stopping && !stop.load(Ordering::Acquire) {
             if runtime.trader.placement_fault.load(Ordering::Acquire) {
@@ -1237,13 +1246,18 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     transport_online = true;
                     transport_progress = Instant::now();
                     recovery = None;
+                    reconcile_after_account_retry = false;
                     runtime.core.connected();
                 }
                 if event.kind == ctp::DISCONNECTED {
                     transport_online = false;
                     transport_progress = Instant::now();
                     recovery = None;
+                    reconcile_after_account_retry = false;
                     runtime.core.disconnect();
+                    if wait_for_front {
+                        runtime.core.block(WAITING_FOR_TRADER);
+                    }
                 }
                 if event.kind == ctp::INSTRUMENT_STATUS {
                     runtime.core.set_trading_status(
@@ -1254,7 +1268,13 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                 }
                 let account_retry = event.kind == ctp::ERROR
                     && session.retries_account_query(event.request, event.error);
+                if account_retry && runtime.core.is_ready() {
+                    runtime.core.block(ACCOUNT_RECONCILIATION);
+                    reconcile_after_account_retry = true;
+                    journal.record(json!({"type":"account_query_recovery_pending"}), true)?;
+                }
                 if let Some(snapshot) = session.on_event(event.as_ref(), batch_now, &decoded)? {
+                    reconcile_after_account_retry = false;
                     let trades = snapshot.trades.clone();
                     runtime.core.restore(snapshot)?;
                     if !session.settlement_confirmed() {
@@ -1266,7 +1286,13 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                         Some(journal.begin_recovery(&mut runtime.core, trades, batch_now)?);
                 }
                 if let Some(available) = session.take_cash_update() {
-                    runtime.core.constrain_cash(available)?;
+                    if reconcile_after_account_retry {
+                        session.restart_queries(batch_now)?;
+                        recovery = None;
+                        reconcile_after_account_retry = false;
+                    } else {
+                        runtime.core.constrain_cash(available)?;
+                    }
                 }
                 if let Some(rules) = session.take_rule_update() {
                     for rule in &rules {
@@ -1383,22 +1409,36 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     work = true;
                 }
             }
-            if runtime.trader.events.is_empty()
-                && (session.timed_out(now)
-                    || (!transport_online
+            if runtime.trader.events.is_empty() {
+                if session.timed_out(now)
+                    || (!wait_for_front
+                        && !transport_online
                         && now.saturating_duration_since(transport_progress)
-                            >= Duration::from_millis(config.response_timeout_ms)))
-            {
-                runtime.core.disconnect();
-                journal.state(&runtime.core, &[])?;
-                journal.record(json!({"type":"restart_required","reason":"transport or control response timeout","venue_orders_cancelled":false}), true)?;
-                anyhow::bail!("CTP timeout requires supervisor restart; SDK lifecycle work is excluded from the business loop");
-            }
-            if let Some(kind) = session.request_due(Instant::now())? {
-                let id = runtime.trader.next_id()?;
-                let code = runtime.trader.control(kind, id, session.query_target())?;
-                session.sent(kind, id, code, Instant::now())?;
-                work = true;
+                            >= Duration::from_millis(config.response_timeout_ms))
+                {
+                    let account_timeout = session.account_query_in_flight();
+                    runtime.core.disconnect();
+                    journal.state(&runtime.core, &[])?;
+                    let reason = if account_timeout {
+                        "account query timeout"
+                    } else {
+                        "transport or control response timeout"
+                    };
+                    journal.record(json!({"type":"restart_required","reason":reason,"venue_orders_cancelled":false}), true)?;
+                    if account_timeout {
+                        return Err(ctp::AccountQueryRecoveryRequired(
+                            "CTP account query timed out",
+                        )
+                        .into());
+                    }
+                    anyhow::bail!("CTP timeout requires supervisor restart; SDK lifecycle work is excluded from the business loop");
+                }
+                if let Some(kind) = session.request_due(now)? {
+                    let id = runtime.trader.next_id()?;
+                    let code = runtime.trader.control(kind, id, session.query_target())?;
+                    session.sent(kind, id, code, Instant::now())?;
+                    work = true;
+                }
             }
             // Tick consumption, strategy, risk, OMS and the SDK call all use this thread.
             if let Some(md) = &mut feed {
@@ -1644,6 +1684,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                             Ok(Command::Reconcile {}) => {
                                 session.restart_queries(Instant::now()).map(|_| {
                                     recovery = None;
+                                    reconcile_after_account_retry = false;
                                     runtime.core.block("operator-requested reconciliation");
                                     json!({"type":"reconciling"})
                                 })
@@ -1738,11 +1779,16 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                 false,
                 crate::position_ipc::Observation {
                     account: session.account_funds(),
+                    reason: (runtime.core.is_ready()
+                        && feed.as_ref().is_some_and(|md| md.waiting_for_front()))
+                    .then_some(WAITING_FOR_MD),
                     ..Default::default()
                 },
             );
             if !work {
-                if config.idle_sleep_us == 0 {
+                if wait_for_front && !transport_online {
+                    std::thread::sleep(Duration::from_millis(10));
+                } else if config.idle_sleep_us == 0 {
                     std::hint::spin_loop();
                 } else {
                     std::thread::sleep(Duration::from_micros(config.idle_sleep_us));
@@ -1751,7 +1797,13 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
         }
         Ok(())
     })();
-    if outcome.is_err() {
+    let account_restart = outcome
+        .as_ref()
+        .is_err_and(|e| e.is::<ctp::AccountQueryRecoveryRequired>());
+    if account_restart {
+        runtime.core.disconnect();
+        runtime.core.block(ACCOUNT_COLD_RESTART);
+    } else if outcome.is_err() {
         runtime
             .core
             .block("runtime failed; complete recovery required before trading");
@@ -1796,7 +1848,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
         &core,
         false,
         false,
-        if outcome.is_ok() && shutdown_ok {
+        if (outcome.is_ok() || account_restart) && shutdown_ok {
             cn_futures_state::RuntimeStatus::Stopped
         } else {
             cn_futures_state::RuntimeStatus::Failed

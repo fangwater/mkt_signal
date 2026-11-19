@@ -60,7 +60,8 @@ fn account_not_ready_retries_are_correlated_bounded_and_keep_old_funds_time() {
         assert!(!s.retries_account_query(id, 3));
         assert!(s.retries_account_query(id, 90));
         if id == 103 {
-            assert!(s.on_raw_event(&error, now).is_err());
+            let failure = s.on_raw_event(&error, now).unwrap_err();
+            assert!(failure.is::<AccountQueryRecoveryRequired>());
         } else {
             s.on_raw_event(&error, now).unwrap();
             assert!(s

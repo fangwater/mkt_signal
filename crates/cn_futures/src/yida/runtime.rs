@@ -129,6 +129,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
             marks: market.marks(),
             connected: runtime.trader.l1_connected.load(Ordering::Acquire),
             dropped: runtime.trader.l1_dropped.load(Ordering::Relaxed),
+            reason: None,
         },
     );
     on_sdk(placement.as_ref(), || runtime.trader.start())?;
@@ -501,6 +502,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     marks: market.marks(),
                     connected: runtime.trader.l1_connected.load(Ordering::Acquire),
                     dropped: runtime.trader.l1_dropped.load(Ordering::Relaxed),
+                    reason: None,
                 },
             );
             if !work {
@@ -566,6 +568,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
             marks: market.marks(),
             connected: false,
             dropped: 0,
+            reason: None,
         },
     );
     journal.record(

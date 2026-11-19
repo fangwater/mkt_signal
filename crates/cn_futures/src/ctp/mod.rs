@@ -33,6 +33,22 @@ pub const MARGIN: i32 = 18;
 pub const EXCHANGE_MARGIN: i32 = 19;
 pub const SETTLEMENT_STATUS: i32 = 20;
 
+/// Recover by starting a new SDK session after the current journal has drained.
+#[derive(Debug)]
+pub struct AccountQueryRecoveryRequired(pub(crate) &'static str);
+
+impl AccountQueryRecoveryRequired {
+    pub const EXIT_STATUS: i32 = 75;
+}
+
+impl std::fmt::Display for AccountQueryRecoveryRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for AccountQueryRecoveryRequired {}
+
 /// Correlate business responses across reconnects. OrderRef alone is not a session identity.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Correlation {

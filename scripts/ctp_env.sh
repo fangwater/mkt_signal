@@ -50,7 +50,8 @@ case "$1" in
         systemd_dir="$HOME/.config/systemd/user"
         mkdir -p "$systemd_dir" logs run data/stops
         candidate="$(mktemp "$systemd_dir/.ctp-unit.XXXXXX")"
-        trap 'rm -f -- "$candidate"' EXIT
+        retry_candidate="$(mktemp "$systemd_dir/.ctp-recovery.XXXXXX")"
+        trap 'rm -f -- "$candidate" "$retry_candidate"' EXIT
         cat > "$candidate" <<EOF
 [Unit]
 Description=$environment read-only CTP Trader and Md
@@ -76,6 +77,18 @@ EOF
             cmp -s "$candidate" "$systemd_dir/$unit" || fail 'existing CTP unit differs; preserve operator configuration'
         else
             mv -- "$candidate" "$systemd_dir/$unit"
+        fi
+        retry_config="$systemd_dir/$unit.d/10-account-query-recovery.conf"
+        cat > "$retry_candidate" <<'EOF'
+[Service]
+RestartForceExitStatus=75
+RestartSec=60s
+EOF
+        if [[ -e "$retry_config" ]]; then
+            cmp -s "$retry_candidate" "$retry_config" || fail 'existing CTP recovery policy differs; preserve operator configuration'
+        else
+            mkdir -p -- "$(dirname "$retry_config")"
+            mv -- "$retry_candidate" "$retry_config"
         fi
         systemctl --user daemon-reload
         systemctl --user enable "$unit"

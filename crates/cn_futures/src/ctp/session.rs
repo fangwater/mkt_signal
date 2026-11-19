@@ -137,6 +137,10 @@ impl Session {
                 > Duration::from_millis(self.config.response_timeout_ms)
         })
     }
+    #[cfg(feature = "ctp-sdk")]
+    pub(crate) fn account_query_in_flight(&self) -> bool {
+        self.waiting.is_some_and(|(kind, _, _)| kind == ACCOUNT)
+    }
     pub fn login_identity(&self) -> Option<(i32, i32)> {
         self.login.as_ref().map(|(_, f, s, _)| (*f, *s))
     }
@@ -320,10 +324,12 @@ impl Session {
           // The broker explicitly asks to retry an account query that has delivered no rows.
           // Retain the last factual funds timestamp; never turn a retry into a fresh balance.
         if e.kind == ERROR && self.retries_account_query(e.request, e.error) {
-            ensure!(
-                self.account_not_ready_retries < 3,
-                "CTP account query remained unavailable after three retries"
-            );
+            if self.account_not_ready_retries >= 3 {
+                return Err(AccountQueryRecoveryRequired(
+                    "CTP account query remained unavailable after three retries",
+                )
+                .into());
+            }
             self.account_not_ready_retries += 1;
             self.waiting = None;
             self.next_send = now + Duration::from_millis(self.config.query_interval_ms.max(2000));

@@ -33,6 +33,7 @@ class Fixture final : public CThostFtdcTraderApi {
     std::map<std::string, CThostFtdcOrderField> orders;
     std::vector<CThostFtdcTradeField> trades;
     int long_position = 0, short_position = 0;
+    int account_queries = 0;
     void fill(CThostFtdcOrderField& o, int quantity) {
         CThostFtdcTradeField t{};
         std::strcpy(t.InvestorID, "test"); std::strcpy(t.ExchangeID, "CFFEX");
@@ -103,6 +104,14 @@ public:
     }
     int ReqQryTradingAccount(CThostFtdcQryTradingAccountField* p, int id) override {
         check(std::strcmp(p->CurrencyID, "CNY") == 0); CThostFtdcTradingAccountField r{};
+        if (std::getenv("CTP_FIXTURE_ACCOUNT_QUERY_RECOVERY")) {
+            ++account_queries;
+            if (account_queries == 3 || account_queries == 7 || account_queries == 8) {
+                CThostFtdcRspInfoField error{}; error.ErrorID = 90;
+                spi->OnRspError(&error, id, true); return 0;
+            }
+            if (account_queries == 9) return 0;
+        }
         std::strcpy(r.AccountID, "test"); std::strcpy(r.CurrencyID, "CNY"); std::strcpy(r.TradingDay, "20261109");
         r.Available = 1000000; r.Balance=1200000; r.CurrMargin=200000; r.Commission=52.5; spi->OnRspQryTradingAccount(&r, nullptr, id, true); return 0;
     }
@@ -181,6 +190,7 @@ def main():
     parser.add_argument("--symbol", default="IF2612")
     parser.add_argument("--unconfirmed-settlement",action="store_true")
     parser.add_argument("--transport-timeout",action="store_true")
+    parser.add_argument("--account-query-recovery",action="store_true")
     parser.add_argument("--placement-config",type=Path,required=True,help="explicit CPU/NUMA placement for the authorized external host")
     args = parser.parse_args()
     placement=tomllib.loads(args.placement_config.read_text())
@@ -200,11 +210,13 @@ def main():
         config=config[:config.index("[placement]")]+placement_table
         for old, new in [('/opt/ctp/6.7.11/libthosttraderapi_se.so', str(library)), ('/tmp/mkt_ctp_sim/flow', str(temp / 'flow')), ('broker_id = "REPLACE"', 'broker_id = "TEST"'), ('max_actions_per_second = 2', 'max_actions_per_second = 20'), ('enable_fak_fok = false', 'enable_fak_fok = true')]:
             config = config.replace(old, new)
-        if args.transport_timeout: config=config.replace("response_timeout_ms = 30000","response_timeout_ms = 5000")
+        if args.transport_timeout or args.account_query_recovery:
+            config=config.replace("response_timeout_ms = 30000","response_timeout_ms = 5000")
         config_path = temp / "config.toml"
         config_path.write_text(config)
         environment = dict(os.environ, CTP_USER_ID="test", CTP_PASSWORD="fixture-only", CTP_APP_ID="fixture", CTP_AUTH_CODE="fixture")
         if args.unconfirmed_settlement: environment["CTP_FIXTURE_UNCONFIRMED"]="1"
+        if args.account_query_recovery: environment["CTP_FIXTURE_ACCOUNT_QUERY_RECOVERY"]="1"
         stderr = open(temp / "stderr.log", "w+")
         process = subprocess.Popen([str(args.binary.resolve()), "--config", str(config_path), "--connect", "--execute"], env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True)
         responses = queue.Queue()
@@ -271,6 +283,20 @@ def main():
                 events = audited_events()
                 assert not any(e.get("type")=="prepared_submit" or e.get("event",{}).get("kind")==5 for e in events)
                 print(json.dumps({"transport_timeout":True,"supervisor_restart_required":True,"trade_blocked":True,"settlement_confirmations":0,"orders_sent":0}))
+                return
+            if args.account_query_recovery:
+                assert wait("reconciled")["state"]["ready"]
+                wait("account_query_recovery_pending")
+                assert not state()["ready"]
+                assert wait("reconciled")["state"]["ready"]
+                wait("account_query_recovery_pending")
+                assert not state()["ready"]
+                assert wait("restart_required")["reason"] == "account query timeout"
+                wait("runtime_stopped")
+                assert process.wait(timeout=10) == 75
+                events = audited_events()
+                assert not any(e.get("type")=="prepared_submit" or e.get("event",{}).get("kind")==5 for e in events)
+                print(json.dumps({"account_query_recovery":True,"reconciled_before_ready":True,"retryable_exit_status":75,"orders_sent":0}))
                 return
             if args.unconfirmed_settlement:
                 assert not wait("reconciled")["state"]["ready"]

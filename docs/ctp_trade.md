@@ -163,6 +163,9 @@ python3 crates/cn_futures/tests/ctp_bridge_smoke.py \
 python3 crates/cn_futures/tests/ctp_bridge_smoke.py \
   --sdk-dir /absolute/ctp --binary target/release/ctp-trader --unconfirmed-settlement \
   --placement-config /absolute/private/ctp_placement.toml
+python3 crates/cn_futures/tests/ctp_bridge_smoke.py \
+  --sdk-dir /absolute/ctp --binary target/release/ctp-trader --account-query-recovery \
+  --placement-config /absolute/private/ctp_placement.toml
 python3 crates/cn_futures/tests/ctp_md_bridge_smoke.py \
   --sdk-dir /absolute/ctp --binary target/release/ctp-md \
   --placement-config /absolute/private/ctp_placement.toml

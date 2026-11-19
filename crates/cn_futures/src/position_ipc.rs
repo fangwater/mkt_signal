@@ -9,6 +9,7 @@ pub struct Observation<'a> {
     pub marks: &'a [cn_futures_state::InstrumentMark],
     pub connected: bool,
     pub dropped: u64,
+    pub reason: Option<&'a str>,
 }
 
 pub(crate) fn publish(
@@ -24,6 +25,9 @@ pub(crate) fn publish(
         publisher
             .capture(force, |snapshot| {
                 core.capture_positions(snapshot)?;
+                if let Some(reason) = observation.reason {
+                    snapshot.reason = cn_futures_state::Text::new(reason)?;
+                }
                 snapshot.account = observation.account.copied();
                 snapshot.marks.extend_from_slice(observation.marks);
                 snapshot.l1_connected = observation.connected;
