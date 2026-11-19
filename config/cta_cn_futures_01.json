@@ -25,20 +25,14 @@
   "rules": [
     {
       "symbol": "SN",
-      "factor": "td_pr_010",
-      "sign": 1,
-      "NQ": "0.20/0.80"
-    },
-    {
-      "symbol": "SN",
-      "factor": "baseline_095",
+      "factor": "baseline_035",
       "sign": 1,
       "NQ": "关"
     },
     {
       "symbol": "SN",
-      "factor": "factor_094",
-      "sign": -1,
+      "factor": "baseline_068",
+      "sign": 1,
       "NQ": "0.20/0.80"
     },
     {
@@ -49,20 +43,20 @@
     },
     {
       "symbol": "SN",
+      "factor": "baseline_095",
+      "sign": 1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "SN",
       "factor": "baseline_110",
       "sign": -1,
-      "NQ": "关"
+      "NQ": "0.20/0.80"
     },
     {
       "symbol": "SN",
-      "factor": "td_pr_011",
-      "sign": 1,
-      "NQ": "关"
-    },
-    {
-      "symbol": "SN",
-      "factor": "baseline_035",
-      "sign": 1,
+      "factor": "factor_045",
+      "sign": -1,
       "NQ": "关"
     },
     {
@@ -73,15 +67,47 @@
     },
     {
       "symbol": "SN",
-      "factor": "baseline_068",
+      "factor": "factor_094",
+      "sign": -1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "SN",
+      "factor": "td_mt_032",
+      "sign": -1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "SN",
+      "factor": "td_pr_010",
+      "sign": 1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "SN",
+      "factor": "td_pr_011",
       "sign": 1,
       "NQ": "关"
     },
     {
       "symbol": "SN",
-      "factor": "baseline_101",
+      "factor": "td_pr_012",
       "sign": -1,
-      "NQ": "关"
+      "NQ": "0.20/0.80",
+      "id": "td_pr_012_negative"
+    },
+    {
+      "symbol": "SN",
+      "factor": "td_pr_012",
+      "sign": 1,
+      "NQ": "关",
+      "id": "td_pr_012_positive"
+    },
+    {
+      "symbol": "SN",
+      "factor": "td_ti_036",
+      "sign": 1,
+      "NQ": "0.20/0.80"
     }
   ],
   "publication": {
@@ -91,11 +117,31 @@
     "token_env": "CN_CTA_01_PUBLISH_TOKEN",
     "per_factor_intervals": [
       "1h"
+    ],
+    "products": [
+      "RB"
     ]
   },
   "additional_products": [
+    "cta_cn_futures_01_ag.json",
+    "cta_cn_futures_01_ap.json",
+    "cta_cn_futures_01_bc.json",
+    "cta_cn_futures_01_eb.json",
+    "cta_cn_futures_01_fg.json",
+    "cta_cn_futures_01_hc.json",
+    "cta_cn_futures_01_j.json",
+    "cta_cn_futures_01_jm.json",
+    "cta_cn_futures_01_lc.json",
+    "cta_cn_futures_01_ni.json",
+    "cta_cn_futures_01_oi.json",
+    "cta_cn_futures_01_pf.json",
+    "cta_cn_futures_01_pg.json",
     "cta_cn_futures_01_rb.json",
     "cta_cn_futures_01_sa.json",
-    "cta_cn_futures_01_sm.json"
+    "cta_cn_futures_01_sm.json",
+    "cta_cn_futures_01_sp.json",
+    "cta_cn_futures_01_ss.json",
+    "cta_cn_futures_01_ta.json",
+    "cta_cn_futures_01_y.json"
   ]
 }

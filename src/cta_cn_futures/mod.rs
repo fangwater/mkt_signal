@@ -2,6 +2,7 @@
 mod config;
 mod engine;
 mod extras;
+mod hfq;
 mod history;
 mod live;
 mod panel;
@@ -125,40 +126,20 @@ fn history_begin(cfg: &Config) -> i64 {
 async fn preflight(cfg: &Config, main: &history::Dominant, ledger: Ledger) -> Result<Value> {
     let context = history::parameters(cfg).await?;
     let until = chrono::Utc::now().timestamp_millis();
-    let mut start = history_begin(cfg);
-    let mut history = history::History::default();
-    while start <= until {
-        let end = (start + 30 * 86_400_000 - 1).min(until);
-        history.fetch(cfg, main, start, end).await?;
-        start = end + 1;
-    }
-    ensure!(
-        context.snapshot_as_of == history.session_snapshot,
-        "gRPC minute/session snapshot differs"
-    );
-    let multiple = history.multiple()?;
+    let archive = hfq::fetch(cfg, main, history_begin(cfg), until).await?;
+    let multiple = archive.multiple;
     let mut engine = engine::Engine::new(cfg, ledger.clone())?;
     let mut hours = engine::Bars::default();
     let mut extras = extras::Extras::new(cfg)?;
     let extra_ledgers = extras.ledgers();
-    for row in history
-        .minutes
-        .values()
-        .filter(|r| !r.provisional || r.open_time_ms + 60_000 <= history.through_ms)
-    {
-        extras.push(row.clone(), multiple, main, &context, None, false)?;
-        for hour in hours.push(row.clone(), multiple)? {
-            engine.observe(&hour, &main.contract, multiple, false)?;
-        }
-    }
-    if hours
-        .last_minute_ms()
-        .is_some_and(|last| context.ends_after(last))
-    {
-        if let Some(hour) = hours.finish(multiple)? {
-            engine.observe(&hour, &main.contract, multiple, false)?;
-        }
-    }
+    recovery::warm_hfq(
+        &archive,
+        main,
+        &context,
+        &mut engine,
+        &mut hours,
+        &mut extras,
+    )?;
     if cfg.enabled && !engine.ready() {
         let unready: Vec<_> = engine
             .latest
@@ -182,7 +163,7 @@ async fn preflight(cfg: &Config, main: &history::Dominant, ledger: Ledger) -> Re
     );
     extras.check_enabled_ready()?;
     Ok(
-        json!({"exchange":cfg.exchange,"symbol":cfg.symbol,"contract":main.contract,"multiplier":multiple,"source_minute_rows":history.minutes.len(),"hours":engine.hours,"ready_rules":engine.latest.iter().filter(|r|r.ready).count(),"total_rules":cfg.rules.len(),"last_end_ms":engine.last_end_ms,"grpc_through_ms":history.through_ms,"session_snapshot":context.snapshot_as_of,"source":"grpc","positions_preserved":true,"frequencies":extras.views(false)}),
+        json!({"exchange":cfg.exchange,"symbol":cfg.symbol,"contract":main.contract,"multiplier":multiple,"source_minute_rows":archive.rows.len(),"hours":engine.hours,"ready_rules":engine.latest.iter().filter(|r|r.ready).count(),"total_rules":cfg.rules.len(),"last_end_ms":engine.last_end_ms,"hfq_basis_trading_day":archive.basis_day,"hfq_generation":archive.generation,"session_snapshot":context.snapshot_as_of,"source":"grpc_hfq","positions_preserved":true,"frequencies":extras.views(false)}),
     )
 }
 /// ZMQ minutes are accumulated independently of delayed historical requests.
@@ -420,6 +401,12 @@ fn configs(path: &Path) -> Result<Vec<(PathBuf, Config)>> {
         product.attach_to(&primary);
         product.validate()?;
         configs.push((file, product));
+    }
+    if let Some(publication) = &primary.publication {
+        ensure!(
+            publication.products.is_subset(&products),
+            "Manager publication references an unconfigured product"
+        );
     }
     Ok(configs)
 }
@@ -789,14 +776,34 @@ async fn run_worker(worker: Worker) -> Result<()> {
         report["initialization_complete"] = json!(history.is_none());
         report["restart_required"] = json!(stream.needs_restart);
         report["grpc_through_ms"] = json!(history.as_ref().map(|h| h.through_ms));
-        report["history_rows"] = json!(history.as_ref().map_or(0, |h| h.minutes.len()));
+        report["history_rows"] = json!(history.as_ref().map_or(0, |h| h.minutes.len()
+            + h.hfq.as_ref().map_or(0, |hfq| hfq.rows.len())));
         report["zmq_first_minute_ms"] = json!(stream.minutes.first().map(|r| r.open_time_ms));
         report["zmq_cached_minutes"] = json!(stream.minutes.len());
         *state.write().unwrap_or_else(|p| p.into_inner()) = report;
 
         // Slow gRPC is expected. It never replaces or advances the local anchor.
         if let Some(history) = history.as_mut() {
-            if tokio::time::Instant::now() >= next_fetch {
+            if history.hfq.is_none() && tokio::time::Instant::now() >= next_fetch {
+                match hfq::fetch(
+                    &cfg,
+                    &current,
+                    history_begin(&cfg),
+                    chrono::Utc::now().timestamp_millis(),
+                )
+                .await
+                {
+                    Ok(archive) => {
+                        load_start = archive.cutoff;
+                        history.hfq = Some(archive);
+                    }
+                    Err(error) => {
+                        health.pause(format!("gRPC HFQ history: {error:#}"));
+                        next_fetch = tokio::time::Instant::now() + Duration::from_secs(5);
+                    }
+                }
+            }
+            if history.hfq.is_some() && tokio::time::Instant::now() >= next_fetch {
                 let until = chrono::Utc::now().timestamp_millis();
                 let start = if loaded {
                     history

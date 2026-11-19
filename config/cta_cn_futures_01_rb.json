@@ -25,24 +25,6 @@
   "rules": [
     {
       "symbol": "RB",
-      "factor": "baseline_102",
-      "sign": -1,
-      "NQ": "0.50/0.50"
-    },
-    {
-      "symbol": "RB",
-      "factor": "factor_131",
-      "sign": -1,
-      "NQ": "关"
-    },
-    {
-      "symbol": "RB",
-      "factor": "factor_128",
-      "sign": -1,
-      "NQ": "0.20/0.80"
-    },
-    {
-      "symbol": "RB",
       "factor": "baseline_035",
       "sign": -1,
       "NQ": "0.50/0.50"
@@ -55,9 +37,21 @@
     },
     {
       "symbol": "RB",
-      "factor": "baseline_052",
-      "sign": 1,
-      "NQ": "0.20/0.80"
+      "factor": "baseline_102",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "RB",
+      "factor": "factor_128",
+      "sign": -1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "RB",
+      "factor": "factor_131",
+      "sign": -1,
+      "NQ": "关"
     },
     {
       "symbol": "RB",

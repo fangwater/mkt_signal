@@ -135,6 +135,29 @@ pub struct Recovered {
     pub anchor_ms: i64,
     pub history_rows: usize,
 }
+pub(super) fn warm_hfq(
+    archive: &super::hfq::History,
+    main: &Dominant,
+    context: &super::live::Context,
+    engine: &mut Engine,
+    hours: &mut Bars,
+    extras: &mut Extras,
+) -> Result<()> {
+    ensure!(
+        context.ends_after(archive.cutoff),
+        "HFQ archive ends inside a session"
+    );
+    for row in &archive.rows {
+        extras.push_hfq(row.clone(), archive.multiple, main, context)?;
+        for hour in hours.push_hfq(row.clone(), archive.multiple)? {
+            engine.observe(&hour, &main.contract, archive.multiple, false)?;
+        }
+    }
+    if let Some(hour) = hours.finish(archive.multiple)? {
+        engine.observe(&hour, &main.contract, archive.multiple, false)?;
+    }
+    Ok(())
+}
 pub fn recover(
     cfg: &Config,
     main: &Dominant,
@@ -178,9 +201,34 @@ pub fn recover(
     let mut extras = Extras::new(cfg)?;
     let extra_ledgers = extras.ledgers();
     let mut count = 0;
+    if let Some(archive) = &history.hfq {
+        ensure!(
+            multiple == archive.multiple,
+            "HFQ/native multipliers differ"
+        );
+        ensure!(
+            anchor > archive.cutoff,
+            "waiting for ZMQ beyond the HFQ archive"
+        );
+        warm_hfq(
+            archive,
+            main,
+            &input.context,
+            &mut engine,
+            &mut hours,
+            &mut extras,
+        )?;
+        count = archive.rows.len();
+    }
     for row in history
         .minutes
         .range(..=anchor)
+        .filter(|(ts, _)| {
+            history
+                .hfq
+                .as_ref()
+                .is_none_or(|archive| **ts > archive.cutoff)
+        })
         .map(|(_, r)| r.clone())
         .chain(local.iter().filter(|r| r.open_time_ms > anchor).cloned())
     {

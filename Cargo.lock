@@ -837,7 +837,7 @@ dependencies = [
 [[package]]
 name = "cn_market_proto"
 version = "0.1.0"
-source = "git+ssh://git@github.com/fangwater/market_replay.git?rev=e43e51a7f59e429ebb77d849ce06170788dac80d#e43e51a7f59e429ebb77d849ce06170788dac80d"
+source = "git+ssh://git@github.com/fangwater/market_replay.git?rev=95d5c806dc3b6f660431dfde52e72e15d42409b5#95d5c806dc3b6f660431dfde52e72e15d42409b5"
 dependencies = [
  "prost 0.14.6",
  "tonic 0.14.8",

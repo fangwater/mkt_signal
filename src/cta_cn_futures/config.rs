@@ -61,6 +61,14 @@ pub struct PublicationConfig {
     #[serde(default)]
     pub include_trading_day: bool,
     pub per_factor_intervals: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub products: BTreeSet<String>,
+}
+
+impl PublicationConfig {
+    pub fn enabled_for(&self, product: &str) -> bool {
+        self.enabled && (self.products.is_empty() || self.products.contains(product))
+    }
 }
 
 fn enabled_by_default() -> bool {
@@ -71,11 +79,21 @@ fn enabled_by_default() -> bool {
 pub struct Rule {
     pub symbol: String,
     pub factor: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub sign: i8,
     #[serde(rename = "NQ")]
     pub nq: String,
 }
 impl Rule {
+    pub fn key(&self) -> &str {
+        self.id.as_deref().unwrap_or(&self.factor)
+    }
+
+    pub fn formula_name(&self) -> String {
+        format!("cn_features_{}", self.factor.to_ascii_lowercase())
+    }
+
     pub fn gates(&self) -> Result<Option<(f64, f64)>> {
         if matches!(self.nq.as_str(), "关" | "关闭") {
             return Ok(None);
@@ -90,6 +108,15 @@ impl Rule {
     }
 }
 impl Config {
+    pub fn factor_names(&self) -> Vec<String> {
+        self.rules
+            .iter()
+            .map(Rule::formula_name)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     pub fn strategy_group(&self) -> Result<String> {
         let tail = self
             .name
@@ -157,7 +184,10 @@ impl Config {
             cn_futures_core::segments::exchange_of(&self.symbol),
         ) {
             ("SHFE", Some("xsge")) => Ok((Core::Xsge, Grpc::Shfe)),
+            ("INE", Some("xsie")) => Ok((Core::Xsie, Grpc::Ine)),
             ("CZCE", Some("xzce")) => Ok((Core::Xzce, Grpc::Czce)),
+            ("DCE", Some("xdce")) => Ok((Core::Xdce, Grpc::Dce)),
+            ("GFEX", Some("xgfe")) => Ok((Core::Xgfe, Grpc::Gfex)),
             _ => anyhow::bail!(
                 "unsupported native CTA market {}/{}",
                 self.exchange,
@@ -283,17 +313,19 @@ impl Config {
                 "rule symbol/sign mismatch"
             );
             ensure!(
-                seen.insert(rule.factor.to_ascii_lowercase()),
-                "duplicate factor rule"
+                rule.id.as_ref().is_none_or(|id| !id.is_empty()
+                    && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')),
+                "invalid factor rule ID"
+            );
+            ensure!(
+                seen.insert(rule.key().to_ascii_lowercase()),
+                "duplicate factor rule ID"
             );
             rule.gates()?;
         }
         if !cfg.rules.is_empty() {
             crate::factor_pub::cn_features::FuturesFactorPlan::from_factor_names(
-                cfg.rules
-                    .iter()
-                    .map(|r| format!("cn_features_{}", r.factor))
-                    .collect(),
+                cfg.factor_names(),
             )?;
         }
         for key in cfg.frequencies.keys() {

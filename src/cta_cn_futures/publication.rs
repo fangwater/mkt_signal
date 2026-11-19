@@ -78,7 +78,10 @@ impl Publisher {
         cfg: &Config,
         positions: BTreeMap<String, StrategyPosition>,
     ) -> Result<Option<Self>> {
-        let Some(settings) = cfg.publication_settings().filter(|p| p.enabled) else {
+        let Some(settings) = cfg
+            .publication_settings()
+            .filter(|p| p.enabled_for(&cfg.symbol))
+        else {
             return Ok(None);
         };
         let group = cfg.strategy_group()?;

@@ -45,7 +45,7 @@ impl Dominant {
         })
     }
 }
-fn native_contract(cfg: &Config, code: &str) -> Result<String> {
+pub(super) fn native_contract(cfg: &Config, code: &str) -> Result<String> {
     let prefix = cfg.native_prefix();
     let (product, month) = code
         .split_at_checked(prefix.len())
@@ -64,7 +64,11 @@ fn native_contract(cfg: &Config, code: &str) -> Result<String> {
     let month = if cfg.exchange == "CZCE" {
         &month[month.len() - 3..]
     } else {
-        ensure!(month.len() == 4, "invalid SHFE maturity: {code}");
+        ensure!(
+            month.len() == 4,
+            "invalid {} maturity: {code}",
+            cfg.exchange
+        );
         month
     };
     Ok(format!("{prefix}{month}"))
@@ -209,6 +213,7 @@ async fn secondary(cfg: &Config, day: u32) -> Result<(Option<String>, Option<Str
 /// provisional minutes until they agree with the independently captured ZMQ feed.
 #[derive(Default)]
 pub struct History {
+    pub hfq: Option<super::hfq::History>,
     pub minutes: BTreeMap<i64, MinuteBar>,
     pub contract: Option<Contract>,
     pub through_ms: i64,

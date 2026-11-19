@@ -89,12 +89,38 @@ impl Extras {
         live_after_ms: Option<i64>,
         fresh: bool,
     ) -> Result<()> {
+        self.push_with_basis(row, multiple, main, context, live_after_ms, fresh, false)
+    }
+    pub(super) fn push_hfq(
+        &mut self,
+        row: MinuteBar,
+        multiple: f64,
+        main: &Dominant,
+        context: &Context,
+    ) -> Result<()> {
+        self.push_with_basis(row, multiple, main, context, None, false, true)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn push_with_basis(
+        &mut self,
+        row: MinuteBar,
+        multiple: f64,
+        main: &Dominant,
+        context: &Context,
+        live_after_ms: Option<i64>,
+        fresh: bool,
+        hfq: bool,
+    ) -> Result<()> {
         for (interval, slot) in &mut self.slots {
             if slot.error.is_some() {
                 continue;
             }
             let result = (|| -> Result<()> {
-                let mut closed = slot.bars.push(row.clone(), multiple)?;
+                let mut closed = if hfq {
+                    slot.bars.push_hfq(row.clone(), multiple)?
+                } else {
+                    slot.bars.push(row.clone(), multiple)?
+                };
                 if slot
                     .bars
                     .last_minute_ms()

@@ -50,6 +50,7 @@ pub struct Bar {
     pub trade: [f64; FUTURES_TRADE_FIELD_COUNT],
     pub book: Book5,
     pub mid: f64,
+    additive_hfq: bool,
 }
 /// Aggregate native minutes. Hourly bars retain the existing CN segment
 /// convention; shorter bars align to clock boundaries as in Prep.
@@ -57,6 +58,7 @@ pub struct Bars {
     rows: Vec<MinuteBar>,
     interval: Interval,
     started: bool,
+    additive_hfq: bool,
 }
 impl Default for Bars {
     fn default() -> Self {
@@ -69,16 +71,29 @@ impl Bars {
             rows: Vec::new(),
             interval,
             started: false,
+            additive_hfq: false,
         }
     }
     pub fn last_minute_ms(&self) -> Option<i64> {
         self.rows.last().map(|r| r.open_time_ms)
     }
     pub fn push(&mut self, row: MinuteBar, multiple: f64) -> Result<Vec<Bar>> {
+        self.push_with_basis(row, multiple, false)
+    }
+    pub fn push_hfq(&mut self, row: MinuteBar, multiple: f64) -> Result<Vec<Bar>> {
+        self.push_with_basis(row, multiple, true)
+    }
+    fn push_with_basis(
+        &mut self,
+        row: MinuteBar,
+        multiple: f64,
+        additive_hfq: bool,
+    ) -> Result<Vec<Bar>> {
         let mut out = Vec::new();
+        let valid_price = |value: f64| value.is_finite() && (additive_hfq || value > 0.);
         ensure!(
-            row.mid_price.is_some_and(|mid| mid.is_finite() && mid > 0.)
-                || (self.interval == Interval::Hour && row.close.is_finite() && row.close > 0.),
+            row.mid_price.is_some_and(valid_price)
+                || (self.interval == Interval::Hour && valid_price(row.close)),
             "minute is missing a valid mid_price"
         );
         if !self.started && self.interval != Interval::Hour {
@@ -94,6 +109,7 @@ impl Bars {
             );
             if row.open_time_ms - last.open_time_ms != 60_000
                 || row.trading_day != last.trading_day
+                || additive_hfq != self.additive_hfq
                 || (self.interval != Interval::Hour
                     && row.open_time_ms.div_euclid(self.interval.millis())
                         != last.open_time_ms.div_euclid(self.interval.millis()))
@@ -101,6 +117,7 @@ impl Bars {
                 out.push(self.finish(multiple)?.context("missing hourly tail")?);
             }
         }
+        self.additive_hfq = additive_hfq;
         self.rows.push(row);
         if self.rows.len() == (self.interval.millis() / 60_000) as usize {
             out.push(self.finish(multiple)?.context("missing complete bar")?);
@@ -139,7 +156,7 @@ impl Bars {
                     && (r.volume_lots == 0.
                         || [r.open, r.snapshot_high, r.snapshot_low, r.close]
                             .iter()
-                            .all(|v| v.is_finite() && *v > 0.)),
+                            .all(|v| v.is_finite() && (self.additive_hfq || *v > 0.))),
                 "invalid traded minute"
             );
             if r.volume_lots > 0. {
@@ -188,15 +205,28 @@ impl Bars {
             );
         }
         v[6] = if v[7] > 0. { v[5] / v[7] } else { 0. };
-        for (i, amount, volume, carry) in [
-            (23, 5, 4, last.vwap),
-            (24, 10, 12, last.buy_vwap.unwrap_or(f64::NAN)),
-            (25, 11, 13, last.sell_vwap.unwrap_or(f64::NAN)),
-        ] {
+        let quotes: [fn(&MinuteBar) -> (f64, f64); 3] = [
+            |row| (row.vwap, row.volume_lots),
+            |row| (row.buy_vwap.unwrap_or(f64::NAN), row.buy_volume_lots),
+            |row| (row.sell_vwap.unwrap_or(f64::NAN), row.sell_volume_lots),
+        ];
+        for ((i, amount, volume), quote) in [(23, 5, 4), (24, 10, 12), (25, 11, 13)]
+            .into_iter()
+            .zip(quotes)
+        {
             v[i] = if v[volume] > 0. {
-                v[amount] / v[volume] / multiple
+                if self.additive_hfq {
+                    rows.iter()
+                        .map(quote)
+                        .filter(|(_, lots)| *lots > 0.)
+                        .map(|(price, lots)| price * lots)
+                        .sum::<f64>()
+                        / v[volume]
+                } else {
+                    v[amount] / v[volume] / multiple
+                }
             } else {
-                carry
+                quote(last).0
             };
         }
         v[28] = if v[5] > 0. { v[26] / v[5] } else { f64::NAN };
@@ -210,9 +240,11 @@ impl Bars {
         );
         let mid = last
             .mid_price
-            .filter(|v| v.is_finite() && *v > 0.)
+            .filter(|v| v.is_finite() && (self.additive_hfq || *v > 0.))
             .or_else(|| {
-                (self.interval == Interval::Hour && last.close.is_finite() && last.close > 0.)
+                (self.interval == Interval::Hour
+                    && last.close.is_finite()
+                    && (self.additive_hfq || last.close > 0.))
                     .then_some(last.close)
             })
             .context("minute is missing a valid mid_price")?;
@@ -224,6 +256,7 @@ impl Bars {
             trade: v,
             book,
             mid,
+            additive_hfq: self.additive_hfq,
         }))
     }
 }
@@ -255,6 +288,8 @@ impl Default for Ledger {
 #[derive(Clone, Serialize)]
 pub struct RuleState {
     pub factor: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub raw: Option<f64>,
     pub value: Option<f64>,
     pub quantile: Option<f64>,
@@ -266,6 +301,7 @@ pub struct RuleState {
 pub struct Engine {
     cfg: Config,
     plan: Option<FuturesFactorPlan>,
+    formula_indices: Vec<usize>,
     formula: FuturesFusionState,
     transforms: Vec<Transform>,
     nq: Nq,
@@ -284,20 +320,26 @@ impl Engine {
             "invalid persisted rule position"
         );
         let interval = cfg.interval_kind()?;
-        let plan = if cfg.rules.is_empty() {
+        let factor_names = cfg.factor_names();
+        let formula_indices = cfg
+            .rules
+            .iter()
+            .map(|r| {
+                factor_names
+                    .binary_search(&r.formula_name())
+                    .map_err(|_| anyhow::anyhow!("formula missing from plan: {}", r.factor))
+            })
+            .collect::<Result<_>>()?;
+        let plan = if factor_names.is_empty() {
             ensure!(!cfg.enabled, "empty frequency must be disabled");
             None
         } else {
-            Some(FuturesFactorPlan::from_factor_names(
-                cfg.rules
-                    .iter()
-                    .map(|r| format!("cn_features_{}", r.factor))
-                    .collect(),
-            )?)
+            Some(FuturesFactorPlan::from_factor_names(factor_names)?)
         };
         Ok(Self {
             cfg: cfg.clone(),
             plan,
+            formula_indices,
             formula: FuturesFusionState::default(),
             transforms: cfg
                 .rules
@@ -354,22 +396,32 @@ impl Engine {
                 .map(|l| if price { l.price } else { l.volume_lots }.unwrap_or(f64::NAN))
                 .collect()
         };
-        let depth = FuturesDepth5::from_slices(
+        let depth_constructor = if hour.additive_hfq {
+            FuturesDepth5::from_additive_hfq_slices
+        } else {
+            FuturesDepth5::from_slices
+        };
+        let depth = depth_constructor(
             &array(&hour.book.bids, true),
             &array(&hour.book.bids, false),
             &array(&hour.book.asks, true),
             &array(&hour.book.asks, false),
         )?;
-        self.formula.push_continuous(FuturesFusionInput {
+        let input = FuturesFusionInput {
             ts_ms: hour.end_ms,
-            symbol: contract.into(),
+            symbol: self.cfg.symbol.clone(),
             trading_day: hour.trading_day,
             trade: FuturesTradeBar { values: hour.trade },
             depth: Some(depth),
             quality_flags: 0,
             volume_multiple: multiple,
             volume_multiple_verified: true,
-        })?;
+        };
+        if hour.additive_hfq {
+            self.formula.push_additive_hfq_continuous(input)?;
+        } else {
+            self.formula.push_continuous(input)?;
+        }
         let raw = match &self.plan {
             Some(plan) => self.formula.factor_values(plan)?,
             None => Vec::new(),
@@ -379,7 +431,14 @@ impl Engine {
         self.hours += 1;
         let mut points = Vec::new();
         let mut all_ready = true;
-        for ((rule, transform), raw) in self.cfg.rules.iter().zip(&mut self.transforms).zip(raw) {
+        for ((rule, transform), &formula_index) in self
+            .cfg
+            .rules
+            .iter()
+            .zip(&mut self.transforms)
+            .zip(&self.formula_indices)
+        {
+            let raw = raw[formula_index];
             let f: Field = if self.cfg.interval == "1h" {
                 transform.observe_with_forward_fill(raw)
             } else {
@@ -402,9 +461,19 @@ impl Engine {
             self.cfg.enabled && live && all_ready && hour.end_ms > self.ledger.last_decision_ms;
         if publish {
             self.ledger.lots_per_rule = self.cfg.lots_per_rule;
-            self.ledger
-                .flags
-                .retain(|factor, _| self.cfg.rules.iter().any(|r| &r.factor == factor));
+            let keep_attribution = self.cfg.publish_per_factor()
+                && self
+                    .cfg
+                    .publication_settings()
+                    .is_some_and(|p| p.enabled_for(&self.cfg.symbol));
+            self.ledger.flags.retain(|factor, flag| {
+                if self.cfg.rules.iter().any(|r| r.key() == factor) {
+                    return true;
+                }
+                // Manager still requires an explicit zero for a retired member.
+                *flag = 0;
+                keep_attribution
+            });
         }
         if publish && self.ledger.contract != contract {
             if !self.ledger.contract.is_empty()
@@ -421,7 +490,7 @@ impl Engine {
         }
         self.latest.clear();
         for (rule, f, gates, ready) in points {
-            let current = *self.ledger.flags.get(&rule.factor).unwrap_or(&0);
+            let current = *self.ledger.flags.get(rule.key()).unwrap_or(&0);
             let flag = if publish {
                 let q = f.quantile.context("ready factor missing rank")?;
                 let q = if rule.sign > 0 { q } else { 1. - q };
@@ -513,10 +582,11 @@ impl Engine {
                 current
             };
             if publish {
-                self.ledger.flags.insert(rule.factor.clone(), flag);
+                self.ledger.flags.insert(rule.key().to_owned(), flag);
             }
             self.latest.push(RuleState {
                 factor: rule.factor,
+                id: rule.id,
                 raw: f.raw,
                 value: f.value,
                 quantile: f.quantile,
@@ -561,7 +631,7 @@ impl Engine {
                 .cfg
                 .rules
                 .iter()
-                .map(|r| r.factor.clone())
+                .map(|r| r.key().to_owned())
                 .chain(self.ledger.flags.keys().cloned())
                 .collect();
             Ok(names

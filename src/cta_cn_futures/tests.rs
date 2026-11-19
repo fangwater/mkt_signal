@@ -82,6 +82,24 @@ fn native_hour_aggregation_keeps_last_book_and_mid_and_sums_turnover() {
     assert_eq!(out.book, minute(59).book.unwrap());
     assert_eq!(out.end_ms, minute(59).open_time_ms + 60_000);
 }
+
+#[test]
+fn hfq_hour_preserves_quoted_vwap_and_native_turnover() {
+    let mut bars = Bars::default();
+    let mut first = minute(0);
+    first.vwap = 100.;
+    first.buy_vwap = Some(110.);
+    first.sell_vwap = Some(90.);
+    let mut second = minute(1);
+    second.vwap = 200.;
+    second.buy_vwap = Some(210.);
+    second.sell_vwap = Some(190.);
+    assert!(bars.push_hfq(first, 1.).unwrap().is_empty());
+    assert!(bars.push_hfq(second, 1.).unwrap().is_empty());
+    let bar = bars.finish(1.).unwrap().unwrap();
+    assert_eq!(bar.trade[5], 2000.);
+    assert_eq!(&bar.trade[23..26], &[150., 160., 140.]);
+}
 #[test]
 fn session_gap_keeps_short_tail_without_inventing_minutes() {
     let mut h = Bars::default();
@@ -459,6 +477,39 @@ fn panel_changes_keep_factual_lots_until_a_new_live_decision() {
         Engine::new(&changed, restored).unwrap().targets(),
         next.targets()
     );
+}
+
+#[test]
+fn repeated_formula_keeps_independent_positions_and_retired_manager_members() {
+    let mut cfg: Config =
+        serde_json::from_str(include_str!("../../config/cta_cn_futures_01.json")).unwrap();
+    cfg.publication.as_mut().unwrap().enabled = true;
+    cfg.publication.as_mut().unwrap().products.clear();
+    cfg.rules.retain(|rule| rule.factor == "td_pr_012");
+    cfg.validate().unwrap();
+    let mut ledger = Ledger {
+        contract: "sn2612".into(),
+        ..Ledger::default()
+    };
+    ledger.flags.insert("baseline_101".into(), 1);
+    ledger.flags.insert("td_pr_012_negative".into(), -1);
+    ledger.flags.insert("td_pr_012_positive".into(), 1);
+    let mut engine = Engine::new(&cfg, ledger.clone()).unwrap();
+    for i in 0..200 {
+        engine.observe(&hour(i), "sn2612", 1., false).unwrap();
+    }
+    assert!(engine.ready());
+    assert_eq!(engine.latest[0].raw, engine.latest[1].raw);
+    assert_eq!((engine.latest[0].flag, engine.latest[1].flag), (-1, 1));
+    assert!(engine.ledger == ledger);
+    assert!(engine.observe(&hour(200), "sn2612", 1., true).unwrap());
+    let restored = Engine::new(&cfg, engine.ledger.clone()).unwrap();
+    assert_eq!(
+        restored.publication_positions().unwrap()["cn-futures-01-baseline_101-1h"].targets
+            ["SHFE:sn2612"],
+        0
+    );
+    assert_eq!(restored.ledger.flags.len(), 3);
 }
 #[test]
 fn configuration_preview_save_conflicts_and_invalid_rules_preserve_the_ledger() {

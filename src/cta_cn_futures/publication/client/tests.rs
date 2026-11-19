@@ -102,6 +102,7 @@ fn settings(url: String) -> PublicationConfig {
         token_env: "unused_test_env".into(),
         include_trading_day: true,
         per_factor_intervals: BTreeSet::from(["1h".into()]),
+        products: BTreeSet::new(),
     }
 }
 

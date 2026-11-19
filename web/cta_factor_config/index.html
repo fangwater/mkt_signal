@@ -133,7 +133,7 @@ async function saveAccountRisk(account,input){
 }
 $('reload-account-risk').onclick=()=>loadAccountRisk();
 function factorRows(doc){
-  if(nativeMode)return doc.rules.map(row=>({'标的':row.symbol,nq:row.NQ,'符号':row.sign,'因子':row.factor}));
+  if(nativeMode)return doc.rules.map(row=>({'标的':row.symbol,nq:row.NQ,'符号':row.sign,'因子':row.factor,...(row.id?{id:row.id}:{})}));
   return doc.factor_rules.map(row=>({'标的':row['标的'].replace(/USDT$/i,''),nq:row.nq,'符号':row['符号'],'因子':row['因子']}));
 }
 function factorSourceMarket(doc){
@@ -234,15 +234,17 @@ async function action(save){
   }catch(error){message(error.message,true);}finally{setBusy(false);}
 }
 function nativeRules(){
+  const symbol=draft.symbol;
   let rows;try{rows=JSON.parse($('factor-json').value);}catch(error){throw Error('JSON 格式错误：'+error.message);}
   if(!Array.isArray(rows)||(!rows.length&&$('enabled').value==='true'))throw Error('启用的频段必须填写非空因子数组');
   const fields=['标的','nq','符号','因子'];
   return rows.map((row,index)=>{
-    if(!row||typeof row!=='object'||Array.isArray(row)||Object.keys(row).length!==4||fields.some(key=>!Object.hasOwn(row,key)))throw Error('第 '+(index+1)+' 项只接受「标的、nq、符号、因子」');
-    if(typeof row['标的']!=='string'||row['标的'].trim().toUpperCase()!=='SN')throw Error('本策略仅配置锡 SN');
+    if(!row||typeof row!=='object'||Array.isArray(row)||Object.keys(row).some(key=>key!=='id'&&!fields.includes(key))||fields.some(key=>!Object.hasOwn(row,key)))throw Error('第 '+(index+1)+' 项需填写「标的、nq、符号、因子」，可选 id');
+    if(typeof row['标的']!=='string'||row['标的'].trim().toUpperCase()!==symbol)throw Error('本策略仅配置 '+symbol);
     if(![-1,1].includes(row['符号']))throw Error('符号只接受 -1 或 1');
     if(typeof row.nq!=='string'||typeof row['因子']!=='string'||!row['因子'].trim())throw Error('nq 和因子须为字符串');
-    return {symbol:'SN',factor:row['因子'].trim(),sign:row['符号'],NQ:row.nq.trim()};
+    if(Object.hasOwn(row,'id')&&(typeof row.id!=='string'||!row.id.trim()))throw Error('规则 id 须为非空字符串');
+    return {symbol,factor:row['因子'].trim(),sign:row['符号'],NQ:row.nq.trim(),...(row.id?{id:row.id.trim()}:{})};
   });
 }
 function nativeCollect(){
@@ -254,19 +256,21 @@ function nativeCollect(){
 }
 function prepareNative(){
   $('strategy-type').replaceChildren(new Option('国内期货 Prep','cta-cn-futures'));$('strategy-group').replaceChildren(new Option('读取配置中…',''));
-  $('symbol-group').previousElementSibling.textContent='品种';$('symbol-group').replaceChildren(new Option('锡 · SN','SN'));
-  $('strategy-settings').hidden=false;$('current-frequency').textContent='SHFE · SN · 1h';
+  $('symbol-group').previousElementSibling.textContent='品种';
+  $('strategy-settings').hidden=false;
   $('strategy-settings').querySelector('.hint').textContent='每条因子规则独立计算开平仓，目标按整数手数合并。关闭策略会停止生成新目标，保留已发布目标。';
   document.querySelector('label[for="max-pos"]').textContent='单份手数（手）';$('max-pos').parentElement.nextElementSibling.textContent='每条规则的目标手数，修改后用于后续实时决策。';
   $('enabled').parentElement.nextElementSibling.textContent='只控制本策略生成目标仓位。';
   $('max-pos').min='1';$('max-pos').max='100';$('max-pos').step='1';
   $('spread-settings').hidden=true;
-  $('factor-hint').textContent='每项填写「标的、nq、符号、因子」。标的固定为 SN；符号为 -1 / 1；nq 填「0.50」「0.20/0.80」或「关闭」。';
-  $('symbol-members').textContent='上期所锡 SN · 实际交割合约由主力 REST 选择。';
+  $('factor-hint').textContent='每项填写「标的、nq、符号、因子」。同一公式配置多条规则时填写独立 id。符号为 -1 / 1，nq 填「0.50」「0.20/0.80」或「关闭」。';
 }
 function showNative(doc){
   selectedWorker='cta-cn-futures';draft=clone(doc);dirty=false;groupsDirty=false;$('dirty').textContent='';
-  nativeFrequency=doc.interval;$('current-frequency').textContent='SHFE · SN · '+doc.interval;
+  const market=doc.exchange+' · '+doc.symbol;
+  nativeFrequency=doc.interval;$('current-frequency').textContent=market+' · '+doc.interval;
+  $('symbol-group').replaceChildren(new Option(market,doc.symbol));
+  $('symbol-members').textContent='实际交割合约由主力 REST 选择。';
   $('strategy-group').replaceChildren(new Option(doc.name,doc.name));
   $('enabled').value=String(doc.enabled);$('max-pos').value=doc.lots_per_rule;
   for(const [id,value] of [['entry-long',doc.entry.factor_long_quantile],['entry-short',doc.entry.factor_short_quantile],['exit-long',doc.exits.factor_exit_quantile_long],['exit-short',doc.exits.factor_exit_quantile_short]]){$(id).value=value;$(id).min='0';$(id).max='1';}

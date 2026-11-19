@@ -265,9 +265,10 @@ Prefer existing config loaders and Redis sync/print scripts over ad hoc parsing.
 ### Domestic Futures CTA
 
 `cta-cn-futures` uses the domestic futures market gRPC service for startup
-history. Read the native contract's minute bars, trading sessions, and monthly
-size thresholds, then construct hourly bars using the strategy's domestic
-session aggregation. Use the environment-local preflight to verify that all
+history. Read the product's published `baseline_data_1min_hfq` generation and
+construct hourly bars using the strategy's domestic session aggregation.
+Use native contract minutes, trading sessions, and monthly size thresholds for
+the handoff to live ZMQ. Use the environment-local preflight to verify that all
 enabled rules are ready and the factual position ledger is preserved before
 replacing the worker. Live readiness requires matching the first complete ZMQ
 minute to the finalized gRPC minute, then consuming the subsequent buffered ZMQ

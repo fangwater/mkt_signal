@@ -16,6 +16,7 @@ fn settings() -> PublicationConfig {
         token_env: "CN_CTA_01_PUBLISH_TOKEN".into(),
         include_trading_day: false,
         per_factor_intervals: BTreeSet::from(["1h".into()]),
+        products: BTreeSet::new(),
     }
 }
 #[test]
@@ -30,13 +31,15 @@ fn per_factor_names_carry_instance_factor_and_frequency_without_aggregate_double
             .rules
             .iter()
             .enumerate()
-            .map(|(i, r)| (r.factor.clone(), if i % 2 == 0 { 1 } else { -1 }))
+            .map(|(i, r)| (r.key().to_owned(), if i % 2 == 0 { 1 } else { -1 }))
             .collect(),
         retired_contracts: vec!["sn2611".into()],
     };
+    let td_pr_010_lots = i64::from(ledger.flags["td_pr_010"]) * 2;
+    let net_lots: i64 = ledger.flags.values().map(|&flag| i64::from(flag) * 2).sum();
     let engine = Engine::new(&cfg, ledger).unwrap();
     let targets = engine.publication_positions().unwrap();
-    assert_eq!(targets.len(), 10);
+    assert_eq!(targets.len(), cfg.rules.len());
     assert!(targets.contains_key("cn-futures-01-td_pr_010-1h"));
     assert!(!targets.contains_key("cn-futures-01-1h"));
     assert_eq!(
@@ -45,14 +48,14 @@ fn per_factor_names_carry_instance_factor_and_frequency_without_aggregate_double
     );
     assert_eq!(
         targets["cn-futures-01-td_pr_010-1h"].targets["SHFE:sn2612"],
-        2
+        td_pr_010_lots
     );
     assert_eq!(
         targets
             .values()
             .map(|p| p.targets["SHFE:sn2612"])
             .sum::<i64>(),
-        0
+        net_lots
     );
 }
 #[test]
@@ -80,6 +83,8 @@ fn products_with_a_shared_factor_keep_distinct_attribution() {
     let configs =
         super::super::configs(std::path::Path::new("config/cta_cn_futures_01.json")).unwrap();
     let mut group = BTreeMap::new();
+    let mut enabled_settings = configs[0].1.publication_settings().unwrap().clone();
+    enabled_settings.enabled = true;
     for (_, cfg) in configs {
         let suffix = cfg.symbol.to_ascii_lowercase();
         let (group_name, token) = if suffix == "sn" {
@@ -95,16 +100,17 @@ fn products_with_a_shared_factor_keep_distinct_attribution() {
         };
         assert_eq!(cfg.strategy_group().unwrap(), group_name);
         assert_eq!(cfg.publication_settings().unwrap().token_env, token);
+        assert_eq!(enabled_settings.enabled_for(&cfg.symbol), suffix == "rb");
         let engine = Engine::new(&cfg, Ledger::default()).unwrap();
         for (name, position) in engine.publication_positions().unwrap() {
             assert!(group.insert(name, position).is_none());
         }
     }
-    assert_eq!(group.len(), 38);
+    assert_eq!(group.len(), 147);
     assert!(group.contains_key("cn-futures-01-baseline_035-1h"));
     assert!(group.contains_key("cn-futures-01-rb-baseline_035-1h"));
-    assert!(group.contains_key("cn-futures-01-sa-factor_081-1h"));
-    assert!(group.contains_key("cn-futures-01-sm-factor_081-1h"));
+    assert!(group.contains_key("cn-futures-01-td_pr_012_negative-1h"));
+    assert!(group.contains_key("cn-futures-01-td_pr_012_positive-1h"));
 }
 
 #[tokio::test]
