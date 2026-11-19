@@ -20,6 +20,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       'SHFE:rb2701': {target_lots:1,attributed_lots:0,strategies:[
         {name:'long-factor',target_lots:3,attributed_lots:2},
         {name:'short-factor',target_lots:-2,attributed_lots:-2},
+        {name:'inactive-factor',target_lots:0,attributed_lots:0},
       ]},
     };
     await page.route(url=>url.origin==='http://cn-viz.test'&&url.pathname==='/',route=>route.fulfill({contentType:'text/html',body:html}));
@@ -153,11 +154,28 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.equal(await page.locator('#account-balance').innerText(),'¥ 499,999.72');
     assert.equal(new URL(page.url()).searchParams.get('source'),'ctp');
     await page.getByRole('link',{name:'登录 Manager 查看策略仓位'}).waitFor();
+    ctp.entry.positions=[row('SHFE','rb2701','buy',1)];
+    ctp.entry.marks=[{...mark('rb2701','future',10,null),trading_day:20261119}];
+    await page.evaluate(f=>window.__push(f),ctp);
+    assert.equal(await page.locator('.detail-row').getByRole('link',{name:'登录 Manager 查看策略仓位'}).count(),1);
+    assert.equal(await page.locator('#futures-amount').innerText(),'--');
+    assert.equal(await page.locator('#options-amount').innerText(),'¥ 0.00');
+    ctp.entry.marks[0]={...ctp.entry.marks[0],bid_price:2982,ask_price:2983,bid_lots:2,ask_lots:3,initial:true,native_time:'14:59–15:00',last_trade_time:''};
+    await page.evaluate(f=>window.__push(f),ctp);
+    assert.equal(await page.locator('#futures-amount').innerText(),'¥ 29,825.00');
+    assert.match(await page.locator('#quote-status').innerText(),/历史行情/);
+    assert.match(await page.locator('#positions .net-amount span').getAttribute('title'),/14:59–15:00.*已完成分钟/);
+    ctp.entry.positions=[]; ctp.entry.marks=[];
+    await page.evaluate(f=>window.__push(f),ctp);
     strategyStatus=200;
     await page.locator('#refresh').click();
     await page.getByText('long-factor',{exact:true}).waitFor();
     assert.deepEqual(await page.locator('.strategy-detail tbody tr').first().locator('td').allTextContents(),['long-factor','+2','+3']);
     assert.deepEqual(await page.locator('.strategy-detail tbody tr').last().locator('td').allTextContents(),['short-factor','-2','-2']);
+    await page.locator('#show-zero').check();
+    assert.equal(await page.getByText('inactive-factor',{exact:true}).count(),1);
+    await page.locator('#show-zero').uncheck();
+    assert.equal(await page.getByText('inactive-factor',{exact:true}).count(),0);
     assert.deepEqual((await page.locator('#positions tr[data-symbol="rb2701"] td').allTextContents()).slice(1,3),['0','+1']);
     assert.equal(await page.locator('#contract-count').innerText(),'0');
     assert.equal(await page.locator('.attribution-gap').count(),0);

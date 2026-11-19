@@ -38,7 +38,7 @@ fn spawn(
                 let result = s.latest().and_then(|snapshot| {
                     if let Some(mut snapshot) = snapshot {
                         if let Some(quotes) = &quotes {
-                            quotes.borrow().attach(&mut snapshot);
+                            quotes.borrow_mut().attach(&mut snapshot);
                         }
                         hub.apply(&source, snapshot)?;
                     }
