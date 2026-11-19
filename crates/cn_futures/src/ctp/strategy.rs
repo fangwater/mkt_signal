@@ -46,9 +46,58 @@ impl Actions {
     }
 }
 pub enum ActionOutcome {
-    Submitted { tag: u64, receipt: SubmitReceipt },
-    CancelledLocally { tag: u64, key: OrderKey },
-    Rejected { tag: u64, error: String },
+    Submitted {
+        tag: u64,
+        receipt: SubmitReceipt,
+    },
+    CancelledLocally {
+        tag: u64,
+        key: OrderKey,
+    },
+    Rejected {
+        tag: u64,
+        error: String,
+    },
+    #[cfg(any(feature = "ctp-sdk", test))]
+    CtpDispatchBlocked {
+        action: Action,
+        checks: CtpDispatchChecks,
+        quote_received_us: u64,
+        quote_generation: u64,
+    },
+}
+
+#[cfg(any(feature = "ctp-sdk", test))]
+#[derive(Clone, Copy, serde::Serialize)]
+pub struct CtpDispatchChecks {
+    pub strategy_can_trade: bool,
+    pub execution_enabled: bool,
+    pub account_ready: bool,
+    pub market_data_ready: bool,
+    pub market_data_backlog: bool,
+    pub trade_event_backlog: bool,
+    pub journal_failed: bool,
+    pub trade_ingress_failed: bool,
+}
+
+#[cfg(any(feature = "ctp-sdk", test))]
+impl CtpDispatchChecks {
+    fn healthy(self) -> bool {
+        self.strategy_can_trade
+            && self.execution_enabled
+            && self.account_ready
+            && self.market_data_ready
+            && !self.journal_failed
+            && !self.trade_ingress_failed
+    }
+
+    pub(crate) fn can_dispatch(self) -> bool {
+        self.healthy() && !self.market_data_backlog && !self.trade_event_backlog
+    }
+
+    pub(crate) fn can_retry(self) -> bool {
+        self.healthy() && (self.market_data_backlog || self.trade_event_backlog)
+    }
 }
 /// Hooks must do bounded CPU work only: no network/disk I/O, sleeps or waits.
 /// Submitted outcomes report local SDK acceptance, never venue acceptance/fills.

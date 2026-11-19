@@ -75,6 +75,52 @@ fn intent() -> Intent {
         execution_route: None,
     }
 }
+
+#[test]
+fn unsent_ctp_dispatch_audit_identifies_the_blocking_check_and_target() {
+    use crate::ctp::{
+        ctaker::Target,
+        strategy::{Action, ActionOutcome, CtpDispatchChecks},
+    };
+    let (entry, mutation) = AuditPayload::StrategyResult(ActionOutcome::CtpDispatchBlocked {
+        action: Action::SubmitCtaker {
+            tag: 11,
+            intent: intent(),
+            target: Arc::new(Target {
+                source_id: "account".into(),
+                batch_id: "rb-test-batch".into(),
+                target_revision: 3,
+                trading_day: "20261119".into(),
+                expires_at_us: 456,
+                net_targets: Default::default(),
+            }),
+        },
+        checks: CtpDispatchChecks {
+            strategy_can_trade: true,
+            execution_enabled: true,
+            account_ready: true,
+            market_data_ready: true,
+            market_data_backlog: true,
+            trade_event_backlog: false,
+            journal_failed: false,
+            trade_ingress_failed: false,
+        },
+        quote_received_us: 123,
+        quote_generation: 2,
+    })
+    .materialize(NativeMutation::default());
+    assert_eq!(entry["type"], "ctp_strategy_dispatch_blocked");
+    assert_eq!(entry["sent_to_sdk"], false);
+    assert_eq!(entry["retryable"], true);
+    assert_eq!(entry["checks"]["market_data_backlog"], true);
+    assert_eq!(entry["checks"]["trade_event_backlog"], false);
+    assert_eq!(entry["action"]["batch_id"], "rb-test-batch");
+    assert_eq!(entry["action"]["target_revision"], 3);
+    assert_eq!(entry["quote_received_us"], 123);
+    assert!(mutation.orders.is_empty());
+    assert!(mutation.trades.is_empty());
+}
+
 fn rows<T: serde::de::DeserializeOwned>(store: &persist_manager::RocksDbStore, cf: &str) -> Vec<T> {
     store
         .scan(cf, None, false, None)

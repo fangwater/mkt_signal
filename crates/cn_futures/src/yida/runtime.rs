@@ -481,7 +481,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                                 can_trade: allowed,
                             },
                         )?;
-                        journal.strategy_result(result)?;
+                        journal.strategy_result(result, false)?;
                     }
                 }
             }

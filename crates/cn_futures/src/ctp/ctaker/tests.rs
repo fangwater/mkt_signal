@@ -124,6 +124,77 @@ fn request(a: Action) -> (Intent, Arc<Target>) {
         _ => panic!("unexpected action"),
     }
 }
+
+#[test]
+fn callback_backlog_defers_unsent_ctp_action_within_original_target_lease() {
+    for (md, trade) in [(true, false), (false, true), (true, true)] {
+        let c = core(0, 0);
+        let mut ctaker = strategy(&c, -2);
+        let checks = CtpDispatchChecks {
+            strategy_can_trade: true,
+            execution_enabled: true,
+            account_ready: true,
+            market_data_ready: true,
+            market_data_backlog: md,
+            trade_event_backlog: trade,
+            journal_failed: false,
+            trade_ingress_failed: false,
+        };
+        assert!(!checks.can_dispatch());
+        assert!(checks.can_retry());
+        let action = decide(&mut ctaker, &c, tick(NOW), NOW).remove(0);
+        ctaker
+            .on_result(
+                &ActionOutcome::CtpDispatchBlocked {
+                    action,
+                    checks,
+                    quote_received_us: NOW,
+                    quote_generation: 7,
+                },
+                context(&c),
+            )
+            .unwrap();
+        let early = NOW + 499_999;
+        assert!(decide(&mut ctaker, &c, tick(early), early).is_empty());
+        let retry = NOW + 500_000;
+        let (intent, original) = request(decide(&mut ctaker, &c, tick(retry), retry).remove(0));
+        assert_eq!((intent.side, intent.lots), (Side::Sell, 2));
+        assert_eq!(*original, target(-2));
+        let expired = target(-2).expires_at_us;
+        assert!(decide(&mut ctaker, &c, tick(expired), expired).is_empty());
+    }
+}
+
+#[test]
+fn failed_dispatch_health_check_halts_even_with_callback_backlog() {
+    let c = core(0, 0);
+    let mut ctaker = strategy(&c, -2);
+    let action = decide(&mut ctaker, &c, tick(NOW), NOW).remove(0);
+    let checks = CtpDispatchChecks {
+        strategy_can_trade: true,
+        execution_enabled: true,
+        account_ready: true,
+        market_data_ready: true,
+        market_data_backlog: true,
+        trade_event_backlog: false,
+        journal_failed: true,
+        trade_ingress_failed: false,
+    };
+    assert!(!checks.can_retry());
+    ctaker
+        .on_result(
+            &ActionOutcome::CtpDispatchBlocked {
+                action,
+                checks,
+                quote_received_us: NOW,
+                quote_generation: 7,
+            },
+            context(&c),
+        )
+        .unwrap();
+    let later = NOW + 1_000_000;
+    assert!(decide(&mut ctaker, &c, tick(later), later).is_empty());
+}
 #[test]
 fn configuration_requires_tested_fak_and_removes_local_lot_limits() {
     let c: Config =

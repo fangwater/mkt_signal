@@ -43,6 +43,11 @@ wrong-day, future/stale or foreign-generation quotes produce no action. FAK
 cancellation does not imply a fill; subsequent attempts wait for resolved
 orders and the configured interval. Rejections/uncertain submissions halt
 this target, with unknown reservations left under the native core's control.
+If an incoming callback closes the CTP gate before any reservation or SDK
+call, the journal and trader log record `ctp_strategy_dispatch_blocked` with
+the action's batch, quote generation, gate values, and retry status. A
+callback backlog defers the action to a subsequent fresh tick within the
+original target lease when the account, market feed, and journal are healthy.
 No automatic order cancellation or new target restoration runs on restart.
 
 Every child `prepared_submit` audit includes its exact native key plus the

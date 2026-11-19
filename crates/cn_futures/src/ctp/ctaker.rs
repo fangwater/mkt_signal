@@ -481,6 +481,12 @@ impl Strategy for Ctaker {
         Ok(())
     }
     fn on_result(&mut self, outcome: &ActionOutcome, _: StrategyContext<'_>) -> Result<()> {
+        #[cfg(any(feature = "ctp-sdk", test))]
+        if let ActionOutcome::CtpDispatchBlocked { checks, .. } = outcome {
+            // The action was stopped before reservation or an SDK call. Only
+            // transient callback backlog can retry on a later fresh tick.
+            self.halted |= !checks.can_retry();
+        }
         if matches!(outcome, ActionOutcome::Rejected { .. })
             || matches!(outcome,ActionOutcome::Submitted{receipt,..} if !receipt.all_submitted_locally)
         {

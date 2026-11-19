@@ -192,6 +192,38 @@ impl AuditPayload {
                 crate::ctp::strategy::ActionOutcome::Rejected { tag, error } => {
                     serde_json::json!({"type":"strategy_action_rejected","tag":tag,"error":error})
                 }
+                #[cfg(any(feature = "ctp-sdk", test))]
+                crate::ctp::strategy::ActionOutcome::CtpDispatchBlocked {
+                    action,
+                    checks,
+                    quote_received_us,
+                    quote_generation,
+                } => {
+                    use crate::ctp::strategy::Action;
+                    let action = match action {
+                        Action::Submit { tag, intent } => {
+                            serde_json::json!({"op":"submit","tag":tag,"intent":intent})
+                        }
+                        Action::SubmitCtaker {
+                            tag,
+                            intent,
+                            target,
+                        } => serde_json::json!({
+                            "op":"submit_ctaker","tag":tag,"intent":intent,
+                            "source_id":target.source_id,"batch_id":target.batch_id,
+                            "target_revision":target.target_revision,
+                            "trading_day":target.trading_day,"expires_at_us":target.expires_at_us,
+                        }),
+                        Action::Cancel { tag, key } => {
+                            serde_json::json!({"op":"cancel","tag":tag,"key":key})
+                        }
+                    };
+                    serde_json::json!({
+                        "type":"ctp_strategy_dispatch_blocked","sent_to_sdk":false,
+                        "retryable":checks.can_retry(),"checks":checks,"action":action,
+                        "quote_received_us":quote_received_us,"quote_generation":quote_generation,
+                    })
+                }
             },
             Self::OrderProjection(orders) => {
                 for order in orders {
@@ -467,10 +499,14 @@ impl Journal {
             false,
         )
     }
-    pub fn strategy_result(&self, outcome: crate::ctp::strategy::ActionOutcome) -> Result<()> {
+    pub fn strategy_result(
+        &self,
+        outcome: crate::ctp::strategy::ActionOutcome,
+        display: bool,
+    ) -> Result<()> {
         self.enqueue(
             AuditPayload::StrategyResult(outcome),
-            false,
+            display,
             NativeMutation::default(),
             false,
         )
@@ -1394,19 +1430,37 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                 &mut actions,
                             )?;
                             for action in actions.drain() {
-                                let allowed = can_trade
-                                    && md.ready()
-                                    && runtime.trader.events.is_empty()
-                                    && !md.has_backlog()
-                                    && !journal.failed.load(Ordering::Acquire)
-                                    && !runtime.trader.fault.load(Ordering::Acquire);
-                                let outcome = ctp::strategy::dispatch(
-                                    &mut runtime,
-                                    &journal,
-                                    action,
-                                    allowed,
-                                    Instant::now(),
-                                )?;
+                                use ctp::strategy::{ActionOutcome, CtpDispatchChecks};
+                                let checks = CtpDispatchChecks {
+                                    strategy_can_trade: can_trade,
+                                    execution_enabled: runtime.execute,
+                                    account_ready: runtime.core.is_ready(),
+                                    market_data_ready: md.ready(),
+                                    market_data_backlog: md.has_backlog(),
+                                    trade_event_backlog: !runtime.trader.events.is_empty(),
+                                    journal_failed: journal.failed.load(Ordering::Acquire),
+                                    trade_ingress_failed: runtime
+                                        .trader
+                                        .fault
+                                        .load(Ordering::Acquire),
+                                };
+                                let allowed = checks.can_dispatch();
+                                let outcome = if allowed {
+                                    ctp::strategy::dispatch(
+                                        &mut runtime,
+                                        &journal,
+                                        action,
+                                        true,
+                                        Instant::now(),
+                                    )?
+                                } else {
+                                    ActionOutcome::CtpDispatchBlocked {
+                                        action,
+                                        checks,
+                                        quote_received_us: tick.received_us,
+                                        quote_generation: tick.connection_generation,
+                                    }
+                                };
                                 strategy.on_result(
                                     &outcome,
                                     StrategyContext {
@@ -1414,7 +1468,12 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                         can_trade: allowed && runtime.core.is_ready(),
                                     },
                                 )?;
-                                journal.strategy_result(outcome)?;
+                                let display = matches!(
+                                    &outcome,
+                                    ActionOutcome::CtpDispatchBlocked { .. }
+                                        | ActionOutcome::Rejected { .. }
+                                ) || matches!(&outcome, ActionOutcome::Submitted { receipt, .. } if !receipt.all_submitted_locally);
+                                journal.strategy_result(outcome, display)?;
                             }
                         }
                         ctp::market_data::FeedEvent::Connected { generation } => {
