@@ -212,6 +212,9 @@ impl Context {
         self.windows.iter().any(|w| w.end_sec % 86400 == sec)
     }
 }
+/// A bar sealed from both contracts' final snapshot slots closes up to one
+/// snapshot interval before its end on the wall clock; still treat it as live.
+pub const SEAL_LEAD_MS: i64 = 2_000;
 /// Exchange-clock evidence from one contract's own snapshot cadence.
 #[derive(Clone, Copy, Default)]
 struct Witness {
@@ -305,7 +308,11 @@ impl Input {
         if old.div_euclid(60_000) == self.last_quote_ms.div_euclid(60_000) {
             return self.sealed_by_clocks(main);
         }
-        let mut rows = self.closed(self.last_quote_ms.div_euclid(60_000) * 60_000, main)?;
+        let mut rows = self.emit(
+            self.last_quote_ms.div_euclid(60_000) * 60_000,
+            main,
+            "dominant_next_minute_quote",
+        )?;
         rows.extend(self.sealed_by_clocks(main)?);
         Ok(rows)
     }
@@ -340,7 +347,7 @@ impl Input {
         {
             return Ok(Vec::new());
         }
-        let rows = self.closed(minute + 60_000, main)?;
+        let rows = self.emit(minute + 60_000, main, "dominant_secondary_final_slot")?;
         self.witness_sealed_ms = self.witness_sealed_ms.max(minute + 60_000);
         Ok(rows)
     }
@@ -506,7 +513,23 @@ impl Input {
         {
             return Ok(Vec::new());
         }
-        self.closed(end, main)
+        self.emit(end, main, "session_tail_clock")
+    }
+    /// Close minutes and log how each was sealed: wall-clock and exchange-clock
+    /// lag after the minute's end, so the sealing rule can be audited live.
+    fn emit(&mut self, before_ms: i64, main: &Dominant, by: &str) -> Result<Vec<MinuteBar>> {
+        let rows = self.closed(before_ms, main)?;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        for row in &rows {
+            let end = row.open_time_ms + 60_000;
+            println!(
+                "{}",
+                serde_json::json!({"type":"minute_sealed","contract":main.contract,
+                    "secondary":main.secondary,"minute_ms":row.open_time_ms,"by":by,
+                    "wall_lag_ms":now_ms - end,"exchange_lag_ms":self.last_quote_ms - end})
+            );
+        }
+        Ok(rows)
     }
 }
 fn identical(a: &MarketDataMsg, b: &MarketDataMsg) -> bool {

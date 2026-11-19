@@ -113,7 +113,7 @@ fn consume(
         let live = dominant_ready
             && fresh
             && hour.end_ms > input.live_after_ms
-            && hour.end_ms <= now
+            && hour.end_ms <= now + live::SEAL_LEAD_MS
             && now - hour.end_ms <= 120_000;
         engine.observe(&hour, &main.contract, input.multiple, live)?;
     }

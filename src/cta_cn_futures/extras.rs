@@ -109,7 +109,7 @@ impl Extras {
                     let live = live_after_ms.is_some_and(|cutoff| {
                         fresh
                             && bar.end_ms > cutoff
-                            && bar.end_ms <= now
+                            && bar.end_ms <= now + super::live::SEAL_LEAD_MS
                             && now - bar.end_ms <= 120_000
                     });
                     slot.engine.observe(&bar, &main.contract, multiple, live)?;
