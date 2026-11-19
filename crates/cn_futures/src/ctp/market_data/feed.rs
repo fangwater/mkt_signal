@@ -40,6 +40,8 @@ pub struct Feed {
     timeout: Duration,
     dominant: Option<dominant::Lookup>,
     baseline: Vec<Subscription>,
+    /// Bucket and sequence of the tick most recently returned by `poll`.
+    last_quote: Option<(usize, u64)>,
     _flow: File,
 }
 impl Feed {
@@ -95,6 +97,7 @@ impl Feed {
             timeout: Duration::from_millis(config.response_timeout_ms),
             dominant,
             baseline: config.symbols.clone(),
+            last_quote: None,
             _flow: flow,
         })
     }
@@ -105,6 +108,18 @@ impl Feed {
     }
     pub fn has_backlog(&self) -> bool {
         !self.native.events.is_empty()
+    }
+    /// Queued MD events, for latency statistics only.
+    pub fn queued(&self) -> usize {
+        self.native.events.len()
+    }
+    /// True when a newer quote for the contract of the tick just returned by
+    /// `poll` is already queued. Other contracts' quotes are unrelated to a
+    /// decision on this one, so they do not close its dispatch gate.
+    pub fn newer_contract_quote_queued(&self) -> bool {
+        self.last_quote.is_some_and(|(bucket, sequence)| {
+            self.native.latest[bucket].load(std::sync::atomic::Ordering::Acquire) > sequence
+        })
     }
     pub fn generation(&self) -> u64 {
         self.session.generation
@@ -132,7 +147,8 @@ impl Feed {
             !self.native.failed.load(Ordering::Acquire),
             "MD ingress overflow; stream incomplete"
         );
-        let Ok((event, received_us)) = self.native.events.try_recv() else {
+        self.last_quote = None;
+        let Ok((event, received_us, sequence)) = self.native.events.try_recv() else {
             if let Some(lookup) = &mut self.dominant {
                 if let Some(result) = lookup.poll(now)? {
                     return match result {
@@ -226,6 +242,7 @@ impl Feed {
                     return Ok(None);
                 }
                 let venue = self.session.tick_venue(&event)?;
+                self.last_quote = Some((super::native::quote_bucket(&event.symbol), sequence));
                 FeedEvent::Tick(TickRecord::capture(
                     &event,
                     received_us,

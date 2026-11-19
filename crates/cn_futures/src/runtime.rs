@@ -1183,6 +1183,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
         .transpose()?;
     let mut feed_failed = false;
     let mut actions = Actions::default();
+    let mut md_latency = ctp::market_data::latency::LatencyStats::new(Instant::now());
     let mut stopping = false;
     let mut commands_open = true;
     let mut transport_online = false;
@@ -1430,10 +1431,13 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     };
                     match event {
                         ctp::market_data::FeedEvent::Tick(tick) => {
+                            md_latency.observe(&tick, crate::persistence::now_us(), md.queued());
+                            // Only a newer quote for this same contract supersedes this
+                            // decision; other contracts' queued quotes are unrelated.
                             let can_trade = execute
                                 && runtime.core.is_ready()
                                 && md.ready()
-                                && !md.has_backlog()
+                                && !md.newer_contract_quote_queued()
                                 && runtime.trader.events.is_empty()
                                 && ctp::text_ref(&tick.trading_day)? == runtime.core.trading_day();
                             strategy.on_tick(
@@ -1457,7 +1461,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     execution_enabled: runtime.execute,
                                     account_ready: runtime.core.is_ready(),
                                     market_data_ready: md.ready(),
-                                    market_data_backlog: md.has_backlog(),
+                                    newer_contract_quote_queued: md.newer_contract_quote_queued(),
                                     trade_event_backlog: !runtime.trader.events.is_empty(),
                                     journal_failed: journal.failed.load(Ordering::Acquire),
                                     trade_ingress_failed: runtime
@@ -1526,6 +1530,9 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                         }
                     }
                 }
+                if let Some(stats) = md_latency.take_due(Instant::now()) {
+                    journal.record(stats, true)?;
+                }
             }
             // Never submit an opening decision ahead of a known backlog of venue events.
             if runtime.trader.events.is_empty() {
@@ -1534,9 +1541,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     let can_trade = !feed_failed
                         && execute
                         && runtime.core.is_ready()
-                        && feed
-                            .as_ref()
-                            .is_some_and(|md| md.ready() && !md.has_backlog());
+                        && feed.as_ref().is_some_and(|md| md.ready());
                     let mut audit_error = None;
                     work |= ingress.poll(|target| {
                         let recorded = if execute {
@@ -1600,9 +1605,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                 let now_us = crate::persistence::now_us();
                                 let can_trade = execute
                                     && runtime.core.is_ready()
-                                    && feed
-                                        .as_ref()
-                                        .is_some_and(|md| md.ready() && !md.has_backlog());
+                                    && feed.as_ref().is_some_and(|md| md.ready());
                                 let admit = |settings| {
                                     prepare_ctp_target(
                                         settings,
@@ -1707,10 +1710,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     Err(crossbeam_channel::TryRecvError::Empty) => {}
                 }
             }
-            let md_ready = !feed_failed
-                && feed
-                    .as_ref()
-                    .is_none_or(|md| md.ready() && !md.has_backlog());
+            let md_ready = !feed_failed && feed.as_ref().is_none_or(|md| md.ready());
             let can_trade = runtime.execute
                 && runtime.core.is_ready()
                 && transport_online

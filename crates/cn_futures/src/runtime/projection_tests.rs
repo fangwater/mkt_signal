@@ -100,7 +100,7 @@ fn unsent_ctp_dispatch_audit_identifies_the_blocking_check_and_target() {
             execution_enabled: true,
             account_ready: true,
             market_data_ready: true,
-            market_data_backlog: true,
+            newer_contract_quote_queued: true,
             trade_event_backlog: false,
             journal_failed: false,
             trade_ingress_failed: false,
@@ -112,7 +112,7 @@ fn unsent_ctp_dispatch_audit_identifies_the_blocking_check_and_target() {
     assert_eq!(entry["type"], "ctp_strategy_dispatch_blocked");
     assert_eq!(entry["sent_to_sdk"], false);
     assert_eq!(entry["retryable"], true);
-    assert_eq!(entry["checks"]["market_data_backlog"], true);
+    assert_eq!(entry["checks"]["newer_contract_quote_queued"], true);
     assert_eq!(entry["checks"]["trade_event_backlog"], false);
     assert_eq!(entry["action"]["batch_id"], "rb-test-batch");
     assert_eq!(entry["action"]["target_revision"], 3);

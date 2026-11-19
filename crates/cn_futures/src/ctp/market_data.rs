@@ -416,6 +416,7 @@ impl Session {
 mod dominant;
 #[cfg(feature = "ctp-sdk")]
 mod feed;
+pub mod latency;
 #[cfg(feature = "ctp-sdk")]
 mod native;
 #[cfg(feature = "ctp-sdk")]

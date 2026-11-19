@@ -74,7 +74,8 @@ pub struct CtpDispatchChecks {
     pub execution_enabled: bool,
     pub account_ready: bool,
     pub market_data_ready: bool,
-    pub market_data_backlog: bool,
+    /// A newer quote for the same contract is queued behind this one.
+    pub newer_contract_quote_queued: bool,
     pub trade_event_backlog: bool,
     pub journal_failed: bool,
     pub trade_ingress_failed: bool,
@@ -92,11 +93,11 @@ impl CtpDispatchChecks {
     }
 
     pub(crate) fn can_dispatch(self) -> bool {
-        self.healthy() && !self.market_data_backlog && !self.trade_event_backlog
+        self.healthy() && !self.newer_contract_quote_queued && !self.trade_event_backlog
     }
 
     pub(crate) fn can_retry(self) -> bool {
-        self.healthy() && (self.market_data_backlog || self.trade_event_backlog)
+        self.healthy() && (self.newer_contract_quote_queued || self.trade_event_backlog)
     }
 }
 /// Hooks must do bounded CPU work only: no network/disk I/O, sleeps or waits.
