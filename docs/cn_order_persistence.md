@@ -31,6 +31,8 @@ CTP 固定异步发送审计，不再接受 `sync_before_send` 配置。易达�
 | `cn_uniform_orders` | 每个交易日、交易所、完整原生 OrderKey 的最新归一化订单 |
 | `cn_trade_facts` | 去重后的事实成交；通过交易日、交易所与系统订单号关联订单 |
 
+CTP 正常的 `ReqQryInstrument` 回包只更新内存中的合约规则。查询错误、委托、成交及账户对账证据仍写入原有列族。
+
 `NativeOrderRecord` 同时保存当前 OMS 投影与原始 `submitted_intent`。恢复后 `order.owned=false`；历史 `locally_submitted=true` 仅说明曾由本地提交，不代表新进程或任何策略拥有该订单。SDK 未提供的成交流动性角色、策略归属及 CTP 手续费不作推定。易达手续费按回报原值保留为 CNY，原生时间保留其原始整数值，不作为 Unix 时间戳使用。
 
 Day / FAK / FOK 从真实回报字段恢复；CTP 使用 TimeCondition / VolumeCondition，易达使用原生 OrderType。撤单终态若已有全量事实成交，归一化恢复为 Filled，原始撤单状态仍在证据中。

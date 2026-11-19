@@ -595,6 +595,10 @@ impl Journal {
         received_us: u64,
         shutdown_tail: bool,
     ) -> Result<()> {
+        // Successful catalogue rows only refresh in-memory contract rules.
+        if event.kind == crate::ctp::INSTRUMENT && event.error == 0 {
+            return Ok(());
+        }
         self.enqueue(
             AuditPayload::Ctp {
                 event: event.clone(),
@@ -1850,6 +1854,28 @@ mod checkpoint_tests {
             },
             receiver,
         )
+    }
+    #[test]
+    fn ctp_journal_omits_catalogue_rows_and_keeps_errors_and_trade_reports() {
+        use crate::ctp::{ingress::Event, HotEvent, INSTRUMENT, TRADE};
+
+        let (journal, receiver) = fixture();
+        for (kind, error) in [(INSTRUMENT, 0), (INSTRUMENT, 42), (TRADE, 0)] {
+            let event = Event::Hot(HotEvent {
+                kind,
+                error,
+                ..Default::default()
+            });
+            journal.ctp_event(&event, 123, false).unwrap();
+        }
+        let logged: Vec<_> = receiver
+            .try_iter()
+            .map(|record| record.payload.materialize(record.mutation).0)
+            .collect();
+        assert_eq!(logged.len(), 2);
+        assert_eq!(logged[0]["event"]["kind"], INSTRUMENT);
+        assert_eq!(logged[0]["event"]["error_code"], 42);
+        assert_eq!(logged[1]["event"]["kind"], TRADE);
     }
     #[test]
     fn checkpoint_polling_never_reads_an_ack_channel_and_requires_a_valid_prefix() {
