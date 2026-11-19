@@ -1,8 +1,8 @@
 //! Read-only authenticated Manager observations and attribution.
-use super::config::Config;
+use super::{config::Config, l1::SharedQuotes};
 use anyhow::{ensure, Context, Result};
 use axum::http::{header, HeaderMap, StatusCode};
-use cn_futures_state::{PositionRow, MAX_POSITIONS};
+use cn_futures_state::{Adapter, InstrumentMark, PositionRow, MAX_POSITIONS};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -15,9 +15,10 @@ const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct Positions {
-    sources: Arc<BTreeMap<String, String>>,
+    sources: Arc<BTreeMap<String, (String, Adapter)>>,
     origin: String,
     client: reqwest::Client,
+    quotes: Option<SharedQuotes>,
 }
 
 impl Positions {
@@ -27,7 +28,7 @@ impl Positions {
             .iter()
             .filter_map(|counter| {
                 let id = counter.manager_source_id.as_ref()?;
-                Some((counter.id.clone(), id.clone()))
+                Some((counter.id.clone(), (id.clone(), counter.adapter)))
             })
             .collect();
         let client = reqwest::Client::builder()
@@ -40,7 +41,13 @@ impl Positions {
             sources: Arc::new(sources),
             origin: format!("http://127.0.0.1:{}", config.manager_port),
             client,
+            quotes: None,
         })
+    }
+
+    pub fn with_quotes(mut self, quotes: Option<SharedQuotes>) -> Self {
+        self.quotes = quotes;
+        self
     }
 
     pub fn source_ids(&self) -> Vec<&str> {
@@ -52,7 +59,7 @@ impl Positions {
         source: &str,
         headers: &HeaderMap,
     ) -> Result<BTreeMap<String, ContractPositions>, StatusCode> {
-        let (id, ledger): (_, Ledger) = self.read_json(source, headers, "netting").await?;
+        let (id, _, ledger): (_, _, Ledger) = self.read_json(source, headers, "netting").await?;
         if ledger.portfolio.source_id != id {
             return Err(StatusCode::BAD_GATEWAY);
         }
@@ -67,12 +74,36 @@ impl Positions {
         source: &str,
         headers: &HeaderMap,
     ) -> Result<AccountObservation, StatusCode> {
-        let (id, response): (_, ManagerSnapshot) =
+        let (id, adapter, response): (_, _, ManagerSnapshot) =
             self.read_json(source, headers, "snapshot").await?;
         if response.source_id != id {
             return Err(StatusCode::BAD_GATEWAY);
         }
-        Ok(response.project(super::now_us()))
+        let mut observation = response.project(super::now_us());
+        if let (Adapter::Ctp, Some(quotes), Some(position)) =
+            (adapter, &self.quotes, &mut observation.position)
+        {
+            if let Ok(day) = position.trading_day.parse() {
+                let marks = || {
+                    quotes
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .marks(day, &position.positions)
+                };
+                let (mut prices, mut connected) = marks();
+                if prices.iter().any(|m| {
+                    m.last_price.is_none() && m.bid_price.is_none() && m.ask_price.is_none()
+                }) {
+                    // A new observation can queue its first same-day L1 lookup.
+                    // Allow one history polling cycle without re-querying Manager.
+                    tokio::time::sleep(Duration::from_millis(1250)).await;
+                    (prices, connected) = marks();
+                }
+                position.marks = prices;
+                position.l1_connected = connected;
+            }
+        }
+        Ok(observation)
     }
 
     async fn read_json<T: DeserializeOwned>(
@@ -80,8 +111,8 @@ impl Positions {
         source: &str,
         headers: &HeaderMap,
         endpoint: &str,
-    ) -> Result<(&str, T), StatusCode> {
-        let id = self.sources.get(source).ok_or(StatusCode::NOT_FOUND)?;
+    ) -> Result<(&str, Adapter, T), StatusCode> {
+        let (id, adapter) = self.sources.get(source).ok_or(StatusCode::NOT_FOUND)?;
         let cookie = headers
             .get(header::COOKIE)
             .and_then(|value| value.to_str().ok())
@@ -121,7 +152,7 @@ impl Positions {
             bytes.extend_from_slice(&chunk);
         }
         let data = serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_GATEWAY)?;
-        Ok((id, data))
+        Ok((id, *adapter, data))
     }
 }
 
@@ -164,6 +195,8 @@ struct ObservedPositions {
     trading_day: String,
     current: bool,
     positions: Vec<PositionRow>,
+    marks: Vec<InstrumentMark>,
+    l1_connected: bool,
 }
 
 #[derive(Serialize)]
@@ -207,6 +240,8 @@ impl ManagerSnapshot {
                         && !self.replication_stale
                         && self.status == "observing",
                     positions: self.positions,
+                    marks: Vec::new(),
+                    l1_connected: false,
                 })
             });
         let account = self

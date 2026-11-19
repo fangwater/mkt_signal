@@ -8,7 +8,7 @@ use anyhow::Result;
 use cn_futures_state::transport::StateSubscriber;
 use config::{Config, Counter};
 use relay::Hub;
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::time::Duration;
 
 const DASHBOARD: &str = include_str!("../../../../web/cn_futures_viz/index.html");
 fn now_us() -> u64 {
@@ -18,7 +18,7 @@ fn now_us() -> u64 {
 fn spawn(
     source: Counter,
     hub: Hub,
-    quotes: Option<Rc<RefCell<l1::Quotes>>>,
+    quotes: Option<l1::SharedQuotes>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_local(async move {
         if let Some(path) = &source.account_snapshot_path {
@@ -47,7 +47,10 @@ fn spawn(
                 next_saved_mark = now + Duration::from_secs(1);
                 if let (Some(quotes), Some(mut saved)) = (&quotes, hub.retained(&source)) {
                     saved.marks.clear();
-                    quotes.borrow_mut().attach(&mut saved);
+                    quotes
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .attach(&mut saved);
                     if let Err(error) = hub.restore(&source, saved) {
                         log::warn!(
                             "update saved account valuation for {}: {error:#}",
@@ -67,7 +70,10 @@ fn spawn(
                 let result = s.latest().and_then(|snapshot| {
                     if let Some(mut snapshot) = snapshot {
                         if let Some(quotes) = &quotes {
-                            quotes.borrow_mut().attach(&mut snapshot);
+                            quotes
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .attach(&mut snapshot);
                         }
                         hub.apply(&source, snapshot)?;
                     }
@@ -89,6 +95,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         .run_until(async move {
             let hub = Hub::new(&cfg.counters, cfg.stale_after_ms);
             let quotes = cfg.l1.map(|config| l1::spawn(config, cfg.stale_after_ms));
+            let positions = positions.with_quotes(quotes.as_ref().map(|(book, _)| book.clone()));
             let listeners: Vec<_> = cfg
                 .counters
                 .into_iter()

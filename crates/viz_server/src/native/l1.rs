@@ -6,15 +6,16 @@ use cn_futures_pbs::{
     msg::{MarketDataMsg, SOURCE_RESET},
     sources::{zmq::ZmqSource, Source},
 };
-use cn_futures_state::{InstrumentKind, InstrumentMark, Snapshot, Text, Venue, MAX_POSITIONS};
+use cn_futures_state::{
+    InstrumentKind, InstrumentMark, PositionRow, Snapshot, Text, Venue, MAX_POSITIONS,
+};
 use cn_market_proto::{
     cn_futures_market_client::CnFuturesMarketClient, get_minute_bars_request::Range, Exchange,
     GetMinuteBarsRequest, GetMinuteBarsResponse, GetProductMultipliersRequest,
 };
 use std::{
-    cell::RefCell,
     collections::{HashMap, HashSet},
-    rc::Rc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::{
@@ -25,6 +26,7 @@ use tonic::transport::{Channel, Endpoint};
 
 type Contract = (Venue, [u8; 64]);
 type Multipliers = HashMap<(Venue, String), i32>;
+pub type SharedQuotes = Arc<Mutex<Quotes>>;
 
 pub struct Quotes {
     stale_us: u64,
@@ -113,18 +115,25 @@ impl Quotes {
         if !snapshot.position_ready || !snapshot.marks.is_empty() {
             return;
         }
-        let now = now_us();
         let Ok(day) = snapshot.trading_day.as_str().parse() else {
             return;
         };
+        let (marks, connected) = self.marks(day, &snapshot.positions);
+        snapshot.marks = marks;
+        snapshot.l1_connected |= connected;
+    }
+
+    pub fn marks(&mut self, day: u32, positions: &[PositionRow]) -> (Vec<InstrumentMark>, bool) {
+        let now = now_us();
         if self.history.len() >= MAX_POSITIONS {
             self.history
                 .retain(|(_, archived_day), _| *archived_day >= day);
         }
         let mut seen = HashSet::new();
-        snapshot
-            .marks
-            .extend(snapshot.positions.iter().filter_map(|position| {
+        let mut connected = false;
+        let marks = positions
+            .iter()
+            .filter_map(|position| {
                 let (key, product) = contract(position.venue, position.symbol.as_str().as_bytes())?;
                 if !seen.insert(key) {
                     return None;
@@ -164,7 +173,7 @@ impl Quotes {
                     mark.bid_lots = quote.bid[0].quantity.try_into().ok();
                     mark.ask_lots = quote.ask[0].quantity.try_into().ok();
                     mark.paused = quote.source_generation != self.generation;
-                    snapshot.l1_connected |= !mark.paused
+                    connected |= !mark.paused
                         && now >= quote.received_us
                         && now - quote.received_us <= self.stale_us;
                 } else {
@@ -185,7 +194,9 @@ impl Quotes {
                     }
                 }
                 Some(mark)
-            }));
+            })
+            .collect();
+        (marks, connected)
     }
 
     fn history_request(&mut self) -> Option<(Contract, Text<81>, u32)> {
@@ -318,11 +329,8 @@ fn archived_mark(
     None
 }
 
-pub fn spawn(
-    config: config::L1,
-    stale_after_ms: u64,
-) -> (Rc<RefCell<Quotes>>, [JoinHandle<()>; 3]) {
-    let quotes = Rc::new(RefCell::new(Quotes::new(stale_after_ms)));
+pub fn spawn(config: config::L1, stale_after_ms: u64) -> (SharedQuotes, [JoinHandle<()>; 3]) {
+    let quotes = Arc::new(Mutex::new(Quotes::new(stale_after_ms)));
     let book = quotes.clone();
     let market = tokio::task::spawn_local(async move {
         let endpoint = format!("tcp://127.0.0.1:{}", config.zmq_port);
@@ -333,7 +341,7 @@ pub fn spawn(
                     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
                     let error = loop {
                         interval.tick().await;
-                        let mut book = book.borrow_mut();
+                        let mut book = book.lock().unwrap_or_else(|e| e.into_inner());
                         let mut error = None;
                         for _ in 0..512 {
                             match source.poll() {
@@ -369,7 +377,7 @@ pub fn spawn(
         loop {
             let delay = match multipliers(&mut client).await {
                 Ok(rows) => {
-                    let mut book = book.borrow_mut();
+                    let mut book = book.lock().unwrap_or_else(|e| e.into_inner());
                     book.metadata_us = now_us();
                     book.multipliers = rows;
                     3600
@@ -395,7 +403,10 @@ pub fn spawn(
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            let request = book.borrow_mut().history_request();
+            let request = book
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .history_request();
             let Some((key, symbol, day)) = request else {
                 continue;
             };
@@ -413,15 +424,21 @@ pub fn spawn(
                 .await;
             match response {
                 Ok(response) => {
-                    if let Some(history) = book.borrow_mut().history.get_mut(&(key, day)) {
-                        history.mark = archived_mark(
-                            response.into_inner(),
-                            exchange,
-                            venue,
-                            symbol,
-                            day,
-                            now_us(),
-                        );
+                    let mark = archived_mark(
+                        response.into_inner(),
+                        exchange,
+                        venue,
+                        symbol,
+                        day,
+                        now_us(),
+                    );
+                    if let Some(history) = book
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .history
+                        .get_mut(&(key, day))
+                    {
+                        history.mark = mark;
                     }
                 }
                 Err(error) => log::warn!(

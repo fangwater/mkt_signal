@@ -88,6 +88,7 @@
         overflow: hidden;
         background: var(--surface);
       }
+      .risk-band.single-amount { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .metric { padding: 14px; border-right: 1px solid var(--line); min-width: 0; }
       .metric:last-child { border-right: 0; }
       .metric label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 6px; }
@@ -170,7 +171,8 @@
       .status.wait { color: var(--amber); border-color: #82661d; }
       .empty { padding: 42px; text-align: center; color: var(--muted); }
       @media (max-width: 980px) {
-        .risk-band, .account-band { grid-template-columns: repeat(2, 1fr); }
+        .risk-band, .risk-band.single-amount, .account-band { grid-template-columns: repeat(2, 1fr); }
+        .risk-band.single-amount .metric:last-child { grid-column: 1 / -1; }
         .metric:nth-child(2n) { border-right: 0; }
         .metric:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
         .toolbar { margin-left: 0; width: 100%; }
@@ -247,10 +249,10 @@
         <div class="metric"><label>当日手续费</label><strong id="account-commission">--</strong></div>
       </div>
     </section>
-    <section class="risk-band" aria-label="持仓概览">
+    <section class="risk-band single-amount" aria-label="持仓概览">
       <div class="metric"><label>持仓合约数</label><strong id="contract-count">--</strong></div>
-      <div class="metric"><label title="净名义金额＝净手数 × 合约乘数 × L1 最新价，不是保证金或盈亏">期货持仓金额 · 元</label><strong id="futures-amount">--</strong></div>
-      <div class="metric"><label title="净权利金市值＝净手数 × 合约乘数 × L1 最新价，不是标的敞口、保证金或盈亏">期权持仓金额 · 元</label><strong id="options-amount">--</strong></div>
+      <div id="futures-metric" class="metric"><label id="futures-amount-label" title="净名义金额＝净手数 × 合约乘数 × L1 估值价">持仓金额 · 元</label><strong id="futures-amount">--</strong></div>
+      <div id="options-metric" class="metric" hidden><label title="净权利金市值＝净手数 × 合约乘数 × L1 估值价">期权持仓金额 · 元</label><strong id="options-amount">--</strong></div>
       <div class="metric"><label>行情覆盖 · 合约</label><strong id="valuation-coverage">--</strong></div>
     </section>
     <div id="notice" class="meta" role="status" hidden></div>
@@ -362,13 +364,16 @@
       return Math.min(gap,86400000-gap)>limit;
     }
     const validPrice = price => Number.isFinite(price) && price > 0 && price < Number.MAX_VALUE;
+    const hasMid = mark => validPrice(mark.bid_price) && validPrice(mark.ask_price) &&
+      mark.bid_price<=mark.ask_price && mark.bid_lots>0 && mark.ask_lots>0;
+    const hasQuote = mark => mark && (validPrice(mark.last_price) || hasMid(mark));
+    const marketKey = (venue,symbol) => JSON.stringify([venue,symbol]);
     function valuation(g) {
       const mark=g.mark;
       if(!mark || !Number.isInteger(mark.contract_multiple) || mark.contract_multiple<=0) return {amount:null,reason:'等待合约资料与 L1 行情'};
       if(!['future','option'].includes(mark.kind)) return {amount:null,reason:'缺合约类别'};
       const ctp=g.source.adapter==='ctp';
-      const mid=ctp && validPrice(mark.bid_price) && validPrice(mark.ask_price) &&
-        mark.bid_price<=mark.ask_price && mark.bid_lots>0 && mark.ask_lots>0;
+      const mid=ctp && hasMid(mark);
       const price=mid ? mark.bid_price/2+mark.ask_price/2 : mark.last_price;
       const priceLabel=mid ? 'L1 买卖一中间价' : 'L1 最新成交价';
       if(!validPrice(price)) return {amount:null,reason:'等待同交易日 L1 行情'};
@@ -376,9 +381,9 @@
       if(!Number.isFinite(amount)) return {amount:null,reason:'估值超出数值范围'};
       const age=Date.now()-Number(mark.received_us)/1000;
       const oldNative=oldExchangeQuote(mark,g.source.stale_after_ms);
-      const historical=g.historical || oldNative || mark.initial || mark.paused || !g.source.entry?.l1_connected || age<0 || age>g.source.stale_after_ms || status(g.source)!=='observing' || !mark.trading_day || !mark.native_time;
+      const historical=g.historical || oldNative || mark.initial || mark.paused || !g.l1Connected || age<0 || age>g.source.stale_after_ms || status(g.source)!=='observing' || !mark.trading_day || !mark.native_time;
       const quoteTime=String(mark.trading_day||'未知交易日')+' '+(mark.last_trade_time||mark.native_time||'时刻未知');
-      return {amount,price,priceLabel,historical,reason:mark.initial?(ctp?'已完成分钟的最后一档盘口':'初始快照'+(mark.paused?' · 暂停':'')):mark.paused?'行情中断或暂停':age<0||age>g.source.stale_after_ms?'行情停更':!g.source.entry?.l1_connected?'行情断开':oldNative?'原生行情时间较旧':historical?'来源未就绪':ctp?'通联 L1':'易达 L1',quoteTime};
+      return {amount,price,priceLabel,historical,reason:mark.initial?(ctp?'已完成分钟的最后一档盘口':'初始快照'+(mark.paused?' · 暂停':'')):mark.paused?'行情中断或暂停':age<0||age>g.source.stale_after_ms?'行情停更':!g.l1Connected?'行情断开':oldNative?'原生行情时间较旧':historical?'来源未就绪':ctp?'通联 L1':'易达 L1',quoteTime};
     }
     function amountCell(g) {
       const v=valuation(g);
@@ -407,8 +412,20 @@
         && (status(source)==='observing' || (live.runtime_status==='running' && live.connected && live.transport_ready &&
             live.ready && freshAt(live.observed_us, source.stale_after_ms)));
       if (currentHttp || (!currentLive && http && (!saved || http.observed_us >= saved.observed_us))) {
-        const marks=[live,saved].find(entry=>entry?.trading_day===http.trading_day && entry.marks?.length)?.marks;
-        return {...http, position_ready:true, marks, historical:!currentHttp, label:currentHttp?'柜台查询':'Manager 历史持仓'};
+        const marks=new Map((http.marks||[]).map(m=>[marketKey(m.venue,m.symbol),m]));
+        let l1_connected=http.l1_connected;
+        for (const entry of [saved,live]) {
+          if (entry?.trading_day!==http.trading_day) continue;
+          l1_connected ||= entry.l1_connected;
+          for (const mark of entry.marks||[]) {
+            const key=marketKey(mark.venue,mark.symbol);
+            const previous=marks.get(key);
+            const newerLive=entry===live && !mark.initial && hasQuote(mark) &&
+              (previous?.initial || Number(mark.received_us)>=Number(previous?.received_us));
+            if (!previous || (!hasQuote(previous) && hasQuote(mark)) || newerLive) marks.set(key,mark);
+          }
+        }
+        return {...http, position_ready:true, marks:[...marks.values()], l1_connected, historical:!currentHttp, label:currentHttp?'柜台查询':'Manager 历史持仓'};
       }
       if (currentLive) return live;
       if (saved) return {...saved,historical:true,label:'上次账户快照'};
@@ -420,12 +437,12 @@
       const showZero = filtered && $('show-zero').checked;
       for (const source of sources) {
         const snapshot = positionView(source);
-        const marks=new Map((snapshot?.marks||[]).map(m=>[JSON.stringify([m.venue,m.symbol]),m]));
+        const marks=new Map((snapshot?.marks||[]).map(m=>[marketKey(m.venue,m.symbol),m]));
         const group = (venue, symbol) => {
           const key = JSON.stringify([source.source_id, venue, symbol]);
-          if (!groups.has(key)) groups.set(key, {key,source,symbol,venue,positions:[],mark:marks.get(JSON.stringify([venue,symbol])),
+          if (!groups.has(key)) groups.set(key, {key,source,symbol,venue,positions:[],mark:marks.get(marketKey(venue,symbol)),
             tradingDay:snapshot?.trading_day,observedUs:snapshot?.observed_us,positionReady:snapshot?.position_ready,
-            historical:snapshot?.historical,long:0,short:0});
+            historical:snapshot?.historical,l1Connected:snapshot?.l1_connected,long:0,short:0});
           return groups.get(key);
         };
         for (const p of snapshot?.positions || []) {
@@ -544,6 +561,12 @@
     function renderOverview(sources,groups) {
       const known=sources.length && sources.every(s=>positionView(s)?.position_ready);
       $('contract-count').textContent=known?fmt(groups.length):'--';
+      const kinds=new Set(groups.map(g=>g.mark?.kind));
+      const futures=kinds.has('future'), options=kinds.has('option');
+      $('futures-metric').hidden=options&&!futures;
+      $('options-metric').hidden=!options;
+      $('futures-amount-label').textContent=futures?'期货持仓金额 · 元':'持仓金额 · 元';
+      $('futures-metric').closest('.risk-band').classList.toggle('single-amount',!(futures&&options));
       for(const [id,kind] of [['futures-amount','future'],['options-amount','option']]) {
         const amount=known?totalAmount(groups,kind):null;
         $(id).textContent=amount===null?'--':yuan(amount);
