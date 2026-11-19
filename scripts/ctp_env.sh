@@ -7,7 +7,8 @@ cd "$BASE_DIR"
 environment="${BASE_DIR##*/}"
 unit="$environment-trader.service"
 fifo="$BASE_DIR/run/commands.fifo"
-args=(--config "$BASE_DIR/config/trade.toml" --market-data-config "$BASE_DIR/config/md.toml" --read-only)
+args=(--config "$BASE_DIR/config/trade.toml" --market-data-config "$BASE_DIR/config/md.toml")
+run_flags=()
 
 fail() {
     printf '%s\n' "$1" >&2
@@ -16,6 +17,30 @@ fail() {
 
 check_fifo() {
     [[ -p "$fifo" && -O "$fifo" && ! -L "$fifo" ]] || fail 'invalid private command FIFO'
+}
+
+select_mode() {
+    local mode
+    mode=$(/usr/bin/python3 - "$BASE_DIR/config/trade.toml" <<'PY'
+from pathlib import Path
+import sys, tomllib
+
+config = tomllib.loads(Path(sys.argv[1]).read_text())
+ctaker = config.get("ctaker")
+if ctaker is None:
+    print("read-only")
+else:
+    ingress = config.get("position_target_ingress", {})
+    if set(ingress) != {"source_id", "manager_plan"} or not ctaker.get("contracts"):
+        raise SystemExit("managed execution requires a Manager subscription and an explicit contract scope")
+    print("manager-target")
+PY
+)
+    case "$mode" in
+        read-only) args+=(--read-only) ;;
+        manager-target) run_flags+=(--execute) ;;
+        *) fail 'invalid CTP execution mode' ;;
+    esac
 }
 
 [[ $# == 1 ]] || fail "Usage: $0 {install|start|stop|status|state|run}"
@@ -56,6 +81,7 @@ EOF
         systemctl --user enable "$unit"
         ;;
     start)
+        select_mode
         "$BASE_DIR/bin/ctp-trader" "${args[@]}" --check-config
         systemctl --user start "$unit"
         ;;
@@ -73,16 +99,17 @@ EOF
         ;;
     state)
         check_fifo
-        systemctl --user is-active --quiet "$unit" || fail 'CTP account observer is stopped'
+        systemctl --user is-active --quiet "$unit" || fail 'CTP Trader is stopped'
         timeout 2s bash -c 'printf "%s\n" '\''{"op":"state"}'\'' > "$1"' _ "$fifo"
         printf '%s\n' 'read-only state request queued; response remains in private runtime logs'
         ;;
     run)
+        select_mode
         source "$BASE_DIR/env.sh"
         mkdir -p run
         [[ -e "$fifo" || -L "$fifo" ]] || mkfifo -m 0600 -- "$fifo"
         check_fifo
-        exec "$BASE_DIR/bin/ctp-trader" "${args[@]}" --connect <> "$fifo"
+        exec "$BASE_DIR/bin/ctp-trader" "${args[@]}" --connect "${run_flags[@]}" <> "$fifo"
         ;;
     *) fail "Usage: $0 {install|start|stop|status|state|run}" ;;
 esac
