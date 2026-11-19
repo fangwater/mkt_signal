@@ -21,12 +21,41 @@ fn spawn(
     quotes: Option<Rc<RefCell<l1::Quotes>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_local(async move {
+        if let Some(path) = &source.account_snapshot_path {
+            let result = cn_futures_state::checkpoint::load(
+                path,
+                &source.position_namespace,
+                source.adapter,
+                &source.expected_account_hash,
+            )
+            .and_then(|snapshot| {
+                snapshot.map_or(Ok(()), |snapshot| hub.restore(&source, snapshot))
+            });
+            if let Err(error) = result {
+                log::warn!("load account snapshot for {}: {error:#}", source.id);
+            }
+        }
         let mut subscriber = None;
         let mut retry = tokio::time::Instant::now();
+        let mut next_saved_mark = retry;
         let mut interval = tokio::time::interval(Duration::from_millis(10));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
+            let now = tokio::time::Instant::now();
+            if source.account_snapshot_path.is_some() && now >= next_saved_mark {
+                next_saved_mark = now + Duration::from_secs(1);
+                if let (Some(quotes), Some(mut saved)) = (&quotes, hub.retained(&source)) {
+                    saved.marks.clear();
+                    quotes.borrow_mut().attach(&mut saved);
+                    if let Err(error) = hub.restore(&source, saved) {
+                        log::warn!(
+                            "update saved account valuation for {}: {error:#}",
+                            source.id
+                        );
+                    }
+                }
+            }
             if subscriber.is_none() && tokio::time::Instant::now() >= retry {
                 match StateSubscriber::open(&source.position_namespace) {
                     Ok(s) => subscriber = Some(s),

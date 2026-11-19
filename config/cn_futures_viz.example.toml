@@ -26,3 +26,4 @@ expected_account_hash = "<64-character account hash>"
 # position_namespace = "cn_ctp_sim"
 # expected_account_hash = "<64-character account hash>"
 # manager_source_id = "explicit-manager-source-id" # existing Manager portfolio
+# account_snapshot_path = "/absolute/env/data/account-observation.bin" # same path as the trader's position_ipc

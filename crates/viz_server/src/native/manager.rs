@@ -1,8 +1,9 @@
-//! Read-only projection of the authenticated Manager attribution ledger.
+//! Read-only authenticated Manager observations and attribution.
 use super::config::Config;
 use anyhow::{ensure, Context, Result};
 use axum::http::{header, HeaderMap, StatusCode};
-use serde::{Deserialize, Serialize};
+use cn_futures_state::{PositionRow, MAX_POSITIONS};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -10,7 +11,7 @@ use std::{
 };
 
 const SESSION: &str = "cn_cta_session=";
-const MAX_LEDGER_BYTES: usize = 16 * 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct Positions {
@@ -34,7 +35,7 @@ impl Positions {
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(3))
             .build()
-            .context("build Manager ledger HTTP client")?;
+            .context("build Manager observation HTTP client")?;
         Ok(Self {
             sources: Arc::new(sources),
             origin: format!("http://127.0.0.1:{}", config.manager_port),
@@ -51,6 +52,35 @@ impl Positions {
         source: &str,
         headers: &HeaderMap,
     ) -> Result<BTreeMap<String, ContractPositions>, StatusCode> {
+        let (id, ledger): (_, Ledger) = self.read_json(source, headers, "netting").await?;
+        if ledger.portfolio.source_id != id {
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+        ledger.project().map_err(|error| {
+            log::warn!("invalid Manager ledger for Viz source {source}: {error}");
+            StatusCode::BAD_GATEWAY
+        })
+    }
+
+    pub async fn account(
+        &self,
+        source: &str,
+        headers: &HeaderMap,
+    ) -> Result<AccountObservation, StatusCode> {
+        let (id, response): (_, ManagerSnapshot) =
+            self.read_json(source, headers, "snapshot").await?;
+        if response.source_id != id {
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+        Ok(response.project(super::now_us()))
+    }
+
+    async fn read_json<T: DeserializeOwned>(
+        &self,
+        source: &str,
+        headers: &HeaderMap,
+        endpoint: &str,
+    ) -> Result<(&str, T), StatusCode> {
         let id = self.sources.get(source).ok_or(StatusCode::NOT_FOUND)?;
         let cookie = headers
             .get(header::COOKIE)
@@ -65,7 +95,7 @@ impl Positions {
         let mut response = self
             .client
             .get(format!(
-                "{}/manager/api/native/sources/{id}/netting",
+                "{}/manager/api/native/sources/{id}/{endpoint}",
                 self.origin
             ))
             .header(header::COOKIE, cookie)
@@ -85,19 +115,118 @@ impl Positions {
             .await
             .map_err(|_| StatusCode::BAD_GATEWAY)?
         {
-            if bytes.len() + chunk.len() > MAX_LEDGER_BYTES {
+            if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
                 return Err(StatusCode::BAD_GATEWAY);
             }
             bytes.extend_from_slice(&chunk);
         }
-        let ledger: Ledger = serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_GATEWAY)?;
-        if &ledger.portfolio.source_id != id {
-            return Err(StatusCode::BAD_GATEWAY);
-        }
-        ledger.project().map_err(|error| {
-            log::warn!("invalid Manager ledger for Viz source {source}: {error}");
-            StatusCode::BAD_GATEWAY
-        })
+        let data = serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_GATEWAY)?;
+        Ok((id, data))
+    }
+}
+
+#[derive(Deserialize)]
+struct ManagerSnapshot {
+    source_id: String,
+    state_observed_us: Option<u64>,
+    trading_day: Option<String>,
+    snapshot_ready: bool,
+    snapshot_current_runtime: bool,
+    positions_may_lag: bool,
+    projection_errors: u64,
+    replication_stale: bool,
+    status: String,
+    positions: Vec<PositionRow>,
+    funds: Option<ManagerFunds>,
+    funds_current_runtime: bool,
+    funds_stale: bool,
+}
+
+#[derive(Deserialize)]
+struct ManagerFunds {
+    observed_us: u64,
+    currency: Option<String>,
+    balance: Option<f64>,
+    available: Option<f64>,
+    margin: Option<f64>,
+    native_fields: BTreeMap<String, f64>,
+}
+
+#[derive(Serialize)]
+pub struct AccountObservation {
+    position: Option<ObservedPositions>,
+    account: Option<ObservedFunds>,
+}
+
+#[derive(Serialize)]
+struct ObservedPositions {
+    observed_us: u64,
+    trading_day: String,
+    current: bool,
+    positions: Vec<PositionRow>,
+}
+
+#[derive(Serialize)]
+struct ObservedFunds {
+    observed_us: u64,
+    current: bool,
+    currency: &'static str,
+    balance: Option<f64>,
+    available: Option<f64>,
+    curr_margin: Option<f64>,
+    withdraw_quota: Option<f64>,
+    position_profit: Option<f64>,
+    close_profit: Option<f64>,
+    commission: Option<f64>,
+}
+
+impl ManagerSnapshot {
+    fn project(self, now_us: u64) -> AccountObservation {
+        let valid_time = |time| time > 0 && time <= now_us;
+        let position = self
+            .trading_day
+            .zip(self.state_observed_us)
+            .and_then(|(day, time)| {
+                let mut seen = std::collections::HashSet::new();
+                let valid = day.len() == 8
+                    && day.bytes().all(|b| b.is_ascii_digit())
+                    && valid_time(time)
+                    && self.snapshot_ready
+                    && !self.positions_may_lag
+                    && self.projection_errors == 0
+                    && self.positions.len() <= MAX_POSITIONS
+                    && self.positions.iter().all(|row| {
+                        !row.symbol.as_str().is_empty()
+                            && row.position.validate().is_ok()
+                            && seen.insert((row.venue, row.symbol.as_str(), row.side))
+                    });
+                valid.then(|| ObservedPositions {
+                    observed_us: time,
+                    trading_day: day,
+                    current: self.snapshot_current_runtime
+                        && !self.replication_stale
+                        && self.status == "observing",
+                    positions: self.positions,
+                })
+            });
+        let account = self
+            .funds
+            .filter(|funds| {
+                funds.currency.as_deref() == Some("CNY") && valid_time(funds.observed_us)
+            })
+            .map(|funds| ObservedFunds {
+                observed_us: funds.observed_us,
+                currency: "CNY",
+                current: self.funds_current_runtime && !self.funds_stale && !self.replication_stale,
+                balance: funds.balance,
+                available: funds.available,
+                curr_margin: funds.margin,
+                withdraw_quota: funds.native_fields.get("withdraw_quota").copied(),
+                position_profit: funds.native_fields.get("position_profit").copied(),
+                close_profit: funds.native_fields.get("close_profit").copied(),
+                commission: funds.native_fields.get("commission").copied(),
+            });
+        AccountObservation { position, account }
     }
 }
 

@@ -38,10 +38,23 @@ pub fn router(cfg: &crate::config::HttpCfg, hub: Hub, positions: manager::Positi
         )
         .route(
             "/strategy-positions/:source",
+            get({
+                let positions = positions.clone();
+                move |Path(source): Path<String>, headers: HeaderMap| {
+                    let positions = positions.clone();
+                    async move {
+                        let result = positions.read(&source, &headers).await;
+                        ([(header::CACHE_CONTROL, "no-store")], result.map(Json))
+                    }
+                }
+            }),
+        )
+        .route(
+            "/account-observation/:source",
             get(move |Path(source): Path<String>, headers: HeaderMap| {
                 let positions = positions.clone();
                 async move {
-                    let result = positions.read(&source, &headers).await;
+                    let result = positions.account(&source, &headers).await;
                     ([(header::CACHE_CONTROL, "no-store")], result.map(Json))
                 }
             }),

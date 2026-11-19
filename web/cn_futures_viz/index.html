@@ -308,7 +308,7 @@
       return name + ' · ' + year + '年' + String(month).padStart(2,'0') + '月' + (option ? ' · ' + (option.toUpperCase()==='C'?'看涨':'看跌') + ' · 行权价 ' + strike : '');
     }
     const contractLabel = g => {
-      const name=contractName(g.venue,g.symbol,g.source.entry?.trading_day);
+      const name=contractName(g.venue,g.symbol,g.tradingDay);
       return `<span class="scope-label">${escape(name)}</span>${name===g.symbol?'':`<span class="contract-code">${escape(g.symbol)}</span>`}`;
     };
     const managerUrl = new URL('/manager/', location.origin);
@@ -376,7 +376,7 @@
       if(!Number.isFinite(amount)) return {amount:null,reason:'估值超出数值范围'};
       const age=Date.now()-Number(mark.received_us)/1000;
       const oldNative=oldExchangeQuote(mark,g.source.stale_after_ms);
-      const historical=oldNative || mark.initial || mark.paused || !g.source.entry?.l1_connected || age<0 || age>g.source.stale_after_ms || status(g.source)!=='observing' || !mark.trading_day || !mark.native_time;
+      const historical=g.historical || oldNative || mark.initial || mark.paused || !g.source.entry?.l1_connected || age<0 || age>g.source.stale_after_ms || status(g.source)!=='observing' || !mark.trading_day || !mark.native_time;
       const quoteTime=String(mark.trading_day||'未知交易日')+' '+(mark.last_trade_time||mark.native_time||'时刻未知');
       return {amount,price,priceLabel,historical,reason:mark.initial?(ctp?'已完成分钟的最后一档盘口':'初始快照'+(mark.paused?' · 暂停':'')):mark.paused?'行情中断或暂停':age<0||age>g.source.stale_after_ms?'行情停更':!g.source.entry?.l1_connected?'行情断开':oldNative?'原生行情时间较旧':historical?'来源未就绪':ctp?'通联 L1':'易达 L1',quoteTime};
     }
@@ -394,15 +394,38 @@
       return Number.isFinite(total)?total:null;
     }
     const activeStrategy = row => row.attributed_lots !== 0 || row.target_lots !== 0;
+    const managerObservation = source => source && state.strategy?.id === source.source_id ? state.strategy.observation : null;
+    const freshAt = (us, limit) => {
+      const age = Date.now() - Number(us) / 1000;
+      return us > 0 && age >= 0 && age <= limit;
+    };
+    function positionView(source) {
+      const live=source.entry, saved=source.saved_entry;
+      const http=managerObservation(source)?.position;
+      const currentHttp=http?.current && freshAt(http.observed_us, source.stale_after_ms);
+      const currentLive=live?.position_ready && !source.error
+        && (status(source)==='observing' || (live.runtime_status==='running' && live.connected && live.transport_ready &&
+            live.ready && freshAt(live.observed_us, source.stale_after_ms)));
+      if (currentHttp || (!currentLive && http && (!saved || http.observed_us >= saved.observed_us))) {
+        const marks=[live,saved].find(entry=>entry?.trading_day===http.trading_day && entry.marks?.length)?.marks;
+        return {...http, position_ready:true, marks, historical:!currentHttp, label:currentHttp?'柜台查询':'Manager 历史持仓'};
+      }
+      if (currentLive) return live;
+      if (saved) return {...saved,historical:true,label:'上次账户快照'};
+      if (live?.position_ready && source.adapter==='ctp') return {...live,historical:true,label:'保留上次持仓'};
+      return live;
+    }
     function positionGroups(sources, filtered = true) {
       const groups = new Map();
       const showZero = filtered && $('show-zero').checked;
       for (const source of sources) {
-        const snapshot = source.entry;
+        const snapshot = positionView(source);
         const marks=new Map((snapshot?.marks||[]).map(m=>[JSON.stringify([m.venue,m.symbol]),m]));
         const group = (venue, symbol) => {
           const key = JSON.stringify([source.source_id, venue, symbol]);
-          if (!groups.has(key)) groups.set(key, {key,source,symbol,venue,positions:[],mark:marks.get(JSON.stringify([venue,symbol])),long:0,short:0});
+          if (!groups.has(key)) groups.set(key, {key,source,symbol,venue,positions:[],mark:marks.get(JSON.stringify([venue,symbol])),
+            tradingDay:snapshot?.trading_day,observedUs:snapshot?.observed_us,positionReady:snapshot?.position_ready,
+            historical:snapshot?.historical,long:0,short:0});
           return groups.get(key);
         };
         for (const p of snapshot?.positions || []) {
@@ -444,12 +467,29 @@
         if (state.strategy === strategy) render();
       }
     }
+    async function loadObservation() {
+      const strategy=state.strategy;
+      if (!strategy || strategy.loadingObservation) return;
+      strategy.loadingObservation=true;
+      try {
+        const response=await fetch('/account-observation/' + encodeURIComponent(strategy.id), {
+          cache:'no-store',signal:strategy.controller.signal
+        });
+        strategy.observation=response.ok ? await response.json() : null;
+      } catch {
+        strategy.observation=null;
+      } finally {
+        strategy.loadingObservation=false;
+        if (state.strategy===strategy) render();
+      }
+    }
     function selectStrategySource(source) {
       const id = STRATEGY_SOURCES.has(source?.source_id) ? source.source_id : null;
       if (id === (state.strategy?.id ?? null)) return;
       state.strategy?.controller.abort();
-      state.strategy = id ? {id, controller:new AbortController(), loading:false, status:null, contracts:null} : null;
+      state.strategy = id ? {id, controller:new AbortController(), loading:false, status:null, contracts:null, observation:null, loadingObservation:false} : null;
       void loadStrategy();
+      void loadObservation();
     }
     function strategyMessage() {
       const strategy = state.strategy;
@@ -471,7 +511,15 @@
     }
 
     function renderFunds(source) {
-      const entry=source?.entry, account=entry?.account;
+      const entry=source?.entry, live=entry?.account, saved=source?.saved_entry?.account;
+      const http=managerObservation(source)?.account;
+      const liveCurrent=live && !source.error && entry.runtime_status==='running' && entry.connected && entry.transport_ready
+        && freshAt(live.observed_us,30000) && freshAt(entry.observed_us,source.stale_after_ms);
+      const httpCurrent=http?.current && freshAt(http.observed_us,30000);
+      const historical=[http,saved,live].filter(Boolean).sort((a,b)=>b.observed_us-a.observed_us)[0];
+      const account=httpCurrent ? http : liveCurrent ? live : historical;
+      const current=account && (account===http ? httpCurrent : account===live && liveCurrent);
+      const label=current?'柜台查询':account===http?'Manager 历史资金':account===saved?'上次账户快照':'保留上次查询';
       const values={
         'account-balance':account?.balance, 'account-available':account?.available,
         'account-withdrawable':account?.withdraw_quota, 'account-margin':account?.curr_margin,
@@ -480,11 +528,10 @@
       };
       const valid=account?.currency==='CNY' && Number(account.observed_us)>0;
       for (const [id,value] of Object.entries(values)) $(id).textContent=valid && typeof value==='number'?yuan(value):'--';
-      const age=Date.now()-Number(account?.observed_us)/1000, captureAge=Date.now()-Number(entry?.observed_us)/1000;
-      const stale=valid && (source.error || entry.runtime_status!=='running' || !entry.connected || !entry.transport_ready || age<0 || age>30000 || captureAge>source.stale_after_ms);
+      const stale=valid && !current;
       $('account-funds').className='account-band'+(stale?' stale':'');
       $('funds-status').className='meta'+(stale?' stale':'');
-      $('funds-status').textContent=!valid?'柜台资金尚未就绪':(stale?'保留上次查询':'柜台查询')+' · '+time(account.observed_us,true);
+      $('funds-status').textContent=!valid?'柜台资金尚未就绪':label+' · '+time(account.observed_us,true);
     }
     function selectedSources() {
       const sources=[...state.sources.values()];
@@ -495,7 +542,7 @@
       return selected ? [selected] : [];
     }
     function renderOverview(sources,groups) {
-      const known=sources.length && sources.every(s=>s.entry?.position_ready);
+      const known=sources.length && sources.every(s=>positionView(s)?.position_ready);
       $('contract-count').textContent=known?fmt(groups.length):'--';
       for(const [id,kind] of [['futures-amount','future'],['options-amount','option']]) {
         const amount=known?totalAmount(groups,kind):null;
@@ -522,22 +569,23 @@
     }
     function renderPositions(sources, groups) {
       state.groups = groups;
-      const ready = sources.length && sources.every(s => s.entry?.position_ready);
+      const observation=sources[0] && positionView(sources[0]), ready=observation?.position_ready;
       $('filtered-contracts').textContent = ready || groups.length ? fmt(groups.length) : '--';
       $('filtered-net-long').textContent = ready ? fmt(groups.filter(g=>g.long>g.short).length) : '--';
       $('filtered-net-short').textContent = ready ? fmt(groups.filter(g=>g.short>g.long).length) : '--';
-      $('position-note').textContent = ready ? '' : "等待柜台持仓恢复";
+      $('position-note').textContent = ready ? (observation.historical
+        ? observation.label+' · '+time(observation.observed_us,true) : '') : "等待柜台持仓恢复";
       const strategyColumn = state.strategy ? '<th>净目标 · 手</th>' : '';
       const columns = state.strategy ? 6 : 5;
       $('position-head').innerHTML = `<tr><th>合约</th><th>柜台净仓 · 手</th>${strategyColumn}<th>净金额 · 元</th><th>状态</th><th>更新时间</th></tr>`;
       const content = groups.map((g,index) => {
         const open=detailOpen(g);
-        const net=g.source.entry?.position_ready ? g.long-g.short : null;
+        const net=g.positionReady ? g.long-g.short : null;
         const target=g.attribution?.target_lots, phase=status(g.source);
         const targetCell=state.strategy ? `<td class="${qtyClass(target)}">${signed(target)}</td>` : '';
-        let html = `<tr class="aggregate-row ${phase!=='observing'?'retained':''}" data-symbol="${escape(g.symbol)}"><td><span class="group-label"><button class="group-toggle" data-group="${index}" aria-expanded="${open}" aria-label="${open?'收起':'展开'} ${escape(g.symbol)}"></button>${contractLabel(g)}</span></td><td class="${qtyClass(net)}">${signed(net)}</td>${targetCell}<td class="net-amount">${net===null?'--':amountCell(g)}</td><td>${badge(phase)}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;
+        let html = `<tr class="aggregate-row ${g.historical||phase!=='observing'?'retained':''}" data-symbol="${escape(g.symbol)}"><td><span class="group-label"><button class="group-toggle" data-group="${index}" aria-expanded="${open}" aria-label="${open?'收起':'展开'} ${escape(g.symbol)}"></button>${contractLabel(g)}</span></td><td class="${qtyClass(net)}">${signed(net)}</td>${targetCell}<td class="net-amount">${net===null?'--':amountCell(g)}</td><td>${badge(phase)}</td><td>${time(g.observedUs)}</td></tr>`;
         if (open) {
-          const detail = g.attribution ? strategyDetails(g, phase==='observing' ? net : null) : state.strategy
+          const detail = g.attribution ? strategyDetails(g, phase==='observing' && !g.historical ? net : null) : state.strategy
             ? `<h3 class="strategy-heading">策略构成</h3><div class="position-detail strategy-message meta">${strategyMessage()}</div>` : '';
           const brokerOpen = state.brokerDetails.has(g.key);
           const broker = g.positions.length ? `<button type="button" class="broker-toggle" data-broker="${index}" aria-expanded="${brokerOpen}">柜台明细</button>${brokerOpen ? brokerDetails(g) : ''}` : '';
@@ -545,7 +593,8 @@
         }
         return html;
       }).join('');
-      const empty = !sources.length ? "等待持仓数据" : !ready ? "等待柜台完成持仓恢复" : sources.some(s=>status(s)!=='observing') ? "持仓数据未就绪，等待更新" : $('symbol').value ? "当前筛选没有持仓" : "当前无持仓";
+      const empty = !sources.length ? "等待持仓数据" : !ready ? "等待柜台完成持仓恢复" : $('symbol').value ? "当前筛选没有持仓"
+        : observation.historical ? "上次确认无持仓" : sources[0].adapter==='yida' && status(sources[0])!=='observing' ? "持仓数据未就绪，等待更新" : "当前无持仓";
       rows('positions',content,columns,empty);
     }
     function strategyDetails(g, brokerNet) {
@@ -617,8 +666,8 @@
     });
 
     $('show-zero').onchange=render;$('symbol').oninput=render;
-    $('refresh').onclick=()=>{connect();void loadStrategy();};
-    render();setInterval(render,1000);setInterval(loadStrategy,5000);connect();
+    $('refresh').onclick=()=>{connect();void loadStrategy();void loadObservation();};
+    render();setInterval(render,1000);setInterval(loadStrategy,5000);setInterval(loadObservation,15000);connect();
   })();
   </script>
 </body></html>

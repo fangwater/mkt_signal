@@ -1,6 +1,9 @@
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +67,7 @@ pub struct Counter {
     pub position_namespace: String,
     pub expected_account_hash: String,
     pub manager_source_id: Option<String>,
+    pub account_snapshot_path: Option<PathBuf>,
 }
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
@@ -97,12 +101,14 @@ impl Config {
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'-'))
                 && !["/", "/snapshot", "/healthz"].contains(&self.http.ws_path.as_str())
-                && !self.http.ws_path.starts_with("/strategy-positions/"),
+                && !self.http.ws_path.starts_with("/strategy-positions/")
+                && !self.http.ws_path.starts_with("/account-observation/"),
             "invalid ws_path"
         );
         let mut ids = HashSet::new();
         let mut namespaces = HashSet::new();
         let mut manager_ids = HashSet::new();
+        let mut snapshot_paths = HashSet::new();
         for counter in &self.counters {
             ensure!(
                 !counter.id.is_empty()
@@ -131,6 +137,13 @@ impl Config {
                             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
                         && manager_ids.insert(id),
                     "invalid or duplicate Manager source id"
+                );
+            }
+            if let Some(path) = &counter.account_snapshot_path {
+                cn_futures_state::checkpoint::validate_path(path)?;
+                ensure!(
+                    snapshot_paths.insert(path),
+                    "duplicate account snapshot path"
                 );
             }
         }

@@ -25,11 +25,9 @@ fn sample() -> Snapshot {
     s
 }
 
-#[test]
-fn account_funds_codec_preserves_actual_values_and_query_time() {
-    let mut s = sample();
-    let account = AccountFunds {
-        observed_us: s.observed_us - 1,
+fn sample_funds(observed_us: u64) -> AccountFunds {
+    AccountFunds {
+        observed_us,
         currency: Text::new("CNY").unwrap(),
         balance: 499999.72,
         available: -10.25,
@@ -41,7 +39,12 @@ fn account_funds_codec_preserves_actual_values_and_query_time() {
         position_profit: -3.0,
         close_profit: 4.0,
         commission: 5.0,
-    };
+    }
+}
+#[test]
+fn account_funds_codec_preserves_actual_values_and_query_time() {
+    let mut s = sample();
+    let account = sample_funds(s.observed_us - 1);
     s.account = Some(account);
     s.validate().unwrap();
     let encoded = bincode::serialize(&s).unwrap();
@@ -118,6 +121,7 @@ fn bounded_background_publisher_replaces_pending_complete_snapshots() {
     let cfg = Config {
         namespace: namespace.clone(),
         interval_ms: 1000,
+        account_snapshot_path: None,
     };
     let mut producer = publisher::Producer::start(&cfg, Adapter::Yida, &"a".repeat(64)).unwrap();
     let subscriber = transport::StateSubscriber::open(&namespace).unwrap();
@@ -160,6 +164,91 @@ fn bounded_background_publisher_replaces_pending_complete_snapshots() {
     producer.finish().unwrap();
 }
 
+#[test]
+fn orderly_exit_saves_the_last_confirmed_observation_and_preserves_it_on_a_failed_restart() {
+    let namespace = format!("native_saved_{}", publisher::now_us());
+    let dir = std::env::temp_dir().join(&namespace);
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("account.bin");
+    let cfg = Config {
+        namespace: namespace.clone(),
+        interval_ms: 1000,
+        account_snapshot_path: Some(path.clone()),
+    };
+    let hash = "a".repeat(64);
+    let mut producer = publisher::Producer::start(&cfg, Adapter::Ctp, &hash).unwrap();
+    let subscriber = transport::StateSubscriber::open(&namespace).unwrap();
+    producer
+        .capture(true, |s| {
+            s.position_ready = true;
+            s.connected = true;
+            s.transport_ready = true;
+            s.ready = true;
+            s.can_trade = true;
+            s.trading_day = Text::new("20261119")?;
+            s.account = Some(sample_funds(s.observed_us - 1));
+            s.positions.push(PositionRow {
+                venue: Venue::Shfe,
+                symbol: Text::new("rb2701")?,
+                side: Side::Sell,
+                position: Position {
+                    yesterday: 2,
+                    ..Default::default()
+                },
+            });
+            Ok(())
+        })
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let capture = loop {
+        if let Some(s) = subscriber.latest().unwrap() {
+            break s;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert!(!path.exists());
+    producer
+        .capture(true, |s| {
+            s.position_ready = false;
+            s.ready = false;
+            s.connected = false;
+            s.transport_ready = false;
+            s.can_trade = false;
+            s.runtime_status = RuntimeStatus::Stopped;
+            Ok(())
+        })
+        .unwrap();
+    producer.finish().unwrap();
+    let saved = checkpoint::load(&path, &namespace, Adapter::Ctp, &hash)
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.observed_us, capture.observed_us);
+    assert_eq!(saved.positions[0].position.yesterday, 2);
+    assert_eq!(
+        saved.account.unwrap().observed_us,
+        capture.account.unwrap().observed_us
+    );
+    assert_eq!(saved.account.unwrap().balance, 499999.72);
+    assert!(!saved.can_trade && !saved.ready && !saved.connected && !saved.transport_ready);
+    assert!(checkpoint::load(&path, &namespace, Adapter::Ctp, &"b".repeat(64)).is_err());
+    assert!(checkpoint::load(&path, "other-source", Adapter::Ctp, &hash).is_err());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let bytes = std::fs::read(&path).unwrap();
+    let mut restarted = publisher::Producer::start(&cfg, Adapter::Ctp, &hash).unwrap();
+    restarted.capture(true, |_| Ok(())).unwrap();
+    restarted.finish().unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 thread_local! {
     static COUNT_ALLOCATIONS:std::cell::Cell<bool>=const {std::cell::Cell::new(false)};
     static ALLOCATIONS:std::cell::Cell<usize>=const {std::cell::Cell::new(0)};
@@ -193,6 +282,7 @@ fn snapshot_capture_does_not_allocate_or_wait_for_encoding() {
     let cfg = Config {
         namespace: format!("native_capture_{}", publisher::now_us()),
         interval_ms: 1000,
+        account_snapshot_path: None,
     };
     let mut producer = publisher::Producer::start(&cfg, Adapter::Yida, &"a".repeat(64)).unwrap();
     ALLOCATIONS.with(|n| n.set(0));
@@ -246,6 +336,7 @@ fn failed_capture_invalidates_the_entire_position_snapshot() {
     let cfg = Config {
         namespace: format!("native_failed_capture_{}", publisher::now_us()),
         interval_ms: 1000,
+        account_snapshot_path: None,
     };
     let mut producer = publisher::Producer::start(&cfg, Adapter::Yida, &"a".repeat(64)).unwrap();
     let subscriber = transport::StateSubscriber::open(&cfg.namespace).unwrap();

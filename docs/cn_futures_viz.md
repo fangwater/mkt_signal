@@ -90,10 +90,19 @@ CTP 按相关联的成功资金查询更新；易达未提供对应账户资金�
 | `/healthz` | 运维健康摘要：来源新鲜度、原始就绪标记、持仓行数；HTTP 在线不代表账户就绪 |
 | 配置 `ws_path`，默认 `/ws` | 连接即重放每个源最新帧，后续即时转发 |
 | `/strategy-positions/<source>` | 对显式绑定的账户转发同主机 Manager 会话，按合约返回目标与归因净仓 |
+| `/account-observation/<source>` | 沿用 Manager 会话和来源权限，返回原生账户接口的持仓和资金观察，保留实际时间和新鲜度 |
 
 柜台资金和持仓由 WebSocket 初始化与更新。已配置归因的账户每五秒读取策略明细。Manager 负责验证登录、账户和策略查看权限，响应不缓存。未配置来源返回 404。慢 WebSocket 客户端发送超时断开，队列溢出时重放所有源最新完整帧。
 
 唯一 WS 帧类型 `cn_futures_state`：`source_id`、展示 `label`／`account`、`adapter`、`namespace`、`stale_after_ms`、`entry`、`error`。`entry` 来自公共 Snapshot，CTP 行情可由 Viz 补充。账户摘要不发送，epoch／sequence／replaced_snapshots／l1_dropped 编成十进制字符串以保留 JS 整数精度。源不可用时 `entry=null` 或保留最后已知帧并附错误。
+
+交易端 `position_ipc.account_snapshot_path` 和 Viz 同账户的 `account_snapshot_path`
+可指向同一个私有文件。退出时，交易后台线程把最后一份确认的账户观察写到同一
+目录的临时文件，fsync 后原子换名，再 fsync 目录。未完成对账的启动和断线观察
+保留已有文件。Viz 校验 namespace、adapter、账户摘要和时间，在 `saved_entry`
+回放历史资金及原生多空今昨仓。页面优先使用当前 Manager HTTP 读数和已确认
+的实时柜台观察，再按观察时间采用历史值。历史显示保留原始时间，健康状态仍取
+实时数据。交易启动使用柜台正式对账。
 
 ```bash
 cargo fmt -p viz_server --check
@@ -102,4 +111,4 @@ cargo test -p cn_futures_state -p viz_server --lib
 cargo clippy -p cn_futures_state -p viz_server --all-targets --no-deps -- -D warnings
 ```
 
-验证覆盖来源绑定、字段保真、全量替换、未知与空仓、IPC 直达、各源 WS 重放、250 ms 内转发、自定义路径和移除 HTTP 快照接口。浏览器验收检查真实公网 WebSocket、中文合约搜索、手数／元显示、展开与分方向、断线／重启、桌面及手机布局。
+验证覆盖来源绑定、字段保真、全量替换、未知与空仓、IPC 直达、各源 WS 重放、250 ms 内转发、退出快照和 HTTP 读数优先。浏览器验收检查真实公网 WebSocket、中文合约搜索、手数／元显示、展开与分方向、断线／重启、桌面及手机布局。

@@ -12,6 +12,7 @@ fn source(id: &str) -> Counter {
         position_namespace: format!("test_native_{}_{}", id, now_us()),
         expected_account_hash: "a".repeat(64),
         manager_source_id: None,
+        account_snapshot_path: None,
     }
 }
 fn snapshot(source: &Counter, epoch: u64, sequence: u64) -> Snapshot {
@@ -40,6 +41,39 @@ fn snapshot(source: &Counter, epoch: u64, sequence: u64) -> Snapshot {
 }
 fn frame(hub: &Hub) -> Value {
     serde_json::from_str(&hub.latest()[0]).unwrap()
+}
+
+#[test]
+fn saved_account_never_makes_a_restarted_counter_live() {
+    let mut source = source("saved");
+    source.account_snapshot_path = Some("/unused/native-account.bin".into());
+    let hub = Hub::new(std::slice::from_ref(&source), 15000);
+    let settled = snapshot(&source, 100, 1);
+    hub.restore(&source, settled.clone()).unwrap();
+    assert_eq!(
+        frame(&hub)["saved_entry"]["positions"][0]["symbol"],
+        "cu2612"
+    );
+    assert_eq!(frame(&hub)["saved_entry"]["can_trade"], false);
+    assert!(!hub.latest()[0].contains(&source.expected_account_hash));
+    assert!(hub.health()["sources"][0]["position_ready"].is_null());
+
+    let mut waiting = snapshot(&source, 200, 1);
+    waiting.position_ready = false;
+    waiting.positions.clear();
+    waiting.ready = false;
+    hub.apply(&source, waiting).unwrap();
+    assert_eq!(frame(&hub)["entry"]["position_ready"], false);
+    assert_eq!(
+        frame(&hub)["saved_entry"]["observed_us"],
+        settled.observed_us
+    );
+
+    let mut flat = snapshot(&source, 200, 2);
+    flat.positions.clear();
+    hub.apply(&source, flat).unwrap();
+    assert!(frame(&hub).get("saved_entry").is_none());
+    assert_eq!(hub.health()["sources"][0]["position_rows"], 0);
 }
 
 #[test]

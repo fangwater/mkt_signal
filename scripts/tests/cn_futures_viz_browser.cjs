@@ -16,6 +16,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       .replace('__CN_FUTURES_WS_PATH__',JSON.stringify('/observe/live'))
       .replace('__CN_FUTURES_STRATEGY_SOURCES__',JSON.stringify(['ctp']));
     let strategyStatus=401;
+    let observation=null;
     const strategy={
       'SHFE:rb2701': {target_lots:1,attributed_lots:0,strategies:[
         {name:'long-factor',target_lots:3,attributed_lots:2},
@@ -25,6 +26,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     };
     await page.route(url=>url.origin==='http://cn-viz.test'&&url.pathname==='/',route=>route.fulfill({contentType:'text/html',body:html}));
     await page.route('**/strategy-positions/ctp',route=>route.fulfill({status:strategyStatus,json:strategy}));
+    await page.route('**/account-observation/ctp',route=>route.fulfill({status:observation?200:401,json:observation}));
     await page.addInitScript(()=>{
       window.__sockets=[];
       window.WebSocket=class {
@@ -208,6 +210,25 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     await page.evaluate(f=>window.__push(f),ctp);
     assert.match(await page.locator('#source-updates').innerText(),/执行失败/);
     assert.equal(await page.locator('#notice').isVisible(),true);
+    ctp.saved_entry={...ctp.entry,observed_us:(Date.now()-90000)*1000,positions:[row('SHFE','rb2701','sell',0,2)],
+      account:{...account,observed_us:(Date.now()-100000)*1000},position_ready:true};
+    ctp.entry={...ctp.entry,observed_us:Date.now()*1000,position_ready:false,positions:[],account:null,runtime_status:'running',
+      reason:'CTP trader front offline; waiting for reconnection'};
+    await page.evaluate(f=>window.__push(f),ctp);
+    assert.match(await page.locator('#position-note').innerText(),/上次账户快照/);
+    assert.match(await page.locator('#funds-status').innerText(),/上次账户快照/);
+    assert.equal(await page.locator('tr[data-symbol="rb2701"] > td').nth(1).innerText(),'-2');
+    ctp.entry={...ctp.entry,position_ready:true,connected:true,transport_ready:true,ready:true,reason:'',
+      positions:[row('SHFE','rb2701','buy',3)],account:{...account,observed_us:Date.now()*1000}};
+    await page.evaluate(f=>window.__push(f),ctp);
+    assert.equal(await page.locator('tr[data-symbol="rb2701"] > td').nth(1).innerText(),'+3');
+    observation={
+      position:{current:true,observed_us:Date.now()*1000,trading_day:'20261119',positions:[row('SHFE','rb2701','buy',4)]},
+      account:{...account,current:true,observed_us:Date.now()*1000,balance:550000},
+    };
+    await page.locator('#refresh').click();
+    await page.waitForFunction(()=>document.querySelector('tr[data-symbol="rb2701"] td:nth-child(2)')?.textContent==='+4');
+    assert.equal(await page.locator('#account-balance').innerText(),'¥ 550,000.00');
     await page.goto('http://cn-viz.test/?source=paper');
     await page.evaluate(f=>window.__push(f),ctp);
     await page.evaluate(f=>window.__push(f),frame);

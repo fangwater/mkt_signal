@@ -1,5 +1,6 @@
 //! SDK-free native account position snapshots. One complete replaceable state
 //! per publication, using Exec's length-prefixed bincode over iceoryx2.
+pub mod checkpoint;
 pub mod publisher;
 pub mod transport;
 
@@ -331,6 +332,7 @@ pub struct Config {
     pub namespace: String,
     #[serde(default = "default_interval")]
     pub interval_ms: u64,
+    pub account_snapshot_path: Option<std::path::PathBuf>,
 }
 fn default_interval() -> u64 {
     1000
@@ -338,6 +340,9 @@ fn default_interval() -> u64 {
 impl Config {
     pub fn validate(&self) -> Result<()> {
         service_name(&self.namespace)?;
+        if let Some(path) = &self.account_snapshot_path {
+            checkpoint::validate_path(path)?;
+        }
         ensure!(
             (100..=60_000).contains(&self.interval_ms),
             "position IPC interval_ms must be 100..60000"

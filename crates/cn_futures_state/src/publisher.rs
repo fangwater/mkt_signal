@@ -1,6 +1,8 @@
 //! Cold-created three-buffer mailbox. Capture never waits for serialization,
 //! IPC subscribers, a mutex, a database or a worker acknowledgment.
-use crate::{transport::StatePublisher, Adapter, Config, RuntimeStatus, Snapshot, Text};
+use crate::{
+    checkpoint, transport::StatePublisher, Adapter, Config, RuntimeStatus, Snapshot, Text,
+};
 use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use std::{
@@ -39,6 +41,7 @@ impl Producer {
         let (ready, pending) = bounded::<Snapshot>(1);
         let (init_tx, init_rx) = std::sync::mpsc::sync_channel(1);
         let namespace = config.namespace.clone();
+        let account_snapshot_path = config.account_snapshot_path.clone();
         let worker_rx = pending.clone();
         let worker = std::thread::spawn(move || -> Result<()> {
             let publisher = match StatePublisher::new(&namespace) {
@@ -51,13 +54,32 @@ impl Producer {
                     return Err(e);
                 }
             };
-            while let Ok(snapshot) = worker_rx.recv() {
-                publisher.publish(&snapshot)?;
-                if free_tx.send(snapshot).is_err() {
-                    break;
+            let mut confirmed: Option<Snapshot> = None;
+            let outcome = (|| -> Result<()> {
+                while let Ok(snapshot) = worker_rx.recv() {
+                    publisher.publish(&snapshot)?;
+                    if account_snapshot_path.is_some() && checkpoint::confirmed(&snapshot) {
+                        let mut retained = snapshot.clone();
+                        if retained.account.is_none() {
+                            retained.account = confirmed
+                                .as_ref()
+                                .filter(|previous| previous.trading_day == snapshot.trading_day)
+                                .and_then(|previous| previous.account);
+                        }
+                        confirmed = Some(retained);
+                    }
+                    if free_tx.send(snapshot).is_err() {
+                        break;
+                    }
+                }
+                Ok(())
+            })();
+            if let Some((path, snapshot)) = account_snapshot_path.as_deref().zip(confirmed) {
+                if let Err(error) = checkpoint::save(path, &namespace, snapshot) {
+                    eprintln!("native account checkpoint: {error:#}");
                 }
             }
-            Ok(())
+            outcome
         });
         init_rx
             .recv()
