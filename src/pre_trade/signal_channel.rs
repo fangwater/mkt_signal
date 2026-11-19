@@ -1158,11 +1158,14 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 return;
             }
 
-            if let Err(reason) = crate::pre_trade::binance_pm_buy_capacity::check_open(
+            if let Err(reason) = crate::pre_trade::binance_pm_buy_capacity::open_funding(
                 opening_venue,
                 side,
                 &symbol,
                 open_ctx.amount_value() * open_ctx.price_value(),
+                open_ctx
+                    .get_order_type()
+                    .is_some_and(|kind| kind.is_limit()),
             ) {
                 debug!(
                     "ArbOpen: blocked by Binance PM buying power symbol={} reason={}",
