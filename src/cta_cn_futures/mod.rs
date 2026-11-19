@@ -594,6 +594,8 @@ async fn run_worker(worker: Worker) -> Result<()> {
     let mut current = history::dominant(&cfg)
         .await
         .with_context(|| format!("load dominant for {}/{}", cfg.exchange, cfg.symbol))?;
+    // Unshifted REST row (with its secondary) for reuse on periodic refreshes.
+    let mut source_dominant = current.clone();
     let mut stream = Stream {
         extras: Some(extras),
         ..Stream::default()
@@ -861,8 +863,9 @@ async fn run_worker(worker: Worker) -> Result<()> {
             }
         }
         if tokio::time::Instant::now() >= next_dominant {
-            match history::dominant(&cfg).await {
+            match history::dominant_with(&cfg, Some(&source_dominant)).await {
                 Ok(row) => {
+                    source_dominant = row.clone();
                     let row = if row.trading_day < current.trading_day {
                         row.for_day(current.trading_day)
                     } else {

@@ -70,6 +70,11 @@ fn native_contract(cfg: &Config, code: &str) -> Result<String> {
     Ok(format!("{prefix}{month}"))
 }
 pub async fn dominant(cfg: &Config) -> Result<Dominant> {
+    dominant_with(cfg, None).await
+}
+/// Reuse `previous`'s secondary contracts while the REST dominant row is
+/// unchanged: selections come from the preceding close and are fixed intraday.
+pub async fn dominant_with(cfg: &Config, previous: Option<&Dominant>) -> Result<Dominant> {
     let (exchange, _) = cfg.exchange_codes()?;
     let response: serde_json::Value = reqwest::Client::new()
         .get(&cfg.dominant_url)
@@ -128,6 +133,18 @@ pub async fn dominant(cfg: &Config) -> Result<Dominant> {
         secondary: None,
         secondary_next: None,
     };
+    if let Some(previous) = previous.filter(|p| {
+        p.secondary.is_some()
+            && p.source_trading_day == main.source_trading_day
+            && p.scheduled_next == main.scheduled_next
+    }) {
+        // `previous` may already be shifted by `for_day`; reuse its source row.
+        if previous.trading_day == main.trading_day && previous.contract == main.contract {
+            main.secondary = previous.secondary.clone();
+            main.secondary_next = previous.secondary_next.clone();
+            return Ok(main);
+        }
+    }
     // The secondary contract only accelerates minute sealing. Without it the
     // dominant's next-minute quote and the session-tail clock still seal bars.
     match secondary(cfg, trading_day).await {
@@ -167,7 +184,7 @@ async fn secondary(cfg: &Config, day: u32) -> Result<(Option<String>, Option<Str
         .await?;
         match result {
             // gRPC RESOURCE_EXHAUSTED (8); proto client uses its own tonic version.
-            Err(status) if status.code() as i32 == 8 && attempt < 8 => {
+            Err(status) if status.code() as i32 == 8 && attempt < 12 => {
                 attempt += 1;
                 tokio::time::sleep(std::time::Duration::from_millis(250 * attempt)).await;
             }
