@@ -1,6 +1,7 @@
 //! Opt-in native STANDARD USD-M leverage policy. Exchange I/O runs outside the
 //! target publication path. The exchange remains the final order-risk gate.
 use super::*;
+use crate::strategy::batch_exec_strategy::BatchExecTarget;
 use serde::{Deserialize, Serialize};
 
 pub const STATUS_KEY: &str = "exec_leverage_guard";
@@ -416,6 +417,11 @@ async fn initialize_api(api: &Api, symbol: &str) -> Result<LeverageInitOutcome> 
     }
 }
 
+#[derive(Deserialize)]
+struct TargetConfig {
+    targets: BTreeMap<String, BatchExecTarget>,
+}
+
 async fn load_targets(redis: &mut RedisClient) -> Result<BTreeMap<String, f64>> {
     let mut targets = BTreeMap::new();
     for family in ["batch_exec", "chase_exec"] {
@@ -427,16 +433,16 @@ async fn load_targets(redis: &mut RedisClient) -> Result<BTreeMap<String, f64>> 
         for name in names {
             crate::pre_trade::batch_exec_config::validate_config_strategy_name(&name)?;
             anyhow::ensure!(seen.insert(name.clone()), "duplicate strategy index");
-            let config: Value = redis
+            let config: TargetConfig = redis
                 .get_json(&format!("{family}:{name}"))
                 .await?
                 .context("indexed target missing")?;
-            for (symbol, row) in config["targets"]
-                .as_object()
-                .context("target map missing")?
-            {
-                runtime_common::exec_market::validate_symbol(TradingVenue::BinanceFutures, symbol)?;
-                *targets.entry(symbol.clone()).or_insert(0.) += number(row, "qty")?;
+            for (symbol, target) in config.targets {
+                runtime_common::exec_market::validate_symbol(
+                    TradingVenue::BinanceFutures,
+                    &symbol,
+                )?;
+                *targets.entry(symbol).or_insert(0.) += target.qty;
             }
         }
     }
@@ -679,6 +685,37 @@ mod tests {
     fn ack(level: u8, cap: f64) -> Value {
         json!({"symbol":"ONEUSDT","leverage":level,"maxNotionalValue":cap})
     }
+
+    #[test]
+    fn clear_targets_have_zero_quantity() {
+        let config: TargetConfig = serde_json::from_value(json!({"targets": {
+            "ACEUSDT": {"qty": "clear", "signal": 0},
+            "TUTUSDT": "clear"
+        }}))
+        .unwrap();
+        assert_eq!(config.targets["ACEUSDT"].qty, 0.);
+        assert_eq!(config.targets["TUTUSDT"].qty, 0.);
+    }
+
+    #[test]
+    fn numeric_targets_keep_their_quantity() {
+        let config: TargetConfig = serde_json::from_value(json!({"targets": {
+            "ONEUSDT": {"qty": -15.5, "signal": 0},
+            "BTCUSDT": 1.25
+        }}))
+        .unwrap();
+        assert_eq!(config.targets["ONEUSDT"].qty, -15.5);
+        assert_eq!(config.targets["BTCUSDT"].qty, 1.25);
+    }
+
+    #[test]
+    fn invalid_target_quantity_fails_parsing() {
+        for qty in [json!("CLEAR"), json!("bad"), json!("1.25"), Value::Null] {
+            let config = json!({"targets": {"ONEUSDT": {"qty": qty, "signal": 0}}});
+            assert!(serde_json::from_value::<TargetConfig>(config).is_err());
+        }
+    }
+
     fn fixture(steps: Vec<(String, u16, Value)>) -> (Api, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
