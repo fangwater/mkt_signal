@@ -11,13 +11,11 @@ extern "C" fn stop(_: i32) {
 fn main() {
     if let Err(error) = run() {
         eprintln!("ctp-trader: {error:#}");
-        std::process::exit(
-            if error.is::<cn_futures::ctp::AccountQueryRecoveryRequired>() {
-                cn_futures::ctp::AccountQueryRecoveryRequired::EXIT_STATUS
-            } else {
-                1
-            },
-        );
+        std::process::exit(if error.is::<cn_futures::ctp::ColdRestartRequired>() {
+            cn_futures::ctp::ColdRestartRequired::EXIT_STATUS
+        } else {
+            1
+        });
     }
 }
 fn run() -> Result<()> {

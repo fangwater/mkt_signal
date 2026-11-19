@@ -1059,7 +1059,6 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     const WAITING_FOR_TRADER: &str = "CTP trader front offline; waiting for reconnection";
     const WAITING_FOR_MD: &str = "CTP market-data front offline; waiting for reconnection";
     const ACCOUNT_RECONCILIATION: &str = "CTP account query unavailable; reconciliation pending";
-    const ACCOUNT_COLD_RESTART: &str = "CTP account query unavailable; cold restart required";
     let wait_for_front = market_data.is_some();
     config.validate()?;
     if let Some(ingress) = &config.position_target_ingress {
@@ -1426,7 +1425,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     };
                     journal.record(json!({"type":"restart_required","reason":reason,"venue_orders_cancelled":false}), true)?;
                     if account_timeout {
-                        return Err(ctp::AccountQueryRecoveryRequired(
+                        return Err(ctp::ColdRestartRequired::AccountQuery(
                             "CTP account query timed out",
                         )
                         .into());
@@ -1449,7 +1448,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     let queued = md.has_backlog();
                     let event = match md.poll(Instant::now()) {
                         Ok(event) => event,
-                        Err(error) if !execute => {
+                        Err(error) if !execute && !error.is::<ctp::ColdRestartRequired>() => {
                             // Keep the SDK owner until cold shutdown. Release/Init must not
                             // run on this business loop, and an MD failure must not hide funds.
                             feed_failed = true;
@@ -1797,12 +1796,13 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
         }
         Ok(())
     })();
-    let account_restart = outcome
+    let restart = outcome
         .as_ref()
-        .is_err_and(|e| e.is::<ctp::AccountQueryRecoveryRequired>());
-    if account_restart {
+        .err()
+        .and_then(|error| error.downcast_ref::<ctp::ColdRestartRequired>());
+    if let Some(restart) = restart {
         runtime.core.disconnect();
-        runtime.core.block(ACCOUNT_COLD_RESTART);
+        runtime.core.block(restart.observation_reason());
     } else if outcome.is_err() {
         runtime
             .core
@@ -1848,7 +1848,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
         &core,
         false,
         false,
-        if (outcome.is_ok() || account_restart) && shutdown_ok {
+        if (outcome.is_ok() || restart.is_some()) && shutdown_ok {
             cn_futures_state::RuntimeStatus::Stopped
         } else {
             cn_futures_state::RuntimeStatus::Failed

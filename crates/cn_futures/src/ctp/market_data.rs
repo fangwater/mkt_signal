@@ -311,12 +311,13 @@ impl Session {
         if event.last == 0 {
             return Ok(false);
         }
-        let day = super::text(&event.trading_day)?;
-        ensure!(
-            day.len() == 8 && day.bytes().all(|b| b.is_ascii_digit()),
-            "invalid MD trading day"
-        );
-        self.trading_day = Some(day);
+        let day = super::text_ref(&event.trading_day)?;
+        if day.len() != 8 || day.starts_with('0') || !day.bytes().all(|b| b.is_ascii_digit()) {
+            // A front can accept login before exposing the next trading day.
+            // Keep the session unready and let the owner restart the SDK cold.
+            return Err(super::ColdRestartRequired::MarketDataTradingDay.into());
+        }
+        self.trading_day = Some(day.to_owned());
         self.logged_in = true;
         self.login_request = None;
         Ok(true)
@@ -562,8 +563,25 @@ mod tests {
             } else {
                 response.error = 3;
             }
-            assert!(s.login(&response).is_err());
+            assert!(!s
+                .login(&response)
+                .unwrap_err()
+                .is::<super::super::ColdRestartRequired>());
             assert!(!s.ready());
+        }
+    }
+    #[test]
+    fn login_without_trading_day_requires_cold_restart_and_never_becomes_ready() {
+        for day in [[0; 9], *b"00000000\0"] {
+            let mut session = Session::new(&config());
+            session.connected(1).unwrap();
+            let mut response = login(0);
+            response.trading_day = day;
+            assert!(matches!(
+                session.login(&response).unwrap_err().downcast_ref(),
+                Some(super::super::ColdRestartRequired::MarketDataTradingDay)
+            ));
+            assert!(!session.logged_in && !session.ready());
         }
     }
     #[test]

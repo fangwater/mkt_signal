@@ -35,19 +35,37 @@ pub const SETTLEMENT_STATUS: i32 = 20;
 
 /// Recover by starting a new SDK session after the current journal has drained.
 #[derive(Debug)]
-pub struct AccountQueryRecoveryRequired(pub(crate) &'static str);
-
-impl AccountQueryRecoveryRequired {
-    pub const EXIT_STATUS: i32 = 75;
+pub enum ColdRestartRequired {
+    AccountQuery(&'static str),
+    MarketDataTradingDay,
 }
 
-impl std::fmt::Display for AccountQueryRecoveryRequired {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)
+impl ColdRestartRequired {
+    pub const EXIT_STATUS: i32 = 75;
+
+    #[cfg(feature = "ctp-sdk")]
+    pub(crate) fn observation_reason(&self) -> &'static str {
+        match self {
+            Self::AccountQuery(_) => "CTP account query unavailable; cold restart required",
+            Self::MarketDataTradingDay => {
+                "CTP market-data trading day unavailable; cold restart required"
+            }
+        }
     }
 }
 
-impl std::error::Error for AccountQueryRecoveryRequired {}
+impl std::fmt::Display for ColdRestartRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::AccountQuery(message) => message,
+            Self::MarketDataTradingDay => {
+                "MD login returned no valid trading day; retry after SDK restart"
+            }
+        })
+    }
+}
+
+impl std::error::Error for ColdRestartRequired {}
 
 /// Correlate business responses across reconnects. OrderRef alone is not a session identity.
 #[derive(Clone, Copy, PartialEq, Eq)]

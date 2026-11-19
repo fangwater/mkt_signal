@@ -325,7 +325,7 @@ impl Session {
           // Retain the last factual funds timestamp; never turn a retry into a fresh balance.
         if e.kind == ERROR && self.retries_account_query(e.request, e.error) {
             if self.account_not_ready_retries >= 3 {
-                return Err(AccountQueryRecoveryRequired(
+                return Err(ColdRestartRequired::AccountQuery(
                     "CTP account query remained unavailable after three retries",
                 )
                 .into());
