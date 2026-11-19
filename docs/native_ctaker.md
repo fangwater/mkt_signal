@@ -48,6 +48,12 @@ call, the journal and trader log record `ctp_strategy_dispatch_blocked` with
 the action's batch, quote generation, gate values, and retry status. A
 callback backlog defers the action to a subsequent fresh tick within the
 original target lease when the account, market feed, and journal are healthy.
+The market-data part of that gate only considers a newer queued quote for the
+same contract: the MD callback records a per-contract sequence, so other
+contracts' quotes from the same exchange burst do not block a decision.
+Target admission requires a ready MD session, not an empty MD queue. Each
+minute the trader log prints `md_latency` (exchange stamp to SDK receipt in
+ms, receipt to business-thread processing in µs, deepest MD queue).
 For each target contract, the trader log records `ctaker_quote_decision` when
 the reason a fresh quote did or did not emit an order changes (for example
 `quote_stale`, `retry_interval`, `target_reached`, `target_lease_expired`).
