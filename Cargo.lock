@@ -6686,8 +6686,11 @@ dependencies = [
  "anyhow",
  "axum 0.7.9",
  "bincode",
+ "chrono",
  "clap",
+ "cn_futures_pbs",
  "cn_futures_state",
+ "cn_market_proto",
  "env_logger",
  "futures-util",
  "iceoryx2",
@@ -6701,6 +6704,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.24.0",
  "toml 0.8.23",
+ "tonic 0.14.8",
  "viz_common",
 ]
 

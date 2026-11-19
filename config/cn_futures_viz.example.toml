@@ -1,5 +1,7 @@
-# SDK-free, read-only IPC -> WebSocket relay. No database or trading credentials.
+# SDK-free, read-only account monitoring. No database or trading credentials.
 stale_after_ms = 15000
+# manager_port = 18211  # existing loopback Manager gateway
+# l1 = { zmq_port = 13005, metadata_port = 18312 }  # loopback market tunnels for CTP
 
 [http]
 bind = "127.0.0.1"
@@ -23,3 +25,4 @@ expected_account_hash = "<64-character account hash>"
 # adapter = "ctp"
 # position_namespace = "cn_ctp_sim"
 # expected_account_hash = "<64-character account hash>"
+# manager_source_id = "explicit-manager-source-id" # existing Manager portfolio

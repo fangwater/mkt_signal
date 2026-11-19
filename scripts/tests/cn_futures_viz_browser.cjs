@@ -12,8 +12,18 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     page.on('pageerror', error=>errors.push(error.message));
     const requests=[];
     page.on('request', request=>requests.push(request.url()));
-    const html=fs.readFileSync(path.join(__dirname,'../../web/cn_futures_viz/index.html'),'utf8').replace('__CN_FUTURES_WS_PATH__',JSON.stringify('/observe/live'));
+    const html=fs.readFileSync(path.join(__dirname,'../../web/cn_futures_viz/index.html'),'utf8')
+      .replace('__CN_FUTURES_WS_PATH__',JSON.stringify('/observe/live'))
+      .replace('__CN_FUTURES_STRATEGY_SOURCES__',JSON.stringify(['ctp']));
+    let strategyStatus=401;
+    const strategy={
+      'SHFE:rb2701': {target_lots:1,attributed_lots:0,strategies:[
+        {name:'long-factor',target_lots:3,attributed_lots:2},
+        {name:'short-factor',target_lots:-2,attributed_lots:-2},
+      ]},
+    };
     await page.route(url=>url.origin==='http://cn-viz.test'&&url.pathname==='/',route=>route.fulfill({contentType:'text/html',body:html}));
+    await page.route('**/strategy-positions/ctp',route=>route.fulfill({status:strategyStatus,json:strategy}));
     await page.addInitScript(()=>{
       window.__sockets=[];
       window.WebSocket=class {
@@ -42,6 +52,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.doesNotMatch(await page.locator('#positions .aggregate-row').innerText(),/历史|权利金|名义金额/);
     assert.match(await page.locator('#positions').innerText(),/沪铜 · 2026年12月/);
     await page.locator('[data-group]').first().click();
+    assert.equal(await page.getByText('今仓 · 手',{exact:true}).count(),0);
+    await page.getByRole('button',{name:'柜台明细'}).click();
     assert.equal(await page.locator('#positions .position-detail tbody tr').count(),2);
     assert.deepEqual(await page.locator('.position-detail th').allTextContents(),['方向','持仓 · 手','今仓 · 手','昨仓 · 手']);
     assert.deepEqual(await page.locator('.position-detail tbody tr').first().locator('td').allTextContents(),['多头','5','2','3']);
@@ -73,6 +85,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.match(await page.locator('#quote-status').innerText(),/历史行情/);
     assert.match(await page.locator('#positions .aggregate-row[data-symbol="cu2612C106000"] .net-amount span').getAttribute('title'),/历史行情.*初始快照/);
     await page.locator('#positions .aggregate-row[data-symbol="cu2612C106000"] [data-group]').click();
+    await page.locator('#positions .aggregate-row[data-symbol="cu2612C106000"] + .detail-row [data-broker]').click();
     assert.match(await page.locator('.valuation-basis').last().innerText(),/净权利金市值.*合约乘数 5.*初始快照/);
     await page.locator('#positions .aggregate-row[data-symbol="cu2612C106000"] [data-group]').click();
     frame.entry.marks[1].initial=false;frame.entry.marks[1].received_us=(Date.now()-20000)*1000;frame.entry.observed_us=Date.now()*1000;
@@ -88,9 +101,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     await page.evaluate(f=>window.__push(f),frame);
     const text=await page.locator('#positions').innerText();
     for(const expected of ['白糖 · 2027年01月','PTA · 2029年12月','沪深300股指 · 2026年12月','原油 · 2027年01月','碳酸锂 · 2026年12月','豆粕 · 2027年01月','unknown2612','原油 · 2026年12月 · 看涨 · 行权价 780','豆粕 · 2027年01月 · 看跌 · 行权价 3000','白糖 · 2027年01月 · 看涨 · 行权价 6000','沪深300股指 · 2026年12月 · 看涨 · 行权价 4000']) assert.ok(text.includes(expected),expected);
-    await page.locator('#venue').selectOption('CZCE');
-    assert.equal(await page.locator('#positions tr[data-symbol]').count(),3);
-    await page.locator('#venue').selectOption('');
+    assert.equal(await page.getByRole('combobox',{name:'交易所筛选'}).count(),0);
+    assert.equal(await page.getByRole('columnheader',{name:'交易所',exact:true}).count(),0);
     // Initial recovery and flat are distinct, even across a publisher restart.
     frame.entry.positions=[];frame.entry.position_ready=false;frame.entry.publisher_epoch='2';
     await page.evaluate(f=>window.__push(f),frame);
@@ -140,6 +152,30 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     await page.locator('[data-source="ctp"]').click();
     assert.equal(await page.locator('#account-balance').innerText(),'¥ 499,999.72');
     assert.equal(new URL(page.url()).searchParams.get('source'),'ctp');
+    await page.getByRole('link',{name:'登录 Manager 查看策略仓位'}).waitFor();
+    strategyStatus=200;
+    await page.locator('#refresh').click();
+    await page.getByText('long-factor',{exact:true}).waitFor();
+    assert.deepEqual(await page.locator('.strategy-detail tbody tr').first().locator('td').allTextContents(),['long-factor','+2','+3']);
+    assert.deepEqual(await page.locator('.strategy-detail tbody tr').last().locator('td').allTextContents(),['short-factor','-2','-2']);
+    assert.deepEqual((await page.locator('#positions tr[data-symbol="rb2701"] td').allTextContents()).slice(1,3),['0','+1']);
+    assert.equal(await page.locator('#contract-count').innerText(),'0');
+    assert.equal(await page.locator('.attribution-gap').count(),0);
+    ctp.entry.positions=[row('SHFE','rb2701','buy',1)];
+    ctp.entry.marks=[{...mark('rb2701','future',10,3140),bid_price:3141,ask_price:3143,bid_lots:1,ask_lots:2}];
+    await page.evaluate(f=>window.__push(f),ctp);
+    assert.match(await page.locator('.attribution-gap').innerText(),/策略合计 0 手，柜台与账本相差 \+1 手/);
+    assert.equal(await page.locator('#positions .net-amount').innerText(),'¥ 31,420.00');
+    ctp.entry.marks[0].bid_price=3143; ctp.entry.marks[0].ask_price=3145;
+    await page.evaluate(f=>window.__push(f),ctp);
+    assert.equal(await page.locator('#positions .net-amount').innerText(),'¥ 31,440.00');
+    ctp.entry.marks[0].ask_lots=0;
+    await page.evaluate(f=>window.__push(f),ctp);
+    assert.equal(await page.locator('#positions .net-amount').innerText(),'¥ 31,400.00');
+    strategyStatus=403;
+    await page.locator('#refresh').click();
+    await page.getByText('当前账户或策略无查看权限',{exact:true}).waitFor();
+    assert.equal(await page.locator('.strategy-detail').count(),0);
     await page.goto('http://cn-viz.test/?source=paper');
     await page.evaluate(f=>window.__push(f),ctp);
     await page.evaluate(f=>window.__push(f),frame);
@@ -151,6 +187,6 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.equal(await page.locator('[data-activity]').count(),0);
     assert.deepEqual(errors,[]);
     assert.ok(requests.every(url=>!url.includes('/snapshot')&&!url.includes('/healthz')));
-    console.log('Passed: WS-only init, native lots/yuan, query funds/freshness, isolated sources, names/search, positions/recovery/stale, reconnect, mobile.');
+    console.log('Passed: native WS, funds, L1 amounts, authorized strategy holdings, source isolation, contract search, recovery, reconnect, mobile.');
   } finally { await browser.close(); }
 })().catch(error=>{console.error(error);process.exitCode=1;});

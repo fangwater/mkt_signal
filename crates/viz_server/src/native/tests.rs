@@ -11,6 +11,7 @@ fn source(id: &str) -> Counter {
         adapter: Adapter::Yida,
         position_namespace: format!("test_native_{}_{}", id, now_us()),
         expected_account_hash: "a".repeat(64),
+        manager_source_id: None,
     }
 }
 fn snapshot(source: &Counter, epoch: u64, sequence: u64) -> Snapshot {
@@ -128,6 +129,8 @@ fn native_config_has_one_ipc_contract_and_safe_ws_path() {
             ws_path: "/observe/live".into(),
         },
         stale_after_ms: 1000,
+        manager_port: 18211,
+        l1: None,
         counters: vec![source],
     };
     cfg.validate().unwrap();
@@ -167,7 +170,15 @@ async fn direct_ws_replays_each_source_and_forwards_without_flush_timer_or_rest_
         port: addr.port(),
         ws_path: "/observe/live".into(),
     };
-    let app = server::router(&cfg, hub.clone());
+    let positions = manager::Positions::new(&Config {
+        http: cfg.clone(),
+        stale_after_ms: 1000,
+        manager_port: 18211,
+        l1: None,
+        counters: sources.clone(),
+    })
+    .unwrap();
+    let app = server::router(&cfg, hub.clone(), positions);
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/observe/live"))
         .await
@@ -197,7 +208,7 @@ async fn direct_ws_replays_each_source_and_forwards_without_flush_timer_or_rest_
     assert_eq!(response.headers()["cache-control"], "no-store");
     let html = response.text().await.unwrap();
     assert!(html.contains("const WS_PATH = \"/observe/live\""));
-    assert!(!html.contains("fetch("));
+    assert!(html.contains("const STRATEGY_SOURCES = new Set([])"));
     assert!(!html.contains("data-activity"));
     assert!(html.contains("人民币元") && html.contains("沪铜"));
     for path in ["/snapshot", "/orders", "/cancel", "/config/"] {
@@ -233,7 +244,7 @@ async fn ipc_listener_relays_common_state_without_sdk_or_database() {
                     .unwrap();
             let hub = Hub::new(std::slice::from_ref(&source), 1000);
             let mut rx = hub.tx.subscribe();
-            let handle = spawn(source.clone(), hub.clone());
+            let handle = spawn(source.clone(), hub.clone(), None);
             tokio::time::timeout(Duration::from_secs(3), async {
                 let mut seq = 0;
                 loop {
@@ -255,4 +266,102 @@ async fn ipc_listener_relays_common_state_without_sdk_or_database() {
             handle.abort();
         })
         .await;
+}
+
+#[tokio::test]
+async fn strategy_positions_forward_only_the_session_to_the_pinned_manager_source() {
+    use axum::{
+        http::{header, HeaderMap, StatusCode},
+        routing::get,
+        Json, Router,
+    };
+    let ledger = Router::new().route(
+        "/manager/api/native/sources/manager-ctp/netting",
+        get(|headers: HeaderMap| async move {
+            if headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) != Some("cn_cta_session=allowed") {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            Ok(Json(json!({
+                "portfolio": {
+                    "source_id": "manager-ctp",
+                    "strategy_groups": {"active":{"members":["alpha"],"held":false},"held":{"members":["beta"],"held":true}},
+                    "targets": {"alpha":{"SHFE:rb2701":3},"beta":{"SHFE:rb2701":99}},
+                    "positions": {
+                        "alpha":{"SHFE:rb2701":{"fifo":[{"lots":1,"price":3100},{"lots":1,"price":3110}]}},
+                        "beta":{"SHFE:rb2701":{"fifo":[{"lots":-2,"price":3120}]}}
+                    }
+                },
+                "net_targets":{"SHFE:rb2701":{"target_lots":1,"attributed_lots":0}}
+            })))
+        }),
+    );
+    let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let manager_port = upstream.local_addr().unwrap().port();
+    let upstream_task = tokio::spawn(async move { axum::serve(upstream, ledger).await.unwrap() });
+    let mut ctp = source("ctp");
+    ctp.manager_source_id = Some("manager-ctp".into());
+    let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = local.local_addr().unwrap();
+    let cfg = Config {
+        http: crate::config::HttpCfg {
+            bind: "127.0.0.1".into(),
+            port: addr.port(),
+            ws_path: "/ws".into(),
+        },
+        stale_after_ms: 1000,
+        manager_port,
+        l1: None,
+        counters: vec![ctp, source("paper")],
+    };
+    let app = server::router(
+        &cfg.http,
+        Hub::new(&cfg.counters, 1000),
+        manager::Positions::new(&cfg).unwrap(),
+    );
+    let local_task = tokio::spawn(async move { axum::serve(local, app).await.unwrap() });
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let ctp_url = format!("http://{addr}/strategy-positions/ctp");
+    for (cookie, expected) in [
+        ("theme=dark", StatusCode::UNAUTHORIZED),
+        ("cn_cta_session=denied", StatusCode::FORBIDDEN),
+    ] {
+        let response = client
+            .get(&ctp_url)
+            .header(header::COOKIE, cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+    let result = client
+        .get(&ctp_url)
+        .header(header::COOKIE, "theme=dark; cn_cta_session=allowed")
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    assert_eq!(result.headers()[header::CACHE_CONTROL], "no-store");
+    let value: Value = serde_json::from_slice(&result.bytes().await.unwrap()).unwrap();
+    assert_eq!(
+        value,
+        json!({"SHFE:rb2701": {
+            "target_lots":1,"attributed_lots":0, "strategies":[
+                {"name":"alpha","target_lots":3,"attributed_lots":2},
+                {"name":"beta","target_lots":-2,"attributed_lots":-2}
+            ]
+        }})
+    );
+    assert_eq!(
+        client
+            .get(format!("http://{addr}/strategy-positions/paper"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    local_task.abort();
+    upstream_task.abort();
 }

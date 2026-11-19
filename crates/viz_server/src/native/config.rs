@@ -9,6 +9,9 @@ pub struct Config {
     pub http: crate::config::HttpCfg,
     #[serde(default = "stale_default")]
     pub stale_after_ms: u64,
+    #[serde(default = "manager_port_default")]
+    pub manager_port: u16,
+    pub l1: Option<L1>,
     pub counters: Vec<Counter>,
 }
 fn default_http() -> crate::config::HttpCfg {
@@ -39,7 +42,17 @@ fn native_http<'de, D: serde::Deserializer<'de>>(
 fn stale_default() -> u64 {
     15_000
 }
+fn manager_port_default() -> u16 {
+    18211
+}
 pub use cn_futures_state::Adapter;
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct L1 {
+    pub zmq_port: u16,
+    pub metadata_port: u16,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Counter {
@@ -50,6 +63,7 @@ pub struct Counter {
     pub adapter: Adapter,
     pub position_namespace: String,
     pub expected_account_hash: String,
+    pub manager_source_id: Option<String>,
 }
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
@@ -63,6 +77,13 @@ impl Config {
             .parse()
             .context("invalid native HTTP bind/port")?;
         ensure!(self.http.port > 0, "native HTTP port cannot be zero");
+        ensure!(self.manager_port > 0, "Manager port cannot be zero");
+        if let Some(l1) = self.l1 {
+            ensure!(
+                l1.zmq_port > 0 && l1.metadata_port > 0,
+                "L1 ports cannot be zero"
+            );
+        }
         ensure!(!self.counters.is_empty(), "configure at least one counter");
         ensure!(
             (100..=3_600_000).contains(&self.stale_after_ms),
@@ -75,11 +96,13 @@ impl Config {
                     .ws_path
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'-'))
-                && !["/", "/snapshot", "/healthz"].contains(&self.http.ws_path.as_str()),
+                && !["/", "/snapshot", "/healthz"].contains(&self.http.ws_path.as_str())
+                && !self.http.ws_path.starts_with("/strategy-positions/"),
             "invalid ws_path"
         );
         let mut ids = HashSet::new();
         let mut namespaces = HashSet::new();
+        let mut manager_ids = HashSet::new();
         for counter in &self.counters {
             ensure!(
                 !counter.id.is_empty()
@@ -100,6 +123,16 @@ impl Config {
                 namespaces.insert(&counter.position_namespace),
                 "duplicate position IPC namespace"
             );
+            if let Some(id) = &counter.manager_source_id {
+                ensure!(
+                    !id.is_empty()
+                        && id
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+                        && manager_ids.insert(id),
+                    "invalid or duplicate Manager source id"
+                );
+            }
         }
         Ok(())
     }
