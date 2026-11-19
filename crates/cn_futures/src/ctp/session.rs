@@ -6,6 +6,12 @@ use anyhow::{ensure, Context, Result};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
+/// A full catalogue pass returns ~29k rows and re-queries every known rate.
+/// Login/reconciliation always performs a complete pass; intraday contract
+/// rules and rates change rarely, so the background refresh is infrequent to
+/// avoid flooding the callback queue that gates order dispatch.
+pub(crate) const RULE_REFRESH_INTERVAL: Duration = Duration::from_secs(30 * 60);
+
 pub struct Session {
     config: Config,
     investor: String,
@@ -150,7 +156,7 @@ impl Session {
             return Ok(None);
         }
         if self.ready && self.next_kind.is_none() {
-            if now.saturating_duration_since(self.last_rule_poll) >= Duration::from_secs(60) {
+            if now.saturating_duration_since(self.last_rule_poll) >= RULE_REFRESH_INTERVAL {
                 self.maintenance = true;
                 self.next_kind = Some(INSTRUMENT);
                 self.catalogue.clear();

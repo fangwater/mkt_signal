@@ -18,7 +18,18 @@ fn background_cash_and_complete_rule_queries_keep_business_session_ready() {
     assert!(session.on_raw_event(&account, now).unwrap().is_none());
     assert_eq!(session.take_cash_update(), Some(123.0));
     assert!(session.ready());
+    let refreshed_at = now;
     now += Duration::from_secs(60);
+    assert_eq!(
+        session.request_due(now).unwrap(),
+        Some(ACCOUNT),
+        "the full catalogue is not re-queried every minute"
+    );
+    session.sent(ACCOUNT, 102, 0, now).unwrap();
+    let mut account = response(ACCOUNT, 102);
+    account.available = 124.0;
+    assert!(session.on_raw_event(&account, now).unwrap().is_none());
+    now = refreshed_at + RULE_REFRESH_INTERVAL;
     assert_eq!(session.request_due(now).unwrap(), Some(INSTRUMENT));
     session.sent(INSTRUMENT, 101, 0, now).unwrap();
     let mut absent = response(INSTRUMENT, 101);
