@@ -150,18 +150,30 @@ async fn secondary(cfg: &Config, day: u32) -> Result<(Option<String>, Option<Str
         CnFuturesMarketClient::connect(cfg.history_grpc.clone()),
     )
     .await??;
-    let response = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        client.get_contract_selections(GetContractSelectionsRequest {
-            exchange: cfg.exchange_codes()?.1 as i32,
-            products: vec![cfg.symbol.clone()],
-            mode: ContractSelectionMode::SecondaryOi as i32,
-            start_trading_day: day,
-            end_trading_day: day,
-        }),
-    )
-    .await??
-    .into_inner();
+    let request = GetContractSelectionsRequest {
+        exchange: cfg.exchange_codes()?.1 as i32,
+        products: vec![cfg.symbol.clone()],
+        mode: ContractSelectionMode::SecondaryOi as i32,
+        start_trading_day: day,
+        end_trading_day: day,
+    };
+    // The service bounds concurrent selections; products start together.
+    let mut attempt = 0_u64;
+    let response = loop {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client.get_contract_selections(request.clone()),
+        )
+        .await?;
+        match result {
+            // gRPC RESOURCE_EXHAUSTED (8); proto client uses its own tonic version.
+            Err(status) if status.code() as i32 == 8 && attempt < 8 => {
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(250 * attempt)).await;
+            }
+            result => break result?.into_inner(),
+        }
+    };
     let row = response
         .rows
         .iter()
