@@ -6,10 +6,10 @@
 `/home/ubuntu/ctp_chuangyuan01`。使用上期技术官方 CTP 6.7.11，
 `ctp-trader` 在同一个进程内接入 TraderApi 和 MdApi。
 
-常驻服务以 `--connect --read-only` 启动，使用 `NoStrategy`。
-Rust 入口禁止在此模式开启执行、ctaker 或结算确认。它允许认证、登录、订阅行情及账户查询，
-不确认结算、不提交新单、不撤单。结算未确认时核心 `ready=false`
-是预期门控；应结合账户查询和对账回执判断观察链路是否恢复。
+创元实盘以 `--connect --execute` 启动。环境配置中的 `[ctaker]` 仅允许
+`SHFE:rb2701`，执行端订阅 Manager gRPC。`confirm_settlement = true` 使 Trader
+在登录后查询柜台确认状态，并在当日尚未确认时调用 CTP SDK 的结算确认接口。
+移除 `[ctaker]` 并关闭结算确认后，环境脚本以 `--read-only` 启动账户查询。
 
 ## 合约范围
 
@@ -29,12 +29,13 @@ Rust 后台线程解析响应，验证生效日、来源和合约后，将名单
 
 行情主力订阅可独立用于观察。新版 `trade.toml` 删除旧的六个测试合约，
 执行端使用 Manager 目标中的具体合约，需要执行时自动查柜台规则和补订行情。
-创元当前按只读模式运行，账户委托、成交和持仓查询覆盖全账户。
+账户委托、成交和持仓查询覆盖全账户。
 
 2026-11-19 已通过完整空仓对账，将 Manager 的 `cn-futures-01-rb` 七个
 小时因子绑定到 `SHFE:rb2701`。信号实例按组发布目标，Manager 按账户汇总并
 经 gRPC 交付目标向量。创元已部署按 Manager 净目标和交易所下单规格确定委托
-手数的版本。用 `scripts/ctp_env.sh` 启动的当前运行代保持只读，等待结算确认。
+手数的版本。北京时间 10:04 核验 SDK 已确认结算，柜台完成 0 持仓、0 委托对账。
+Manager 的螺纹净目标为 0 手，执行订阅已连接。
 
 ## 操作入口
 
@@ -52,9 +53,9 @@ Rust 运行时排空 SDK 回报并关闭持久化写入。
 `state` 只排队读取状态，响应留在私有日志。`status` 显示进程状态，
 不将进程存活等同于柜台就绪。
 
-Ubuntu 用户 systemd 服务为 `ctp_chuangyuan01-trader.service`，
-已启用开机启动和 user linger；`Restart=no`，认证错误或运行故障后
-不会反复尝试登录。脚本没有开启执行权限或结算确认的选项。
+Ubuntu 用户 systemd 服务为 `ctp_chuangyuan01-trader.service`，已启用开机启动、
+user linger 与 `Restart=no`。环境脚本根据 `[ctaker]` 选择运行模式，实盘配置要求
+明确的合约范围和 Manager gRPC 订阅。
 
 ## 文件与资源
 
