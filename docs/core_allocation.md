@@ -1,6 +1,19 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新于 2026-11-18 13:35 UTC。**部署、迁移、下线任何绑核进程时，请同步更新本表。**
+最后更新于 2026-11-19 12:59 UTC。**部署、迁移、下线任何绑核进程时，请同步更新本表。**
+
+2026-11-19 12:49–12:57 UTC，JP 通过标准 Binance FR 流程发布 `binance_fr_arb03`（`0c02f9aa`）。
+停信号并备份原程序和日志后停机，空挂单核验通过。六个本地 release 产物和发布脚本均经
+SHA-256 核对后安装。停机期间只对齐非 BNB 合约敞口，DYDX 和 0G 两笔卖单成交，
+名义合计 13.68 USDT。恢复前非 BNB 最大残差 3.43 USDT，
+三类挂单均为 0，BNB 合约仓位为 0.13。
+`persist_manager` PID 1620187 使用 CPU15。Config 1619665、Viz 1619844、
+trade_engine 1620853、pre_trade 1621147、account_monitor 1621481、
+trade_signal 1622329、dashboard 3186031 使用 CPU `0-5,48-95`。
+交易引擎和账户监控的建立连接均走 `172.31.35.231`。恢复后账户为 `free_trade`，
+至 12:59 UTC 开仓发单 435 笔，现货回执含 24 笔 51015
+及 281 笔 51042。回执在 `data/ops/binance_fr_arb03_0c02f9aa_20261119T124022Z/`，
+JP 备份位于 `~/binance_fr_arb03/run/0c02f9aa_20261119T124022Z/before/`。
 
 2026-11-18 13:31–13:35 UTC，JP 逐盘发布 Binance FR arb02/03/04 和 Bitget FR
 arb01/02 的 `trade_signal`（`arbmm c29433b1`，与 Gate 验收产物相同）。
