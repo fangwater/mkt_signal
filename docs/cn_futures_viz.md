@@ -14,7 +14,7 @@ target/release/cn-futures-viz --config config/cn_futures_viz.toml --check-config
 target/release/cn-futures-viz --config config/cn_futures_viz.toml
 ```
 
-默认监听 `127.0.0.1:8811`。`--check-config` 只解析配置，不打开 IPC 或 SDK。用户指定 CTP 外部部署／执行主机为 `sh_dev`（`ssh sh_dev`）；本机和所有内网机器仅允许 CTP 编辑及编译，不运行 CTP SDK。当前公网 Viz 同时配置易达 paper 和 [CTP 只读环境](sh_dev_ctp.md)，使用独立 IPC namespace；页面默认 CTP，通过来源标签切换，不跨柜台聚合资金或持仓。
+默认监听 `127.0.0.1:8811`。`--check-config` 只解析配置，不打开 IPC 或 SDK。用户指定 CTP 外部部署／执行主机为 `sh_dev`（`ssh sh_dev`）；本机和所有内网机器仅允许 CTP 编辑及编译，不运行 CTP SDK。当前公网 Viz 同时配置易达 paper 和 [CTP 只读环境](sh_dev_ctp.md)，使用独立 IPC namespace。页面默认选择 CTP，账户入口通过 `?source=<柜台 ID>` 预选对应柜台。切换标签会更新地址，便于刷新后继续查看同一账户。
 
 交易配置的根级：
 

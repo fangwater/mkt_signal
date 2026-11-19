@@ -13,7 +13,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     const requests=[];
     page.on('request', request=>requests.push(request.url()));
     const html=fs.readFileSync(path.join(__dirname,'../../web/cn_futures_viz/index.html'),'utf8').replace('__CN_FUTURES_WS_PATH__',JSON.stringify('/observe/live'));
-    await page.route('http://cn-viz.test/',route=>route.fulfill({contentType:'text/html',body:html}));
+    await page.route(url=>url.origin==='http://cn-viz.test'&&url.pathname==='/',route=>route.fulfill({contentType:'text/html',body:html}));
     await page.addInitScript(()=>{
       window.__sockets=[];
       window.WebSocket=class {
@@ -139,6 +139,12 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.equal(await page.locator('#account-balance').innerText(),'--');
     await page.locator('[data-source="ctp"]').click();
     assert.equal(await page.locator('#account-balance').innerText(),'¥ 499,999.72');
+    assert.equal(new URL(page.url()).searchParams.get('source'),'ctp');
+    await page.goto('http://cn-viz.test/?source=paper');
+    await page.evaluate(f=>window.__push(f),ctp);
+    await page.evaluate(f=>window.__push(f),frame);
+    await page.evaluate(f=>window.__push(f),ctp);
+    assert.equal(await page.locator('[data-source="paper"]').getAttribute('aria-selected'),'true');
     await page.setViewportSize({width:390,height:844});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
     assert.ok((await page.locator('#show-zero').boundingBox()).width<=20);

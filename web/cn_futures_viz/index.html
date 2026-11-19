@@ -297,7 +297,8 @@
       const name=contractName(g.venue,g.symbol,g.source.entry?.trading_day);
       return `<span class="scope-label">${escape(name)}</span>${name===g.symbol?'':`<span class="contract-code">${escape(g.symbol)}</span>`}`;
     };
-    const state = { sources:new Map(), ws:null, timer:null, expanded:new Set(), groups:[], selectedSource:null, userSelected:false };
+    const state = { sources:new Map(), ws:null, timer:null, expanded:new Set(), groups:[],
+      preferredSource:new URLSearchParams(location.search).get('source') };
     const status = source => {
       const s = source.entry;
       if (source.error) return s ? 'unavailable' : 'waiting';
@@ -397,11 +398,11 @@
     }
     function selectedSources() {
       const sources=[...state.sources.values()];
-      if (!state.sources.has(state.selectedSource)) state.selectedSource=(sources.find(s=>s.adapter==='ctp')||sources[0])?.source_id||null;
-      const tabs=sources.map(s=>`<button type="button" role="tab" data-source="${escape(s.source_id)}" aria-selected="${s.source_id===state.selectedSource}">${adapterName(s)}</button>`).join('');
+      const selected=state.sources.get(state.preferredSource) ?? sources.find(s=>s.adapter==='ctp') ?? sources[0];
+      const tabs=sources.map(s=>`<button type="button" role="tab" data-source="${escape(s.source_id)}" aria-selected="${s===selected}">${adapterName(s)}</button>`).join('');
       if ($('source-tabs').innerHTML!==tabs) $('source-tabs').innerHTML=tabs;
       $('source-tabs').hidden=sources.length<=1;
-      return sources.filter(s=>s.source_id===state.selectedSource);
+      return selected ? [selected] : [];
     }
     function renderOverview(sources,groups) {
       const known=sources.length && sources.every(s=>s.entry?.position_ready);
@@ -458,7 +459,6 @@
     function accept(frame) {
       if (frame.type!=='cn_futures_state' || !frame.source_id) return;
       state.sources.set(frame.source_id,frame);
-      if (!state.userSelected && frame.adapter==='ctp') state.selectedSource=frame.source_id;
       render();
     }
     function connect() {
@@ -473,7 +473,15 @@
     }
     document.addEventListener('click',event=>{
       const sourceButton=event.target.closest('[data-source]');
-      if(sourceButton){state.selectedSource=sourceButton.dataset.source;state.userSelected=true;state.expanded.clear();render();return;}
+      if(sourceButton){
+        state.preferredSource=sourceButton.dataset.source;
+        const url=new URL(location.href);
+        url.searchParams.set('source',state.preferredSource);
+        history.replaceState(null,'',url);
+        state.expanded.clear();
+        render();
+        return;
+      }
       const button=event.target.closest('[data-group]'); if(!button)return;
       const key=state.groups[Number(button.dataset.group)]?.key; if(!key)return;
       state.expanded.has(key)?state.expanded.delete(key):state.expanded.add(key);render();
