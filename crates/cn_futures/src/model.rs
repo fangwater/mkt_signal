@@ -95,9 +95,9 @@ impl ExecutionScope {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RiskLimits {
-    pub max_order_lots: i32,
-    pub max_position_lots_per_side: i32,
-    pub max_working_lots: i32,
+    pub max_order_lots: Option<i32>,
+    pub max_position_lots_per_side: Option<i32>,
+    pub max_working_lots: Option<i32>,
     pub max_actions_per_second: usize,
     pub minimum_cash_remaining: f64,
     pub enable_fak_fok: bool,
@@ -107,9 +107,14 @@ pub struct RiskLimits {
 impl RiskLimits {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.max_order_lots > 0
-                && self.max_position_lots_per_side > 0
-                && self.max_working_lots > 0
+            [
+                self.max_order_lots,
+                self.max_position_lots_per_side,
+                self.max_working_lots,
+            ]
+            .into_iter()
+            .flatten()
+            .all(|lots| lots > 0)
                 && self.max_actions_per_second > 0,
             "risk limits must be positive"
         );

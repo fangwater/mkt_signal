@@ -415,9 +415,9 @@ mod tests {
         use crate::core::TradingCore;
         let mut core = TradingCore::new(
             RiskLimits {
-                max_order_lots: 5,
-                max_position_lots_per_side: 5,
-                max_working_lots: 5,
+                max_order_lots: Some(5),
+                max_position_lots_per_side: Some(5),
+                max_working_lots: Some(5),
                 max_actions_per_second: 5,
                 minimum_cash_remaining: 0.0,
                 enable_fak_fok: true,

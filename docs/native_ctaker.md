@@ -5,11 +5,15 @@ The default remains `NoStrategy`. An explicit `[ctaker]` in the Trader TOML,
 all required for target execution. Existing read-only launches stay read-only.
 No live environment is enabled by adding this implementation.
 
-Settings require an explicit stable `source_id`, `max_target_lots`,
-`max_order_lots`, `quote_max_age_ms` (1–5000), `target_max_age_ms` (1–60000) and
-`retry_interval_ms` (100–60000). Lot limits cannot exceed the existing risk
-limits. `risk.enable_fak_fok` must already be validated for that venue/account.
-Do not copy these controls into a live TOML without choosing account limits.
+CTP settings require a stable `source_id`, `quote_max_age_ms` (1–5000),
+`target_max_age_ms` (1–60000) and `retry_interval_ms` (100–60000).
+The Manager's signed net target is authoritative. CTP target execution derives each
+order from that target, factual inventory and exchange-reported contract size
+rules. Remove `risk.max_order_lots`, `risk.max_position_lots_per_side` and
+`risk.max_working_lots` from the CTP configuration when enabling `[ctaker]`.
+`risk.enable_fak_fok` must be enabled for the venue/account.
+An optional `contracts` list restricts which native contracts this instance may
+trade. The full account vector may include zero entries for other flat contracts.
 
 The local private JSON-line command channel accepts:
 
@@ -20,7 +24,7 @@ The local private JSON-line command channel accepts:
 This is an expired documentation example, not a live order instruction. The
 vector must contain every configured native contract, including explicit zeros.
 Contracts retain their exchange, case and delivery month. Another source/day,
-unknown contracts, missing zero entries, excess lots, expired/long leases and
+unknown contracts, missing zero entries, expired/long leases and
 old/conflicting revisions are rejected. An identical live batch is idempotent;
 a reconnect or rejection requires a new batch/revision. New batches cannot
 replace unresolved native orders. Manual submits are blocked in ctaker mode;

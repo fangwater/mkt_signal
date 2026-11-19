@@ -127,6 +127,12 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         if let Some(ctaker) = &self.ctaker {
             ctaker.validate(&self.risk)?;
+            ensure!(
+                self.risk.max_order_lots.is_none()
+                    && self.risk.max_position_lots_per_side.is_none()
+                    && self.risk.max_working_lots.is_none(),
+                "CTP ctaker sizes from the Manager target and exchange rules; remove local lot limits"
+            );
         }
         if let Some(ingress) = &self.position_target_ingress {
             if let Some(ctaker) = &self.ctaker {

@@ -81,10 +81,10 @@ fn public_simulation_is_endpoint_pinned_and_has_one_lot_limits() {
             .validate_sdk_config_text(&(native.clone() + extra))
             .is_err());
     }
-    c.risk.max_order_lots = 2;
+    c.risk.max_order_lots = Some(2);
     assert!(c.validate().is_err());
-    c.risk.max_order_lots = 1;
-    c.risk.max_working_lots = 3;
+    c.risk.max_order_lots = Some(1);
+    c.risk.max_working_lots = Some(3);
     assert!(c.validate().is_err());
 }
 
@@ -610,9 +610,9 @@ fn restored_core() -> crate::core::TradingCore {
         .unwrap()
         .unwrap();
     let mut risk = c.risk;
-    risk.max_order_lots = 3;
-    risk.max_position_lots_per_side = 3;
-    risk.max_working_lots = 3;
+    risk.max_order_lots = Some(3);
+    risk.max_position_lots_per_side = Some(3);
+    risk.max_working_lots = Some(3);
     let mut core = crate::core::TradingCore::new(risk, scope()).unwrap();
     core.restore(snapshot).unwrap();
     core

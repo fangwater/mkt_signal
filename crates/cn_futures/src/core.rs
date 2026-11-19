@@ -181,7 +181,7 @@ impl TradingCore {
             self.pending_open.push([0, 0]);
             self.fills.push(Default::default());
             self.working_by_symbol.push(Vec::with_capacity(
-                (self.limits.max_working_lots as usize).clamp(4, 64),
+                (self.limits.max_working_lots.unwrap_or(4) as usize).clamp(4, 64),
             ));
         }
         id
@@ -632,7 +632,10 @@ impl TradingCore {
             intent.lots >= minimum
                 && intent.lots <= maximum
                 && (intent.price_type == PriceType::Limit || intent.lots % minimum == 0)
-                && intent.lots <= self.limits.max_order_lots,
+                && self
+                    .limits
+                    .max_order_lots
+                    .is_none_or(|limit| intent.lots <= limit),
             "invalid order quantity"
         );
         match intent.price_type {
@@ -656,7 +659,9 @@ impl TradingCore {
             "limit price overflow"
         );
         ensure!(
-            self.working_lots + i64::from(intent.lots) <= i64::from(self.limits.max_working_lots),
+            self.limits.max_working_lots.is_none_or(|limit| {
+                self.working_lots + i64::from(intent.lots) <= i64::from(limit)
+            }),
             "working lot limit"
         );
         ensure!(
@@ -679,8 +684,10 @@ impl TradingCore {
         if intent.offset == Offset::Open {
             let pending = self.pending_open[symbol.0][side_index(intent.side)];
             ensure!(
-                self.position_id(symbol, intent.side).total() + pending + i64::from(intent.lots)
-                    <= i64::from(self.limits.max_position_lots_per_side),
+                self.limits.max_position_lots_per_side.is_none_or(|limit| {
+                    self.position_id(symbol, intent.side).total() + pending + i64::from(intent.lots)
+                        <= i64::from(limit)
+                }),
                 "position limit"
             );
             cash_unit = rule.cash_budget_per_open_lot;
@@ -1189,7 +1196,11 @@ impl TradingCore {
     /// A parent FOK cannot be implemented as independently executable children.
     pub fn plan(&self, intent: Intent) -> Result<SmallVec<[Intent; 2]>> {
         ensure!(
-            intent.lots > 0 && intent.lots <= self.limits.max_order_lots,
+            intent.lots > 0
+                && self
+                    .limits
+                    .max_order_lots
+                    .is_none_or(|limit| intent.lots <= limit),
             "invalid parent quantity"
         );
         if !intent.venue.separate_close_dates() || intent.offset != Offset::Close {

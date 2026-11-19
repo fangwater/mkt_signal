@@ -37,9 +37,9 @@ fn fixture(label: &str) -> (std::path::PathBuf, Journal, TradingCore) {
     };
     let mut core = TradingCore::new(
         RiskLimits {
-            max_order_lots: 10,
-            max_position_lots_per_side: 20,
-            max_working_lots: 20,
+            max_order_lots: Some(10),
+            max_position_lots_per_side: Some(20),
+            max_working_lots: Some(20),
             max_actions_per_second: 20,
             minimum_cash_remaining: 0.0,
             enable_fak_fok: true,

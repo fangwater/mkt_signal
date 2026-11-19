@@ -115,9 +115,9 @@ fn failed_pre_submit_audit_never_reaches_the_sdk() {
 
 fn limits() -> RiskLimits {
     RiskLimits {
-        max_order_lots: 10,
-        max_position_lots_per_side: 20,
-        max_working_lots: 20,
+        max_order_lots: Some(10),
+        max_position_lots_per_side: Some(20),
+        max_working_lots: Some(20),
         max_actions_per_second: 20,
         minimum_cash_remaining: 1000.0,
         enable_fak_fok: false,
@@ -1530,13 +1530,13 @@ fn terminal_reports_and_stale_duplicates_keep_working_risk_until_factual_fills()
         assert_eq!(c.working_lots, i64::from(traded));
         assert_working_index(&c);
         // A terminal report still reserves its missing factual fills for both limits and STP.
-        c.limits.max_working_lots = traded;
+        c.limits.max_working_lots = Some(traded);
         assert!(c
             .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
             .unwrap_err()
             .to_string()
             .contains("working lot limit"));
-        c.limits.max_working_lots = 20;
+        c.limits.max_working_lots = Some(20);
         assert!(c
             .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
             .unwrap_err()

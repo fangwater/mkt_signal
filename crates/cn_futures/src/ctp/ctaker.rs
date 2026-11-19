@@ -6,7 +6,7 @@ use anyhow::{ensure, Context, Result};
 pub use cn_futures_target::Target;
 use serde::Deserialize;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
 };
 
@@ -14,8 +14,7 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub source_id: String,
-    pub max_target_lots: i32,
-    pub max_order_lots: i32,
+    pub contracts: Option<BTreeSet<String>>,
     pub quote_max_age_ms: u64,
     pub target_max_age_ms: u64,
     pub retry_interval_ms: u64,
@@ -23,16 +22,25 @@ pub struct Settings {
 impl Settings {
     pub fn validate(&self, risk: &RiskLimits) -> Result<()> {
         identifier(&self.source_id)?;
+        if let Some(contracts) = &self.contracts {
+            ensure!(
+                (1..=cn_futures_target::MAX_CONTRACTS).contains(&contracts.len()),
+                "invalid CTP ctaker contract scope"
+            );
+            for market in contracts {
+                let (exchange, symbol) = market.split_once(':').context("missing target venue")?;
+                ensure!(
+                    is_future_symbol(Venue::parse(exchange)?, symbol),
+                    "invalid CTP ctaker contract: {market}"
+                );
+            }
+        }
         ensure!(
-            self.max_target_lots > 0
-                && self.max_target_lots <= risk.max_position_lots_per_side
-                && self.max_order_lots > 0
-                && self.max_order_lots <= risk.max_order_lots
-                && (1..=5_000).contains(&self.quote_max_age_ms)
+            (1..=5_000).contains(&self.quote_max_age_ms)
                 && (1..=60_000).contains(&self.target_max_age_ms)
                 && (100..=60_000).contains(&self.retry_interval_ms)
                 && risk.enable_fak_fok,
-            "ctaker requires explicit bounded lots/ages and tested limit/FAK support"
+            "ctaker requires bounded quote/target ages and tested limit/FAK support"
         );
         Ok(())
     }
@@ -61,21 +69,29 @@ pub(crate) fn validate_target<'a>(
         (1..=cn_futures_target::MAX_CONTRACTS).contains(&target.net_targets.len()),
         "ctaker requires a bounded native contract vector including zeros"
     );
-    target
-        .net_targets
-        .iter()
-        .map(|(market, &lots)| {
-            let (exchange, symbol) = market.split_once(':').context("missing target venue")?;
-            let venue = Venue::parse(exchange)?;
+    let mut contracts = Vec::with_capacity(target.net_targets.len());
+    for (market, &lots) in &target.net_targets {
+        let (exchange, symbol) = market.split_once(':').context("missing target venue")?;
+        let venue = Venue::parse(exchange)?;
+        ensure!(
+            is_future_symbol(venue, symbol)
+                || (allow_options && option_symbol_parts(venue, symbol).is_some()),
+            "invalid ctaker native contract: {market}"
+        );
+        if settings
+            .contracts
+            .as_ref()
+            .is_some_and(|scope| !scope.contains(market))
+        {
             ensure!(
-                (is_future_symbol(venue, symbol)
-                    || (allow_options && option_symbol_parts(venue, symbol).is_some()))
-                    && i64::from(lots).abs() <= i64::from(settings.max_target_lots),
-                "invalid ctaker native contract or target lots: {market}"
+                !needs_contract(core, venue, symbol, lots),
+                "CTP target requires execution outside the configured contracts: {market}"
             );
-            Ok((venue, symbol, lots))
-        })
-        .collect()
+            continue;
+        }
+        contracts.push((venue, symbol, lots));
+    }
+    Ok(contracts)
 }
 
 pub(crate) fn needs_contract(
@@ -99,7 +115,7 @@ fn identifier(value: &str) -> Result<()> {
 
 pub struct Ctaker {
     settings: Settings,
-    fixed_scope: Option<BTreeMap<String, (Venue, String)>>,
+    fixed_scope: Option<FixedScope>,
     markets: HashMap<Venue, HashMap<String, String>>,
     target: Option<Arc<Target>>,
     last: Option<Arc<Target>>,
@@ -107,6 +123,50 @@ pub struct Ctaker {
     next_attempt_us: BTreeMap<String, u64>,
     next_tag: u64,
     halted: bool,
+}
+
+struct FixedScope {
+    contracts: BTreeSet<String>,
+    max_target_lots: i32,
+    max_order_lots: i32,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct YidaSettings {
+    pub source_id: String,
+    max_target_lots: i32,
+    max_order_lots: i32,
+    quote_max_age_ms: u64,
+    target_max_age_ms: u64,
+    retry_interval_ms: u64,
+}
+
+impl YidaSettings {
+    pub fn validate(&self, risk: &RiskLimits) -> Result<()> {
+        ensure!(
+            self.max_target_lots > 0
+                && risk
+                    .max_position_lots_per_side
+                    .is_some_and(|limit| self.max_target_lots <= limit)
+                && self.max_order_lots > 0
+                && risk
+                    .max_order_lots
+                    .is_some_and(|limit| self.max_order_lots <= limit),
+            "Yida ctaker lot limits must be within account risk limits"
+        );
+        self.timing().validate(risk)
+    }
+
+    fn timing(&self) -> Settings {
+        Settings {
+            source_id: self.source_id.clone(),
+            contracts: None,
+            quote_max_age_ms: self.quote_max_age_ms,
+            target_max_age_ms: self.target_max_age_ms,
+            retry_interval_ms: self.retry_interval_ms,
+        }
+    }
 }
 impl Ctaker {
     pub fn new(config: &crate::config::Config) -> Result<Self> {
@@ -117,30 +177,31 @@ impl Ctaker {
 
     #[cfg(feature = "yida-sdk")]
     pub(crate) fn with_scope<'a>(
-        settings: Settings,
+        settings: YidaSettings,
         risk: &RiskLimits,
         contracts: impl IntoIterator<Item = (Venue, &'a str)>,
     ) -> Result<Self> {
         settings.validate(risk)?;
-        let mut scope = BTreeMap::new();
+        let mut scope = BTreeSet::new();
         for (venue, symbol) in contracts {
             let market = format!("{}:{symbol}", venue.as_str());
-            ensure!(
-                scope.insert(market, (venue, symbol.to_owned())).is_none(),
-                "duplicate ctaker contract"
-            );
+            ensure!(scope.insert(market), "duplicate ctaker contract");
         }
         ensure!(
             (1..=cn_futures_target::MAX_CONTRACTS).contains(&scope.len()),
             "ctaker requires 1..128 explicit contracts"
         );
-        Ok(Self::from_scope(settings, Some(scope)))
+        Ok(Self::from_scope(
+            settings.timing(),
+            Some(FixedScope {
+                contracts: scope,
+                max_target_lots: settings.max_target_lots,
+                max_order_lots: settings.max_order_lots,
+            }),
+        ))
     }
 
-    fn from_scope(
-        settings: Settings,
-        fixed_scope: Option<BTreeMap<String, (Venue, String)>>,
-    ) -> Self {
+    fn from_scope(settings: Settings, fixed_scope: Option<FixedScope>) -> Self {
         Self {
             settings,
             fixed_scope,
@@ -172,8 +233,14 @@ impl Ctaker {
         )?;
         if let Some(scope) = &self.fixed_scope {
             ensure!(
-                target.net_targets.keys().eq(scope.keys()),
+                target.net_targets.keys().eq(scope.contracts.iter()),
                 "ctaker requires the complete fixed native contract vector including zeros"
+            );
+            ensure!(
+                contracts
+                    .iter()
+                    .all(|&(_, _, lots)| i64::from(lots).abs() <= i64::from(scope.max_target_lots)),
+                "Yida ctaker target exceeds account lot limit"
             );
         } else {
             for &(venue, symbol, lots) in &contracts {
@@ -341,11 +408,10 @@ impl Ctaker {
         } else {
             (Offset::Open, delta.abs())
         };
-        let lots = delta
-            .abs()
-            .min(available)
-            .min(i64::from(self.settings.max_order_lots))
-            .min(i64::from(rule.max_lots));
+        let mut lots = delta.abs().min(available).min(i64::from(rule.max_lots));
+        if let Some(scope) = &self.fixed_scope {
+            lots = lots.min(i64::from(scope.max_order_lots));
+        }
         if lots < i64::from(rule.min_lots) {
             return Ok(());
         }

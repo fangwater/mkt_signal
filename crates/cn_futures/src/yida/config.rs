@@ -28,7 +28,7 @@ pub struct Config {
     /// Defaults to flow_directory/persist_manager. Never shared across accounts.
     pub persistence_directory: Option<PathBuf>,
     pub position_ipc: Option<cn_futures_state::Config>,
-    pub ctaker: Option<crate::ctp::ctaker::Settings>,
+    pub ctaker: Option<crate::ctp::ctaker::YidaSettings>,
     pub position_target_ingress: Option<cn_futures_target::Config>,
     /// Read-only L1 for held/configured contracts, independent of trading permissions.
     #[serde(default)]
@@ -98,6 +98,12 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.risk.max_order_lots.is_some()
+                && self.risk.max_position_lots_per_side.is_some()
+                && self.risk.max_working_lots.is_some(),
+            "Yida requires explicit account lot limits"
+        );
         if let Some(ctaker) = &self.ctaker {
             ctaker.validate(&self.risk)?;
             ensure!(
@@ -129,7 +135,8 @@ impl Config {
         self.execution_route.validate()?;
         if self.public_simulation {
             ensure!(
-                self.risk.max_order_lots == 1 && self.risk.max_working_lots <= 2,
+                self.risk.max_order_lots == Some(1)
+                    && self.risk.max_working_lots.is_some_and(|limit| limit <= 2),
                 "public_simulation requires max_order_lots=1 and max_working_lots<=2"
             );
         }

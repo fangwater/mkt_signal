@@ -5,20 +5,32 @@ const NOW: u64 = 1_794_877_200_000_000;
 fn config() -> Config {
     let mut c: Config =
         toml::from_str(include_str!("../../../../../config/ctp_trade.example.toml")).unwrap();
-    c.risk.max_order_lots = 3;
-    c.risk.max_position_lots_per_side = 10;
-    c.risk.max_working_lots = 10;
     c.risk.max_actions_per_second = 20;
     c.risk.enable_fak_fok = true;
     c.ctaker = Some(Settings {
         source_id: "test-account".into(),
-        max_target_lots: 10,
-        max_order_lots: 3,
+        contracts: None,
         quote_max_age_ms: 1000,
         target_max_age_ms: 30000,
         retry_interval_ms: 500,
     });
     c
+}
+
+#[test]
+fn ctp_contract_scope_preserves_the_manager_quantity_and_rejects_other_markets() {
+    let mut c = config();
+    let settings = c.ctaker.as_mut().unwrap();
+    settings.contracts = Some(BTreeSet::from(["SHFE:cu2612".into()]));
+    let c = core(0, 0);
+    let mut batch = target(7);
+    batch.net_targets.insert("SHFE:sn2612".into(), 0);
+    assert_eq!(
+        validate_target(settings, &batch, &c, NOW, false).unwrap(),
+        [(Venue::Shfe, "cu2612", 7)]
+    );
+    batch.net_targets.insert("SHFE:sn2612".into(), 1);
+    assert!(validate_target(settings, &batch, &c, NOW, false).is_err());
 }
 fn core(long: i32, short: i32) -> TradingCore {
     let c = config();
@@ -113,7 +125,7 @@ fn request(a: Action) -> (Intent, Arc<Target>) {
     }
 }
 #[test]
-fn configuration_is_explicit_and_requires_tested_fak_and_lot_bounds() {
+fn configuration_requires_tested_fak_and_removes_local_lot_limits() {
     let c: Config =
         toml::from_str(include_str!("../../../../../config/ctp_trade.example.toml")).unwrap();
     assert!(c.ctaker.is_none());
@@ -122,14 +134,14 @@ fn configuration_is_explicit_and_requires_tested_fak_and_lot_bounds() {
     c.risk.enable_fak_fok = false;
     assert!(c.validate().is_err());
     c.risk.enable_fak_fok = true;
-    c.ctaker.as_mut().unwrap().max_order_lots = 4;
+    c.risk.max_order_lots = Some(4);
     assert!(c.validate().is_err());
     assert!(NoStrategy
         .on_target(target(1), context(&core(0, 0)), NOW)
         .is_err());
 }
 #[test]
-fn target_admission_rejects_wrong_identity_scope_day_size_lease_and_closed_gates() {
+fn target_admission_rejects_wrong_identity_scope_day_lease_and_closed_gates() {
     let c = core(0, 0);
     let mut s = Ctaker::new(&config()).unwrap();
     s.on_market_state(true, 7).unwrap();
@@ -145,9 +157,6 @@ fn target_admission_rejects_wrong_identity_scope_day_size_lease_and_closed_gates
     bad.push(t);
     let mut t = target(1);
     t.net_targets.insert("SHFE:CU2612".into(), 0);
-    bad.push(t);
-    let mut t = target(1);
-    t.net_targets.insert("SHFE:cu2612".into(), 11);
     bad.push(t);
     let mut t = target(1);
     t.expires_at_us = NOW;
@@ -233,13 +242,27 @@ fn aggressive_bbo_limit_fak_uses_integer_ticks_and_chunk_bounds_with_frozen_batc
         (
             Side::Buy,
             Offset::Open,
-            3,
+            7,
             101,
             PriceType::Limit,
             TimeInForce::Fak
         )
     );
     assert_eq!(*t, target(7));
+    let mut s = strategy(&c, 107);
+    let (i, t) = request(decide(&mut s, &c, tick(NOW), NOW).remove(0));
+    assert_eq!(*t, target(107));
+    assert_eq!(i.lots, 100);
+    let mut c_for_order = core(0, 0);
+    let planned = c_for_order.plan(i).unwrap();
+    assert_eq!(
+        c_for_order
+            .prepare(planned[0].clone(), Instant::now())
+            .unwrap()
+            .intent
+            .lots,
+        100
+    );
     let mut s = strategy(&c, -2);
     let (i, _) = request(decide(&mut s, &c, tick(NOW), NOW).remove(0));
     assert_eq!((i.side, i.price_ticks, i.lots), (Side::Sell, 100, 2));

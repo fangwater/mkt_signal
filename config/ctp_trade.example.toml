@@ -27,9 +27,6 @@ response_timeout_ms = 30000
 idle_sleep_us = 64000
 
 [risk]
-max_order_lots = 1
-max_position_lots_per_side = 2
-max_working_lots = 2
 max_actions_per_second = 2
 minimum_cash_remaining = 10000.0
 enable_fak_fok = false

@@ -198,7 +198,7 @@ def main():
         subprocess.run(["c++", "-std=c++17", "-shared", "-fPIC", "-isystem", str(args.sdk_dir), str(source), "-o", str(library)], check=True)
         config = (root / "config/ctp_trade.example.toml").read_text()
         config=config[:config.index("[placement]")]+placement_table
-        for old, new in [('/opt/ctp/6.7.11/libthosttraderapi_se.so', str(library)), ('/tmp/mkt_ctp_sim/flow', str(temp / 'flow')), ('broker_id = "REPLACE"', 'broker_id = "TEST"'), ('max_order_lots = 1', 'max_order_lots = 10'), ('max_working_lots = 2', 'max_working_lots = 10'), ('max_actions_per_second = 2', 'max_actions_per_second = 20'), ('enable_fak_fok = false', 'enable_fak_fok = true')]:
+        for old, new in [('/opt/ctp/6.7.11/libthosttraderapi_se.so', str(library)), ('/tmp/mkt_ctp_sim/flow', str(temp / 'flow')), ('broker_id = "REPLACE"', 'broker_id = "TEST"'), ('max_actions_per_second = 2', 'max_actions_per_second = 20'), ('enable_fak_fok = false', 'enable_fak_fok = true')]:
             config = config.replace(old, new)
         if args.transport_timeout: config=config.replace("response_timeout_ms = 30000","response_timeout_ms = 5000")
         config_path = temp / "config.toml"
