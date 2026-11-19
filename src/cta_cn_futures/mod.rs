@@ -196,6 +196,32 @@ struct Stream {
     extras: Option<extras::Extras>,
 }
 impl Stream {
+    fn phase<'a>(
+        &self,
+        history_loaded: bool,
+        market_context: Option<&live::Context>,
+        now_ms: i64,
+        active_phase: &'a str,
+    ) -> &'a str {
+        if self.needs_restart {
+            return "paused";
+        }
+        if market_context.is_some_and(|context| !context.allows(now_ms)) {
+            return "market_closed";
+        }
+        if self.aligned {
+            return active_phase;
+        }
+        if !history_loaded {
+            return "warming";
+        }
+        if self.minutes.is_empty() {
+            "waiting_live"
+        } else {
+            "synchronizing"
+        }
+    }
+
     fn reset(&mut self) {
         let needs_restart = self.aligned || self.needs_restart;
         let extras = self.extras.take();
@@ -307,7 +333,7 @@ impl Stream {
         if matches!(event, live::Event::Reset) {
             self.reset();
             ensure!(!self.needs_restart, "ZMQ reset; restart for initialization");
-            anyhow::bail!("ZMQ reset; waiting for a new first complete minute");
+            return Ok(());
         }
         if let Some(input) = self.input.as_mut() {
             let rows = input.observe(event, main)?;
@@ -573,6 +599,7 @@ async fn run_worker(worker: Worker) -> Result<()> {
         ..Stream::default()
     };
     let mut history = Some(history::History::default());
+    let mut market_context: Option<live::Context> = None;
     let mut hours = engine::Bars::default();
     let mut load_start = history_begin(&cfg);
     let mut loaded = false;
@@ -751,9 +778,12 @@ async fn run_worker(worker: Worker) -> Result<()> {
         frequencies["1h"] = json!({"enabled":cfg.enabled,"factor_ready":engine.ready(),"live_ready":ready && engine.ready(),
             "last_bar_end_ms":engine.last_end_ms,"rules":engine.latest,"positions":engine.targets()});
         report["frequencies"] = frequencies;
-        if cfg.enabled && !engine.ready() {
-            report["phase"] = json!("warming");
-        }
+        report["phase"] = json!(stream.phase(
+            loaded,
+            market_context.as_ref(),
+            chrono::Utc::now().timestamp_millis(),
+            report["phase"].as_str().unwrap_or("waiting_live"),
+        ));
         report["initialization_complete"] = json!(history.is_none());
         report["restart_required"] = json!(stream.needs_restart);
         report["grpc_through_ms"] = json!(history.as_ref().map(|h| h.through_ms));
@@ -790,20 +820,33 @@ async fn run_worker(worker: Worker) -> Result<()> {
                             load_start = end + 1;
                             loaded = load_start > until;
                         }
-                        if stream.input.is_none()
-                            && stream.pending.has()
-                            && history.contract.is_some()
+                        if history.contract.is_some()
+                            && market_context.as_ref().is_none_or(|context| {
+                                context.snapshot_as_of != history.session_snapshot
+                            })
                         {
                             match history::parameters(&cfg).await {
-                                Ok(context) => {
-                                    if let Err(e) =
-                                        stream.prepare(context, history.multiple()?, &current)
-                                    {
-                                        stream.reset();
-                                        health.pause(format!("ZMQ baseline preparation: {e:#}"));
-                                    }
+                                Ok(context)
+                                    if context.snapshot_as_of == history.session_snapshot =>
+                                {
+                                    market_context = Some(context);
+                                }
+                                Ok(_) => {
+                                    health.pause("gRPC minute/session snapshot differs".into())
                                 }
                                 Err(e) => health.pause(format!("gRPC parameters: {e:#}")),
+                            }
+                        }
+                        if stream.input.is_none() && stream.pending.has() {
+                            if let Some(context) = market_context.as_ref().filter(|context| {
+                                context.snapshot_as_of == history.session_snapshot
+                            }) {
+                                if let Err(e) =
+                                    stream.prepare(context.clone(), history.multiple()?, &current)
+                                {
+                                    stream.reset();
+                                    health.pause(format!("ZMQ baseline preparation: {e:#}"));
+                                }
                             }
                         }
                     }

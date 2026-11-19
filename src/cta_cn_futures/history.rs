@@ -3,8 +3,9 @@ use anyhow::{ensure, Context, Result};
 use chrono::NaiveDate;
 use cn_market_proto::{
     cn_futures_market_client::CnFuturesMarketClient, get_minute_bars_request::Range, Contract,
-    GetMinuteBarsRequest, GetMinuteBarsResponse, GetSizeThresholdsRequest,
-    GetTradingSessionsRequest, MinuteBar, TimeRange,
+    ContractSelectionMode, GetContractSelectionsRequest, GetMinuteBarsRequest,
+    GetMinuteBarsResponse, GetSizeThresholdsRequest, GetTradingSessionsRequest, MinuteBar,
+    TimeRange,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -15,6 +16,12 @@ pub struct Dominant {
     pub trading_day: u32,
     pub source_trading_day: u32,
     pub scheduled_next: String,
+    /// Secondary-OI contract in effect on `trading_day`; a clock witness only.
+    #[serde(default)]
+    pub secondary: Option<String>,
+    /// Secondary-OI contract for the first trading day after `trading_day`.
+    #[serde(default)]
+    pub secondary_next: Option<String>,
 }
 impl Dominant {
     pub fn for_day(&self, day: u32) -> Result<Self> {
@@ -32,6 +39,8 @@ impl Dominant {
         Ok(Self {
             contract: self.scheduled_next.clone(),
             trading_day: day,
+            secondary: self.secondary_next.clone(),
+            secondary_next: None,
             ..self.clone()
         })
     }
@@ -106,7 +115,7 @@ pub async fn dominant(cfg: &Config) -> Result<Dominant> {
             .context("missing current dominant")?,
     )?;
     let trading_day = day.format("%Y%m%d").to_string().parse()?;
-    Ok(Dominant {
+    let mut main = Dominant {
         contract,
         trading_day,
         source_trading_day: trading_day,
@@ -116,7 +125,56 @@ pub async fn dominant(cfg: &Config) -> Result<Dominant> {
                 .as_str()
                 .context("missing next dominant")?,
         )?,
-    })
+        secondary: None,
+        secondary_next: None,
+    };
+    // The secondary contract only accelerates minute sealing. Without it the
+    // dominant's next-minute quote and the session-tail clock still seal bars.
+    match secondary(cfg, trading_day).await {
+        Ok((current, next)) => {
+            main.secondary = current.filter(|c| *c != main.contract);
+            main.secondary_next = next.filter(|c| *c != main.scheduled_next);
+        }
+        Err(error) => eprintln!(
+            "secondary contract unavailable for {}/{} {trading_day}: {error:#}",
+            cfg.exchange, cfg.symbol
+        ),
+    }
+    Ok(main)
+}
+/// `GetContractSelections(SECONDARY_OI)`: the effective secondary contract on
+/// `day` and, once that day has closed, the one scheduled for the next day.
+async fn secondary(cfg: &Config, day: u32) -> Result<(Option<String>, Option<String>)> {
+    let mut client = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        CnFuturesMarketClient::connect(cfg.history_grpc.clone()),
+    )
+    .await??;
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        client.get_contract_selections(GetContractSelectionsRequest {
+            exchange: cfg.exchange_codes()?.1 as i32,
+            products: vec![cfg.symbol.clone()],
+            mode: ContractSelectionMode::SecondaryOi as i32,
+            start_trading_day: day,
+            end_trading_day: day,
+        }),
+    )
+    .await??
+    .into_inner();
+    let row = response
+        .rows
+        .iter()
+        .find(|r| r.trading_day == day && r.product.eq_ignore_ascii_case(&cfg.symbol))
+        .context("no secondary selection row for the dominant trading day")?;
+    let pick = |selected: &Option<cn_market_proto::SelectedContract>| -> Result<Option<String>> {
+        selected
+            .as_ref()
+            .filter(|s| !s.contract.is_empty())
+            .map(|s| native_contract(cfg, &s.contract))
+            .transpose()
+    };
+    Ok((pick(&row.selected)?, pick(&row.scheduled_next)?))
 }
 /// Network history retained only in memory. Repeated tail requests replace
 /// provisional minutes until they agree with the independently captured ZMQ feed.

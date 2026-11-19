@@ -195,7 +195,7 @@ impl Context {
             .get(&month)
             .with_context(|| format!("gRPC has no applicable size thresholds for {month}"))
     }
-    fn allows(&self, ts_ms: i64) -> bool {
+    pub(super) fn allows(&self, ts_ms: i64) -> bool {
         let sec = shanghai(ts_ms / 1000).time().num_seconds_from_midnight();
         self.windows.iter().any(|w| {
             if w.begin_sec < w.end_sec {
@@ -212,6 +212,37 @@ impl Context {
         self.windows.iter().any(|w| w.end_sec % 86400 == sec)
     }
 }
+/// Exchange-clock evidence from one contract's own snapshot cadence.
+#[derive(Clone, Copy, Default)]
+struct Witness {
+    last_ms: i64,
+    min_interval_ms: i64,
+    intervals: u32,
+}
+/// Learn a contract's cadence before trusting it; the minimum observed
+/// interval is a lower bound, never an assumed 500 ms.
+const WITNESS_INTERVALS: u32 = 20;
+impl Witness {
+    fn observe(&mut self, ts_ms: i64) {
+        if self.last_ms > 0 && ts_ms > self.last_ms {
+            let delta = ts_ms - self.last_ms;
+            self.min_interval_ms = if self.intervals == 0 {
+                delta
+            } else {
+                self.min_interval_ms.min(delta)
+            };
+            self.intervals = self.intervals.saturating_add(1);
+        }
+        self.last_ms = self.last_ms.max(ts_ms);
+    }
+    /// This contract's latest snapshot is in the final slot of `minute_ms` (or
+    /// later): its next snapshot cannot be stamped inside that minute.
+    fn completes(&self, minute_ms: i64) -> bool {
+        self.intervals >= WITNESS_INTERVALS
+            && self.last_ms >= minute_ms
+            && self.last_ms + self.min_interval_ms >= minute_ms + 60_000
+    }
+}
 pub struct Input {
     pub multiple: f64,
     pub live_after_ms: i64,
@@ -222,6 +253,10 @@ pub struct Input {
     last_quote_ms: i64,
     pub last_received_us: u64,
     last_quote: Option<MarketDataMsg>,
+    main_clock: Witness,
+    secondary_clock: Witness,
+    /// End of the latest minute sealed by the two contract clocks.
+    witness_sealed_ms: i64,
 }
 impl Input {
     pub fn new(context: Context, multiple: f64, first_ms: i64) -> Self {
@@ -235,6 +270,9 @@ impl Input {
             last_quote_ms: 0,
             last_received_us: 0,
             last_quote: None,
+            main_clock: Witness::default(),
+            secondary_clock: Witness::default(),
+            witness_sealed_ms: 0,
         }
     }
     pub fn from_quotes(
@@ -262,11 +300,49 @@ impl Input {
             anyhow::bail!("ZMQ continuity reset; gRPC catch-up required");
         };
         let old = self.last_quote_ms;
+        self.witness(&q, main)?;
         self.ingest(&q, main)?;
         if old.div_euclid(60_000) == self.last_quote_ms.div_euclid(60_000) {
+            return self.sealed_by_clocks(main);
+        }
+        let mut rows = self.closed(self.last_quote_ms.div_euclid(60_000) * 60_000, main)?;
+        rows.extend(self.sealed_by_clocks(main)?);
+        Ok(rows)
+    }
+    /// Secondary-contract snapshots only advance its exchange clock.
+    fn witness(&mut self, q: &MarketDataMsg, main: &Dominant) -> Result<()> {
+        let Some(secondary) = main.secondary.as_deref() else {
+            return Ok(());
+        };
+        if q.symbol() != secondary.as_bytes()
+            || q.exchange_ts_us <= 0
+            || q.trading_day != main.trading_day
+        {
+            return Ok(());
+        }
+        let ts_ms = q.exchange_ts_us / 1000;
+        if self.context.allows(ts_ms) {
+            self.secondary_clock.observe(ts_ms);
+        }
+        Ok(())
+    }
+    /// Seal the dominant's current minute once both the dominant and the
+    /// secondary contract have delivered that minute's final snapshot slot,
+    /// instead of waiting for the dominant's next-minute quote.
+    fn sealed_by_clocks(&mut self, main: &Dominant) -> Result<Vec<MinuteBar>> {
+        if main.secondary.is_none() || self.last_quote_ms == 0 {
             return Ok(Vec::new());
         }
-        self.closed(self.last_quote_ms.div_euclid(60_000) * 60_000, main)
+        let minute = self.last_quote_ms.div_euclid(60_000) * 60_000;
+        if minute <= self.processed_minute_ms
+            || !self.main_clock.completes(minute)
+            || !self.secondary_clock.completes(minute)
+        {
+            return Ok(Vec::new());
+        }
+        let rows = self.closed(minute + 60_000, main)?;
+        self.witness_sealed_ms = self.witness_sealed_ms.max(minute + 60_000);
+        Ok(rows)
     }
     fn ingest(&mut self, q: &MarketDataMsg, main: &Dominant) -> Result<()> {
         if q.symbol() != main.contract.as_bytes() {
@@ -309,6 +385,10 @@ impl Input {
             ts_ms >= self.last_quote_ms,
             "out-of-order native quote; gRPC catch-up required"
         );
+        ensure!(
+            ts_ms >= self.witness_sealed_ms,
+            "native quote arrived after its minute was sealed by contract clocks; gRPC catch-up required"
+        );
         let time = shanghai(q.exchange_ts_us / 1_000_000)
             .with_nanosecond((q.exchange_ts_us.rem_euclid(1_000_000) * 1000) as u32)
             .context("invalid exchange microseconds")?;
@@ -333,6 +413,7 @@ impl Input {
         });
         self.last_received_us = q.received_us;
         self.last_quote_ms = ts_ms;
+        self.main_clock.observe(ts_ms);
         self.last_quote = Some(*q);
         Ok(())
     }

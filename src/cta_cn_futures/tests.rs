@@ -217,6 +217,8 @@ fn next_trading_day_uses_explicit_scheduled_main_once_then_requires_rest_refresh
         trading_day: 20261116,
         source_trading_day: 20261116,
         scheduled_next: "sn2701".into(),
+        secondary: None,
+        secondary_next: None,
     };
     assert_eq!(d.for_day(20261116).unwrap().contract, "sn2612");
     let next = d.for_day(20261117).unwrap();
@@ -294,6 +296,8 @@ fn live_fixture() -> (tempfile::TempDir, Config, Dominant) {
             trading_day: 20261117,
             source_trading_day: 20261116,
             scheduled_next: "sn2612".into(),
+            secondary: None,
+            secondary_next: None,
         },
     )
 }
@@ -630,6 +634,26 @@ fn live_context() -> super::live::Context {
     )
     .unwrap()
 }
+
+#[test]
+fn loaded_history_reports_closed_session_before_live_alignment() {
+    let context = live_context();
+    let stream = super::Stream::default();
+    let before_open = night_open() - 3_600_000;
+    assert_eq!(
+        stream.phase(true, Some(&context), before_open, "waiting_live"),
+        "market_closed"
+    );
+    assert_eq!(
+        stream.phase(true, Some(&context), night_open(), "waiting_live"),
+        "waiting_live"
+    );
+    assert_eq!(
+        stream.phase(false, Some(&context), night_open(), "waiting_live"),
+        "warming"
+    );
+}
+
 fn metadata() -> cn_market_proto::Contract {
     cn_market_proto::Contract {
         exchange: cn_market_proto::Exchange::Shfe as i32,
@@ -811,7 +835,7 @@ fn reconnect_clears_the_first_minute_and_cached_tail_but_keeps_targets() {
             &main,
             true
         )
-        .is_err());
+        .is_ok());
     assert!(stream.minutes.is_empty());
     assert!(!stream.aligned);
     assert!(stream.input.is_none());
@@ -1205,4 +1229,74 @@ fn recovery_warms_independent_minute_ledger_without_replaying_positions() {
     assert_eq!(view["1min"]["factor_ready"], true);
     assert_eq!(view["1min"]["positions"]["targets"][0]["target_lots"], -1);
     assert_eq!(result.anchor_ms, local[0].open_time_ms);
+}
+fn quote_for(symbol: &[u8], ms: i64, volume: u64) -> super::live::Event {
+    let mut event = quote(ms, volume);
+    if let super::live::Event::Quote(q) = &mut event {
+        q.set_symbol(symbol).unwrap();
+    }
+    event
+}
+/// Dominant and secondary snapshots every 500 ms from 21:00:00.5; returns the
+/// exchange time of the quote that emitted the 21:01 minute, if any.
+fn feed_two_contracts(
+    input: &mut super::live::Input,
+    main: &Dominant,
+    start: i64,
+    secondary_until: i64,
+    main_until: i64,
+) -> Option<i64> {
+    let mut sealed_at = None;
+    let mut volume = 100;
+    for slot in 1..=240 {
+        let ms = start + slot * 500;
+        let mut events = vec![];
+        if ms <= main_until {
+            volume += 1;
+            events.push(quote_for(b"sn2612", ms, volume));
+        }
+        if ms <= secondary_until {
+            events.push(quote_for(b"sn2701", ms, 50));
+        }
+        for event in events {
+            let rows = input.observe(event, main).unwrap();
+            if rows.iter().any(|r| r.open_time_ms == start + 60_000) {
+                assert!(sealed_at.is_none(), "a minute is emitted once");
+                sealed_at = Some(ms);
+            }
+        }
+    }
+    sealed_at
+}
+#[test]
+fn dominant_and_secondary_final_snapshot_slots_seal_the_minute_without_waiting() {
+    let (_dir, _cfg, mut main) = live_fixture();
+    main.secondary = Some("sn2701".into());
+    let start = night_open();
+    let mut input = super::live::Input::new(live_context(), 1., start);
+    // Both contracts delivered 21:01:59.5: 21:01 closes on that quote, not at 21:02.
+    assert_eq!(
+        feed_two_contracts(&mut input, &main, start, start + 119_500, start + 119_500),
+        Some(start + 119_500)
+    );
+    // A dominant snapshot stamped inside the sealed minute contradicts the
+    // learned cadence and requires catch-up instead of being dropped silently.
+    assert!(input
+        .observe(quote_for(b"sn2612", start + 119_750, 400), &main)
+        .is_err());
+
+    // The secondary skipped its final slot: fall back to the next-minute quote.
+    let mut input = super::live::Input::new(live_context(), 1., start);
+    assert_eq!(
+        feed_two_contracts(&mut input, &main, start, start + 119_000, start + 120_000),
+        Some(start + 120_000)
+    );
+
+    // Without a secondary contract the dominant's next minute still seals.
+    main.secondary = None;
+    let mut input = super::live::Input::new(live_context(), 1., start);
+    assert_eq!(
+        feed_two_contracts(&mut input, &main, start, start + 119_500, start + 119_500),
+        None
+    );
 }
