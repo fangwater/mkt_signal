@@ -564,3 +564,43 @@ fn fake_transport_keeps_acceptance_factual_and_blocks_before_sdk_when_audit_fail
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+#[test]
+fn quote_decisions_note_each_stable_reason_once_and_ignore_the_flapping_callback_gate() {
+    let c = core(0, 0);
+    let mut s = strategy(&c, 1);
+    let mut stale = tick(NOW);
+    stale.received_us = NOW - 1_000_001;
+    assert!(decide(&mut s, &c, stale, NOW).is_empty());
+    let note = s.take_wait_note().unwrap();
+    assert_eq!(
+        (note.market.as_str(), note.reason, note.batch_id.as_str()),
+        ("SHFE:cu2612", "quote_stale", "batch-01")
+    );
+    assert!(decide(&mut s, &c, stale, NOW).is_empty());
+    assert!(
+        s.take_wait_note().is_none(),
+        "unchanged reason is not repeated"
+    );
+
+    let mut closed = Actions::default();
+    let gate = StrategyContext {
+        core: &c,
+        can_trade: false,
+    };
+    s.decide(&tick(NOW), gate, &mut closed, NOW).unwrap();
+    assert!(closed.drain().next().is_none());
+    assert!(
+        s.take_wait_note().is_none(),
+        "gate flaps are logged at dispatch"
+    );
+
+    assert_eq!(decide(&mut s, &c, tick(NOW), NOW).len(), 1);
+    assert_eq!(s.take_wait_note().unwrap().reason, "order_action_emitted");
+    assert!(decide(&mut s, &c, tick(NOW + 1), NOW + 1).is_empty());
+    assert_eq!(s.take_wait_note().unwrap().reason, "retry_interval");
+
+    let held = core(1, 0);
+    let mut s = strategy(&held, 1);
+    assert!(decide(&mut s, &held, tick(NOW), NOW).is_empty());
+    assert_eq!(s.take_wait_note().unwrap().reason, "target_reached");
+}

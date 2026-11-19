@@ -123,6 +123,17 @@ pub struct Ctaker {
     next_attempt_us: BTreeMap<String, u64>,
     next_tag: u64,
     halted: bool,
+    waits: BTreeMap<String, &'static str>,
+    wait_note: Option<WaitNote>,
+}
+
+/// Latest per-contract reason a target quote did or did not produce an order action.
+pub struct WaitNote {
+    pub source_id: String,
+    pub batch_id: String,
+    pub target_revision: i64,
+    pub market: String,
+    pub reason: &'static str,
 }
 
 struct FixedScope {
@@ -212,6 +223,8 @@ impl Ctaker {
             next_attempt_us: BTreeMap::new(),
             next_tag: 0,
             halted: false,
+            waits: BTreeMap::new(),
+            wait_note: None,
         }
     }
     pub fn accept(
@@ -301,6 +314,7 @@ impl Ctaker {
         self.last = Some(target.clone());
         self.next_attempt_us.clear();
         self.halted = false;
+        self.waits.clear();
         Ok(target)
     }
     fn decide(
@@ -337,20 +351,67 @@ impl Ctaker {
         actions: &mut Actions,
         now_us: u64,
     ) -> Result<()> {
+        let market = self
+            .target
+            .as_ref()
+            .and_then(|_| self.markets.get(&quote.venue))
+            .and_then(|markets| markets.get(quote.symbol))
+            .cloned();
+        let reason = self.decide_quote(quote, context, actions, now_us)?;
+        // The callback gate flips with every queued venue/MD event; blocked
+        // actions are logged at dispatch, so only stable reasons are noted here.
+        if let (Some(market), Some(target)) = (market, &self.target) {
+            if reason != WAIT_GATE_CLOSED && self.waits.get(&market) != Some(&reason) {
+                self.waits.insert(market.clone(), reason);
+                self.wait_note = Some(WaitNote {
+                    source_id: target.source_id.clone(),
+                    batch_id: target.batch_id.clone(),
+                    target_revision: target.target_revision,
+                    market,
+                    reason,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn take_wait_note(&mut self) -> Option<WaitNote> {
+        self.wait_note.take()
+    }
+
+    fn decide_quote(
+        &mut self,
+        quote: Quote<'_>,
+        context: StrategyContext<'_>,
+        actions: &mut Actions,
+        now_us: u64,
+    ) -> Result<&'static str> {
         let Some(target) = &self.target else {
-            return Ok(());
+            return Ok("no_target");
         };
-        if self.halted
-            || !context.can_trade
-            || !context.core.is_ready()
-            || self.generation != Some(quote.generation)
-            || now_us >= target.expires_at_us
-            || quote.received_us > now_us
-            || now_us - quote.received_us > self.settings.quote_max_age_ms * 1000
-            || quote.trading_day != target.trading_day
-            || target.trading_day != context.core.trading_day()
-        {
-            return Ok(());
+        let blocked = if self.halted {
+            Some("halted_after_rejection")
+        } else if !context.can_trade {
+            Some(WAIT_GATE_CLOSED)
+        } else if !context.core.is_ready() {
+            Some("account_not_ready")
+        } else if self.generation != Some(quote.generation) {
+            Some("quote_generation_mismatch")
+        } else if now_us >= target.expires_at_us {
+            Some("target_lease_expired")
+        } else if quote.received_us > now_us {
+            Some("quote_from_future")
+        } else if now_us - quote.received_us > self.settings.quote_max_age_ms * 1000 {
+            Some("quote_stale")
+        } else if quote.trading_day != target.trading_day {
+            Some("quote_trading_day_mismatch")
+        } else if target.trading_day != context.core.trading_day() {
+            Some("account_trading_day_mismatch")
+        } else {
+            None
+        };
+        if let Some(reason) = blocked {
+            return Ok(reason);
         }
         let symbol = quote.symbol;
         let Some(market) = self
@@ -358,29 +419,31 @@ impl Ctaker {
             .get(&quote.venue)
             .and_then(|markets| markets.get(symbol))
         else {
-            return Ok(());
+            return Ok("contract_not_in_target");
         };
-        if context.core.has_working_orders(quote.venue, symbol)
-            || self
-                .next_attempt_us
-                .get(market)
-                .is_some_and(|t| *t > now_us)
+        if context.core.has_working_orders(quote.venue, symbol) {
+            return Ok("working_order_unresolved");
+        }
+        if self
+            .next_attempt_us
+            .get(market)
+            .is_some_and(|t| *t > now_us)
         {
-            return Ok(());
+            return Ok("retry_interval");
         }
         let long = context.core.position(quote.venue, symbol, Side::Buy);
         let short = context.core.position(quote.venue, symbol, Side::Sell);
         let delta = i64::from(target.net_targets[market]) - (long.total() - short.total());
         if delta == 0 {
-            return Ok(());
+            return Ok("target_reached");
         }
         let side = if delta > 0 { Side::Buy } else { Side::Sell };
         let opposite = if side == Side::Buy { &short } else { &long };
         let Some(rule) = context.core.instrument(quote.venue, symbol) else {
-            return Ok(());
+            return Ok("contract_rule_missing");
         };
         if !rule.active {
-            return Ok(());
+            return Ok("contract_inactive");
         }
         let (bid, ask) = (quote.bid, quote.ask);
         if ![bid, ask, quote.lower_limit, quote.upper_limit]
@@ -392,7 +455,7 @@ impl Ctaker {
             || quote.bid_lots <= 0
             || quote.ask_lots <= 0
         {
-            return Ok(());
+            return Ok("quote_book_invalid");
         }
         let price = if side == Side::Buy { ask } else { bid };
         let ticks = (price / rule.price_tick).round();
@@ -401,7 +464,7 @@ impl Ctaker {
             || ticks > 9_007_199_254_740_991.0
             || (ticks * rule.price_tick - price).abs() > rule.price_tick * 1e-6
         {
-            return Ok(());
+            return Ok("price_tick_invalid");
         }
         let (offset, available) = if opposite.total() > 0 {
             (Offset::Close, opposite.total() - opposite.frozen())
@@ -413,7 +476,7 @@ impl Ctaker {
             lots = lots.min(i64::from(scope.max_order_lots));
         }
         if lots < i64::from(rule.min_lots) {
-            return Ok(());
+            return Ok("lots_below_minimum");
         }
         let tag = self
             .next_tag
@@ -439,9 +502,11 @@ impl Ctaker {
             market.clone(),
             now_us.saturating_add(self.settings.retry_interval_ms * 1000),
         );
-        Ok(())
+        Ok("order_action_emitted")
     }
 }
+
+const WAIT_GATE_CLOSED: &str = "execution_gate_closed";
 
 pub(crate) struct Quote<'a> {
     pub venue: Venue,
@@ -479,6 +544,9 @@ impl Strategy for Ctaker {
         }
         self.generation = ready.then_some(generation);
         Ok(())
+    }
+    fn take_wait_note(&mut self) -> Option<WaitNote> {
+        Ctaker::take_wait_note(self)
     }
     fn on_result(&mut self, outcome: &ActionOutcome, _: StrategyContext<'_>) -> Result<()> {
         #[cfg(any(feature = "ctp-sdk", test))]

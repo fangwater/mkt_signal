@@ -599,13 +599,24 @@ impl Journal {
         if event.kind == crate::ctp::INSTRUMENT && event.error == 0 {
             return Ok(());
         }
+        // Order, fill, cancel and error callbacks are low-volume operator
+        // facts; account, position and rate queries remain audit-only.
+        let display = event.error != 0
+            || matches!(
+                event.kind,
+                crate::ctp::ORDER
+                    | crate::ctp::TRADE
+                    | crate::ctp::INSERT_RESPONSE
+                    | crate::ctp::CANCEL_RESPONSE
+                    | crate::ctp::ERROR
+            );
         self.enqueue(
             AuditPayload::Ctp {
                 event: event.clone(),
                 received_us,
                 shutdown_tail,
             },
-            false,
+            display,
             NativeMutation::default(),
             false,
         )
@@ -613,7 +624,7 @@ impl Journal {
     pub fn prepared_submit(&self, day: &str, p: &crate::model::PreparedOrder) -> Result<()> {
         self.enqueue(
             AuditPayload::PreparedSubmit(SubmitAudit::new(day, p, crate::persistence::now_us())?),
-            false,
+            true,
             NativeMutation::default(),
             self.sync_before_send,
         )
@@ -629,7 +640,7 @@ impl Journal {
                 submit: SubmitAudit::new(day, p, crate::persistence::now_us())?,
                 target,
             },
-            false,
+            true,
             NativeMutation::default(),
             self.sync_before_send,
         )
@@ -637,7 +648,7 @@ impl Journal {
     pub fn prepared_cancel(&self, p: &crate::model::PreparedCancel) -> Result<()> {
         self.enqueue(
             AuditPayload::PreparedCancel(CancelAudit::new(p)?),
-            false,
+            true,
             NativeMutation::default(),
             self.sync_before_send,
         )
@@ -711,7 +722,7 @@ impl Journal {
                 native_time,
                 received_us,
             },
-            false,
+            live_report,
             NativeMutation::default(),
             false,
         )
@@ -1433,6 +1444,12 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                 },
                                 &mut actions,
                             )?;
+                            if let Some(note) = strategy.take_wait_note() {
+                                journal.record(
+                                    json!({"type":"ctaker_quote_decision","source_id":note.source_id,"batch_id":note.batch_id,"target_revision":note.target_revision,"market":note.market,"reason":note.reason,"quote_received_us":tick.received_us,"quote_generation":tick.connection_generation}),
+                                    true,
+                                )?;
+                            }
                             for action in actions.drain() {
                                 use ctp::strategy::{ActionOutcome, CtpDispatchChecks};
                                 let checks = CtpDispatchChecks {
@@ -1472,12 +1489,8 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                         can_trade: allowed && runtime.core.is_ready(),
                                     },
                                 )?;
-                                let display = matches!(
-                                    &outcome,
-                                    ActionOutcome::CtpDispatchBlocked { .. }
-                                        | ActionOutcome::Rejected { .. }
-                                ) || matches!(&outcome, ActionOutcome::Submitted { receipt, .. } if !receipt.all_submitted_locally);
-                                journal.strategy_result(outcome, display)?;
+                                // Every CTP order decision outcome belongs in the operator log.
+                                journal.strategy_result(outcome, true)?;
                             }
                         }
                         ctp::market_data::FeedEvent::Connected { generation } => {

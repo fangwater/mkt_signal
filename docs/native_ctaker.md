@@ -48,6 +48,14 @@ call, the journal and trader log record `ctp_strategy_dispatch_blocked` with
 the action's batch, quote generation, gate values, and retry status. A
 callback backlog defers the action to a subsequent fresh tick within the
 original target lease when the account, market feed, and journal are healthy.
+For each target contract, the trader log records `ctaker_quote_decision` when
+the reason a fresh quote did or did not emit an order changes (for example
+`quote_stale`, `retry_interval`, `target_reached`, `target_lease_expired`).
+The callback gate is excluded because it flips per queued event; a gated
+action is logged as `ctp_strategy_dispatch_blocked`. Every strategy outcome,
+`prepared_submit` / `prepared_cancel`, CTP order, trade, insert/cancel
+response and error callback, and live normalized trade is also printed to the
+trader log; account, position and rate query rows remain audit-only.
 No automatic order cancellation or new target restoration runs on restart.
 
 Every child `prepared_submit` audit includes its exact native key plus the

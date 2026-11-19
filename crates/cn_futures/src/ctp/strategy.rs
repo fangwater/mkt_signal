@@ -119,6 +119,10 @@ pub trait Strategy {
     fn on_market_state(&mut self, _ready: bool, _generation: u64) -> Result<()> {
         Ok(())
     }
+    /// Latest change in why a target quote did or did not emit an action.
+    fn take_wait_note(&mut self) -> Option<super::ctaker::WaitNote> {
+        None
+    }
     fn on_result(&mut self, _outcome: &ActionOutcome, _context: StrategyContext<'_>) -> Result<()> {
         Ok(())
     }
@@ -166,6 +170,11 @@ impl Strategy for ConfiguredStrategy {
             strategy.on_market_state(ready, generation)?;
         }
         Ok(())
+    }
+    fn take_wait_note(&mut self) -> Option<super::ctaker::WaitNote> {
+        self.0
+            .as_mut()
+            .and_then(super::ctaker::Ctaker::take_wait_note)
     }
     fn on_result(&mut self, outcome: &ActionOutcome, context: StrategyContext<'_>) -> Result<()> {
         if let Some(strategy) = &mut self.0 {
