@@ -56,6 +56,15 @@ Manager 的螺纹净目标为 0 手，执行订阅已连接。
 - 交易 TOML 的 `idle_sleep_us` 改为 `poll`：独占隔离核用 `{ mode = "busy" }`，共享主机用 `{ mode = "sleep", idle_us = 64000 }`。
 - 部署前在 `sh_dev` 运行 `cn_futures` 的 exec / algo / persist / runtime 测试；开发机只编译。
 
+2026-11-20 夜盘完成切换（北京时间约 23:00）。切换前创元交易进程已在 17:24 收盘断线时退出，无未结委托。
+sh_dev 上先运行 `cn_futures` 全部 188 项库测试并通过，再安装同一提交 `d978b86e` 的 `ctp-trader`、
+`persist_manager` 与新环境脚本：`ctp_env.sh install` 新增 `ctp_chuangyuan01-persist.service`（CPU 3，
+stdout 即 trader 日志），`start` 先起持久化再起交易，`IPC_NAMESPACE=ctp_chuangyuan01`；交易配置
+`[ctaker]` 改为 `[exec]`，`poll = { mode = "sleep", idle_us = 1000 }`。旧库移至
+`data/pre-exec-ledger-20261120T143221Z/`。对账为交易日 `20261123`、rb2701 空 1 手昨仓，随后
+`assign_position` 以原成本 3007 记入 `cn-futures-01-rb-1h`。Manager 以 rebase 在新流水上重设锚点
+（revision 34，分钟收盘 2997 估值）。云端导出器同步更新并重置导出状态，8811 Viz 同步更新。
+
 ## 操作入口
 
 ```bash
