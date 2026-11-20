@@ -1,4 +1,4 @@
-//! Product HFQ archive for the startup factor window; native minutes prove ZMQ continuity.
+//! Product HFQ archive for the startup factor window; native minutes prove Redis continuity.
 use super::{config::Config, history::Dominant};
 use anyhow::{ensure, Context, Result};
 use cn_market_proto::{

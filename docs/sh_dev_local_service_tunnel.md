@@ -1,13 +1,13 @@
 # sh_dev 常驻多服务穿透
 
-最后更新：2026-11-16
+最后更新：2026-11-20
 
 本机主动建立到腾讯云 `sh_dev` 的反向 SSH TCP 连接，云上的服务通过
 `127.0.0.1` 访问本机或公司局域网内的已授权服务。按用户确认的范围，
 隧道入口仅监听回环地址。2026-11-16 用户另行授权 CTA 策略页面通过腾讯云
 公网 IP 访问配置面板，由云端 Nginx 的 80 端口代理页面和受授权保护的配置 API；
 其余服务仍按原范围访问。
-HTTP、HTTP/2、gRPC、WebSocket 和 ZeroMQ
+HTTP、HTTP/2、gRPC、WebSocket 和 Redis
 均按原生 TCP 字节流转发，无需改成 HTTP 代理协议。
 
 ## 当前映射
@@ -15,16 +15,14 @@ HTTP、HTTP/2、gRPC、WebSocket 和 ZeroMQ
 | 服务名 | 腾讯云内的入口 | 内网目标 | 用途 |
 | --- | --- | --- | --- |
 | `history-grpc` | `127.0.0.1:18312` | 本机 `127.0.0.1:18312` | 国内期货历史分钟 gRPC |
-| `market-zmq` | `127.0.0.1:13005` | 公司 `10.61.20.12:13005` | 已有通联 ZeroMQ 行情 |
+| `market-redis` | `127.0.0.1:13005` | 公司 `10.61.20.11:9380` | 通联二级 feeder 的 Redis Pub/Sub，供 Viz 估值 |
 | `dominant` | `127.0.0.1:18313` | 本机 `127.0.0.1:18313` | 主力合约 HTTP 查询 |
 | `mcp` | `127.0.0.1:8780` | 本机 `127.0.0.1:8780` | MCP HTTP 服务 |
 | `cta-config` | `127.0.0.1:19401` | 本机 `127.0.0.1:19401` | 锡 CTA 配置面板 |
 
-历史 gRPC 地址为 `http://127.0.0.1:18312`，ZMQ SUB 地址为
-`tcp://127.0.0.1:13005`。上期所订阅前缀为 `mdl.22.1.* || `，
-其中 `*` 为普通字符；公司主行情解析规则见 [cn-futures-pbs](cn_futures_pbs.md)。
-云端 ZMQ 适配器可继续使用 `access_scope="company_intranet"`，目标填写
-上述回环地址，仍处理同一份上游行情协议。
+历史 gRPC 地址为 `http://127.0.0.1:18312`。远端 Viz 在 `127.0.0.1:13005`
+通过 RESP2 订阅 Redis，上期所频道为 `mdl.22.1.*`，其中 `*` 是频道名的一部分。
+本机 CTA 直接连接二级 feeder。公司主行情解析规则见 [cn-futures-pbs](cn_futures_pbs.md)。
 
 主力与 MCP 在云端按原地址访问：
 
@@ -44,7 +42,7 @@ curl 'http://127.0.0.1:8780/api/cn_dominant_contracts?product=RB'
 
 ```text
 sh_dev_service_tunnel@history-grpc.service
-sh_dev_service_tunnel@market-zmq.service
+sh_dev_service_tunnel@market-redis.service
 sh_dev_service_tunnel@dominant.service
 sh_dev_service_tunnel@mcp.service
 sh_dev_service_tunnel@cta-config.service
@@ -84,8 +82,8 @@ cd /home/fanghaizhou/sh_dev_service_tunnel
 配置文件为 `config/tunnel.toml`，每个映射显式填写 `name`、`local_host`、
 `local_port` 和 `remote_port`。`local_host` 支持本机回环和局域网 IPv4，
 每个云端监听端口唯一。日志独立位于 `logs/<服务名>.log`。
-`status` 反映 SSH 进程状态；业务可用性须用实际 RPC、HTTP 查询或 ZMQ
-握手及有效行情检查，不能从进程存活推断。
+`status` 反映 SSH 进程状态。业务可用性须验证实际 RPC、HTTP 查询或 Redis
+订阅与有效行情。
 
 私有 OpenSSH 配置为 `~/.config/mkt_signal/dev_tunnel/ssh_config`，专用密钥
 为 `~/.ssh/mkt-sh-dev-tunnel-ed25519`，权限 0600；保留既有 known_hosts

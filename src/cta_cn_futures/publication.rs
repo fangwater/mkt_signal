@@ -137,7 +137,7 @@ impl Publisher {
                         bid: q.bid[0].price,
                         ask: q.ask[0].price,
                         observed_us: q.exchange_ts_us,
-                        source: "company_zmq".into(),
+                        source: "company_redis".into(),
                     },
                 );
             }

@@ -4,9 +4,9 @@ use super::{
     engine::{Bars, Engine, Ledger},
     extras::Extras,
     history::{Dominant, History},
-    live::{Event, Input},
+    live::{Context as MarketContext, Event},
 };
-use anyhow::{ensure, Context, Result};
+use anyhow::{ensure, Result};
 use cn_futures_pbs::msg::MarketDataMsg;
 use cn_market_proto::MinuteBar;
 use std::collections::VecDeque;
@@ -28,7 +28,7 @@ impl Buffer {
             {
                 ensure!(
                     self.quotes.len() < MAX_QUOTES,
-                    "pending ZMQ buffer exhausted"
+                    "pending Redis buffer exhausted"
                 );
                 self.quotes.push_back(**q);
             }
@@ -163,45 +163,23 @@ pub fn recover(
     main: &Dominant,
     history: &History,
     ledger: Ledger,
-    input: &Input,
+    market: &MarketContext,
     local: &[MinuteBar],
 ) -> Result<Recovered> {
     ensure!(
-        input.context.snapshot_as_of == history.session_snapshot,
+        market.snapshot_as_of == history.session_snapshot,
         "gRPC minute/session snapshot differs"
     );
     let multiple = history.multiple()?;
-    // This boundary belongs to the ZMQ generation, not to gRPC's progress.
-    // Keep every later local minute while the delayed server catches this one.
-    let first = local
-        .first()
-        .context("waiting for the first complete ZMQ minute")?;
-    let anchor = first.open_time_ms;
-    let remote = history
-        .minutes
-        .get(&anchor)
-        .with_context(|| format!("waiting for gRPC to reach first ZMQ minute {anchor}"))?;
-    ensure!(
-        !remote.provisional || anchor + 60_000 <= history.through_ms,
-        "gRPC has not finalized first ZMQ minute {anchor}"
-    );
-    ensure!(
-        remote.trading_day == first.trading_day,
-        "historical and live boundary trading days differ"
-    );
-    if !same_minute(remote, first) {
-        eprintln!(
-            "historical and live boundary differ for {} at {anchor}; retaining the live minute",
-            main.contract
-        );
+    let anchor = local.first().map_or(i64::MAX, |row| row.open_time_ms);
+    if let Some((remote, first)) = history.minutes.get(&anchor).zip(local.first()) {
+        if closed(history, remote) && !same_minute(remote, first) {
+            eprintln!(
+                "historical and live boundary differ for {} at {anchor}; retaining Redis",
+                main.contract
+            );
+        }
     }
-    ensure!(
-        history
-            .minutes
-            .range(..=anchor)
-            .all(|(_, r)| !r.provisional || r.open_time_ms + 60_000 <= history.through_ms),
-        "gRPC prefix contains unfinished minutes"
-    );
     let mut engine = Engine::new(cfg, ledger.clone())?;
     let mut hours = Bars::default();
     let mut extras = Extras::new(cfg)?;
@@ -214,48 +192,43 @@ pub fn recover(
         );
         ensure!(
             anchor > archive.cutoff,
-            "waiting for ZMQ beyond the HFQ archive"
+            "waiting for Redis beyond the HFQ archive"
         );
-        warm_hfq(
-            archive,
-            main,
-            &input.context,
-            &mut engine,
-            &mut hours,
-            &mut extras,
-        )?;
+        warm_hfq(archive, main, market, &mut engine, &mut hours, &mut extras)?;
         count = archive.rows.len();
     }
     for row in history
         .minutes
         .range(..anchor)
-        .filter(|(ts, _)| {
-            history
-                .hfq
-                .as_ref()
-                .is_none_or(|archive| **ts > archive.cutoff)
+        .filter(|(ts, row)| {
+            closed(history, row)
+                && history
+                    .hfq
+                    .as_ref()
+                    .is_none_or(|archive| **ts > archive.cutoff)
         })
         .map(|(_, r)| r.clone())
         .chain(local.iter().filter(|r| r.open_time_ms >= anchor).cloned())
     {
         count += 1;
-        extras.push(row.clone(), multiple, main, &input.context, None, false)?;
+        extras.push(row.clone(), multiple, main, market, None, false)?;
         for hour in hours.push(row, multiple)? {
             engine.observe(&hour, &main.contract, multiple, false)?;
         }
-    }
-    if hours
-        .last_minute_ms()
-        .is_some_and(|last| input.context.ends_after(last))
-    {
-        if let Some(hour) = hours.finish(input.multiple)? {
-            engine.observe(&hour, &main.contract, input.multiple, false)?;
+        if hours
+            .last_minute_ms()
+            .is_some_and(|last| market.ends_after(last))
+        {
+            if let Some(hour) = hours.finish(multiple)? {
+                engine.observe(&hour, &main.contract, multiple, false)?;
+            }
         }
     }
     ensure!(
         !cfg.enabled || engine.ready(),
-        "hourly formulas are not ready after gRPC/ZMQ catch-up"
+        "hourly formulas are not ready after gRPC/Redis catch-up"
     );
+    extras.check_enabled_ready()?;
     ensure!(
         engine.ledger == ledger,
         "catch-up changed factual positions"
@@ -271,4 +244,30 @@ pub fn recover(
         anchor_ms: anchor,
         history_rows: count,
     })
+}
+
+pub(super) fn closed(history: &History, row: &MinuteBar) -> bool {
+    !row.provisional || row.open_time_ms + 60_000 <= history.through_ms
+}
+
+pub(super) fn last_closed(history: &History, before: i64) -> Option<i64> {
+    history
+        .minutes
+        .range(..before)
+        .rev()
+        .map(|(_, row)| row)
+        .find(|row| closed(history, row))
+        .map(|row| row.open_time_ms)
+        .or_else(|| history.hfq.as_ref().map(|hfq| hfq.cutoff))
+}
+
+pub(super) async fn load_repair(cfg: &Config, main: &Dominant, cutoff: i64) -> Result<History> {
+    let archive = super::hfq::fetch(cfg, main, super::history_begin(cfg), cutoff + 60_000).await?;
+    let start = archive.cutoff;
+    let mut history = History {
+        hfq: Some(archive),
+        ..History::default()
+    };
+    history.fetch(cfg, main, start, cutoff).await?;
+    Ok(history)
 }

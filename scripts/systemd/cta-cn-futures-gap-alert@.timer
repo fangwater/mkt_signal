@@ -1,0 +1,10 @@
+[Unit]
+Description=Check domestic CTA Redis minute gaps for instance %i
+
+[Timer]
+OnStartupSec=5s
+OnUnitInactiveSec=15s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

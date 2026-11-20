@@ -647,7 +647,7 @@ async fn native_panel_reads_without_authorization_but_protects_configuration_wri
         .unwrap();
     assert_eq!(response["configuration"]["symbol"], "SN");
     assert_eq!(response["configuration"]["lots_per_rule"], 1);
-    assert!(response["configuration"].get("zmq_endpoint").is_none());
+    assert!(response["configuration"].get("redis_endpoint").is_none());
     let request = serde_json::json!({"configuration":response["configuration"],"expected_revision":response["revision"]});
     for path in ["/api/config", "/api/preview"] {
         assert_eq!(
@@ -755,7 +755,7 @@ fn fixed_first_minute_handoff_succeeds_while_grpc_still_lags_the_local_tail() {
         history.minutes.insert(r.open_time_ms, r);
     }
     let prefix_count = history.minutes.len();
-    let input = super::live::Input::new(live_context(), 1., night_open());
+    let market = live_context();
     let local: Vec<_> = (0..10)
         .map(|i| {
             let mut r = minute(1100 * 60 + i);
@@ -765,27 +765,18 @@ fn fixed_first_minute_handoff_succeeds_while_grpc_still_lags_the_local_tail() {
         })
         .collect();
     let anchor = local[0].open_time_ms;
-    let attempt =
-        |history: &History| recovery::recover(&cfg, &main, history, ledger.clone(), &input, &local);
-    assert!(attempt(&history).is_err());
-    // A newer matching row must never move the fixed first-minute boundary.
+    let attempt = |history: &History| {
+        recovery::recover(&cfg, &main, history, ledger.clone(), &market, &local)
+    };
+    assert!(attempt(&history).unwrap().engine.ready());
     history
         .minutes
         .insert(local[5].open_time_ms, local[5].clone());
-    assert!(attempt(&history)
-        .err()
-        .unwrap()
-        .to_string()
-        .contains("first ZMQ minute"));
     let mut first = local[0].clone();
     first.provisional = true;
     history.minutes.insert(anchor, first.clone());
     history.through_ms = anchor + 59_999;
-    assert!(attempt(&history)
-        .err()
-        .unwrap()
-        .to_string()
-        .contains("finalized"));
+    assert_eq!(attempt(&history).unwrap().anchor_ms, anchor);
     history.through_ms = anchor + 60_000;
     let mut out = attempt(&history).unwrap();
     assert_eq!(out.anchor_ms, anchor);
@@ -938,7 +929,7 @@ fn duplicate_snapshots_are_ignored_and_conflicting_identities_block() {
 }
 
 #[test]
-fn initialized_stream_releases_startup_cache_and_requires_restart_after_source_loss() {
+fn initialized_stream_releases_startup_cache_and_stays_warm_after_source_loss() {
     let (_dir, cfg, main) = live_fixture();
     let mut engine = warmed_engine(&cfg);
     let factual = engine.targets();
@@ -983,26 +974,26 @@ fn initialized_stream_releases_startup_cache_and_requires_restart_after_source_l
         )
         .unwrap();
     assert!(stream.minutes.is_empty());
-    assert!(stream
+    stream
         .observe(
             super::live::Event::Reset,
             &mut engine,
             &mut hours,
             &main,
-            true
+            true,
         )
-        .is_err());
-    assert!(stream.needs_restart);
+        .unwrap();
+    assert!(!stream.needs_restart);
     assert!(!stream.ready());
-    assert!(stream
+    stream
         .observe(
             quote(night_open() + 6 * 60_000, 106),
             &mut engine,
             &mut hours,
             &main,
-            true
+            true,
         )
-        .is_err());
+        .unwrap();
     assert!(!stream.pending.has());
     assert!(stream.prepare(live_context(), 1., &main).is_err());
     assert_eq!(engine.targets(), factual);
@@ -1288,9 +1279,15 @@ fn recovery_warms_independent_minute_ledger_without_replaying_positions() {
             row
         })
         .collect();
-    let input = super::live::Input::new(live_context(), 1., local[0].open_time_ms);
-    let result =
-        super::recovery::recover(&cfg, &main, &history, hourly.clone(), &input, &local).unwrap();
+    let result = super::recovery::recover(
+        &cfg,
+        &main,
+        &history,
+        hourly.clone(),
+        &live_context(),
+        &local,
+    )
+    .unwrap();
     assert!(result.engine.ledger == hourly);
     assert!(result.extras.ledgers()[&Interval::Minute] == minute_ledger);
     let view = result.extras.views(false);
@@ -1367,4 +1364,165 @@ fn dominant_and_secondary_final_snapshot_slots_seal_the_minute_without_waiting()
         feed_two_contracts(&mut input, &main, start, start + 119_500, start + 119_500),
         None
     );
+}
+
+#[test]
+fn redis_reset_keeps_warmed_factors_and_resumes_while_replay_is_absent() {
+    let (_dir, cfg, main) = live_fixture();
+    let mut engine = warmed_engine(&cfg);
+    let ledger = engine.ledger.clone();
+    let old_hours = engine.hours;
+    let minute = 60_000;
+    let start = night_open();
+    let mut hours = Bars::default();
+    let mut stream = super::Stream {
+        input: Some(super::live::Input::new(live_context(), 1., start)),
+        aligned: true,
+        extras: Some(super::extras::Extras::new(&cfg).unwrap()),
+        last_closed: Some(start),
+        ..Default::default()
+    };
+    stream
+        .observe(
+            super::live::Event::Reset,
+            &mut engine,
+            &mut hours,
+            &main,
+            true,
+        )
+        .unwrap();
+    assert!(stream.aligned);
+    assert!(!stream.needs_restart);
+    assert_eq!(stream.gap_start, Some(start + minute));
+    assert!(engine.ledger == ledger);
+    for offset in 3..=64 {
+        stream
+            .observe(
+                quote(start + offset * minute, offset as u64),
+                &mut engine,
+                &mut hours,
+                &main,
+                true,
+            )
+            .unwrap();
+    }
+    assert!(stream.gap_start.is_none());
+    assert_eq!(stream.gaps, vec![(start + minute, start + 3 * minute)]);
+    assert!(engine.hours > old_hours);
+    assert!(engine.ledger == ledger);
+}
+
+#[test]
+fn market_replay_failure_does_not_replace_the_running_engine() {
+    let (_dir, cfg, main) = live_fixture();
+    let engine = warmed_engine(&cfg);
+    let ledger = engine.ledger.clone();
+    let original_hours = engine.hours;
+    let start = night_open();
+    let stream = super::Stream {
+        aligned: true,
+        extras: Some(super::extras::Extras::new(&cfg).unwrap()),
+        gaps: vec![(start, start + 60_000)],
+        ..Default::default()
+    };
+    let mut history = super::history::History {
+        hfq: Some(super::hfq::History {
+            generation: "test".into(),
+            basis_day: main.source_trading_day,
+            multiple: 1.,
+            rows: Vec::new(),
+            cutoff: start - 60_000,
+        }),
+        ..Default::default()
+    };
+    let mut unfinished = minute(0);
+    unfinished.open_time_ms = start;
+    unfinished.provisional = true;
+    history.minutes.insert(start, unfinished);
+    let error = stream
+        .repair_point()
+        .rebuild(
+            history,
+            &stream.recent,
+            &cfg,
+            &main,
+            &live_context(),
+            ledger.clone(),
+            start + 60_000,
+        )
+        .err()
+        .unwrap();
+    assert!(error
+        .to_string()
+        .contains("has not completed Redis gap minute"));
+    assert!(stream.aligned && !stream.gaps.is_empty());
+    assert!(engine.ledger == ledger);
+    assert_eq!(engine.hours, original_hours);
+}
+
+#[test]
+fn completed_repair_uses_missing_history_and_preserves_good_redis_and_target() {
+    let (_dir, mut cfg, main) = live_fixture();
+    cfg.enabled = false;
+    let market = live_context();
+    let archive_cutoff = night_open() + 239 * 60_000;
+    let gap = night_open() + 86_400_000;
+    let cutoff = gap + 60_000;
+    let ledger = Ledger {
+        contract: "sn2612".into(),
+        flags: BTreeMap::from([("baseline_078".into(), 1)]),
+        last_decision_ms: 123,
+        ..Default::default()
+    };
+    let mut engine = Engine::new(&cfg, ledger.clone()).unwrap();
+    let mut hours = Bars::default();
+    let mut stream = super::Stream {
+        aligned: true,
+        extras: Some(super::extras::Extras::new(&cfg).unwrap()),
+        gaps: vec![(gap, gap)],
+        last_closed: Some(cutoff),
+        ..Default::default()
+    };
+    let mut missing = minute(0);
+    missing.open_time_ms = gap;
+    missing.trading_day = main.trading_day;
+    let mut archived_next = minute(1);
+    archived_next.open_time_ms = cutoff;
+    archived_next.trading_day = main.trading_day;
+    let mut trusted = archived_next.clone();
+    trusted.close += 250.;
+    stream.recent.push_back(trusted.clone());
+    let history = super::history::History {
+        hfq: Some(super::hfq::History {
+            generation: "test".into(),
+            basis_day: main.source_trading_day,
+            multiple: 1.,
+            rows: Vec::new(),
+            cutoff: archive_cutoff,
+        }),
+        minutes: BTreeMap::from([(gap, missing), (cutoff, archived_next)]),
+        contract: Some(metadata()),
+        session_snapshot: market.snapshot_as_of.clone(),
+        ..Default::default()
+    };
+    let repair = stream
+        .repair_point()
+        .rebuild(
+            history,
+            &stream.recent,
+            &cfg,
+            &main,
+            &market,
+            ledger.clone(),
+            cutoff,
+        )
+        .unwrap();
+    stream
+        .apply_repair(repair, &main, &mut engine, &mut hours, cutoff)
+        .unwrap();
+    assert!(engine.ledger == ledger);
+    assert!(stream.aligned && stream.gap_start.is_none() && stream.gaps.is_empty());
+    let rebuilt = hours.finish(1.).unwrap().unwrap();
+    assert_eq!(rebuilt.minutes, 2);
+    assert_eq!(rebuilt.trade[3], trusted.close);
 }

@@ -29,6 +29,12 @@ pub struct Extras {
     slots: BTreeMap<Interval, Slot>,
 }
 impl Extras {
+    pub(super) fn discard_partial_bars(&mut self) {
+        for (&interval, slot) in &mut self.slots {
+            slot.bars = Bars::new(interval);
+        }
+    }
+
     pub(super) fn last_live_decision(&self) -> Option<(i64, u32)> {
         self.slots
             .values()

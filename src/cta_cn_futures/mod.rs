@@ -18,7 +18,7 @@ use config::Config;
 use engine::Ledger;
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
     time::Duration,
@@ -91,12 +91,12 @@ fn consume(
     input: &live::Input,
     hours: &mut engine::Bars,
     main: &history::Dominant,
-    rows: Vec<cn_market_proto::MinuteBar>,
+    rows: &[cn_market_proto::MinuteBar],
     dominant_ready: bool,
 ) -> Result<()> {
     let mut closed = Vec::new();
     for row in rows {
-        closed.extend(hours.push(row, input.multiple)?);
+        closed.extend(hours.push(row.clone(), input.multiple)?);
         if hours
             .last_minute_ms()
             .is_some_and(|last| input.context.ends_after(last))
@@ -166,7 +166,7 @@ async fn preflight(cfg: &Config, main: &history::Dominant, ledger: Ledger) -> Re
         json!({"exchange":cfg.exchange,"symbol":cfg.symbol,"contract":main.contract,"multiplier":multiple,"source_minute_rows":archive.rows.len(),"hours":engine.hours,"ready_rules":engine.latest.iter().filter(|r|r.ready).count(),"total_rules":cfg.rules.len(),"last_end_ms":engine.last_end_ms,"hfq_basis_trading_day":archive.basis_day,"hfq_generation":archive.generation,"session_snapshot":context.snapshot_as_of,"source":"grpc_hfq","positions_preserved":true,"frequencies":extras.views(false)}),
     )
 }
-/// ZMQ minutes are accumulated independently of delayed historical requests.
+/// Redis minutes are accumulated independently of delayed historical requests.
 #[derive(Default)]
 struct Stream {
     pending: recovery::Buffer,
@@ -175,6 +175,11 @@ struct Stream {
     aligned: bool,
     needs_restart: bool,
     extras: Option<extras::Extras>,
+    resume: Option<(live::Context, f64)>,
+    last_closed: Option<i64>,
+    recent: VecDeque<cn_market_proto::MinuteBar>,
+    gap_start: Option<i64>,
+    gaps: Vec<(i64, i64)>,
 }
 impl Stream {
     fn phase<'a>(
@@ -219,6 +224,58 @@ impl Stream {
             ..Self::default()
         };
     }
+    fn interrupt(&mut self, main: &history::Dominant, from_ms: Option<i64>, reason: &str) {
+        if !self.aligned {
+            self.reset();
+            return;
+        }
+        if let Some(input) = self.input.take() {
+            self.resume = Some((input.context, input.multiple));
+        }
+        let start = from_ms
+            .or_else(|| self.last_closed.map(|last| last + 60_000))
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis().div_euclid(60_000) * 60_000);
+        if self.gap_start.is_none_or(|old| start < old) {
+            self.gap_start = Some(start);
+            eprintln!(
+                "{}",
+                json!({"type":"redis_minute_gap","contract":main.contract,
+                "trading_day":main.trading_day,"start_ms":start,"reason":reason})
+            );
+        }
+    }
+
+    fn remember(
+        &mut self,
+        row: cn_market_proto::MinuteBar,
+        market: &live::Context,
+        main: &history::Dominant,
+    ) {
+        if let Some(last) = self.last_closed {
+            let start = (last + 60_000..row.open_time_ms)
+                .step_by(60_000)
+                .find(|&minute| market.allows(minute));
+            if let Some(start) = start.filter(|&start| self.gap_start.is_none_or(|old| start < old))
+            {
+                self.gap_start = Some(start);
+                eprintln!(
+                    "{}",
+                    json!({"type":"redis_minute_gap","contract":main.contract,
+                    "trading_day":row.trading_day,"start_ms":start,"reason":"missing completed minute"})
+                );
+            }
+        }
+        if let Some(start) = self.gap_start.take() {
+            if start < row.open_time_ms {
+                self.gaps.push((start, row.open_time_ms - 60_000));
+            }
+        }
+        self.last_closed = Some(row.open_time_ms);
+        if self.recent.len() == 4096 {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(row);
+    }
     fn activate(&mut self) {
         self.aligned = true;
         self.minutes = Vec::new();
@@ -243,15 +300,21 @@ impl Stream {
             previous.contract == next.contract,
             "dominant contract changed; restart for new-contract initialization"
         );
+        if self.resume.is_some() && self.input.is_none() {
+            return Ok(());
+        }
         let input = self
             .input
             .as_mut()
-            .context("missing initialized ZMQ input")?;
+            .context("missing initialized Redis input")?;
         // An ordered quote from the next day also closes the previous day's
         // final source minute. Preserve formula windows across ordinary days.
         let rows = input.closed(first_ms, previous)?;
         self.accept(rows, engine, hours, previous, false)?;
-        let input = self.input.take().context("missing initialized ZMQ input")?;
+        let input = self
+            .input
+            .take()
+            .context("missing initialized Redis input")?;
         let cutoff = input.live_after_ms;
         self.input = Some(live::Input::new(
             input.context,
@@ -265,14 +328,25 @@ impl Stream {
     }
     fn accept(
         &mut self,
-        rows: Vec<cn_market_proto::MinuteBar>,
+        mut rows: Vec<cn_market_proto::MinuteBar>,
         engine: &mut engine::Engine,
         hours: &mut engine::Bars,
         main: &history::Dominant,
         dominant_ready: bool,
     ) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
         if self.aligned {
+            rows.retain(|row| self.last_closed.is_none_or(|last| row.open_time_ms > last));
             let input = self.input.as_ref().context("missing live input")?;
+            if self.gap_start.is_some() && !rows.is_empty() {
+                *hours = engine::Bars::default();
+                self.extras
+                    .as_mut()
+                    .context("missing minute frequency states")?
+                    .discard_partial_bars();
+            }
             let fresh = (chrono::Utc::now().timestamp_micros() as u64)
                 .saturating_sub(input.last_received_us)
                 <= 5_000_000;
@@ -294,13 +368,17 @@ impl Stream {
                 self.input.as_ref().context("missing live input")?,
                 hours,
                 main,
-                rows,
+                &rows,
                 dominant_ready,
             )?;
+            let market = input.context.clone();
+            for row in rows {
+                self.remember(row, &market, main);
+            }
         } else {
             ensure!(
                 self.minutes.len() + rows.len() <= 4096,
-                "ZMQ minute cache exhausted"
+                "Redis minute cache exhausted"
             );
             self.minutes.extend(rows);
         }
@@ -319,9 +397,36 @@ impl Stream {
             "source continuity lost; restart for initialization"
         );
         if matches!(event, live::Event::Reset) {
-            self.reset();
-            ensure!(!self.needs_restart, "ZMQ reset; restart for initialization");
+            self.interrupt(main, None, "Redis continuity reset");
             return Ok(());
+        }
+        if let Some(first) = self
+            .input
+            .as_ref()
+            .and_then(|input| input.missing_before(&event, main))
+        {
+            self.interrupt(
+                main,
+                Some(first),
+                "missing trading minute before an ordered Redis quote",
+            );
+        }
+        if let (Some((context, multiple)), live::Event::Quote(quote)) =
+            (self.resume.as_ref(), &event)
+        {
+            if quote.symbol() == main.contract.as_bytes()
+                && quote.trading_day == main.trading_day
+                && quote.exchange_ts_us > 0
+            {
+                self.input = Some(live::Input::new(
+                    context.clone(),
+                    *multiple,
+                    quote.exchange_ts_us / 1_000,
+                ));
+                self.resume = None;
+            } else {
+                return Ok(());
+            }
         }
         if let Some(input) = self.input.as_mut() {
             let rows = input.observe(event, main)?;
@@ -347,12 +452,136 @@ impl Stream {
     }
     fn ready(&self) -> bool {
         self.aligned
+            && self.gap_start.is_none()
             && self.input.as_ref().is_some_and(|i| {
                 (chrono::Utc::now().timestamp_micros() as u64).saturating_sub(i.last_received_us)
                     <= 5_000_000
             })
     }
+
+    fn repair_point(&self) -> RepairPoint {
+        RepairPoint {
+            last_closed: self.last_closed,
+            gap_start: self.gap_start,
+            gaps: self.gaps.clone(),
+        }
+    }
+
+    fn apply_repair(
+        &mut self,
+        repair: PreparedRepair,
+        main: &history::Dominant,
+        engine: &mut engine::Engine,
+        hours: &mut engine::Bars,
+        cutoff: i64,
+    ) -> Result<()> {
+        let replacement = repair.rebuilt;
+        ensure!(
+            replacement.engine.ledger == engine.ledger
+                && replacement.extras.ledgers()
+                    == self
+                        .extras
+                        .as_ref()
+                        .context("missing frequency states")?
+                        .ledgers(),
+            "historical repair would replace the current target ledger"
+        );
+        *engine = replacement.engine;
+        *hours = replacement.hours;
+        self.extras = Some(replacement.extras);
+        self.last_closed = self.last_closed.max(repair.last_closed);
+        self.gaps.clear();
+        if self.gap_start.is_some_and(|start| start <= cutoff) {
+            self.gap_start = None;
+        }
+        self.recent.clear();
+        println!(
+            "{}",
+            json!({"type":"redis_gap_repaired","contract":main.contract,
+            "trading_day":main.trading_day,"through_ms":cutoff,"positions_preserved":true})
+        );
+        Ok(())
+    }
 }
+
+#[derive(PartialEq, Eq)]
+struct RepairPoint {
+    last_closed: Option<i64>,
+    gap_start: Option<i64>,
+    gaps: Vec<(i64, i64)>,
+}
+
+struct PreparedRepair {
+    rebuilt: recovery::Recovered,
+    last_closed: Option<i64>,
+}
+
+struct RepairJob {
+    cutoff: i64,
+    contract: String,
+    config: Vec<u8>,
+    point: RepairPoint,
+    task: tokio::task::JoinHandle<Result<PreparedRepair>>,
+}
+
+impl RepairPoint {
+    fn rebuild(
+        &self,
+        mut history: history::History,
+        recent: &VecDeque<cn_market_proto::MinuteBar>,
+        cfg: &Config,
+        main: &history::Dominant,
+        market: &live::Context,
+        ledger: Ledger,
+        cutoff: i64,
+    ) -> Result<PreparedRepair> {
+        let archive_cutoff = history
+            .hfq
+            .as_ref()
+            .context("missing HFQ repair archive")?
+            .cutoff;
+        let gaps = self
+            .gaps
+            .iter()
+            .copied()
+            .chain(self.gap_start.map(|start| (start, cutoff)));
+        for (first, last) in gaps {
+            for minute in (first.max(archive_cutoff + 60_000)..=last.min(cutoff))
+                .step_by(60_000)
+                .filter(|&minute| market.allows(minute))
+            {
+                ensure!(
+                    history
+                        .minutes
+                        .get(&minute)
+                        .is_some_and(|row| recovery::closed(&history, row)),
+                    "Market Replay has not completed Redis gap minute {minute}"
+                );
+            }
+        }
+        // Reuse complete local minutes outside known gaps. The service is
+        // authoritative for missing or explicitly invalidated minutes only.
+        for row in recent.iter().filter(|row| row.open_time_ms <= cutoff) {
+            let ms = row.open_time_ms;
+            if !self
+                .gaps
+                .iter()
+                .any(|&(first, last)| (first..=last).contains(&ms))
+                && self.gap_start.is_none_or(|start| ms < start)
+            {
+                history.minutes.insert(ms, row.clone());
+            }
+        }
+        let last_closed = recovery::last_closed(&history, i64::MAX);
+        let rebuilt = recovery::recover(cfg, main, &history, ledger, market, &[])?;
+        Ok(PreparedRepair {
+            rebuilt,
+            last_closed,
+        })
+    }
+}
+
+static REPAIR_CONCURRENCY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 type Report = Arc<RwLock<Value>>;
 
@@ -402,8 +631,8 @@ fn configs(path: &Path) -> Result<Vec<(PathBuf, Config)>> {
             product.symbol
         );
         ensure!(
-            product.zmq_endpoint == primary.zmq_endpoint,
-            "additional products must use the group's ZMQ source"
+            product.redis_endpoint == primary.redis_endpoint,
+            "additional products must use the group's Redis source"
         );
         product.attach_to(&primary);
         product.validate()?;
@@ -466,7 +695,7 @@ pub async fn run() -> Result<()> {
     let mut tasks = tokio::task::JoinSet::new();
     let mut reports = BTreeMap::new();
     let mut app = Router::new();
-    let inputs = live::capture(&root.zmq_endpoint, configs.iter().map(|(_, cfg)| cfg))?;
+    let inputs = live::capture(root.redis_endpoint, configs.iter().map(|(_, cfg)| cfg))?;
     let mut workers = Vec::new();
     for ((path, cfg), rx) in configs.into_iter().zip(inputs) {
         std::fs::create_dir_all(cfg.state_directory())?;
@@ -601,6 +830,9 @@ async fn run_worker(worker: Worker) -> Result<()> {
     let mut loaded = false;
     let mut health = Health::default();
     let mut next_fetch = tokio::time::Instant::now();
+    let mut next_repair = next_fetch;
+    let mut repair_job: Option<RepairJob> = None;
+    let mut repair_error: Option<String> = None;
     let mut next_dominant = tokio::time::Instant::now() + Duration::from_secs(60);
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -631,7 +863,7 @@ async fn run_worker(worker: Worker) -> Result<()> {
                 Ok(event) => event,
                 Err(crossbeam_channel::TryRecvError::Empty) => break,
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    anyhow::bail!("ZMQ capture thread stopped")
+                    anyhow::bail!("Redis capture thread stopped")
                 }
             };
             if let Ok(Some(publisher)) = &mut publisher {
@@ -670,6 +902,15 @@ async fn run_worker(worker: Worker) -> Result<()> {
                     }
                 }
             }
+            let fault_minute = match &event {
+                live::Event::Quote(quote)
+                    if quote.symbol() == current.contract.as_bytes()
+                        && quote.exchange_ts_us > 0 =>
+                {
+                    Some(quote.exchange_ts_us.div_euclid(60_000_000) * 60_000)
+                }
+                _ => None,
+            };
             if let Err(e) = stream.observe(
                 event,
                 &mut engine,
@@ -677,8 +918,21 @@ async fn run_worker(worker: Worker) -> Result<()> {
                 &current,
                 health.dominant.is_none(),
             ) {
-                stream.reset();
-                health.pause(format!("ZMQ input: {e:#}"));
+                let error = format!("Redis input: {e:#}");
+                if stream.aligned && !stream.needs_restart {
+                    let suspected = fault_minute.map(|minute| {
+                        stream
+                            .last_closed
+                            .map_or(minute, |last| (last + 60_000).min(minute))
+                    });
+                    stream.interrupt(&current, suspected, &error);
+                    if let Ok(Some(publisher)) = &mut publisher {
+                        publisher.reset();
+                    }
+                } else {
+                    stream.reset();
+                    health.pause(error);
+                }
             }
             if stream.needs_restart {
                 stream.begin_recovery();
@@ -701,8 +955,29 @@ async fn run_worker(worker: Worker) -> Result<()> {
                     health.dominant.is_none(),
                 )
             }) {
-                stream.reset();
-                health.pause(format!("ZMQ minute: {e:#}"));
+                let error = format!("Redis minute: {e:#}");
+                if stream.aligned {
+                    stream.interrupt(&current, None, &error);
+                } else {
+                    stream.reset();
+                    health.pause(error);
+                }
+            }
+        }
+        if stream.aligned {
+            if let Some(missing) = stream
+                .input
+                .as_ref()
+                .and_then(|input| input.overdue_minute(chrono::Utc::now().timestamp_millis()))
+            {
+                stream.interrupt(
+                    &current,
+                    Some(missing),
+                    "trading minute not received by the close grace period",
+                );
+                if let Ok(Some(publisher)) = &mut publisher {
+                    publisher.reset();
+                }
             }
         }
         if stream.needs_restart {
@@ -732,34 +1007,128 @@ async fn run_worker(worker: Worker) -> Result<()> {
             .context("missing minute frequency states")?
             .persist()?;
         if loaded {
-            if let (Some(history_input), Some(input)) = (history.as_ref(), &stream.input) {
+            if let (Some(history_input), Some(market)) = (history.as_ref(), market_context.as_ref())
+            {
                 match recovery::recover(
                     &cfg,
                     &current,
                     history_input,
                     engine.ledger.clone(),
-                    input,
+                    market,
                     &stream.minutes,
                 ) {
                     Ok(recovered) => {
                         println!(
                             "{}",
-                            json!({"type":"grpc_zmq_aligned","contract":current.contract,
+                            json!({"type":"grpc_redis_aligned","contract":current.contract,
                             "anchor_ms":recovered.anchor_ms,"history_rows":recovered.history_rows,
-                            "cached_zmq_minutes":stream.minutes.len(),"hours":recovered.engine.hours,
+                            "cached_redis_minutes":stream.minutes.len(),"hours":recovered.engine.hours,
                             "positions_preserved":true})
                         );
                         engine = recovered.engine;
                         hours = recovered.hours;
                         stream.extras = Some(recovered.extras);
+                        stream.last_closed =
+                            recovery::last_closed(history_input, recovered.anchor_ms);
+                        for row in std::mem::take(&mut stream.minutes) {
+                            stream.remember(row, market, &current);
+                        }
+                        if stream.input.is_none() {
+                            stream.resume = Some((market.clone(), history_input.multiple()?));
+                        }
                         stream.activate();
-                        // gRPC is a startup dependency. Drop its data and make
-                        // further runtime historical requests unreachable.
+                        // The live path can use the warm state immediately.
+                        // Missing minutes are handled by the off-session job.
                         history = None;
                         health.ingress = None;
                     }
                     Err(e) => health.pause(format!("gRPC catch-up: {e:#}")),
                 }
+            }
+        }
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let off_session = market_context
+            .as_ref()
+            .is_some_and(|market| !market.allows(now_ms));
+        if !off_session || !stream.aligned {
+            if let Some(job) = repair_job.take() {
+                job.task.abort();
+            }
+        } else if let Some(market) = market_context.as_ref() {
+            if repair_job
+                .as_ref()
+                .is_some_and(|job| job.task.is_finished())
+            {
+                let RepairJob {
+                    cutoff,
+                    contract,
+                    config,
+                    point,
+                    task,
+                } = repair_job.take().expect("ready repair job");
+                if contract == current.contract
+                    && point == stream.repair_point()
+                    && config == serde_json::to_vec(&cfg)?
+                    && !market.allows(chrono::Utc::now().timestamp_millis())
+                {
+                    let result = match task.await {
+                        Ok(Ok(repair)) => {
+                            stream.apply_repair(repair, &current, &mut engine, &mut hours, cutoff)
+                        }
+                        Ok(Err(error)) => Err(error),
+                        Err(error) => Err(error.into()),
+                    };
+                    match result {
+                        Ok(()) => repair_error = None,
+                        Err(error) => {
+                            let error = format!("{error:#}");
+                            if repair_error.as_deref() != Some(error.as_str()) {
+                                eprintln!(
+                                    "{} Market Replay repair pending: {error}",
+                                    current.contract
+                                );
+                            }
+                            repair_error = Some(error);
+                        }
+                    }
+                }
+                next_repair = tokio::time::Instant::now() + Duration::from_secs(30);
+            } else if repair_job.is_none()
+                && (!stream.gaps.is_empty() || stream.gap_start.is_some())
+                && tokio::time::Instant::now() >= next_repair
+            {
+                let cutoff = (now_ms.div_euclid(60_000) - 1) * 60_000;
+                let repair_cfg = cfg.clone();
+                let repair_main = current.clone();
+                let repair_market = market.clone();
+                let ledger = engine.ledger.clone();
+                let recent = stream.recent.clone();
+                let point = stream.repair_point();
+                let reference = stream.repair_point();
+                let task = tokio::spawn(async move {
+                    let permit = REPAIR_CONCURRENCY.acquire().await?;
+                    let history = recovery::load_repair(&repair_cfg, &repair_main, cutoff).await?;
+                    tokio::task::spawn_blocking(move || {
+                        let _permit = permit;
+                        point.rebuild(
+                            history,
+                            &recent,
+                            &repair_cfg,
+                            &repair_main,
+                            &repair_market,
+                            ledger,
+                            cutoff,
+                        )
+                    })
+                    .await?
+                });
+                repair_job = Some(RepairJob {
+                    cutoff,
+                    contract: current.contract.clone(),
+                    config: serde_json::to_vec(&cfg)?,
+                    point: reference,
+                    task,
+                });
             }
         }
         let ready = stream.ready() && health.error().is_none();
@@ -803,8 +1172,12 @@ async fn run_worker(worker: Worker) -> Result<()> {
         report["grpc_through_ms"] = json!(history.as_ref().map(|h| h.through_ms));
         report["history_rows"] = json!(history.as_ref().map_or(0, |h| h.minutes.len()
             + h.hfq.as_ref().map_or(0, |hfq| hfq.rows.len())));
-        report["zmq_first_minute_ms"] = json!(stream.minutes.first().map(|r| r.open_time_ms));
-        report["zmq_cached_minutes"] = json!(stream.minutes.len());
+        report["redis_first_minute_ms"] = json!(stream.minutes.first().map(|r| r.open_time_ms));
+        report["redis_cached_minutes"] = json!(stream.minutes.len());
+        report["redis_gap_since_ms"] = json!(stream
+            .gap_start
+            .or_else(|| stream.gaps.first().map(|&(start, _)| start)));
+        report["history_repair_error"] = json!(repair_error);
         *state.write().unwrap_or_else(|p| p.into_inner()) = report;
 
         // Slow gRPC is expected. It never replaces or advances the local anchor.
@@ -879,7 +1252,7 @@ async fn run_worker(worker: Worker) -> Result<()> {
                                     stream.prepare(context.clone(), history.multiple()?, &current)
                                 {
                                     stream.reset();
-                                    health.pause(format!("ZMQ baseline preparation: {e:#}"));
+                                    health.pause(format!("Redis baseline preparation: {e:#}"));
                                 }
                             }
                         }

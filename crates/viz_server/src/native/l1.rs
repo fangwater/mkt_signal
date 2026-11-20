@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, FixedOffset, Utc};
 use cn_futures_pbs::{
     msg::{MarketDataMsg, SOURCE_RESET},
-    sources::{zmq::ZmqSource, Source},
+    sources::{redis::RedisSource, Source},
 };
 use cn_futures_state::{
     InstrumentKind, InstrumentMark, PositionRow, Snapshot, Text, Venue, MAX_POSITIONS,
@@ -15,6 +15,7 @@ use cn_market_proto::{
 };
 use std::{
     collections::{HashMap, HashSet},
+    net::{Ipv4Addr, SocketAddrV4},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -331,38 +332,31 @@ fn archived_mark(
 
 pub fn spawn(config: config::L1, stale_after_ms: u64) -> (SharedQuotes, [JoinHandle<()>; 3]) {
     let quotes = Arc::new(Mutex::new(Quotes::new(stale_after_ms)));
+    let (tx, mut rx) = tokio::sync::mpsc::channel(512);
+    // The Redis read and reconnect sleep are blocking. Keep them off the
+    // local HTTP/IPC executor, and stop when its receiver is dropped.
+    drop(tokio::task::spawn_blocking(move || {
+        let endpoint = SocketAddrV4::new(Ipv4Addr::LOCALHOST, config.redis_port);
+        let mut source = RedisSource::new(endpoint);
+        while !tx.is_closed() {
+            match source.poll() {
+                Ok(Some(quote)) => {
+                    if tx.blocking_send(quote).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    log::warn!("Viz L1 source stopped: {error:#}");
+                    break;
+                }
+            }
+        }
+    }));
     let book = quotes.clone();
     let market = tokio::task::spawn_local(async move {
-        let endpoint = format!("tcp://127.0.0.1:{}", config.zmq_port);
-        loop {
-            match ZmqSource::new(&endpoint, 4096) {
-                Ok(mut source) => {
-                    let mut interval = time::interval(Duration::from_millis(10));
-                    interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-                    let error = loop {
-                        interval.tick().await;
-                        let mut book = book.lock().unwrap_or_else(|e| e.into_inner());
-                        let mut error = None;
-                        for _ in 0..512 {
-                            match source.poll() {
-                                Ok(Some(quote)) => book.accept(quote),
-                                Ok(None) => break,
-                                Err(e) => {
-                                    error = Some(e);
-                                    break;
-                                }
-                            }
-                        }
-                        if let Some(error) = error {
-                            book.latest.clear();
-                            break error;
-                        }
-                    };
-                    log::warn!("Viz L1 stream restarting: {error:#}");
-                }
-                Err(error) => log::warn!("Viz L1 source unavailable: {error:#}"),
-            }
-            time::sleep(Duration::from_secs(3)).await;
+        while let Some(quote) = rx.recv().await {
+            book.lock().unwrap_or_else(|e| e.into_inner()).accept(quote);
         }
     });
     let book = quotes.clone();

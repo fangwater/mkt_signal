@@ -8,13 +8,13 @@ use cn_futures_core::{
 };
 use cn_futures_pbs::{
     msg::{MarketDataMsg, SOURCE_RESET},
-    sources::{zmq::ZmqSource, Source},
+    sources::{redundant_redis::RedundantRedisSource, Source},
 };
 use cn_market_proto::{
     Book5, BookLevel, GetSizeThresholdsResponse, GetTradingSessionsResponse, MinuteBar,
     SessionWindow, SizeThreshold,
 };
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, net::SocketAddrV4, time::Duration};
 
 #[derive(Clone)]
 pub enum Event {
@@ -22,7 +22,7 @@ pub enum Event {
     Quote(Box<MarketDataMsg>),
 }
 pub fn capture<'a>(
-    endpoint: &str,
+    endpoint: SocketAddrV4,
     configs: impl Iterator<Item = &'a Config>,
 ) -> Result<Vec<crossbeam_channel::Receiver<Event>>> {
     struct Product {
@@ -47,12 +47,11 @@ pub fn capture<'a>(
             }
         })
         .collect();
-    let endpoint = endpoint.to_owned();
     std::thread::Builder::new()
         .name("cn-md-ingress".into())
         .spawn(move || loop {
             let result = (|| -> Result<()> {
-                let mut source = ZmqSource::new(&endpoint, 131072)?;
+                let mut source = RedundantRedisSource::new(endpoint, endpoint)?;
                 for product in &mut products {
                     product.lost = true;
                 }
@@ -286,7 +285,7 @@ impl Input {
     ) -> Result<(Self, Vec<MinuteBar>)> {
         let first = quotes
             .first()
-            .context("waiting for ZMQ snapshots")?
+            .context("waiting for Redis snapshots")?
             .exchange_ts_us
             / 1000;
         let mut input = Self::new(context, multiple, first);
@@ -294,13 +293,13 @@ impl Input {
             input.ingest(&q, main)?;
         }
         // The source's next minute proves the preceding one has arrived.
-        // A slow gRPC call or a stale ZMQ connection must not close a partial bar.
+        // A slow gRPC call or a stale Redis connection must not close a partial bar.
         let rows = input.closed(input.last_quote_ms.div_euclid(60_000) * 60_000, main)?;
         Ok((input, rows))
     }
     pub fn observe(&mut self, event: Event, main: &Dominant) -> Result<Vec<MinuteBar>> {
         let Event::Quote(q) = event else {
-            anyhow::bail!("ZMQ continuity reset; gRPC catch-up required");
+            anyhow::bail!("Redis continuity reset; gRPC catch-up required");
         };
         let old = self.last_quote_ms;
         self.witness(&q, main)?;
@@ -362,7 +361,7 @@ impl Input {
         if let Some(last) = &self.last_quote {
             ensure!(
                 q.source_generation == last.source_generation,
-                "ZMQ generation changed"
+                "Redis generation changed"
             );
             let key = |q: &MarketDataMsg| (q.action_day, q.source_sequence);
             if key(q) == key(last) {
@@ -386,7 +385,7 @@ impl Input {
         self.day = q.trading_day;
         ensure!(
             self.snaps.len() < 200_000,
-            "bounded ZMQ snapshot buffer exhausted"
+            "bounded Redis snapshot buffer exhausted"
         );
         ensure!(
             ts_ms >= self.last_quote_ms,
@@ -514,6 +513,35 @@ impl Input {
             return Ok(Vec::new());
         }
         self.emit(end, main, "session_tail_clock")
+    }
+
+    pub(super) fn missing_before(&self, event: &Event, main: &Dominant) -> Option<i64> {
+        let Event::Quote(quote) = event else {
+            return None;
+        };
+        if self.last_quote_ms == 0
+            || quote.symbol() != main.contract.as_bytes()
+            || quote.trading_day != main.trading_day
+        {
+            return None;
+        }
+        let next = (quote.exchange_ts_us / 1_000).div_euclid(60_000) * 60_000;
+        let first = (self.last_quote_ms.div_euclid(60_000) + 1) * 60_000;
+        (first..next)
+            .step_by(60_000)
+            .find(|&minute| self.context.allows(minute))
+    }
+
+    pub(super) fn overdue_minute(&self, now_ms: i64) -> Option<i64> {
+        if self.last_quote_ms == 0 || now_ms - self.last_quote_ms <= 5_000 {
+            return None;
+        }
+        // Give the terminal quote and the ordinary next-minute seal time to
+        // arrive before declaring a trading minute missing without a reset.
+        let through = (now_ms - 5_000).div_euclid(60_000) * 60_000;
+        (self.processed_minute_ms + 60_000..through)
+            .step_by(60_000)
+            .find(|&minute| self.context.allows(minute))
     }
     /// Close minutes and log how each was sealed: wall-clock and exchange-clock
     /// lag after the minute's end, so the sealing rule can be audited live.

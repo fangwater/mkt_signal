@@ -52,7 +52,7 @@ pub use cn_futures_state::Adapter;
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct L1 {
-    pub zmq_port: u16,
+    pub redis_port: u16,
     pub metadata_port: u16,
 }
 
@@ -84,7 +84,7 @@ impl Config {
         ensure!(self.manager_port > 0, "Manager port cannot be zero");
         if let Some(l1) = self.l1 {
             ensure!(
-                l1.zmq_port > 0 && l1.metadata_port > 0,
+                l1.redis_port > 0 && l1.metadata_port > 0,
                 "L1 ports cannot be zero"
             );
         }

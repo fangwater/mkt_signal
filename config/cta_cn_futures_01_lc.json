@@ -8,7 +8,7 @@
   "dominant_url": "http://127.0.0.1:18313/api/v1/dominant",
   "history_grpc": "http://127.0.0.1:18312",
   "history_days": 120,
-  "zmq_endpoint": "tcp://10.61.20.12:13005",
+  "redis_endpoint": "10.61.20.11:9380",
   "data_directory": "data/products/LC",
   "bind": "127.0.0.1:19401",
   "entry": {

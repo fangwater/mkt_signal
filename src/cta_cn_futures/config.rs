@@ -4,6 +4,7 @@ use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    net::SocketAddrV4,
     path::{Path, PathBuf},
 };
 
@@ -20,7 +21,7 @@ pub struct Config {
     pub dominant_url: String,
     pub history_grpc: String,
     pub history_days: i64,
-    pub zmq_endpoint: String,
+    pub redis_endpoint: SocketAddrV4,
     pub data_directory: PathBuf,
     pub bind: String,
     pub entry: EntryConfig,
@@ -251,6 +252,10 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         let cfg = self;
         cfg.strategy_group()?;
+        cn_futures_pbs::config::Redis {
+            endpoint: cfg.redis_endpoint,
+        }
+        .validate()?;
         if let Some(publication) = cfg.publication_settings() {
             let url = reqwest::Url::parse(&publication.manager_url)
                 .context("invalid native Manager URL")?;

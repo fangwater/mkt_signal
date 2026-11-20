@@ -210,7 +210,7 @@ async fn secondary(cfg: &Config, day: u32) -> Result<(Option<String>, Option<Str
     Ok((pick(&row.selected)?, pick(&row.scheduled_next)?))
 }
 /// Network history retained only in memory. Repeated tail requests replace
-/// provisional minutes until they agree with the independently captured ZMQ feed.
+/// provisional minutes until they agree with the independently captured Redis feed.
 #[derive(Default)]
 pub struct History {
     pub hfq: Option<super::hfq::History>,

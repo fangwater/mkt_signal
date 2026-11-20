@@ -25,10 +25,10 @@ local_port = 18312
 
 [[forwards]]
 # Example only: replace with the authorized LAN publisher in the private env.
-name = "market-zmq"
+name = "market-redis"
 local_host = "10.0.0.2"
 remote_port = 13005
-local_port = 13005
+local_port = 9380
 
 [[forwards]]
 # CTA configuration panel; its API requires a private panel access credential.
