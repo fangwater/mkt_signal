@@ -1,62 +1,30 @@
 use super::super::{
-    config::{Config, PublicationConfig},
+    config::Config,
     engine::{Engine, Ledger},
 };
 use super::*;
-use std::collections::BTreeSet;
 
 fn configuration() -> Config {
     serde_json::from_str(include_str!("../../../config/cta_cn_futures_01.json")).unwrap()
 }
-fn settings() -> PublicationConfig {
-    PublicationConfig {
-        enabled: false,
-        manager_url: "http://127.0.0.1:18202/api".into(),
-        source_id: "native-account".into(),
-        token_env: "CN_CTA_01_PUBLISH_TOKEN".into(),
-        include_trading_day: false,
-        per_factor_intervals: BTreeSet::from(["1h".into()]),
-        products: BTreeSet::new(),
-    }
-}
 #[test]
-fn per_factor_names_carry_instance_factor_and_frequency_without_aggregate_double_counting() {
-    let mut cfg = configuration();
-    cfg.publication = Some(settings());
+fn one_lot_target_is_published_once_even_with_multiple_agreeing_factors() {
+    let cfg = configuration();
     let ledger = Ledger {
         contract: "sn2612".into(),
         last_decision_ms: 1000,
-        lots_per_rule: 2,
-        flags: cfg
-            .rules
-            .iter()
-            .enumerate()
-            .map(|(i, r)| (r.key().to_owned(), if i % 2 == 0 { 1 } else { -1 }))
-            .collect(),
+        flags: cfg.rules.iter().map(|r| (r.key().to_owned(), 1)).collect(),
         retired_contracts: vec!["sn2611".into()],
+        target_direction: Some(1),
+        ..Ledger::default()
     };
-    let td_pr_010_lots = i64::from(ledger.flags["td_pr_010"]) * 2;
-    let net_lots: i64 = ledger.flags.values().map(|&flag| i64::from(flag) * 2).sum();
     let engine = Engine::new(&cfg, ledger).unwrap();
     let targets = engine.publication_positions().unwrap();
-    assert_eq!(targets.len(), cfg.rules.len());
-    assert!(targets.contains_key("cn-futures-01-td_pr_010-1h"));
-    assert!(!targets.contains_key("cn-futures-01-1h"));
-    assert_eq!(
-        targets["cn-futures-01-td_pr_010-1h"].targets["SHFE:sn2611"],
-        0
-    );
-    assert_eq!(
-        targets["cn-futures-01-td_pr_010-1h"].targets["SHFE:sn2612"],
-        td_pr_010_lots
-    );
-    assert_eq!(
-        targets
-            .values()
-            .map(|p| p.targets["SHFE:sn2612"])
-            .sum::<i64>(),
-        net_lots
-    );
+    assert_eq!(targets.len(), 1);
+    let strategy = &targets["cn-futures-01-1h"];
+    assert_eq!(strategy.targets["SHFE:sn2611"], 0);
+    assert_eq!(strategy.targets["SHFE:sn2612"], 1);
+    assert_eq!(engine.targets()["targets"][1]["target_lots"], 1);
 }
 #[test]
 fn ordinary_instances_keep_one_aggregate_strategy_per_frequency() {
@@ -79,7 +47,7 @@ fn ordinary_instances_keep_one_aggregate_strategy_per_frequency() {
 }
 
 #[test]
-fn products_with_a_shared_factor_keep_distinct_attribution() {
+fn instance_01_has_exactly_one_hourly_strategy_per_product() {
     let configs =
         super::super::configs(std::path::Path::new("config/cta_cn_futures_01.json")).unwrap();
     let mut group = BTreeMap::new();
@@ -102,15 +70,18 @@ fn products_with_a_shared_factor_keep_distinct_attribution() {
         assert_eq!(cfg.publication_settings().unwrap().token_env, token);
         assert_eq!(enabled_settings.enabled_for(&cfg.symbol), suffix == "rb");
         let engine = Engine::new(&cfg, Ledger::default()).unwrap();
-        for (name, position) in engine.publication_positions().unwrap() {
-            assert!(group.insert(name, position).is_none());
-        }
+        let positions = engine.publication_positions().unwrap();
+        assert_eq!(
+            positions.keys().collect::<Vec<_>>(),
+            [&format!("{group_name}-1h")]
+        );
+        group.extend(positions);
     }
-    assert_eq!(group.len(), 147);
-    assert!(group.contains_key("cn-futures-01-baseline_035-1h"));
-    assert!(group.contains_key("cn-futures-01-rb-baseline_035-1h"));
-    assert!(group.contains_key("cn-futures-01-td_pr_012_negative-1h"));
-    assert!(group.contains_key("cn-futures-01-td_pr_012_positive-1h"));
+    assert_eq!(group.len(), 21);
+    assert!(group.contains_key("cn-futures-01-sa-1h"));
+    assert!(!group.contains_key("cn-futures-01-sa-baseline_193-1h"));
+    assert!(group.contains_key("cn-futures-01-1h"));
+    assert!(group.contains_key("cn-futures-01-rb-1h"));
 }
 
 #[tokio::test]

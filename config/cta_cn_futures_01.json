@@ -115,9 +115,7 @@
     "manager_url": "http://127.0.0.1:18202/api",
     "source_id": "native-account",
     "token_env": "CN_CTA_01_PUBLISH_TOKEN",
-    "per_factor_intervals": [
-      "1h"
-    ],
+    "per_factor_intervals": [],
     "products": [
       "RB"
     ]

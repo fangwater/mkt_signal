@@ -53,6 +53,7 @@
     <div class="kv-table">
       <label for="enabled" class="kv-key">策略开关</label><div class="kv-input"><select id="enabled"><option value="false">关闭</option><option value="true">启用</option></select></div><div class="kv-desc">只控制当前策略组、券池和频段。</div>
       <label for="max-pos" class="kv-key">单份金额（USDT）</label><div class="kv-input"><input id="max-pos" type="number" min="0" step="any"></div><div class="kv-desc">每条因子规则的单份金额，修改后用于后续新开仓。</div>
+      <label for="native-position-algorithm" class="kv-key" hidden>仓位算法</label><div class="kv-input" hidden><select id="native-position-algorithm"><option value="v0">v0 · 逐因子判断</option><option value="v1">v1 · 等权均值</option></select></div><div class="kv-desc" hidden>同一品种的每个频段最多一手。</div>
       <label for="entry-long" class="kv-key">多头开仓阈值</label><div class="kv-input"><input id="entry-long" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">因子值高于此阈值时开多。</div>
       <label for="entry-short" class="kv-key">空头开仓阈值</label><div class="kv-input"><input id="entry-short" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">因子值低于此阈值时开空。</div>
       <label for="exit-long" class="kv-key">多头平仓阈值</label><div class="kv-input"><input id="exit-long" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">多头因子值低于此阈值时退出。</div>
@@ -248,20 +249,31 @@ function nativeRules(){
   });
 }
 function nativeCollect(){
-  const doc=clone(draft);doc.enabled=$('enabled').value==='true';doc.lots_per_rule=number('max-pos');
-  if(!Number.isInteger(doc.lots_per_rule)||doc.lots_per_rule<1||doc.lots_per_rule>100)throw Error('单份手数必须是 1 至 100 的整数');
+  const doc=clone(draft);doc.enabled=$('enabled').value==='true';doc.position_algorithm=$('native-position-algorithm').value;
   doc.entry.factor_long_quantile=number('entry-long');doc.entry.factor_short_quantile=number('entry-short');
   doc.exits.factor_exit_quantile_long=number('exit-long');doc.exits.factor_exit_quantile_short=number('exit-short');
   doc.rules=nativeRules();return doc;
+}
+function nativeThresholds(mode,values){
+  const fields=['entry-long','entry-short','exit-long','exit-short'];
+  for(const [i,id] of fields.entries()){$(id).min=mode==='v1'?'-1':'0';$(id).value=values[i];}
 }
 function prepareNative(){
   $('strategy-type').replaceChildren(new Option('国内期货 Prep','cta-cn-futures'));$('strategy-group').replaceChildren(new Option('读取配置中…',''));
   $('symbol-group').previousElementSibling.textContent='品种';
   $('strategy-settings').hidden=false;
-  $('strategy-settings').querySelector('.hint').textContent='每条因子规则独立计算开平仓，目标按整数手数合并。关闭策略会停止生成新目标，保留已发布目标。';
-  document.querySelector('label[for="max-pos"]').textContent='单份手数（手）';$('max-pos').parentElement.nextElementSibling.textContent='每条规则的目标手数，修改后用于后续实时决策。';
+  $('strategy-settings').querySelector('.hint').textContent='v0 汇总逐因子方向，v1 根据因子等权均值判断方向并使用本频段统一 NQ。关闭策略会保留已发布目标。';
+  const size=$('max-pos').parentElement,mode=$('native-position-algorithm').parentElement;
+  for(const cell of [size.previousElementSibling,size,size.nextElementSibling])cell.hidden=true;
+  for(const cell of [mode.previousElementSibling,mode,mode.nextElementSibling])cell.hidden=false;
+  $('native-position-algorithm').onchange=event=>{
+    const algorithm=event.target.value;
+    nativeThresholds(algorithm,algorithm===(draft.position_algorithm||'v0')
+      ?[draft.entry.factor_long_quantile,draft.entry.factor_short_quantile,draft.exits.factor_exit_quantile_long,draft.exits.factor_exit_quantile_short]
+      :algorithm==='v1'?[.5,-.5,-.2,.2]:[.75,.25,.4,.6]);
+    changed();
+  };
   $('enabled').parentElement.nextElementSibling.textContent='只控制本策略生成目标仓位。';
-  $('max-pos').min='1';$('max-pos').max='100';$('max-pos').step='1';
   $('spread-settings').hidden=true;
   $('factor-hint').textContent='每项填写「标的、nq、符号、因子」。同一公式配置多条规则时填写独立 id。符号为 -1 / 1，nq 填「0.50」「0.20/0.80」或「关闭」。';
 }
@@ -272,8 +284,8 @@ function showNative(doc){
   $('symbol-group').replaceChildren(new Option(market,doc.symbol));
   $('symbol-members').textContent='实际交割合约由主力 REST 选择。';
   $('strategy-group').replaceChildren(new Option(doc.name,doc.name));
-  $('enabled').value=String(doc.enabled);$('max-pos').value=doc.lots_per_rule;
-  for(const [id,value] of [['entry-long',doc.entry.factor_long_quantile],['entry-short',doc.entry.factor_short_quantile],['exit-long',doc.exits.factor_exit_quantile_long],['exit-short',doc.exits.factor_exit_quantile_short]]){$(id).value=value;$(id).min='0';$(id).max='1';}
+  $('enabled').value=String(doc.enabled);$('native-position-algorithm').value=doc.position_algorithm||'v0';
+  nativeThresholds($('native-position-algorithm').value,[doc.entry.factor_long_quantile,doc.entry.factor_short_quantile,doc.exits.factor_exit_quantile_long,doc.exits.factor_exit_quantile_short]);
   $('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.rules);
   const windows=catalog.window_parameters?.[doc.interval],hint=$('native-window-params');
   hint.hidden=!windows;

@@ -192,7 +192,7 @@ fn preheat_keeps_factual_positions_and_decision_clock() {
         last_decision_ms: 123,
         lots_per_rule: 1,
         flags: BTreeMap::from([("baseline_076".into(), 1)]),
-        retired_contracts: vec![],
+        ..Ledger::default()
     };
     let mut e = Engine::new(&cfg, old.clone()).unwrap();
     for i in 0..400 {
@@ -219,6 +219,7 @@ fn targets_are_absolute_integer_lots_and_retain_old_contract_clears() {
                 ("baseline_037".into(), -1),
             ]),
             retired_contracts: vec!["sn2612".into()],
+            ..Ledger::default()
         },
     )
     .unwrap();
@@ -294,7 +295,7 @@ fn live_rollover_clears_old_contract_and_duplicate_hour_cannot_advance_state() {
     assert_eq!(targets["targets"][0]["symbol"], "sn2612");
     assert_eq!(targets["targets"][0]["target_lots"], 0);
     assert_eq!(targets["targets"][1]["symbol"], "sn2701");
-    assert!(targets["targets"][1]["target_lots"].as_i64().unwrap().abs() <= 12);
+    assert!(targets["targets"][1]["target_lots"].as_i64().unwrap().abs() <= 1);
     assert!(!e.observe(&hour(1000), "sn2701", 1., true).unwrap());
     assert_eq!(targets, e.targets());
     let restored: Ledger = serde_json::from_slice(&serde_json::to_vec(&e.ledger).unwrap()).unwrap();
@@ -474,12 +475,19 @@ fn warmed_engine(cfg: &Config) -> Engine {
 }
 #[test]
 fn panel_changes_keep_factual_lots_until_a_new_live_decision() {
+    use crate::cta_perp::config::PositionAlgorithm;
     let cfg = config();
-    let engine = warmed_engine(&cfg);
+    let mut engine = warmed_engine(&cfg);
+    engine.ledger.lots_per_rule = 2;
     let targets = engine.targets();
+    assert_eq!(targets["targets"][0]["target_lots"], 2);
     let mut changed = cfg.clone();
     changed.enabled = false;
-    changed.lots_per_rule = 2;
+    changed.position_algorithm = PositionAlgorithm::V1;
+    changed.entry.factor_long_quantile = 0.5;
+    changed.entry.factor_short_quantile = -0.5;
+    changed.exits.factor_exit_quantile_long = -0.2;
+    changed.exits.factor_exit_quantile_short = 0.2;
     changed.rules.remove(0);
     let mut next = engine.reconfigure(&changed).unwrap();
     assert_eq!(next.targets(), targets);
@@ -489,17 +497,24 @@ fn panel_changes_keep_factual_lots_until_a_new_live_decision() {
     changed.enabled = true;
     let mut next = next.reconfigure(&changed).unwrap();
     assert!(next.observe(&hour(1001), "sn2612", 1., true).unwrap());
-    assert_eq!(next.ledger.lots_per_rule, 2);
+    assert!(matches!(next.ledger.target_direction, Some(-1..=1)));
+    assert_eq!(next.ledger.position_algorithm, PositionAlgorithm::V1);
     let restored: Ledger =
         serde_json::from_value(serde_json::to_value(&next.ledger).unwrap()).unwrap();
     assert_eq!(
         Engine::new(&changed, restored).unwrap().targets(),
         next.targets()
     );
+    let targets = next.targets();
+    let mut back = next.reconfigure(&cfg).unwrap();
+    assert_eq!(back.targets(), targets);
+    assert!(back.observe(&hour(1002), "sn2612", 1., true).unwrap());
+    assert_eq!(back.ledger.position_algorithm, PositionAlgorithm::V0);
+    assert!(matches!(back.ledger.target_direction, Some(-1..=1)));
 }
 
 #[test]
-fn repeated_formula_keeps_independent_positions_and_retired_manager_members() {
+fn repeated_formula_keeps_independent_signals_and_drops_removed_rules() {
     let mut cfg: Config =
         serde_json::from_str(include_str!("../../config/cta_cn_futures_01.json")).unwrap();
     cfg.publication.as_mut().unwrap().enabled = true;
@@ -523,12 +538,9 @@ fn repeated_formula_keeps_independent_positions_and_retired_manager_members() {
     assert!(engine.ledger == ledger);
     assert!(engine.observe(&hour(200), "sn2612", 1., true).unwrap());
     let restored = Engine::new(&cfg, engine.ledger.clone()).unwrap();
-    assert_eq!(
-        restored.publication_positions().unwrap()["cn-futures-01-baseline_101-1h"].targets
-            ["SHFE:sn2612"],
-        0
-    );
-    assert_eq!(restored.ledger.flags.len(), 3);
+    assert!(!restored.ledger.flags.contains_key("baseline_101"));
+    assert_eq!(restored.ledger.flags.len(), 2);
+    assert_eq!(restored.publication_positions().unwrap().len(), 1);
 }
 #[test]
 fn configuration_preview_save_conflicts_and_invalid_rules_preserve_the_ledger() {
@@ -646,7 +658,7 @@ async fn native_panel_reads_without_authorization_but_protects_configuration_wri
         .await
         .unwrap();
     assert_eq!(response["configuration"]["symbol"], "SN");
-    assert_eq!(response["configuration"]["lots_per_rule"], 1);
+    assert_eq!(response["configuration"]["position_algorithm"], "v0");
     assert!(response["configuration"].get("redis_endpoint").is_none());
     let request = serde_json::json!({"configuration":response["configuration"],"expected_revision":response["revision"]});
     for path in ["/api/config", "/api/preview"] {
@@ -1234,7 +1246,8 @@ fn recovery_warms_independent_minute_ledger_without_replaying_positions() {
         "1min".into(),
         FrequencyConfig {
             enabled: true,
-            lots_per_rule: 1,
+            lots_per_rule: None,
+            position_algorithm: cfg.position_algorithm,
             entry: cfg.entry.clone(),
             exits: cfg.exits.clone(),
             rules: vec![cfg

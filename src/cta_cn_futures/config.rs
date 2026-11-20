@@ -1,5 +1,5 @@
 use crate::cta_factor_calc::config::Interval;
-use crate::cta_perp::config::{EntryConfig, ExecutionConfig};
+use crate::cta_perp::config::{EntryConfig, ExecutionConfig, PositionAlgorithm};
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -17,7 +17,10 @@ pub struct Config {
     pub interval: String,
     #[serde(default = "enabled_by_default")]
     pub enabled: bool,
-    pub lots_per_rule: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lots_per_rule: Option<i32>,
+    #[serde(default)]
+    pub position_algorithm: PositionAlgorithm,
     pub dominant_url: String,
     pub history_grpc: String,
     pub history_days: i64,
@@ -47,7 +50,10 @@ struct ProductRuntime {
 #[serde(deny_unknown_fields)]
 pub struct FrequencyConfig {
     pub enabled: bool,
-    pub lots_per_rule: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) lots_per_rule: Option<i32>,
+    #[serde(default)]
+    pub position_algorithm: PositionAlgorithm,
     pub entry: EntryConfig,
     pub exits: ExecutionConfig,
     pub rules: Vec<Rule>,
@@ -168,10 +174,6 @@ impl Config {
             self.publication.as_ref()
         }
     }
-    pub fn publish_per_factor(&self) -> bool {
-        self.publication_settings()
-            .is_some_and(|settings| settings.per_factor_intervals.contains(&self.interval))
-    }
     pub fn exchange_codes(
         &self,
     ) -> Result<(
@@ -235,7 +237,8 @@ impl Config {
             .cloned()
             .unwrap_or_else(|| FrequencyConfig {
                 enabled: false,
-                lots_per_rule: 1,
+                lots_per_rule: None,
+                position_algorithm: self.position_algorithm,
                 entry: self.entry.clone(),
                 exits: self.exits.clone(),
                 rules: Vec::new(),
@@ -244,6 +247,7 @@ impl Config {
         cfg.interval = interval.name().into();
         cfg.enabled = settings.enabled;
         cfg.lots_per_rule = settings.lots_per_rule;
+        cfg.position_algorithm = settings.position_algorithm;
         cfg.entry = settings.entry;
         cfg.exits = settings.exits;
         cfg.rules = settings.rules;
@@ -285,11 +289,8 @@ impl Config {
                 "invalid native publication token environment name"
             );
             ensure!(
-                publication
-                    .per_factor_intervals
-                    .iter()
-                    .all(|f| matches!(f.as_str(), "1min" | "5min" | "15min" | "1h")),
-                "invalid per-factor attribution frequency"
+                publication.per_factor_intervals.is_empty(),
+                "one-lot targets require one aggregate Manager member per frequency; migrate old per-factor members first"
             );
         }
 
@@ -300,8 +301,9 @@ impl Config {
         );
         cfg.interval_kind()?;
         ensure!(
-            (1..=100).contains(&cfg.lots_per_rule),
-            "require 1..100 lots per rule"
+            cfg.lots_per_rule
+                .is_none_or(|lots| (1..=100).contains(&lots)),
+            "invalid historical lots_per_rule"
         );
         ensure!(
             (60..=730).contains(&cfg.history_days),
@@ -348,24 +350,34 @@ impl Config {
                 cfg.for_interval(interval).validate()?;
             }
         }
+        let min_factor = cfg.position_algorithm.decision_value(0.0);
         ensure!(
-            cfg.entry.factor_long_quantile > cfg.entry.factor_short_quantile
-                && cfg.entry.factor_long_quantile <= 1.0
-                && cfg.entry.factor_short_quantile >= 0.0,
-            "invalid factor entry quantiles"
+            cfg.entry.factor_long_quantile > cfg.entry.factor_short_quantile,
+            "invalid factor entry thresholds"
         );
+        if cfg.position_algorithm == PositionAlgorithm::V1 {
+            ensure!(
+                cfg.exits.factor_exit_quantile_long < cfg.entry.factor_long_quantile
+                    && cfg.exits.factor_exit_quantile_short > cfg.entry.factor_short_quantile,
+                "v1 exit thresholds must lie inside their corresponding entry thresholds"
+            );
+        }
         ensure!(
             [
                 cfg.entry.factor_long_quantile,
                 cfg.entry.factor_short_quantile,
-                cfg.entry.nq_long_quantile,
-                cfg.entry.nq_short_quantile,
                 cfg.exits.factor_exit_quantile_long,
                 cfg.exits.factor_exit_quantile_short,
             ]
             .iter()
-            .all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
-            "quantiles must be finite values in 0..1"
+            .all(|v| (min_factor..=1.0).contains(v)),
+            "factor thresholds must be in {min_factor}..1"
+        );
+        ensure!(
+            [cfg.entry.nq_long_quantile, cfg.entry.nq_short_quantile]
+                .iter()
+                .all(|v| (0.0..=1.0).contains(v)),
+            "NQ quantiles must be in 0..1"
         );
         let bind = cfg
             .bind

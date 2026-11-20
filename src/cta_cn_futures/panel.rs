@@ -34,7 +34,8 @@ pub(super) struct Controls {
     pub symbol: String,
     pub interval: String,
     pub enabled: bool,
-    pub lots_per_rule: i32,
+    #[serde(default)]
+    pub position_algorithm: crate::cta_perp::config::PositionAlgorithm,
     pub entry: crate::cta_perp::config::EntryConfig,
     pub exits: crate::cta_perp::config::ExecutionConfig,
     pub rules: Vec<Rule>,
@@ -47,7 +48,7 @@ impl From<&Config> for Controls {
             symbol: c.symbol.clone(),
             interval: c.interval.clone(),
             enabled: c.enabled,
-            lots_per_rule: c.lots_per_rule,
+            position_algorithm: c.position_algorithm,
             entry: c.entry.clone(),
             exits: c.exits.clone(),
             rules: c.rules.clone(),
@@ -72,7 +73,7 @@ impl Controls {
         );
         let mut next = base.clone();
         next.enabled = self.enabled;
-        next.lots_per_rule = self.lots_per_rule;
+        next.position_algorithm = self.position_algorithm;
         next.entry = self.entry;
         next.exits = self.exits;
         next.rules = self.rules;
@@ -415,7 +416,11 @@ pub(super) fn apply_extra(
         interval.name().into(),
         FrequencyConfig {
             enabled: next_frequency.enabled,
-            lots_per_rule: next_frequency.lots_per_rule,
+            lots_per_rule: cfg
+                .frequencies
+                .get(interval.name())
+                .and_then(|f| f.lots_per_rule),
+            position_algorithm: next_frequency.position_algorithm,
             entry: next_frequency.entry.clone(),
             exits: next_frequency.exits.clone(),
             rules: next_frequency.rules.clone(),

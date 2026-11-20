@@ -28,15 +28,11 @@ PM2 管理。01 的 Client27 小时配置覆盖 21 个品种、147 条规则：
 因子替换前用候选配置通过环境本地 `preflight`；仅替换规则，不修改开平阈值、
 手数或事实仓位。历史预热不产生目标，下一次有效实时决策才按新表更新。
 
-## 实例与临时逐因子归因
+## Manager 发布与策略归因
 
 `01 / 02` 各自使用环境目录、配置、数据目录、HTTP 端口和进程名。生命周期脚本从配置读取实例名并核对目录，禁止用 `01` 的目录启动 `02`。`config/cta_cn_futures_01.json` 维护锡规则与 `additional_products`；`config/cta_cn_futures_02.json` 是关闭、空规则的独立实例模板。
 
-`publication.per_factor_intervals` 控制临时归因展开，例如 `["1h"]`：
-
-- 普通模式：同实例每频段一个策略，如 `cn-futures-01-1h`、`cn-futures-02-5min`。
-- 逐因子模式：锡沿用 `cn-futures-01-td_pr_010-1h` 等名称；附加品种包含品种代码，如 `cn-futures-01-rb-baseline_035-1h`。
-- 两种表示互斥；同一频段不会把聚合目标与子策略目标同时加进 Manager。公式、NQ、每规则手数、因子事实旗标和本地聚合展示保持原义。
+- 按品种与频段生成一个策略，如 `cn-futures-01-1h`、`cn-futures-01-sa-1h`。
 - 同品种的策略组成独立发布组，每次提交该品种的完整策略批次。01 实例的 SN 沿用
   `cn-futures-01`，附加品种 RB、SA、SM 分别使用 `cn-futures-01-rb`、
   `cn-futures-01-sa`、`cn-futures-01-sm`。各品种共用 Redis 入口，独立封 bar、触发发布和重试。
@@ -50,15 +46,13 @@ PM2 管理。01 的 Client27 小时配置覆盖 21 个品种、147 条规则：
   "manager_url": "http://127.0.0.1:18202/api",
   "source_id": "native-account",
   "token_env": "CN_CTA_01_PUBLISH_TOKEN",
-  "per_factor_intervals": ["1h"],
+  "per_factor_intervals": [],
   "products": ["RB"]
 }
 ```
 
-以上是根配置内的 `publication` 对象。`products` 选定可发布的品种。创元账户只保留
-螺纹钢 RB 的发布令牌，原锡组归因和零目标留在账本。Client27 移出的 RB 规则
-`baseline_052` 保留已登记的归因身份，新配置首次决策后以零目标随批发送。
-附加品种继承 Manager 地址、源账户和逐因子归因频段，
+`products` 选定可发布的品种。已有逐因子成员的账户先核对并结清旧批次，
+在 Manager 登记聚合成员并处理旧成员归因后再启用发布。附加品种继承 Manager 地址和源账户，
 令牌环境名在根变量后附品种后缀，例如 `CN_CTA_01_PUBLISH_TOKEN_RB`。
 各组在 Manager 单独登记成员及令牌。已有 SN 归因可通过 Manager 的 `extend-scope` 注册附加品种组，
 保留原组和已归属仓位。同账户的批次继续共享 revision 和未结清执行需求保护。

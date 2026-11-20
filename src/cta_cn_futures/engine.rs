@@ -1,11 +1,11 @@
-use super::config::Config;
+use super::config::{Config, Rule};
 use crate::cta_factor_calc::{
     config::{Interval, Parameters},
     engine::{Field, Nq, Transform},
 };
 use crate::cta_perp::{
     config::{CtaPerpConfig, PositionAlgorithm},
-    factors::WeightedBar,
+    factors::{mean_bar, SymbolFactors, WeightedBar},
     interval::BarInterval,
     positions::next_position_flag,
 };
@@ -17,6 +17,7 @@ use anyhow::{ensure, Context, Result};
 use cn_market_proto::{Book5, MinuteBar};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
+use trade_signal::model_output_hub::ModelOutputScoreLookupResult;
 
 pub(super) fn parameters(interval: Interval, nq: bool) -> Parameters {
     let mut params = Parameters::for_interval(interval, nq);
@@ -270,6 +271,10 @@ pub struct Ledger {
     pub lots_per_rule: i32,
     pub flags: BTreeMap<String, i8>,
     pub retired_contracts: Vec<String>,
+    #[serde(default)]
+    pub position_algorithm: PositionAlgorithm,
+    #[serde(default)]
+    pub target_direction: Option<i8>,
 }
 fn one_lot() -> i32 {
     1
@@ -282,9 +287,31 @@ impl Default for Ledger {
             lots_per_rule: 1,
             flags: BTreeMap::new(),
             retired_contracts: Vec::new(),
+            position_algorithm: PositionAlgorithm::V0,
+            target_direction: None,
         }
     }
 }
+impl Ledger {
+    fn target_lots(&self) -> i64 {
+        self.target_direction.map(i64::from).unwrap_or_else(|| {
+            // Keep the last published quantity from an older ledger until a live bar.
+            self.flags
+                .values()
+                .map(|&flag| i64::from(flag))
+                .sum::<i64>()
+                * i64::from(self.lots_per_rule)
+        })
+    }
+}
+
+struct ObservedRule {
+    rule: Rule,
+    field: Field,
+    gates: Option<(f64, f64)>,
+    ready: bool,
+}
+
 #[derive(Clone, Serialize)]
 pub struct RuleState {
     pub factor: String,
@@ -300,6 +327,7 @@ pub struct RuleState {
 
 pub struct Engine {
     cfg: Config,
+    signal: CtaPerpConfig,
     plan: Option<FuturesFactorPlan>,
     formula_indices: Vec<usize>,
     formula: FuturesFusionState,
@@ -316,7 +344,10 @@ impl Engine {
     pub fn new(cfg: &Config, ledger: Ledger) -> Result<Self> {
         ensure!(
             (1..=100).contains(&ledger.lots_per_rule)
-                && ledger.flags.values().all(|v| matches!(v, -1..=1)),
+                && ledger.flags.values().all(|v| matches!(v, -1..=1))
+                && ledger.target_direction.is_none_or(|v| matches!(v, -1..=1))
+                && (ledger.position_algorithm == PositionAlgorithm::V0
+                    || ledger.target_direction.is_some()),
             "invalid persisted rule position"
         );
         let interval = cfg.interval_kind()?;
@@ -338,6 +369,23 @@ impl Engine {
         };
         Ok(Self {
             cfg: cfg.clone(),
+            signal: CtaPerpConfig {
+                bar_interval: match interval {
+                    Interval::Minute => BarInterval::OneMinute,
+                    Interval::FiveMinutes => BarInterval::FiveMinutes,
+                    Interval::FifteenMinutes => BarInterval::FifteenMinutes,
+                    Interval::Hour => BarInterval::OneHour,
+                },
+                position_algorithm: cfg.position_algorithm,
+                linear_nq: true,
+                entry: cfg.entry.clone(),
+                execution: cfg.exits.clone(),
+                enabled: cfg.enabled,
+                max_pos_u: 1.,
+                symbol_overrides: BTreeMap::new(),
+                factor_rules: Vec::new(),
+                strict_nq: false,
+            },
             plan,
             formula_indices,
             formula: FuturesFusionState::default(),
@@ -444,161 +492,72 @@ impl Engine {
             } else {
                 transform.observe(raw, true)
             };
-            let gates = if self.cfg.entry.nq_change_enabled {
-                rule.gates()?
-            } else {
+            let gates = if !self.cfg.entry.nq_change_enabled {
                 None
+            } else if self.cfg.position_algorithm == PositionAlgorithm::V1 {
+                Some((
+                    self.cfg.entry.nq_long_quantile,
+                    self.cfg.entry.nq_short_quantile,
+                ))
+            } else {
+                rule.gates()?
             };
             let ready = f.ready
                 && (self.cfg.interval == "1h"
                     || gates.is_none_or(|_| nq.values().all(|v| v.ready)));
             all_ready &= ready;
-            points.push((rule.clone(), f, gates, ready));
+            points.push(ObservedRule {
+                rule: rule.clone(),
+                field: f,
+                gates,
+                ready,
+            });
         }
-        // Preheat never advances a position or decision clock. Apply an entire
-        // frequency atomically only after every configured dependency is ready.
+        // Preheat never advances a position or decision clock.
         let publish =
             self.cfg.enabled && live && all_ready && hour.end_ms > self.ledger.last_decision_ms;
         if publish {
-            self.ledger.lots_per_rule = self.cfg.lots_per_rule;
-            let keep_attribution = self.cfg.publish_per_factor()
-                && self
-                    .cfg
-                    .publication_settings()
-                    .is_some_and(|p| p.enabled_for(&self.cfg.symbol));
-            self.ledger.flags.retain(|factor, flag| {
-                if self.cfg.rules.iter().any(|r| r.key() == factor) {
-                    return true;
-                }
-                // Manager still requires an explicit zero for a retired member.
-                *flag = 0;
-                keep_attribution
-            });
-        }
-        if publish && self.ledger.contract != contract {
-            if !self.ledger.contract.is_empty()
-                && !self
-                    .ledger
-                    .retired_contracts
-                    .contains(&self.ledger.contract)
-            {
-                self.ledger
-                    .retired_contracts
-                    .push(self.ledger.contract.clone());
-            }
-            self.ledger.contract = contract.into();
-        }
-        self.latest.clear();
-        for (rule, f, gates, ready) in points {
-            let current = *self.ledger.flags.get(rule.key()).unwrap_or(&0);
-            let flag = if publish {
-                let q = f.quantile.context("ready factor missing rank")?;
-                let q = if rule.sign > 0 { q } else { 1. - q };
-                let eps = 4. * f64::EPSILON;
-                let direction = if self.cfg.interval == "1h" {
-                    hourly_entry(
-                        q,
-                        self.cfg.entry.factor_long_quantile,
-                        self.cfg.entry.factor_short_quantile,
-                    )
-                } else if q - self.cfg.entry.factor_long_quantile > eps {
-                    1.
-                } else if self.cfg.entry.factor_short_quantile - q > eps {
-                    -1.
-                } else {
-                    0.
-                };
-                let mut entry = self.cfg.entry.clone();
-                entry.nq_change_enabled = gates.is_some();
-                if let Some((long, short)) = gates {
-                    entry.nq_long_quantile = long;
-                    entry.nq_short_quantile = short;
-                }
-                let signal = CtaPerpConfig {
-                    bar_interval: match self.cfg.interval_kind()? {
-                        Interval::Minute => BarInterval::OneMinute,
-                        Interval::FiveMinutes => BarInterval::FiveMinutes,
-                        Interval::FifteenMinutes => BarInterval::FifteenMinutes,
-                        Interval::Hour => BarInterval::OneHour,
-                    },
-                    enabled: true,
-                    max_pos_u: 1.,
-                    position_algorithm: PositionAlgorithm::V0,
-                    symbol_overrides: BTreeMap::new(),
-                    factor_rules: Vec::new(),
-                    strict_nq: false,
-                    linear_nq: true,
-                    entry,
-                    execution: self.cfg.exits.clone(),
-                };
-                let mut input = trade_signal::model_output_hub::ModelOutputScoreLookupResult {
-                    service_name: self.cfg.name.clone(),
-                    symbol_key: self.cfg.symbol.clone(),
-                    subscribed: true,
-                    score: f.value,
-                    score_quantile: f.quantile,
-                    score_ready: f.ready,
-                    score_long_threshold: None,
-                    score_short_threshold: None,
-                    filter_long_value: None,
-                    filter_short_value: None,
-                    filter_long_threshold: None,
-                    filter_short_threshold: None,
-                    filter_long_quantile: None,
-                    filter_short_quantile: None,
-                    filter_ready: false,
-                    score_ts_ms: hour.end_ms,
-                    note: String::new(),
-                };
-                input.filter_ready = nq.values().all(|v| v.ready);
-                input.filter_long_value = nq["long"].value;
-                input.filter_short_value = nq["short"].value;
-                input.filter_long_quantile = nq["long"].quantile;
-                input.filter_short_quantile = nq["short"].quantile;
-                input.filter_long_threshold = nq["long"].median;
-                input.filter_short_threshold = nq["short"].median;
-                let bar = WeightedBar {
-                    model_ts_ms: hour.end_ms,
-                    value: direction,
-                    coefficient: 1.,
-                    quantile: q,
-                    decision_value: q,
-                    votes: Vec::new(),
-                    nq: input,
-                };
-                if self.cfg.interval == "1h"
-                    && hourly_exit(
-                        current,
-                        q,
-                        self.cfg.exits.factor_exit_quantile_long,
-                        self.cfg.exits.factor_exit_quantile_short,
-                    )
+            let (direction, flags) = self.decide(&points, &nq, hour.end_ms)?;
+            if self.ledger.contract != contract {
+                if !self.ledger.contract.is_empty()
+                    && !self
+                        .ledger
+                        .retired_contracts
+                        .contains(&self.ledger.contract)
                 {
-                    next_position_flag(0, &bar, &signal)
-                } else {
-                    next_position_flag(current, &bar, &signal)
+                    self.ledger
+                        .retired_contracts
+                        .push(self.ledger.contract.clone());
                 }
-            } else {
-                current
-            };
-            if publish {
-                self.ledger.flags.insert(rule.key().to_owned(), flag);
+                self.ledger.contract = contract.into();
             }
-            self.latest.push(RuleState {
-                factor: rule.factor,
-                id: rule.id,
-                raw: f.raw,
-                value: f.value,
-                quantile: f.quantile,
-                ready,
-                flag,
-                target_lots: i32::from(flag) * self.ledger.lots_per_rule,
-            });
-        }
-        if publish {
+            self.ledger.flags = flags;
+            self.ledger.lots_per_rule = 1;
+            self.ledger.position_algorithm = self.cfg.position_algorithm;
+            self.ledger.target_direction = Some(direction);
             self.ledger.last_decision_ms = hour.end_ms;
             self.last_decision_day = Some(hour.trading_day);
         }
+        self.latest = points
+            .into_iter()
+            .map(
+                |ObservedRule {
+                     rule, field, ready, ..
+                 }| {
+                    let flag = *self.ledger.flags.get(rule.key()).unwrap_or(&0);
+                    RuleState {
+                        factor: rule.factor,
+                        id: rule.id,
+                        raw: field.raw,
+                        value: field.value,
+                        quantile: field.quantile,
+                        ready,
+                        flag,
+                        target_lots: i32::from(flag),
+                    }
+                },
+            )
+            .collect();
         self.observations
             .push_back((hour.clone(), contract.into(), multiple));
         if self.observations.len() > 16_384 {
@@ -606,6 +565,116 @@ impl Engine {
         }
         Ok(publish)
     }
+    fn decide(
+        &self,
+        points: &[ObservedRule],
+        nq: &BTreeMap<String, Field>,
+        end_ms: i64,
+    ) -> Result<(i8, BTreeMap<String, i8>)> {
+        let inputs = points.iter().map(|point| ModelOutputScoreLookupResult {
+            service_name: self.cfg.name.clone(),
+            symbol_key: self.cfg.symbol.clone(),
+            subscribed: true,
+            score: point.field.value,
+            score_quantile: point.field.quantile,
+            score_ready: point.field.ready,
+            score_long_threshold: None,
+            score_short_threshold: None,
+            filter_long_value: nq["long"].value,
+            filter_short_value: nq["short"].value,
+            filter_long_threshold: nq["long"].median,
+            filter_short_threshold: nq["short"].median,
+            filter_long_quantile: nq["long"].quantile,
+            filter_short_quantile: nq["short"].quantile,
+            filter_ready: nq.values().all(|v| v.ready),
+            score_ts_ms: end_ms,
+            note: String::new(),
+        });
+        if self.cfg.position_algorithm == PositionAlgorithm::V1 {
+            let row = SymbolFactors {
+                factors: points.iter().map(|p| p.rule.key().to_owned()).collect(),
+                weights: points.iter().map(|p| f64::from(p.rule.sign)).collect(),
+            };
+            let inputs: Vec<_> = inputs.collect();
+            let bar = mean_bar(&row, &inputs, &self.signal.entry)
+                .context("cannot aggregate ready domestic factor scores")?;
+            let current = self.ledger.target_lots().signum() as i8;
+            let direction = next_position_flag(current, &bar, &self.signal);
+            let flags = bar
+                .votes
+                .into_iter()
+                .map(|vote| (vote.factor, vote.vote))
+                .collect();
+            return Ok((direction, flags));
+        }
+
+        let mut flags = BTreeMap::new();
+        let mut signal = self.signal.clone();
+        for (point, input) in points.iter().zip(inputs) {
+            let raw_q = point.field.quantile.context("ready factor missing rank")?;
+            let q = if point.rule.sign > 0 {
+                raw_q
+            } else {
+                1. - raw_q
+            };
+            let entry = &mut signal.entry;
+            entry.nq_change_enabled = point.gates.is_some();
+            if let Some((long, short)) = point.gates {
+                entry.nq_long_quantile = long;
+                entry.nq_short_quantile = short;
+            }
+            let hourly = signal.bar_interval == BarInterval::OneHour;
+            let value = if hourly {
+                hourly_entry(q, entry.factor_long_quantile, entry.factor_short_quantile)
+            } else if q - entry.factor_long_quantile > 4. * f64::EPSILON {
+                1.
+            } else if entry.factor_short_quantile - q > 4. * f64::EPSILON {
+                -1.
+            } else {
+                0.
+            };
+            let bar = WeightedBar {
+                model_ts_ms: end_ms,
+                value,
+                coefficient: 1.,
+                quantile: q,
+                decision_value: q,
+                votes: Vec::new(),
+                nq: input,
+            };
+            let mut current = if self.ledger.position_algorithm == PositionAlgorithm::V0 {
+                self.ledger
+                    .flags
+                    .get(point.rule.key())
+                    .copied()
+                    .unwrap_or(0)
+            } else {
+                // The old aggregate direction has no independent factor position.
+                0
+            };
+            if hourly
+                && hourly_exit(
+                    current,
+                    q,
+                    signal.execution.factor_exit_quantile_long,
+                    signal.execution.factor_exit_quantile_short,
+                )
+            {
+                current = 0;
+            }
+            flags.insert(
+                point.rule.key().to_owned(),
+                next_position_flag(current, &bar, &signal),
+            );
+        }
+        let direction = flags
+            .values()
+            .map(|&flag| i32::from(flag))
+            .sum::<i32>()
+            .signum() as i8;
+        Ok((direction, flags))
+    }
+
     pub fn publication_positions(
         &self,
     ) -> Result<BTreeMap<String, super::publication::StrategyPosition>> {
@@ -626,39 +695,16 @@ impl Engine {
                 targets,
             }
         };
-        if self.cfg.publish_per_factor() {
-            let names: std::collections::BTreeSet<_> = self
-                .cfg
-                .rules
-                .iter()
-                .map(|r| r.key().to_owned())
-                .chain(self.ledger.flags.keys().cloned())
-                .collect();
-            Ok(names
-                .into_iter()
-                .map(|factor| {
-                    let lots = i64::from(*self.ledger.flags.get(&factor).unwrap_or(&0))
-                        * i64::from(self.ledger.lots_per_rule);
-                    (
-                        format!("{group}-{factor}-{}", self.cfg.interval),
-                        native(lots),
-                    )
-                })
-                .collect())
-        } else if self.cfg.rules.is_empty() && self.ledger.flags.is_empty() {
-            Ok(BTreeMap::new())
-        } else {
-            let lots = self
-                .ledger
-                .flags
-                .values()
-                .map(|v| i64::from(*v) * i64::from(self.ledger.lots_per_rule))
-                .sum();
-            Ok(BTreeMap::from([(
-                format!("{group}-{}", self.cfg.interval),
-                native(lots),
-            )]))
+        if self.cfg.rules.is_empty()
+            && self.ledger.flags.is_empty()
+            && self.ledger.contract.is_empty()
+        {
+            return Ok(BTreeMap::new());
         }
+        Ok(BTreeMap::from([(
+            format!("{group}-{}", self.cfg.interval),
+            native(self.ledger.target_lots()),
+        )]))
     }
     pub fn targets(&self) -> serde_json::Value {
         let mut targets: Vec<_> = self
@@ -669,14 +715,77 @@ impl Engine {
             .map(|c| serde_json::json!({"exchange":self.cfg.exchange,"symbol":c,"target_lots":0}))
             .collect();
         if !self.ledger.contract.is_empty() {
-            let lots: i32 = self
-                .ledger
-                .flags
-                .values()
-                .map(|f| i32::from(*f) * self.ledger.lots_per_rule)
-                .sum();
+            let lots = self.ledger.target_lots();
             targets.push(serde_json::json!({"exchange":self.cfg.exchange,"symbol":self.ledger.contract,"target_lots":lots}));
         }
         serde_json::json!({"strategy_name":self.cfg.name,"interval":self.cfg.interval,"position_unit":"lot","decision_ms":self.ledger.last_decision_ms,"targets":targets})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_lot_direction_uses_independent_votes_or_the_mean_with_strict_thresholds() {
+        let mut cfg: Config =
+            serde_json::from_str(include_str!("../../config/cta_cn_futures_01.json")).unwrap();
+        cfg.rules.truncate(2);
+        cfg.entry.nq_change_enabled = false;
+        let points = |quantiles: [f64; 2]| {
+            cfg.rules
+                .iter()
+                .zip(quantiles)
+                .map(|(rule, q)| {
+                    let mut rule = rule.clone();
+                    rule.sign = 1;
+                    ObservedRule {
+                        rule,
+                        field: Field {
+                            value: Some(q),
+                            quantile: Some(q),
+                            ready: true,
+                            ..Field::default()
+                        },
+                        gates: None,
+                        ready: true,
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let nq = BTreeMap::from([
+            ("long".into(), Field::default()),
+            ("short".into(), Field::default()),
+        ]);
+        let mut v0 = Engine::new(&cfg, Ledger::default()).unwrap();
+        for (q, expected) in [([0.99, 0.99], 1), ([0.01, 0.01], -1), ([0.99, 0.01], 0)] {
+            assert_eq!(v0.decide(&points(q), &nq, 1).unwrap().0, expected);
+        }
+
+        let mut v1_cfg = cfg.clone();
+        v1_cfg.position_algorithm = PositionAlgorithm::V1;
+        v1_cfg.entry.factor_long_quantile = 0.5;
+        v1_cfg.entry.factor_short_quantile = -0.5;
+        v1_cfg.exits.factor_exit_quantile_long = -0.2;
+        v1_cfg.exits.factor_exit_quantile_short = 0.2;
+        v1_cfg.validate().unwrap();
+        let mut v1 = Engine::new(&v1_cfg, Ledger::default()).unwrap();
+        for (current, q, expected) in [
+            (0, [0.99, 0.51], 0),
+            (0, [0.99, 0.52], 1),
+            (0, [0.01, 0.49], 0),
+            (0, [0.01, 0.48], -1),
+            (1, [0.4, 0.4], 1),
+            (1, [0.39, 0.4], 0),
+            (-1, [0.6, 0.6], -1),
+            (-1, [0.61, 0.6], 0),
+        ] {
+            v1.ledger.target_direction = Some(current);
+            assert_eq!(v1.decide(&points(q), &nq, 1).unwrap().0, expected);
+        }
+        v0.ledger.position_algorithm = PositionAlgorithm::V1;
+        v0.ledger.target_direction = Some(1);
+        v0.ledger.flags.insert(cfg.rules[0].key().into(), 1);
+        assert_eq!(v0.decide(&points([0.5, 0.5]), &nq, 1).unwrap().0, 0);
     }
 }
