@@ -86,14 +86,11 @@ impl Health {
         self.ingress = Some(error);
     }
 }
-fn consume(
-    engine: &mut engine::Engine,
+fn close_hours(
     input: &live::Input,
     hours: &mut engine::Bars,
-    main: &history::Dominant,
     rows: &[cn_market_proto::MinuteBar],
-    dominant_ready: bool,
-) -> Result<()> {
+) -> Result<Vec<engine::Bar>> {
     let mut closed = Vec::new();
     for row in rows {
         closed.extend(hours.push(row.clone(), input.multiple)?);
@@ -106,19 +103,7 @@ fn consume(
             }
         }
     }
-    let now = chrono::Utc::now().timestamp_millis();
-    let fresh = (chrono::Utc::now().timestamp_micros() as u64)
-        .saturating_sub(input.last_received_us)
-        <= 5_000_000;
-    for hour in closed {
-        let live = dominant_ready
-            && fresh
-            && hour.end_ms > input.live_after_ms
-            && hour.end_ms <= now + live::SEAL_LEAD_MS
-            && now - hour.end_ms <= 120_000;
-        engine.observe(&hour, &main.contract, input.multiple, live)?;
-    }
-    Ok(())
+    Ok(closed)
 }
 fn history_begin(cfg: &Config) -> i64 {
     (chrono::Utc::now() - chrono::Duration::days(cfg.history_days)).timestamp_millis()
@@ -166,6 +151,12 @@ async fn preflight(cfg: &Config, main: &history::Dominant, ledger: Ledger) -> Re
         json!({"exchange":cfg.exchange,"symbol":cfg.symbol,"contract":main.contract,"multiplier":multiple,"source_minute_rows":archive.rows.len(),"hours":engine.hours,"ready_rules":engine.latest.iter().filter(|r|r.ready).count(),"total_rules":cfg.rules.len(),"last_end_ms":engine.last_end_ms,"hfq_basis_trading_day":archive.basis_day,"hfq_generation":archive.generation,"session_snapshot":context.snapshot_as_of,"source":"grpc_hfq","positions_preserved":true,"frequencies":extras.views(false)}),
     )
 }
+struct ClosedHour {
+    bar: engine::Bar,
+    live_eligible: bool,
+    last_received_us: u64,
+}
+
 /// Redis minutes are accumulated independently of delayed historical requests.
 #[derive(Default)]
 struct Stream {
@@ -177,6 +168,8 @@ struct Stream {
     extras: Option<extras::Extras>,
     resume: Option<(live::Context, f64)>,
     last_closed: Option<i64>,
+    // The final minute can seal before the hour is eligible to advance.
+    closed_hours: VecDeque<ClosedHour>,
     recent: VecDeque<cn_market_proto::MinuteBar>,
     gap_start: Option<i64>,
     gaps: Vec<(i64, i64)>,
@@ -235,6 +228,12 @@ impl Stream {
         let start = from_ms
             .or_else(|| self.last_closed.map(|last| last + 60_000))
             .unwrap_or_else(|| chrono::Utc::now().timestamp_millis().div_euclid(60_000) * 60_000);
+        // A queued bar has not advanced the engine. Repair its unconfirmed tail.
+        let start = self
+            .closed_hours
+            .front()
+            .map_or(start, |pending| start.min(pending.bar.end_ms - 60_000));
+        self.closed_hours.clear();
         if self.gap_start.is_none_or(|old| start < old) {
             self.gap_start = Some(start);
             eprintln!(
@@ -289,7 +288,6 @@ impl Stream {
         previous: &history::Dominant,
         next: &history::Dominant,
         first_ms: i64,
-        engine: &mut engine::Engine,
         hours: &mut engine::Bars,
     ) -> Result<()> {
         ensure!(
@@ -310,7 +308,7 @@ impl Stream {
         // An ordered quote from the next day also closes the previous day's
         // final source minute. Preserve formula windows across ordinary days.
         let rows = input.closed(first_ms, previous)?;
-        self.accept(rows, engine, hours, previous, false)?;
+        self.accept(rows, hours, previous, false)?;
         let input = self
             .input
             .take()
@@ -329,7 +327,6 @@ impl Stream {
     fn accept(
         &mut self,
         mut rows: Vec<cn_market_proto::MinuteBar>,
-        engine: &mut engine::Engine,
         hours: &mut engine::Bars,
         main: &history::Dominant,
         dominant_ready: bool,
@@ -363,14 +360,13 @@ impl Stream {
                         fresh,
                     )?;
             }
-            consume(
-                engine,
-                self.input.as_ref().context("missing live input")?,
-                hours,
-                main,
-                &rows,
-                dominant_ready,
-            )?;
+            for bar in close_hours(input, hours, &rows)? {
+                self.closed_hours.push_back(ClosedHour {
+                    live_eligible: dominant_ready && bar.end_ms > input.live_after_ms,
+                    last_received_us: input.last_received_us,
+                    bar,
+                });
+            }
             let market = input.context.clone();
             for row in rows {
                 self.remember(row, &market, main);
@@ -384,10 +380,31 @@ impl Stream {
         }
         Ok(())
     }
+    fn advance_hours(
+        &mut self,
+        engine: &mut engine::Engine,
+        main: &history::Dominant,
+        dominant_ready: bool,
+        now_us: i64,
+    ) -> Result<()> {
+        let Some(input) = self.input.as_ref() else {
+            return Ok(());
+        };
+        let now_ms = now_us.div_euclid(1_000);
+        while let Some(closed) = self.closed_hours.front().filter(|h| h.bar.end_ms <= now_ms) {
+            let fresh = (now_us as u64).saturating_sub(closed.last_received_us) <= 5_000_000;
+            let live = closed.live_eligible
+                && dominant_ready
+                && fresh
+                && now_ms - closed.bar.end_ms <= 120_000;
+            engine.observe(&closed.bar, &main.contract, input.multiple, live)?;
+            self.closed_hours.pop_front();
+        }
+        Ok(())
+    }
     fn observe(
         &mut self,
         event: live::Event,
-        engine: &mut engine::Engine,
         hours: &mut engine::Bars,
         main: &history::Dominant,
         dominant_ready: bool,
@@ -430,7 +447,7 @@ impl Stream {
         }
         if let Some(input) = self.input.as_mut() {
             let rows = input.observe(event, main)?;
-            self.accept(rows, engine, hours, main, dominant_ready)
+            self.accept(rows, hours, main, dominant_ready)
         } else {
             self.pending.push(&event, main)
         }
@@ -488,6 +505,7 @@ impl Stream {
         );
         *engine = replacement.engine;
         *hours = replacement.hours;
+        self.closed_hours.clear();
         self.extras = Some(replacement.extras);
         self.last_closed = self.last_closed.max(repair.last_closed);
         self.gaps.clear();
@@ -886,7 +904,6 @@ async fn run_worker(worker: Worker) -> Result<()> {
                                 &current,
                                 &next,
                                 q.exchange_ts_us / 1000,
-                                &mut engine,
                                 &mut hours,
                             ) {
                                 stream.reset();
@@ -911,13 +928,7 @@ async fn run_worker(worker: Worker) -> Result<()> {
                 }
                 _ => None,
             };
-            if let Err(e) = stream.observe(
-                event,
-                &mut engine,
-                &mut hours,
-                &current,
-                health.dominant.is_none(),
-            ) {
+            if let Err(e) = stream.observe(event, &mut hours, &current, health.dominant.is_none()) {
                 let error = format!("Redis input: {e:#}");
                 if stream.aligned && !stream.needs_restart {
                     let suspected = fault_minute.map(|minute| {
@@ -946,13 +957,14 @@ async fn run_worker(worker: Worker) -> Result<()> {
         }
         if let Some(input) = stream.input.as_mut() {
             let rows = input.clock(chrono::Utc::now().timestamp_millis(), &current);
+            let dominant_ready = health.dominant.is_none();
             if let Err(e) = rows.and_then(|rows| {
-                stream.accept(
-                    rows,
+                stream.accept(rows, &mut hours, &current, dominant_ready)?;
+                stream.advance_hours(
                     &mut engine,
-                    &mut hours,
                     &current,
-                    health.dominant.is_none(),
+                    dominant_ready,
+                    chrono::Utc::now().timestamp_micros(),
                 )
             }) {
                 let error = format!("Redis minute: {e:#}");
@@ -1006,7 +1018,11 @@ async fn run_worker(worker: Worker) -> Result<()> {
             .as_mut()
             .context("missing minute frequency states")?
             .persist()?;
-        if loaded {
+        if loaded
+            && stream.minutes.last().is_none_or(|row| {
+                row.open_time_ms + 60_000 <= chrono::Utc::now().timestamp_millis()
+            })
+        {
             if let (Some(history_input), Some(market)) = (history.as_ref(), market_context.as_ref())
             {
                 match recovery::recover(

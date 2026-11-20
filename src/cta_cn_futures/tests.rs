@@ -110,6 +110,92 @@ fn session_gap_keeps_short_tail_without_inventing_minutes() {
     assert_eq!(rows[0].minutes, 2);
     assert_eq!(rows[0].end_ms, minute(1).open_time_ms + 60_000);
 }
+
+#[test]
+fn live_hour_and_session_tail_wait_for_their_end_before_advancing() {
+    let (_dir, cfg, main) = live_fixture();
+    let session_end = night_open() + 4 * 3_600_000;
+    for (start, count) in [(night_open(), 60), (session_end - 15 * 60_000, 15)] {
+        let end = start + count * 60_000;
+        let mut input = super::live::Input::new(live_context(), 1., start);
+        input.live_after_ms = start;
+        input.last_received_us = (end * 1_000 - 438_000) as u64;
+        let mut stream = super::Stream {
+            aligned: true,
+            input: Some(input),
+            extras: Some(super::extras::Extras::new(&cfg).unwrap()),
+            ..Default::default()
+        };
+        let rows = (0..count)
+            .map(|i| MinuteBar {
+                open_time_ms: start + i * 60_000,
+                trading_day: main.trading_day,
+                ..minute(i)
+            })
+            .collect();
+        let mut engine = warmed_engine(&cfg);
+        let old_hours = engine.hours;
+        let old_end = engine.last_end_ms;
+        let old_decision = engine.ledger.last_decision_ms;
+
+        stream
+            .accept(rows, &mut Bars::default(), &main, true)
+            .unwrap();
+        let pending = &stream.closed_hours.front().unwrap().bar;
+        assert_eq!((pending.start_ms, pending.end_ms), (start, end));
+        assert_eq!(pending.minutes, count as usize);
+        stream
+            .advance_hours(&mut engine, &main, true, end * 1_000 - 1)
+            .unwrap();
+        assert_eq!(engine.hours, old_hours);
+        assert_eq!(engine.last_end_ms, old_end);
+        assert_eq!(engine.ledger.last_decision_ms, old_decision);
+
+        for now in [end * 1_000, end * 1_000 + 100_000] {
+            stream.advance_hours(&mut engine, &main, true, now).unwrap();
+            assert_eq!(engine.hours, old_hours + 1);
+            assert_eq!(engine.last_end_ms, end);
+            assert_eq!(engine.ledger.last_decision_ms, end);
+        }
+    }
+}
+
+#[test]
+fn interruption_before_the_hour_end_invalidates_its_minute_for_repair() {
+    let (_dir, cfg, main) = live_fixture();
+    let end = night_open() + 4 * 3_600_000;
+    let last_minute = end - 60_000;
+    let mut input = super::live::Input::new(live_context(), 1., last_minute);
+    input.live_after_ms = last_minute;
+    input.last_received_us = (end * 1_000 - 438_000) as u64;
+    let mut stream = super::Stream {
+        aligned: true,
+        input: Some(input),
+        extras: Some(super::extras::Extras::new(&cfg).unwrap()),
+        ..Default::default()
+    };
+    let mut hours = Bars::default();
+    stream
+        .accept(
+            vec![MinuteBar {
+                open_time_ms: last_minute,
+                trading_day: main.trading_day,
+                ..minute(0)
+            }],
+            &mut hours,
+            &main,
+            true,
+        )
+        .unwrap();
+    assert_eq!(stream.closed_hours.len(), 1);
+    assert_eq!(stream.last_closed, Some(last_minute));
+    stream
+        .observe(super::live::Event::Reset, &mut hours, &main, true)
+        .unwrap();
+    assert!(stream.closed_hours.is_empty());
+    assert_eq!(stream.gap_start, Some(last_minute));
+}
+
 #[test]
 fn missing_or_invalid_mid_is_rejected_without_using_close() {
     for mid in [None, Some(0.), Some(f64::NAN)] {
@@ -864,7 +950,7 @@ fn repeated_provisional_ranges_replace_revisions_and_removed_rows() {
 #[test]
 fn reconnect_clears_the_first_minute_and_cached_tail_but_keeps_targets() {
     let (_dir, cfg, main) = live_fixture();
-    let mut engine = warmed_engine(&cfg);
+    let engine = warmed_engine(&cfg);
     let targets = engine.targets();
     let mut stream = super::Stream {
         extras: Some(super::extras::Extras::new(&cfg).unwrap()),
@@ -872,20 +958,13 @@ fn reconnect_clears_the_first_minute_and_cached_tail_but_keeps_targets() {
     };
     let mut hours = Bars::default();
     stream
-        .observe(
-            quote(night_open(), 100),
-            &mut engine,
-            &mut hours,
-            &main,
-            true,
-        )
+        .observe(quote(night_open(), 100), &mut hours, &main, true)
         .unwrap();
     stream.prepare(live_context(), 1., &main).unwrap();
     for i in 1..=4 {
         stream
             .observe(
                 quote(night_open() + i * 60_000, 100 + i as u64),
-                &mut engine,
                 &mut hours,
                 &main,
                 true,
@@ -899,13 +978,7 @@ fn reconnect_clears_the_first_minute_and_cached_tail_but_keeps_targets() {
     assert_eq!(stream.minutes.len(), 3);
     assert_eq!(engine.targets(), targets);
     assert!(stream
-        .observe(
-            super::live::Event::Reset,
-            &mut engine,
-            &mut hours,
-            &main,
-            true
-        )
+        .observe(super::live::Event::Reset, &mut hours, &main, true)
         .is_ok());
     assert!(stream.minutes.is_empty());
     assert!(!stream.aligned);
@@ -943,7 +1016,7 @@ fn duplicate_snapshots_are_ignored_and_conflicting_identities_block() {
 #[test]
 fn initialized_stream_releases_startup_cache_and_stays_warm_after_source_loss() {
     let (_dir, cfg, main) = live_fixture();
-    let mut engine = warmed_engine(&cfg);
+    let engine = warmed_engine(&cfg);
     let factual = engine.targets();
     let mut stream = super::Stream {
         extras: Some(super::extras::Extras::new(&cfg).unwrap()),
@@ -951,20 +1024,13 @@ fn initialized_stream_releases_startup_cache_and_stays_warm_after_source_loss() 
     };
     let mut hours = Bars::default();
     stream
-        .observe(
-            quote(night_open(), 100),
-            &mut engine,
-            &mut hours,
-            &main,
-            true,
-        )
+        .observe(quote(night_open(), 100), &mut hours, &main, true)
         .unwrap();
     stream.prepare(live_context(), 1., &main).unwrap();
     for i in 1..=4 {
         stream
             .observe(
                 quote(night_open() + i * 60_000, 100 + i as u64),
-                &mut engine,
                 &mut hours,
                 &main,
                 true,
@@ -979,7 +1045,6 @@ fn initialized_stream_releases_startup_cache_and_stays_warm_after_source_loss() 
     stream
         .observe(
             quote(night_open() + 5 * 60_000, 105),
-            &mut engine,
             &mut hours,
             &main,
             true,
@@ -987,20 +1052,13 @@ fn initialized_stream_releases_startup_cache_and_stays_warm_after_source_loss() 
         .unwrap();
     assert!(stream.minutes.is_empty());
     stream
-        .observe(
-            super::live::Event::Reset,
-            &mut engine,
-            &mut hours,
-            &main,
-            true,
-        )
+        .observe(super::live::Event::Reset, &mut hours, &main, true)
         .unwrap();
     assert!(!stream.needs_restart);
     assert!(!stream.ready());
     stream
         .observe(
             quote(night_open() + 6 * 60_000, 106),
-            &mut engine,
             &mut hours,
             &main,
             true,
@@ -1014,7 +1072,7 @@ fn initialized_stream_releases_startup_cache_and_stays_warm_after_source_loss() 
 #[test]
 fn ordinary_next_day_reuses_initialized_parameters_and_keeps_factor_windows() {
     let (_dir, cfg, main) = live_fixture();
-    let mut engine = warmed_engine(&cfg);
+    let engine = warmed_engine(&cfg);
     let factual = engine.targets();
     let mut stream = super::Stream {
         extras: Some(super::extras::Extras::new(&cfg).unwrap()),
@@ -1022,13 +1080,7 @@ fn ordinary_next_day_reuses_initialized_parameters_and_keeps_factor_windows() {
     };
     let mut hours = Bars::default();
     stream
-        .observe(
-            quote(night_open(), 100),
-            &mut engine,
-            &mut hours,
-            &main,
-            true,
-        )
+        .observe(quote(night_open(), 100), &mut hours, &main, true)
         .unwrap();
     stream.prepare(live_context(), 1., &main).unwrap();
     stream.activate();
@@ -1037,9 +1089,7 @@ fn ordinary_next_day_reuses_initialized_parameters_and_keeps_factor_windows() {
         ..main.clone()
     };
     let start = night_open() + 86_400_000;
-    stream
-        .next_day(&main, &next, start, &mut engine, &mut hours)
-        .unwrap();
+    stream.next_day(&main, &next, start, &mut hours).unwrap();
     for i in 0..=2 {
         let super::live::Event::Quote(mut q) = quote(start + i * 60_000, i as u64) else {
             unreachable!()
@@ -1047,13 +1097,7 @@ fn ordinary_next_day_reuses_initialized_parameters_and_keeps_factor_windows() {
         q.trading_day = next.trading_day;
         q.action_day = 20261117;
         stream
-            .observe(
-                super::live::Event::Quote(q),
-                &mut engine,
-                &mut hours,
-                &next,
-                true,
-            )
+            .observe(super::live::Event::Quote(q), &mut hours, &next, true)
             .unwrap();
     }
     assert!(stream.aligned);
@@ -1396,13 +1440,7 @@ fn redis_reset_keeps_warmed_factors_and_resumes_while_replay_is_absent() {
         ..Default::default()
     };
     stream
-        .observe(
-            super::live::Event::Reset,
-            &mut engine,
-            &mut hours,
-            &main,
-            true,
-        )
+        .observe(super::live::Event::Reset, &mut hours, &main, true)
         .unwrap();
     assert!(stream.aligned);
     assert!(!stream.needs_restart);
@@ -1412,13 +1450,15 @@ fn redis_reset_keeps_warmed_factors_and_resumes_while_replay_is_absent() {
         stream
             .observe(
                 quote(start + offset * minute, offset as u64),
-                &mut engine,
                 &mut hours,
                 &main,
                 true,
             )
             .unwrap();
     }
+    stream
+        .advance_hours(&mut engine, &main, true, (start + 64 * minute) * 1_000)
+        .unwrap();
     assert!(stream.gap_start.is_none());
     assert_eq!(stream.gaps, vec![(start + minute, start + 3 * minute)]);
     assert!(engine.hours > old_hours);
