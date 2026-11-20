@@ -229,8 +229,13 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.equal(await page.locator('#notice').isVisible(),true);
     assert.equal(await page.locator('#notice').innerText(),'CTP：柜台进程已退出，恢复后需重新对账');
     assert.equal(await page.locator('tr[data-symbol="rb2701"] > td').nth(1).innerText(),'+1');
-    ctp.saved_entry={...ctp.entry,observed_us:(Date.now()-90000)*1000,positions:[row('SHFE','rb2701','sell',0,2)],
+    ctp.saved_entry={...ctp.entry,trading_day:'20261119',observed_us:(Date.now()-90000)*1000,positions:[row('SHFE','rb2701','sell',0,2)],
       account:{...account,observed_us:(Date.now()-100000)*1000},position_ready:true};
+    await page.evaluate(f=>window.__push(f),{...ctp,entry:null,error:'等待持仓 IPC'});
+    assert.match(await page.locator('#source-updates').innerText(),/等待柜台连接/);
+    assert.match(await page.locator('#source-updates').innerText(),/快照交易日 20261119/);
+    assert.equal(await page.locator('#notice').isVisible(),false);
+    assert.equal(await page.locator('tr[data-symbol="rb2701"] > td').nth(1).innerText(),'-2');
     ctp.entry={...ctp.entry,observed_us:Date.now()*1000,position_ready:false,positions:[],account:null,runtime_status:'running',
       reason:'CTP trader front offline; waiting for reconnection'};
     await page.evaluate(f=>window.__push(f),ctp);

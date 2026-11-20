@@ -329,6 +329,7 @@
     ]);
     const status = source => {
       const s = source.entry;
+      if (!s && source.saved_entry && (!source.error || source.error==='等待持仓 IPC')) return 'waiting-counter';
       if (source.error) return s ? 'unavailable' : 'waiting';
       if (!s) return 'waiting';
       const age = Date.now() - Number(s.observed_us) / 1000;
@@ -345,7 +346,7 @@
       return 'observing';
     };
     const names = {waiting:'等待数据',unavailable:'来源不可用',stopped:'已停止',failed:'柜台运行中断',recovering:'恢复中',disconnected:'已断线',stale:'数据延迟',observing:'已同步',
-      'waiting-trader':'等待柜台重连','waiting-md':'等待行情重连','waiting-account':'等待资金查询与对账',
+      'waiting-counter':'等待柜台连接','waiting-trader':'等待柜台重连','waiting-md':'等待行情重连','waiting-account':'等待资金查询与对账',
       'waiting-md-day':'等待行情交易日',restarting:'柜台连接恢复中'};
     const badge = phase => `<span class="status ${phase==='observing'?'done':['failed','disconnected','unavailable'].includes(phase)?'error':'wait'}">${escape(names[phase] || phase)}</span>`;
     const adapterName = source => source.adapter==='yida'?'易达':'CTP';
@@ -586,7 +587,11 @@
       const captured=sources.map(s=>s.entry?.observed_us).filter(Boolean);
       $('updated').textContent=captured.length?'更新于 '+time(Math.min(...captured),true):'--';
       $('mode').textContent=sources.length && sources.every(s=>s.entry && !s.entry.can_trade)?'只读观察':'持仓观察';
-      $('source-updates').innerHTML=sources.map(s=>`<div class="strategy-update"><span class="strategy-update-name">${adapterName(s)}</span>${badge(status(s))}<span>交易日 ${escape(s.entry?.trading_day)}</span><time>${time(s.entry?.observed_us)}</time></div>`).join('');
+      $('source-updates').innerHTML=sources.map(s=>{
+        const entry=s.entry ?? s.saved_entry;
+        const observation=entry ? `<span>${s.entry?'交易日':'快照交易日'} ${escape(entry.trading_day)}</span><time>${time(entry.observed_us)}</time>` : '';
+        return `<div class="strategy-update"><span class="strategy-update-name">${adapterName(s)}</span>${badge(status(s))}${observation}</div>`;
+      }).join('');
       const problems=sources.flatMap(s=>{
         const phase=status(s);
         if (phase.startsWith('waiting-') || ['restarting','recovering','observing'].includes(phase)) return [];
