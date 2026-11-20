@@ -344,7 +344,7 @@
       if ((!s.ready && !readOnlySettlement) || !s.transport_ready) return 'unavailable';
       return 'observing';
     };
-    const names = {waiting:'等待数据',unavailable:'来源不可用',stopped:'已停止',failed:'执行失败',recovering:'恢复中',disconnected:'已断线',stale:'数据延迟',observing:'已同步',
+    const names = {waiting:'等待数据',unavailable:'来源不可用',stopped:'已停止',failed:'柜台运行中断',recovering:'恢复中',disconnected:'已断线',stale:'数据延迟',observing:'已同步',
       'waiting-trader':'等待柜台重连','waiting-md':'等待行情重连','waiting-account':'等待资金查询与对账',
       'waiting-md-day':'等待行情交易日',restarting:'柜台连接恢复中'};
     const badge = phase => `<span class="status ${phase==='observing'?'done':['failed','disconnected','unavailable'].includes(phase)?'error':'wait'}">${escape(names[phase] || phase)}</span>`;
@@ -590,7 +590,9 @@
       const problems=sources.flatMap(s=>{
         const phase=status(s);
         if (phase.startsWith('waiting-') || ['restarting','recovering','observing'].includes(phase)) return [];
-        return [s.error,s.entry?.reason,phase==='stale'?'持仓心跳过期，保留最后已知仓位':null].filter(Boolean).map(reason=>adapterName(s)+'：'+reason);
+        const reason=s.entry?.reason==='runtime failed; complete recovery required before trading'
+          ? '柜台进程已退出，恢复后需重新对账' : s.entry?.reason;
+        return [s.error,reason,phase==='stale'?'持仓心跳过期，保留最后已知仓位':null].filter(Boolean).map(detail=>adapterName(s)+'：'+detail);
       });
       $('notice').hidden=!problems.length; $('notice').textContent=problems.join(' · '); $('notice').className='meta stale';
     }

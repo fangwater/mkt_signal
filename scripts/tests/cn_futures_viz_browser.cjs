@@ -225,8 +225,10 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     ctp.entry.runtime_status='failed';
     ctp.entry.reason='runtime failed; complete recovery required before trading';
     await page.evaluate(f=>window.__push(f),ctp);
-    assert.match(await page.locator('#source-updates').innerText(),/执行失败/);
+    assert.match(await page.locator('#source-updates').innerText(),/柜台运行中断/);
     assert.equal(await page.locator('#notice').isVisible(),true);
+    assert.equal(await page.locator('#notice').innerText(),'CTP：柜台进程已退出，恢复后需重新对账');
+    assert.equal(await page.locator('tr[data-symbol="rb2701"] > td').nth(1).innerText(),'+1');
     ctp.saved_entry={...ctp.entry,observed_us:(Date.now()-90000)*1000,positions:[row('SHFE','rb2701','sell',0,2)],
       account:{...account,observed_us:(Date.now()-100000)*1000},position_ready:true};
     ctp.entry={...ctp.entry,observed_us:Date.now()*1000,position_ready:false,positions:[],account:null,runtime_status:'running',
