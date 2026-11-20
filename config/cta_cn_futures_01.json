@@ -117,6 +117,7 @@
     "source_id": "native-account",
     "token_env": "CN_CTA_01_PUBLISH_TOKEN",
     "per_factor_intervals": [],
+    "retire_hourly_factor_members": true,
     "products": [
       "RB",
       "SA"

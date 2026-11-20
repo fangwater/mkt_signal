@@ -68,6 +68,8 @@ pub struct PublicationConfig {
     #[serde(default)]
     pub include_trading_day: bool,
     pub per_factor_intervals: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retire_hourly_factor_members: bool,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub products: BTreeSet<String>,
 }

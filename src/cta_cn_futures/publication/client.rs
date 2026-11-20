@@ -109,14 +109,27 @@ impl Client {
             outbox,
         })
     }
+    fn retired_hourly_member(&self, name: &str) -> bool {
+        self.settings.retire_hourly_factor_members
+            && name
+                .strip_prefix(&self.group)
+                .and_then(|name| name.strip_prefix('-'))
+                .and_then(|name| name.strip_suffix("-1h"))
+                .is_some_and(|id| {
+                    !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                })
+    }
     pub(super) fn check_pending_members<'a>(
         &self,
         members: impl Iterator<Item = &'a String>,
     ) -> Result<()> {
         if let Some(pending) = &self.outbox.pending {
+            let current: BTreeSet<_> = members.collect();
             ensure!(
-                pending.request.strategies.keys().eq(members),
-                "pending publication uses a different strategy roster; reconcile the original batch before splitting product groups"
+                current.iter().all(|name| pending.request.strategies.contains_key(*name))
+                    && pending.request.strategies.iter().all(|(name, targets)| current.contains(name)
+                        || (self.retired_hourly_member(name) && targets.values().all(|&lots| lots == 0))),
+                "pending publication uses a different strategy roster; reconcile the original batch before changing the roster"
             );
         }
         Ok(())
@@ -165,8 +178,13 @@ impl Client {
             "previous account execution demand is unsettled"
         );
         let current: BTreeSet<_> = desired.positions.keys().cloned().collect();
+        let retired = watermark.members.difference(&current);
+        let aggregate = format!("{}-1h", self.group);
         ensure!(
-            current == watermark.members,
+            current.is_subset(&watermark.members)
+                && (retired.clone().next().is_none()
+                    || (current.contains(&aggregate)
+                        && retired.clone().all(|name| self.retired_hourly_member(name)))),
             "native Manager registered group roster differs from the complete published group"
         );
         let mut strategies = BTreeMap::new();
@@ -191,6 +209,18 @@ impl Client {
                     .checked_mul(1000)
                     .context("native signal time overflow")?,
             );
+        }
+        // Keep historical member identities in Manager's complete roster while clearing their targets.
+        for name in retired {
+            strategies.insert(
+                name.clone(),
+                watermark
+                    .contracts
+                    .iter()
+                    .map(|market| (market.clone(), 0))
+                    .collect(),
+            );
+            signal_times.insert(name.clone(), desired.trigger_us);
         }
         let now = chrono::Utc::now().timestamp_micros();
         ensure!(

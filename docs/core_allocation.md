@@ -42,6 +42,33 @@ Delist PID 1260373 继续使用 CPU28，Redis 下架扫描和 monitor 通知健�
 `data/ops/binance_bitget_fr_signal_20261118T132635Z/`，旧产物和日志保存在 JP
 各账户的 `backups/binance_bitget_fr_signal_20261118T132635Z/`。
 
+2026-11-18 10:16–10:31 UTC，JP 先发布 Delist `fc2150f1`，PID 1260373 继续使用
+CPU28。随后逐盘更新 Gate FR 的 `trade_signal`，修复启动时先收到对冲查询导致
+行情缓存未初始化的竞态（`arbmm c29433b1`，231 项测试通过）。
+01/02/03/04 新 PID 分别为 1263786/1263955/1264787/1264186，全线程继续使用 CPU0–5。
+四盘确认行情订阅、信号决策和 Gate 现货波动率快照 527/527，最终无异常重启。
+原 `pre_trade`、`trade_engine` 和账户监控的进程未变，05 仍无信号进程。
+Gate 启动费率检查仍显示 SFPUSDT、TAKEUSDT 缺借币费率；已有敞口只读核对，
+Delist 清仓审计新增 0 条。回滚和核验见 `data/ops/delist_direct_gate_20261118T101004Z/`
+及各 Gate 环境的 `backups/delist_direct_gate_20261118T101004Z-query-fix/`。
+
+2026-11-18 09:20 UTC，JP `okex_binace_cross` 恢复 Spread01 并首次启用 Spread02。
+两组 `1min/5min/15min/1h` 在 OKX 和 Binance 各绑定 1 份，共 16 条，使用 `ctaker`。
+两侧 Exec 经环境脚本启动并完成仓位分配后接收目标。OKX 的 `exec-pre-trade` 和
+`trade_engine` 分别为 PID1244465/CPU22 和 PID1244236/CPU23，Binance 分别为
+PID1244460/CPU26 和 PID1244223/CPU27。两侧均确认收到 8 张策略表。
+09:24 UTC 交易所查询到 Spread01 在 OKX 持有 12 个标的、Binance 持有 11 个标的，
+两侧普通挂单数均为 0。09:25 UTC，Spread02 的 5min 首个非零目标在 OKX 成交，
+覆盖 TRBUSDT 和 TRXUSDT。回执位于 JP Manager 的
+`maintenance-backups/cta_cross_resume_20261118/`。
+
+2026-11-18 05:56 UTC，按操作员确认启用 JP `binance_exec_sbh11` 实盘。
+通过环境脚本在共享 housekeeping CPU 0–5 启动 `trade_engine`（PID 1206668）
+和 `exec-pre-trade`（PID 1206898）。Manager 在 05:54 UTC 重启加载当日实查费率，
+通过该账户的 STANDARD、多资产、单向持仓校验。启动前币安持仓、普通挂单和条件单均为零。
+06:00:44 UTC，Manager 将启动后的首个 `sbh-11-16` 目标 BTCUSDT +0.03 BTC
+发布到 Exec。06:01:16 UTC，币安签名查询回读持仓 +0.006 BTC、普通挂单 3 笔。
+
 2026-11-17，JP 新增 `binance_exec_sbh11` / `ba503d02`，授权 Manager 用户
 `sbh`，原生 Binance USD-M STANDARD，单向持仓、多资产模式。交易所只读核验
 持仓及普通挂单均为零。四个指定公网出口的签名查询均通过；按要求使用
@@ -2180,15 +2207,15 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 15 | persist_manager ×N | 原FR等及okex_exec_trade01/binance_exec_spread01持久化；新账户MM PID421889，旧MM alpha停止 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
 | 17 | cta-prep-binance-futures | PID2168358；Prep01四频段与Prep02三券池×5min/15min/1h，同进程596项计算，回放完成且四张小时表已启用；原仓位账本保留；无额外独占核 |
-| 18 | cta-factor-spread | PID1140614；Spread01/Spread02四频段共享532项计算；双市场Tardis小时包截止2026-11-12，227个普通分钟窗口续接；已追平，小时Spread01 109/109、Spread02 130/130就绪；Spread01信号开启、Spread02每规则100U且发布关闭；11-16双Exec交易已下线、8条绑定零份，两组计算保持 |
+| 18 | cta-factor-spread | PID1140614，Spread01 和 Spread02 各四个频段发布开启，双侧各 1 份，小时项分别 109/109 和 130/130 就绪 |
 | 19 | 空闲 | RX03 旧因子/信号/页面已停止，Exec07 已清仓解绑并移除 Manager 入口 |
 | 20 | exec_volatility_pub(exec_volatility_binance) | 共享Binance现货/永续Vol，PID2865016；独立于RX01生命周期 |
 | 21 | okex_exec_trade01 account_monitor | PID944519；UID577437828112804477（LTOKEx656） |
-| 22 | 空闲 | okex_exec_trade01 exec-pre-trade于11-16清仓后停止 |
-| 23 | 空闲 | okex_exec_trade01 trade_engine于11-16清仓后停止 |
+| 22 | okex_exec_trade01 exec-pre-trade | PID1244465，Spread01/02 |
+| 23 | okex_exec_trade01 trade_engine | PID1244236，Spread01/02 |
 | 24 | crypto_cta_manager / cta_web + crypto_nav_manager | CTA PID3909484；NAV PID483448，MM83777统计接入，交易进程保持 |
 | 25 | binance_exec_spread01 account_monitor | PID3912185；81857独立执行环境 |
-| 26-27 | 空闲 | binance_exec_spread01 exec-pre-trade / trade_engine于11-16清仓后停止 |
+| 26–27 | binance_exec_spread01 exec-pre-trade / trade_engine | PID1244460/CPU26，PID1244223/CPU27 |
 | 28 | redis-server.service + Delist | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID3195932（11-12单币持续报警与独立系数），env.sh DELIST_CORE=28；SG隧道于11-11停止 |
 | 29 | okex_mm_83777 account_monitor | PID275138；UID556411065144578537，空仓风险解析已修复，实盘账户监控 |
 | 30 | okex_mm_83777 trade_signal | PID291515；BTC/ETH实盘，vol门限开启、Tlen关闭 |

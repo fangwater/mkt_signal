@@ -124,7 +124,10 @@
       .position-detail thead { position:static; }
       .strategy-detail th:first-child, .strategy-detail td:first-child { white-space:normal; overflow-wrap:anywhere; }
       .strategy-heading { margin:0 0 8px; text-align:left; font-size:13px; }
-      .strategy-target { display:block; margin-top:2px; }
+      .strategy-detail + .strategy-heading { margin-top:12px; }
+      .factor-toggle { height:28px; font-size:12px; }
+      .factor-toggle::before { content:""; display:inline-block; width:5px; height:5px; margin-right:8px; border:solid currentColor; border-width:0 1px 1px 0; transform:rotate(-45deg); vertical-align:2px; }
+      .factor-toggle[aria-expanded="true"]::before { transform:rotate(45deg); }
       .strategy-message { padding:10px; text-align:left; white-space:normal; }
       .strategy-message a { color:var(--cyan); }
       .attribution-gap { color:var(--amber); font-size:12px; margin:8px 0; white-space:normal; }
@@ -260,14 +263,14 @@
     <section class="section">
       <div class="section-head">
         <h2>合约净持仓</h2>
-        <label class="meta check"><input id="show-zero" type="checkbox">显示零仓位</label>
+        <label class="meta check"><input id="show-zero" type="checkbox">显示零仓位合约</label>
         <span id="position-note" class="meta">等待持仓数据</span>
         <span id="strategy-status" class="meta" role="status" hidden></span>
         <span id="quote-status" class="quote-status"></span>
         <div class="summary"><span>合约 <strong id="filtered-contracts">--</strong></span><span>净多合约 <strong id="filtered-net-long">--</strong></span><span>净空合约 <strong id="filtered-net-short">--</strong></span></div>
       </div>
       <div class="table-wrap positions-wrap"><table><thead id="position-head"></thead><tbody id="positions"></tbody></table></div>
-      <div class="meta table-note">正数净多，负数净空。策略净仓来自 Manager 账本，柜台净仓来自持仓快照。</div>
+      <div class="meta table-note">正数净多，负数净空。净目标包含 Manager 的暂停处理，信号目标为策略最近一次提交的手数。</div>
     </section>
   </main>
   <script>
@@ -316,7 +319,7 @@
     };
     const managerUrl = new URL('/manager/', location.origin);
     managerUrl.port = '';
-    const state = { sources:new Map(), ws:null, timer:null, detailChoices:new Map(), brokerDetails:new Set(), groups:[],
+    const state = { sources:new Map(), ws:null, timer:null, detailChoices:new Map(), brokerDetails:new Set(), factorDetails:new Set(), groups:[],
       preferredSource:new URLSearchParams(location.search).get('source'), strategy:null };
     const recoveryReasons = new Map([
       ['CTP trader front offline; waiting for reconnection','waiting-trader'],
@@ -404,7 +407,7 @@
       const total=values.reduce((n,v)=>n+v.amount,0);
       return Number.isFinite(total)?total:null;
     }
-    const activeStrategy = row => row.attributed_lots !== 0 || row.target_lots !== 0;
+    const activeStrategy = row => row.attributed_lots !== 0 || row.signal_target_lots !== 0;
     const managerObservation = source => source && state.strategy?.id === source.source_id ? state.strategy.observation : null;
     const freshAt = (us, limit) => {
       const age = Date.now() - Number(us) / 1000;
@@ -464,7 +467,8 @@
             const [venue, symbol] = market.split(':');
             if (!symbol || !match(venue, symbol, snapshot?.trading_day)) continue;
             const key = JSON.stringify([source.source_id, venue, symbol]);
-            if (groups.has(key) || (showZero && attribution.strategies.some(activeStrategy))) {
+            if (groups.has(key) || attribution.factor_signals?.rules?.length ||
+                (showZero && attribution.strategies.some(activeStrategy))) {
               group(venue, symbol).attribution = attribution;
             }
           }
@@ -622,7 +626,7 @@
         let html = `<tr class="aggregate-row ${g.historical||phase!=='observing'?'retained':''}" data-symbol="${escape(g.symbol)}"><td><span class="group-label"><button class="group-toggle" data-group="${index}" aria-expanded="${open}" aria-label="${open?'收起':'展开'} ${escape(g.symbol)}"></button>${contractLabel(g)}</span></td><td class="${qtyClass(net)}">${signed(net)}</td>${targetCell}<td class="net-amount">${net===null?'--':amountCell(g)}</td><td>${badge(phase)}</td><td>${time(g.observedUs)}</td></tr>`;
         if (open) {
           const detail = g.attribution ? strategyDetails(g, phase==='observing' && !g.historical ? net : null) : state.strategy
-            ? `<h3 class="strategy-heading">策略构成</h3><div class="position-detail strategy-message meta">${strategyMessage()}</div>` : '';
+            ? `<h3 class="strategy-heading">策略归因</h3><div class="position-detail strategy-message meta">${strategyMessage()}</div>` : '';
           const brokerOpen = state.brokerDetails.has(g.key);
           const broker = g.positions.length ? `<button type="button" class="broker-toggle" data-broker="${index}" aria-expanded="${brokerOpen}">柜台明细</button>${brokerOpen ? brokerDetails(g) : ''}` : '';
           html += `<tr class="detail-row"><td colspan="${columns}">${detail}${broker}</td></tr>`;
@@ -635,17 +639,27 @@
     }
     function strategyDetails(g, brokerNet) {
       const {attributed_lots: attributed, strategies} = g.attribution;
-      const visible = $('show-zero').checked ? strategies : strategies.filter(activeStrategy);
-      const detail = [...visible].sort((a,b)=>Math.abs(b.attributed_lots)-Math.abs(a.attributed_lots) || a.name.localeCompare(b.name))
-        .map(row => {
-          const target = row.target_lots === row.attributed_lots ? ''
-            : `<small class="strategy-target muted">目标 ${signed(row.target_lots)} 手</small>`;
-          return `<tr><td>${escape(row.name)}</td><td><span class="${qtyClass(row.attributed_lots)}">${signed(row.attributed_lots)}</span>${target}</td></tr>`;
-        }).join('');
+      const visible = g.attribution.factor_signals || $('show-zero').checked ? strategies : strategies.filter(activeStrategy);
+      const detail = [...visible].sort((a,b)=>a.name.localeCompare(b.name)).map(row =>
+        `<tr><td>${escape(row.name)}</td><td class="${qtyClass(row.signal_target_lots)}">${signed(row.signal_target_lots)}</td><td class="${qtyClass(row.attributed_lots)}">${signed(row.attributed_lots)}</td></tr>`
+      ).join('');
       const difference = brokerNet === null || brokerNet === attributed ? '' : `<p class="attribution-gap">策略合计 ${signed(attributed)} 手，柜台与账本相差 ${signed(brokerNet-attributed)} 手</p>`;
-      const table = detail ? `<div class="position-detail strategy-detail"><table aria-label="${escape(g.symbol)} 策略仓位"><thead><tr><th>策略</th><th>策略净仓 · 手</th></tr></thead><tbody>${detail}</tbody></table></div>`
-        : '<div class="position-detail strategy-message meta">当前策略仓位和目标均为零</div>';
-      return `<h3 class="strategy-heading">策略构成</h3>${table}${difference}`;
+      const table = detail ? `<div class="position-detail strategy-detail"><table aria-label="${escape(g.symbol)} 策略仓位"><thead><tr><th>策略</th><th>信号目标 · 手</th><th>账本净仓 · 手</th></tr></thead><tbody>${detail}</tbody></table></div>`
+        : '<div class="position-detail strategy-message meta">该合约没有策略归因记录</div>';
+      return `${factorDetails(g)}<h3 class="strategy-heading">策略归因</h3>${table}${difference}`;
+    }
+    function factorDetails(g) {
+      const signals = g.attribution.factor_signals;
+      if (!signals?.rules.length) return '';
+      const open = state.factorDetails.has(g.key);
+      const decided = signals.decision_ms ? ` <time class="meta">${time(signals.decision_ms * 1000,true)}</time>` : '';
+      const heading = `<h3 class="strategy-heading"><button type="button" class="factor-toggle" data-factor="${escape(g.key)}" aria-expanded="${open}">1h 因子信号</button>${decided}</h3>`;
+      if (!open) return heading;
+      const rows = signals.rules.map(row => {
+        const label = row.id ? `${row.factor} (${row.id})` : row.factor;
+        return `<tr><td>${escape(label)}</td><td class="${qtyClass(row.target_lots)}">${signed(row.target_lots)}</td></tr>`;
+      }).join('');
+      return `${heading}<div class="position-detail strategy-detail"><table aria-label="${escape(g.symbol)} 因子信号"><thead><tr><th>因子</th><th>信号方向</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     }
     function brokerDetails(g) {
       const details = g.positions.map(p => {
@@ -696,6 +710,13 @@
           state.brokerDetails.has(key) ? state.brokerDetails.delete(key) : state.brokerDetails.add(key);
           render();
         }
+        return;
+      }
+      const factors=event.target.closest('[data-factor]');
+      if (factors) {
+        const key=factors.dataset.factor;
+        state.factorDetails.has(key) ? state.factorDetails.delete(key) : state.factorDetails.add(key);
+        render();
         return;
       }
       const button=event.target.closest('[data-group]');

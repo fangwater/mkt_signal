@@ -706,6 +706,22 @@ impl Engine {
             native(self.ledger.target_lots()),
         )]))
     }
+    pub fn factor_signals(&self) -> serde_json::Value {
+        use serde_json::json;
+        let market = (!self.ledger.contract.is_empty())
+            .then(|| format!("{}:{}", self.cfg.exchange, self.ledger.contract));
+        let rules: Vec<_> = self
+            .cfg
+            .rules
+            .iter()
+            .map(|rule| {
+                let target = self.ledger.flags.get(rule.key()).copied();
+                json!({"factor":rule.factor, "id":rule.id, "target_lots":target})
+            })
+            .collect();
+        json!({"market":market, "decision_ms":self.ledger.last_decision_ms,"rules":rules})
+    }
+
     pub fn targets(&self) -> serde_json::Value {
         let mut targets: Vec<_> = self
             .ledger

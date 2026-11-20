@@ -14,6 +14,7 @@ pub struct Config {
     pub stale_after_ms: u64,
     #[serde(default = "manager_port_default")]
     pub manager_port: u16,
+    pub cta_signal_port: Option<u16>,
     pub l1: Option<L1>,
     pub counters: Vec<Counter>,
 }
@@ -82,6 +83,10 @@ impl Config {
             .context("invalid native HTTP bind/port")?;
         ensure!(self.http.port > 0, "native HTTP port cannot be zero");
         ensure!(self.manager_port > 0, "Manager port cannot be zero");
+        ensure!(
+            self.cta_signal_port != Some(0),
+            "CTA signal port cannot be zero"
+        );
         if let Some(l1) = self.l1 {
             ensure!(
                 l1.redis_port > 0 && l1.metadata_port > 0,

@@ -1,6 +1,16 @@
 # OKX / Binance CTA Spread
 
-最后更新：2026-11-17 08:00 UTC
+最后更新于 2026-11-18 09:25 UTC。
+
+2026-11-18 09:20 UTC，`okex_binace_cross` 恢复 Spread01，并首次启用 Spread02。
+`LTOKEx656` 的资金账户已向同一账号的交易账户划入 19,999.40 USDT，划转单号
+`3358815295`。两组均启用 1min/5min/15min/1h，每个周期在 OKX 和 Binance 各绑定
+1 份，沿用 `lgq_grid_spread` 的 `ctaker`。两侧 Exec 确认收到 8 张策略表。
+交易所于 09:24 UTC 回读 Spread01 的实际持仓标的数为 OKX 12 个、Binance 11 个，
+普通挂单各 0 笔。09:25 UTC，Spread02 的首个非零目标来自 5min，在 OKX 成交
+TRBUSDT 和 TRXUSDT。唯一未就绪的计算项为 OKX FILUSDT 15min `factor_114`。
+操作回执位于 JP Manager 的
+`maintenance-backups/cta_cross_resume_20261118/`。
 
 2026-11-17，cross 的 OKX Exec `okex_exec_trade01` 切换到 LTOKEx656
 （交易所 UID `577437828112804477`）。原 env 和监控日志备份在环境目录的

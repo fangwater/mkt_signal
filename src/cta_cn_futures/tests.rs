@@ -603,8 +603,10 @@ fn panel_changes_keep_factual_lots_until_a_new_live_decision() {
 fn repeated_formula_keeps_independent_signals_and_drops_removed_rules() {
     let mut cfg: Config =
         serde_json::from_str(include_str!("../../config/cta_cn_futures_01.json")).unwrap();
-    cfg.publication.as_mut().unwrap().enabled = true;
-    cfg.publication.as_mut().unwrap().products.clear();
+    let publication = cfg.publication.as_mut().unwrap();
+    publication.enabled = true;
+    publication.products.clear();
+    publication.retire_hourly_factor_members = false;
     cfg.rules.retain(|rule| rule.factor == "td_pr_012");
     cfg.validate().unwrap();
     let mut ledger = Ledger {

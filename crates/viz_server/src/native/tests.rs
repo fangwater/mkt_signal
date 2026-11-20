@@ -164,6 +164,7 @@ fn native_config_has_one_ipc_contract_and_safe_ws_path() {
         },
         stale_after_ms: 1000,
         manager_port: 18211,
+        cta_signal_port: None,
         l1: None,
         counters: vec![source],
     };
@@ -208,6 +209,7 @@ async fn direct_ws_replays_each_source_and_forwards_without_flush_timer_or_rest_
         http: cfg.clone(),
         stale_after_ms: 1000,
         manager_port: 18211,
+        cta_signal_port: None,
         l1: None,
         counters: sources.clone(),
     })
@@ -318,17 +320,30 @@ async fn strategy_positions_forward_only_the_session_to_the_pinned_manager_sourc
             Ok(Json(json!({
                 "portfolio": {
                     "source_id": "manager-ctp",
-                    "strategy_groups": {"active":{"members":["alpha"],"held":false},"held":{"members":["beta"],"held":true}},
-                    "targets": {"alpha":{"SHFE:rb2701":3},"beta":{"SHFE:rb2701":99}},
+                    "strategy_groups": {"active":{"members":["active-1h","active-retired-1h"],"held":false},"held":{"members":["beta"],"held":true}},
+                    "targets": {"active-1h":{"SHFE:rb2701":3},"active-retired-1h":{"SHFE:rb2701":0},"beta":{"SHFE:rb2701":99}},
                     "positions": {
-                        "alpha":{"SHFE:rb2701":{"fifo":[{"lots":1,"price":3100},{"lots":1,"price":3110}]}},
+                        "active-1h":{"SHFE:rb2701":{"fifo":[{"lots":1,"price":3100},{"lots":1,"price":3110}]}},
+                        "active-retired-1h":{"SHFE:rb2701":{"fifo":[]}},
                         "beta":{"SHFE:rb2701":{"fifo":[{"lots":-2,"price":3120}]}}
                     }
                 },
                 "net_targets":{"SHFE:rb2701":{"target_lots":1,"attributed_lots":0}}
             })))
         }),
-    );
+    )
+    .route("/state", get(|headers: HeaderMap| async move {
+        assert!(headers.get(header::COOKIE).is_none());
+        Json(json!({
+            "strategy_group":"held",
+            "manager_publication":{"source_id":"another-account"},
+            "factor_signals":{"market":"SHFE:rb2701","decision_ms":999,"rules":[{"factor":"other-account","target_lots":0}]},
+            "products":{"RB":{"strategy_group":"active","manager_publication":{"source_id":"manager-ctp"},
+                "factor_signals":{"market":"SHFE:rb2701","decision_ms":123,"rules":[
+                    {"factor":"alpha","target_lots":3},{"factor":"beta","id":"flat","target_lots":0}
+                ]}}}
+        }))
+    }));
     let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let manager_port = upstream.local_addr().unwrap().port();
     let upstream_task = tokio::spawn(async move { axum::serve(upstream, ledger).await.unwrap() });
@@ -344,6 +359,7 @@ async fn strategy_positions_forward_only_the_session_to_the_pinned_manager_sourc
         },
         stale_after_ms: 1000,
         manager_port,
+        cta_signal_port: Some(manager_port),
         l1: None,
         counters: vec![ctp, source("paper")],
     };
@@ -382,9 +398,11 @@ async fn strategy_positions_forward_only_the_session_to_the_pinned_manager_sourc
         value,
         json!({"SHFE:rb2701": {
             "target_lots":1,"attributed_lots":0, "strategies":[
-                {"name":"alpha","target_lots":3,"attributed_lots":2},
-                {"name":"beta","target_lots":-2,"attributed_lots":-2}
-            ]
+                {"name":"active-1h","signal_target_lots":3,"target_lots":3,"attributed_lots":2},
+                {"name":"beta","signal_target_lots":99,"target_lots":-2,"attributed_lots":-2}
+            ], "factor_signals":{"market":"SHFE:rb2701","decision_ms":123,"rules":[
+                {"factor":"alpha","id":null,"target_lots":3},{"factor":"beta","id":"flat","target_lots":0}
+            ]}
         }})
     );
     assert_eq!(

@@ -67,7 +67,7 @@ fn status(
     error: Option<&str>,
     live_ready: bool,
 ) -> Value {
-    json!({"name":cfg.name,"phase":if error.is_some() {"paused"} else if live_ready {"live"} else {"waiting_live"},"exchange":cfg.exchange,"symbol":cfg.symbol,"interval":"1h","position_unit":"lot","dominant":main,"factor_ready":engine.ready(),"live_ready":live_ready,"error":error,"last_bar_end_ms":engine.last_end_ms,"rules":engine.latest,"positions":engine.targets(),"updated_us":chrono::Utc::now().timestamp_micros()})
+    json!({"name":cfg.name,"phase":if error.is_some() {"paused"} else if live_ready {"live"} else {"waiting_live"},"exchange":cfg.exchange,"symbol":cfg.symbol,"interval":"1h","position_unit":"lot","dominant":main,"factor_ready":engine.ready(),"live_ready":live_ready,"error":error,"last_bar_end_ms":engine.last_end_ms,"rules":engine.latest,"positions":engine.targets(),"factor_signals":engine.factor_signals(),"updated_us":chrono::Utc::now().timestamp_micros()})
 }
 
 #[derive(Default)]
@@ -730,7 +730,7 @@ pub async fn run() -> Result<()> {
         }
         let state = Arc::new(RwLock::new(json!({"name":cfg.name,"phase":"warming",
             "symbol":cfg.symbol,"exchange":cfg.exchange,"strategy_group":cfg.strategy_group()?,
-            "strategies":positions,"live_ready":false,"factor_ready":false,"positions":engine.targets(),
+            "strategies":positions,"live_ready":false,"factor_ready":false,"positions":engine.targets(),"factor_signals":engine.factor_signals(),
             "manager_publication": publication_status(&cfg, &publisher)})));
         reports.insert(cfg.symbol.clone(), state.clone());
         let catalog = Arc::new(RwLock::new(panel::catalog(&cfg)?));

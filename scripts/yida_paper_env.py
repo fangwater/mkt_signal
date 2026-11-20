@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Environment-local supervision for a read-only Yida paper account and Viz."""
+"""Environment-local supervision for an official Yida paper account and Viz."""
 import argparse
 import json
 import os
@@ -35,6 +35,17 @@ def validate_trader():
     required = [cfg[key] for key in ("user_id_env", "password_env", "app_id_env", "auth_code_env")]
     if any(not os.environ.get(key) for key in required):
         raise RuntimeError("paper credentials are missing; source this environment's private env.sh")
+    execute = os.environ.get("YIDA_PAPER_EXECUTE") == "1"
+    if execute:
+        ctaker = cfg.get("ctaker", {})
+        ingress = cfg.get("position_target_ingress", {})
+        manager = ingress.get("manager_plan", {})
+        if not ctaker.get("source_id") or ctaker["source_id"] != ingress.get("source_id"):
+            raise RuntimeError("paper execution requires ctaker and matching target ingress")
+        if not os.environ.get(manager.get("token_env", "")):
+            raise RuntimeError("Manager paper target credential is missing")
+    elif "ctaker" in cfg:
+        raise RuntimeError("paper ctaker requires YIDA_PAPER_EXECUTE=1")
     return cfg
 
 
@@ -91,8 +102,10 @@ def run_trader():
     if fd != 0:
         os.close(fd)
     (run / "trader.pid").write_text(str(os.getpid()))
-    # No --execute: the environment cannot place/cancel any orders.
-    os.execv(BASE / "bin/yida-trader", [str(BASE / "bin/yida-trader"), "--config", str(BASE / "config/yida.toml"), "--connect"])
+    command = [str(BASE / "bin/yida-trader"), "--config", str(BASE / "config/yida.toml"), "--connect"]
+    if os.environ.get("YIDA_PAPER_EXECUTE") == "1":
+        command.append("--execute")
+    os.execv(BASE / "bin/yida-trader", command)
 
 
 def drain():
@@ -117,7 +130,8 @@ def drain():
 
 
 def status():
-    result = {"environment": BASE.name, "mode": "paper_read_only", "services": {}}
+    mode = "paper_ctaker" if os.environ.get("YIDA_PAPER_EXECUTE") == "1" else "paper_read_only"
+    result = {"environment": BASE.name, "mode": mode, "services": {}}
     for component in COMPONENTS:
         proc = subprocess.run(["systemctl", "--user", "show", unit(component), "--property=ActiveState,SubState,MainPID,ExecMainStatus"], capture_output=True, text=True, check=True)
         result["services"][component] = dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)

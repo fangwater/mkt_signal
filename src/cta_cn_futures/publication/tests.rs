@@ -91,6 +91,52 @@ fn instance_01_has_exactly_one_hourly_strategy_per_product() {
     assert!(group.contains_key("cn-futures-01-rb-1h"));
 }
 
+#[test]
+fn sa_hourly_keeps_ten_factor_signals_and_one_net_strategy() {
+    let cfg = super::super::configs(std::path::Path::new("config/cta_cn_futures_01.json"))
+        .unwrap()
+        .into_iter()
+        .map(|(_, cfg)| cfg)
+        .find(|cfg| cfg.symbol == "SA")
+        .unwrap();
+    let flags = cfg
+        .rules
+        .iter()
+        .map(|rule| {
+            let flag = match rule.key() {
+                "baseline_193" => 1,
+                "td_pt_006" | "td_vi_023" => -1,
+                _ => 0,
+            };
+            (rule.key().to_owned(), flag)
+        })
+        .collect();
+    let ledger = Ledger {
+        contract: "SA701".into(),
+        last_decision_ms: 1000,
+        flags,
+        ..Ledger::default()
+    };
+    let engine = Engine::new(&cfg, ledger).unwrap();
+    let targets = engine.publication_positions().unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets["cn-futures-01-sa-1h"].targets["CZCE:SA701"], -1);
+    let signals = engine.factor_signals();
+    let rules = signals["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 10);
+    assert_eq!(
+        rules.iter().filter(|rule| rule["target_lots"] == 0).count(),
+        7
+    );
+    assert_eq!(
+        rules
+            .iter()
+            .map(|rule| rule["target_lots"].as_i64().unwrap())
+            .sum::<i64>(),
+        -1
+    );
+}
+
 #[tokio::test]
 async fn products_publish_only_their_own_positions_on_independent_clocks() {
     let build = |positions| {

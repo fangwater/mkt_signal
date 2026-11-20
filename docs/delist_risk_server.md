@@ -1,6 +1,14 @@
 # Delist Risk Server
 
-最后更新：2026-11-16 05:21 UTC（CTA Config 账户杠杆编辑）
+最后更新：2026-11-18 10:30 UTC（下架名单与 12 小时脚本收口上线）
+
+2026-11-18 10:16 UTC，JP 发布 `arbmm fc2150f1` 的 Delist、启动脚本和页面。
+本机 release 构建并校验上传哈希。新进程 PID 1260373，全部线程使用 CPU28。
+确认 12 小时收口窗口和 1,000 USDT 门槛已生效，PostgreSQL 告警字段已迁移。
+NAV 目录、Redis 下架扫描和通知服务均通过核验，扫描没有发现收口候选，
+下架名单变更和清仓审计均新增 0 条。停用的 `bitget_fr_arb03` 仍有静态
+快照配置，已核实不在 NAV 授权目录。配置文件哈希保持一致。回退与核验在
+`~/delist_risk_server/run/delist_direct_gate_20261118T101004Z/`。
 
 2026-11-16，`/delist/cta/config/` 新增“账户风控”，在原有 Delist 登录下分别读取和
 保存 LGQ RX01 / RX03 的最大杠杆。数据直接来自各自 `<env>:<venue>:pre_trade_risk_params`

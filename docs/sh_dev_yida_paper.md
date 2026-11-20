@@ -2,7 +2,9 @@
 
 最后更新：2026-11-18
 
-用户指定的部署主机为 `ssh sh_dev`，运行目录 `/home/ubuntu/yida_paper01`。已部署易达官方 SHFE／INE paper 账户观察和国内期货 Viz，使用 SDK `1.502.55.35`。2026-11-16 新增独立的 [创元 CTP 只读环境](sh_dev_ctp.md)；部署前本环境 trader 已失败，Viz 仍运行，账户 Viz 更新已将独立 CTP 来源加入本环境的 8811 页面，并更新匹配当前 IPC 的易达 trader 二进制；仅重启 Viz，易达 trader 继续停用。下文历史验收结果不代表当前易达 trader 仍在线。
+用户指定的部署主机为 `ssh sh_dev`，运行目录 `/home/ubuntu/yida_paper01`，使用 SDK `1.502.55.35`。
+2026-11-18 易达官方仿真恢复登录，作为 `sh_dev_yida_paper01` 接入国内期货 Manager。
+易达与 [创元 CTP](sh_dev_ctp.md) 分别使用独立的账户来源、持仓账本和计划订阅。
 
 ## 当前服务
 
@@ -10,12 +12,15 @@
 
 | 服务 | 配置／入口 | 状态与范围 |
 | --- | --- | --- |
-| `yida_paper01-trader.service` | `config/yida.toml`、`config/server.cfg` | `public_simulation=true`、TCP；只带 `--connect`，不带 `--execute` |
+| `yida_paper01-trader.service` | `config/yida.toml`、`config/server.cfg` | `public_simulation=true`，TCP，订阅 Manager 的仿真目标 |
 | `yida_paper01-viz.service` | `config/viz.toml` | 按用户要求监听 `0.0.0.0:8811`，浏览器直接访问 VPS 公网地址的 8811 端口，无需 SSH 转发 |
 
 服务由 Ubuntu 用户的 systemd 管理，已开启 user linger，退出 SSH 后继续运行。交易端不自动重启，避免登录／认证错误后重复提交；Viz 失败时自动重启。所有启停都通过环境内脚本，不直接操作监管器。
 
-交易白名单为 `SHFE/cu2612`、`INE/sc2612`，账户实际持仓仍完整恢复和展示，包括白名单外既有持仓。已启用 `observation_l1=true`，在同一个 SDK 登录内订阅现有持仓及原白名单的 TCP L1；`TCPMarketDataCPUID=1`，`RecalcMode=off`。没有启动第二个行情登录或额外采集进程。行情观察不扩大可交易白名单；本地执行预算不作为账户权益。独立主行情仍由 `cn-futures-pbs` 接入。
+当前执行范围为 `SHFE:rb2701`，单笔和绝对目标上限均为 1 手。Manager 组
+`yida-paper01-rb` 按当前柜台对账快照初始化为零手，执行端通过同一条 SSH 反向隧道订阅 gRPC。
+账户完整恢复和展示既有持仓。已启用 `observation_l1=true`，同一 SDK 登录订阅现有持仓和执行合约。
+接入验收时，Manager 已同步 30 条持仓，执行端收到 `no_batch`。
 
 ## 操作入口
 
@@ -34,7 +39,10 @@ cd /home/ubuntu/yida_paper01
 ./scripts/yida_paper_env.sh start viz
 ```
 
-环境目录为 0700，`env.sh` 和私有配置为 0600；凭据不写入仓库、命令参数、状态输出或 Viz 进程环境。操作脚本固定只读运行，不提供开启 `--execute` 的选项。交易 stdin 由权限 0600 的 `run/commands.fifo` 保持，避免无人值守时因 EOF 退出；`state` 响应保留在私有日志中。正常停止先发送 `shutdown`，等待 SDK 尾部回报和持久化完成。
+环境目录为 0700，`env.sh` 和私有配置为 0600。启动脚本在
+`YIDA_PAPER_EXECUTE=1` 时校验官方仿真配置、同源的 ctaker 与 Manager 订阅凭据，然后传入 `--execute`。
+交易 stdin 由权限 0600 的 `run/commands.fifo` 保持，`state` 响应写入私有日志。
+正常停止先发送 `shutdown`，等待 SDK 尾部回报和持久化完成。
 
 应用亲和性：业务 CPU 0、SDK CPU 1、后台 CPU 3、NUMA 节点 0；Viz 在 CPU 3。主机暴露 4 个不同 core ID，CPU 2 没有分配给该环境。没有修改内核 CPU 隔离或 IRQ 策略，不宣称独占物理核或实测低延迟。
 

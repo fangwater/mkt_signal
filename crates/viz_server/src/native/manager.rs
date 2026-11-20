@@ -1,5 +1,5 @@
 //! Read-only authenticated Manager observations and attribution.
-use super::{config::Config, l1::SharedQuotes};
+use super::{config::Config, cta, l1::SharedQuotes};
 use anyhow::{ensure, Context, Result};
 use axum::http::{header, HeaderMap, StatusCode};
 use cn_futures_state::{Adapter, InstrumentMark, PositionRow, MAX_POSITIONS};
@@ -18,6 +18,7 @@ pub struct Positions {
     sources: Arc<BTreeMap<String, (String, Adapter)>>,
     origin: String,
     client: reqwest::Client,
+    cta_signal_port: Option<u16>,
     quotes: Option<SharedQuotes>,
 }
 
@@ -41,6 +42,7 @@ impl Positions {
             sources: Arc::new(sources),
             origin: format!("http://127.0.0.1:{}", config.manager_port),
             client,
+            cta_signal_port: config.cta_signal_port,
             quotes: None,
         })
     }
@@ -63,7 +65,22 @@ impl Positions {
         if ledger.portfolio.source_id != id {
             return Err(StatusCode::BAD_GATEWAY);
         }
-        ledger.project().map_err(|error| {
+        let mut signals = BTreeMap::new();
+        if let Some(port) = self.cta_signal_port {
+            let groups = ledger
+                .portfolio
+                .strategy_groups
+                .keys()
+                .map(String::as_str)
+                .collect();
+            match cta::factor_signals(&self.client, port, id, &groups).await {
+                Ok(observed) => signals = observed,
+                Err(error) => {
+                    log::warn!("read CTA signals for Viz source {source}: {error:#}")
+                }
+            }
+        }
+        ledger.project(signals).map_err(|error| {
             log::warn!("invalid Manager ledger for Viz source {source}: {error}");
             StatusCode::BAD_GATEWAY
         })
@@ -123,7 +140,7 @@ impl Positions {
                     .find(|part| part.starts_with(SESSION))
             })
             .ok_or(StatusCode::UNAUTHORIZED)?;
-        let mut response = self
+        let response = self
             .client
             .get(format!(
                 "{}/manager/api/native/sources/{id}/{endpoint}",
@@ -136,24 +153,28 @@ impl Positions {
         match response.status() {
             StatusCode::OK => {}
             code @ (StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND) => {
-                return Err(code)
+                return Err(code);
             }
             _ => return Err(StatusCode::BAD_GATEWAY),
         }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
+        let data = decode_json(response)
             .await
-            .map_err(|_| StatusCode::BAD_GATEWAY)?
-        {
-            if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
-                return Err(StatusCode::BAD_GATEWAY);
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        let data = serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_GATEWAY)?;
+            .map_err(|_| StatusCode::BAD_GATEWAY)?;
         Ok((id, *adapter, data))
     }
+}
+
+pub(super) async fn decode_json<T: DeserializeOwned>(response: reqwest::Response) -> Result<T> {
+    let mut response = response.error_for_status()?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        ensure!(
+            bytes.len() + chunk.len() <= MAX_RESPONSE_BYTES,
+            "Viz upstream response too large"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(serde_json::from_slice(&bytes)?)
 }
 
 #[derive(Deserialize)]
@@ -270,11 +291,14 @@ pub struct ContractPositions {
     target_lots: i64,
     attributed_lots: i64,
     strategies: Vec<StrategyPosition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    factor_signals: Option<cta::FactorSignals>,
 }
 
 #[derive(Serialize)]
 struct StrategyPosition {
     name: String,
+    signal_target_lots: i64,
     target_lots: i64,
     attributed_lots: i64,
 }
@@ -316,18 +340,21 @@ struct NetTarget {
 }
 
 impl Ledger {
-    fn project(self) -> Result<BTreeMap<String, ContractPositions>> {
-        let held = self
+    fn project(
+        self,
+        mut signals: BTreeMap<String, (String, cta::FactorSignals)>,
+    ) -> Result<BTreeMap<String, ContractPositions>> {
+        let held: BTreeSet<_> = self
             .portfolio
             .strategy_groups
             .values()
             .filter(|group| group.held)
             .flat_map(|group| &group.members)
-            .collect::<BTreeSet<_>>();
+            .collect();
         self.net_targets
             .into_iter()
             .map(|(market, net)| {
-                let strategies = self
+                let mut strategies = self
                     .portfolio
                     .targets
                     .iter()
@@ -342,13 +369,16 @@ impl Ledger {
                             sum.checked_add(lot.lots)
                                 .context("attributed lots overflow")
                         })?;
+                        let signal_target_lots =
+                            *targets.get(&market).context("missing strategy target")?;
                         let target_lots = if held.contains(name) {
                             attributed_lots
                         } else {
-                            *targets.get(&market).context("missing strategy target")?
+                            signal_target_lots
                         };
                         Ok(StrategyPosition {
                             name: name.clone(),
+                            signal_target_lots,
                             target_lots,
                             attributed_lots,
                         })
@@ -371,12 +401,22 @@ impl Ledger {
                     (target_lots, attributed_lots) == (net.target_lots, net.attributed_lots),
                     "strategy totals do not match the Manager ledger"
                 );
+                let factor_signals = signals.remove(&market).map(|(group, signals)| {
+                    let aggregate = format!("{group}-1h");
+                    strategies.retain(|row| {
+                        row.name == aggregate
+                            || row.signal_target_lots != 0
+                            || row.attributed_lots != 0
+                    });
+                    signals
+                });
                 Ok((
                     market,
                     ContractPositions {
                         target_lots,
                         attributed_lots,
                         strategies,
+                        factor_signals,
                     },
                 ))
             })

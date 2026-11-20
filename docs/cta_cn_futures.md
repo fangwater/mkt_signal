@@ -37,6 +37,12 @@ PM2 管理。01 的 Client27 小时配置覆盖 21 个品种、147 条规则：
   `cn-futures-01`，附加品种 RB、SA、SM 分别使用 `cn-futures-01-rb`、
   `cn-futures-01-sa`、`cn-futures-01-sm`。各品种共用 Redis 入口，独立封 bar、触发发布和重试。
   Manager 按账户输出净目标，并在相同原生合约内匹配策略需求。
+- 01 的每个品种使用一个 `1h` 策略，纯碱为 `cn-futures-01-sa-1h`。
+  `/state` 的 `factor_signals` 展示各因子的 `-1/0/+1` 方向，最终手数见 `positions`。
+  `publication.retire_hourly_factor_members` 用于已登记旧因子的组。切换前核对并结清旧批次，随后在原组登记聚合策略。
+  下一次有效实时决策在同一批次提交聚合目标和旧成员的零目标，历史归因按 Manager 的事实成交和内部划转保留。
+
+2026-11-20 午休，01 按品种启用小时聚合。21 个品种的 147 条规则通过预检，切换前后的工作进程账本校验一致。Manager 对账后结清 11:30 已过租约的纯碱外部需求，并为锡、螺纹和纯碱登记各自的小时聚合策略。Viz 验收确认纯碱显示 10 条因子信号。发布收据位于 `data/ops/cta-hourly-live.df06r6ya/`（Git 忽略）。
 
 发布由 `publication.enabled` 显式开启，仓库模板默认关闭。配置示例：
 
@@ -47,13 +53,13 @@ PM2 管理。01 的 Client27 小时配置覆盖 21 个品种、147 条规则：
   "source_id": "native-account",
   "token_env": "CN_CTA_01_PUBLISH_TOKEN",
   "per_factor_intervals": [],
+  "retire_hourly_factor_members": true,
   "products": ["RB", "SA"]
 }
 ```
 
 `products` 选定可发布的品种。01 仅发布螺纹钢 RB 和纯碱 SA。锡 SN 继续计算本地信号，Manager 保留停发前的目标，锡持仓由人工处理。
-已有逐因子成员的账户先核对并结清旧批次，
-在 Manager 登记聚合成员并处理旧成员归因后再启用发布。附加品种继承 Manager 地址和源账户，
+附加品种继承 Manager 地址、源账户和归因配置，
 令牌环境名在根变量后附品种后缀，例如 `CN_CTA_01_PUBLISH_TOKEN_RB`。
 各组在 Manager 单独登记成员及令牌。已有 SN 归因可通过 Manager 的 `extend-scope` 注册附加品种组，
 保留原组和已归属仓位。同账户的批次继续共享 revision 和未结清执行需求保护。

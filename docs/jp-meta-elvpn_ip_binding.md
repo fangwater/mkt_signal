@@ -1,6 +1,13 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-17 09:12 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新于 2026-11-18 09:25 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-18 09:20 UTC，JP 跨所账户启用 Spread01 和 Spread02。OKX `okex_exec_trade01`
+从 `172.31.35.229/172.31.35.230` 执行，Binance `binance_exec_spread01` 从
+`172.31.35.228/172.31.35.228` 执行。进程和成交核验见 [隔离核心分配登记](core_allocation.md)。
+
+2026-11-18 05:56 UTC，JP `binance_exec_sbh11` 启用实盘，使用原配置的
+`172.31.35.229/172.31.35.230`。启动回执见 [隔离核心分配登记](core_allocation.md)。
 
 2026-11-17，新增 Binance USD-M `binance_exec_sbh11` / `ba503d02`，使用现有
 `172.31.35.229/172.31.35.230`，公网分别为 `52.193.90.33/54.238.72.43`。
@@ -1202,14 +1209,14 @@ binance-cta-perp-rx02        默认出口 / 172.31.35.228       已下线，运�
 binance-cta-perp-rx03        默认出口 / 172.31.35.228       全部旧因子/信号/页面进程停止；Exec07已清仓解绑，旧配置410
 binance-cta-perp-rx01        默认出口 / 172.31.35.228       全部旧进程停止；Exec06永续仓位/挂单0，91旧绑定及virtual06跟随移除，旧配置410
 cta-prep-binance-futures     默认出口 / 172.31.35.228       CPU17运行，Prep01四频段+Prep02三券池×5min/15min/1h共13张活动表；Config loopback19220，发布开启，分钟260/331、小时264/265项就绪
-cta-factor-spread           默认出口 / 172.31.35.228       CPU18计算及Spread01四频段发布开启，1h109/109项就绪，无私有交易请求
+cta-factor-spread           默认出口 / 172.31.35.228       CPU18计算并发布Spread01/02各四频段，小时项分别109/109和130/130就绪
 exec_volatility_binance      默认出口 / 172.31.35.228       共享Kafka执行Vol；CPU20，无私有交易请求或独立监听
 binance-cta-perp-rx04        默认出口 / 172.31.35.228       全部旧因子/信号/页面进程停止；5min已清仓解绑，旧配置410
 binance-cta-special-rx03     172.31.35.228                  RapidX/LTP（停盘，无运行进程）
 okex-intra-arb01             172.31.35.228, 172.31.35.228
 okex_mm_83777                172.31.35.229, 172.31.35.230   UID556411065144578537；BTC/ETH永续实盘开启，vol70分位、杠杆5、Tlen关闭
-okex_exec_trade01            172.31.35.229, 172.31.35.230   UID241049181320564736；监控及Exec运行，Spread四频段；旧记录已归档重置
-binance_exec_spread01        172.31.35.228, 172.31.35.228   81857独立source；11-16清仓后交易停止，监控保留；Spread01/02计算保持，8条双边执行绑定零份
+okex_exec_trade01            172.31.35.229, 172.31.35.230   LTOKEx656（UID577437828112804477），Spread01/02各四频段每表1份
+binance_exec_spread01        172.31.35.228, 172.31.35.228   81857独立source，Spread01/02各四频段每表1份
 okex-binance-cta-spread-rx01  两腿由独立Exec交易             旧signal/publisher/config停止，旧配置410；新Spread计算及发布开启
 binance_fr_arb02             172.31.35.231, 172.31.35.231
 binance_fr_arb03             172.31.35.231, 172.31.35.231

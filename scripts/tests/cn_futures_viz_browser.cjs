@@ -19,13 +19,20 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     let observation=null;
     const strategy={
       'SHFE:rb2701': {target_lots:1,attributed_lots:0,strategies:[
-        {name:'long-factor',target_lots:3,attributed_lots:2},
-        {name:'short-factor',target_lots:-2,attributed_lots:-2},
-        {name:'inactive-factor',target_lots:0,attributed_lots:0},
+        {name:'long-factor',signal_target_lots:3,target_lots:3,attributed_lots:2},
+        {name:'short-factor',signal_target_lots:-2,target_lots:-2,attributed_lots:-2},
+        {name:'flat-factor',signal_target_lots:0,target_lots:0,attributed_lots:0},
       ]},
       'SHFE:sn2701': {target_lots:0,attributed_lots:0,strategies:[
-        {name:'reset-factor',target_lots:0,attributed_lots:0},
+        {name:'reset-factor',signal_target_lots:0,target_lots:0,attributed_lots:0},
       ]},
+      'CZCE:SA701': {target_lots:-1,attributed_lots:0,
+        strategies:[{name:'cn-futures-01-sa-1h',signal_target_lots:-1,target_lots:-1,attributed_lots:0}],
+        factor_signals:{market:'CZCE:SA701',decision_ms:Date.now()-60000,rules:[
+          {factor:'baseline_193',target_lots:1},{factor:'td_pt_006',target_lots:-1},{factor:'td_vi_023',target_lots:-1},
+          ...Array.from({length:7},(_,i)=>({factor:`sa-factor-${i}`,target_lots:0})),
+        ]},
+      },
     };
     await page.route(url=>url.origin==='http://cn-viz.test'&&url.pathname==='/',route=>route.fulfill({contentType:'text/html',body:html}));
     await page.route('**/strategy-positions/ctp',route=>route.fulfill({status:strategyStatus,json:strategy}));
@@ -180,42 +187,60 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     await page.locator('#refresh').click();
     await page.getByText('long-factor',{exact:true}).waitFor();
     const strategyTable=page.getByRole('table',{name:'rb2701 策略仓位'});
-    assert.deepEqual(await strategyTable.locator('th').allTextContents(),['策略','策略净仓 · 手']);
-    const longStrategy=strategyTable.getByRole('row').filter({hasText:'long-factor'});
-    assert.equal(await longStrategy.locator('td span').innerText(),'+2');
-    assert.equal(await longStrategy.locator('.strategy-target').innerText(),'目标 +3 手');
-    const shortStrategy=strategyTable.getByRole('row').filter({hasText:'short-factor'});
-    assert.deepEqual(await shortStrategy.locator('td').allTextContents(),['short-factor','-2']);
-    assert.equal(await strategyTable.locator('.strategy-target').count(),1);
-    await page.locator('#show-zero').check();
-    assert.equal(await page.getByText('inactive-factor',{exact:true}).count(),1);
-    assert.equal(await strategyTable.locator('.strategy-target').count(),1);
-    await page.locator('#show-zero').uncheck();
-    assert.equal(await page.getByText('inactive-factor',{exact:true}).count(),0);
-    assert.equal(await page.locator('#positions .aggregate-row').count(),1);
+    assert.deepEqual(await strategyTable.locator('th').allTextContents(),['策略','信号目标 · 手','账本净仓 · 手']);
+    assert.deepEqual(await strategyTable.locator('tbody tr').allTextContents(),['long-factor+3+2','short-factor-2-2']);
+    assert.deepEqual(await page.locator('#positions .aggregate-row').evaluateAll(rows=>rows.map(row=>row.dataset.symbol)),['SA701','rb2701']);
     ctp.entry.positions=[]; ctp.entry.marks=[];
     await page.evaluate(f=>window.__push(f),ctp);
-    assert.equal(await page.locator('#positions .aggregate-row').count(),0);
-    assert.match(await page.locator('#positions').innerText(),/当前无持仓/);
+    assert.deepEqual(await page.locator('#positions .aggregate-row').evaluateAll(rows=>rows.map(row=>row.dataset.symbol)),['SA701']);
+    await page.locator('#symbol').fill('纯碱');
+    assert.equal(await page.locator('#positions .aggregate-row').count(),1);
     await page.locator('#show-zero').check();
     assert.equal(await page.locator('#positions .aggregate-row').count(),1);
+    const saStrategies=page.getByRole('table',{name:'SA701 策略仓位'});
+    assert.deepEqual(await saStrategies.locator('tbody td').allTextContents(),['cn-futures-01-sa-1h','-1','0']);
+    const saSignals=page.getByRole('table',{name:'SA701 因子信号'});
+    const saToggle=page.getByRole('button',{name:'1h 因子信号',exact:true});
+    assert.equal(await saToggle.getAttribute('aria-expanded'),'false');
+    assert.equal(await saSignals.count(),0);
+    await saToggle.click();
+    assert.equal(await saToggle.getAttribute('aria-expanded'),'true');
+    assert.equal(await saSignals.locator('tbody tr').count(),10);
+    assert.deepEqual(await saSignals.getByRole('row').filter({hasText:'td_vi_023'}).locator('td').allTextContents(),['td_vi_023','-1']);
+    assert.deepEqual(await saSignals.getByRole('row').filter({hasText:'sa-factor-0'}).locator('td').allTextContents(),['sa-factor-0','0']);
+    assert.deepEqual((await page.locator('#positions tr[data-symbol="SA701"] td').allTextContents()).slice(1,3),['0','-1']);
+    await page.setViewportSize({width:390,height:844});
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    assert.equal(await saSignals.locator('tbody tr:visible').count(),10);
+    await Promise.all([
+      page.waitForResponse(response=>response.url().endsWith('/strategy-positions/ctp')),
+      page.locator('#refresh').click(),
+    ]);
+    await saSignals.waitFor();
+    assert.equal(await saToggle.getAttribute('aria-expanded'),'true');
+    await saToggle.click();
+    assert.equal(await saToggle.getAttribute('aria-expanded'),'false');
+    assert.equal(await saSignals.count(),0);
+    await page.setViewportSize({width:1440,height:1000});
+    await page.locator('#symbol').fill('');
     assert.equal(await page.locator('#positions tr[data-symbol="sn2701"]').count(),0);
     assert.deepEqual((await page.locator('#positions tr[data-symbol="rb2701"] td').allTextContents()).slice(1,3),['0','+1']);
     assert.equal(await page.locator('#contract-count').innerText(),'0');
     assert.equal(await page.locator('.attribution-gap').count(),0);
     await page.locator('#show-zero').uncheck();
-    assert.equal(await page.locator('#positions .aggregate-row').count(),0);
+    assert.deepEqual(await page.locator('#positions .aggregate-row').evaluateAll(rows=>rows.map(row=>row.dataset.symbol)),['SA701']);
     ctp.entry.positions=[row('SHFE','rb2701','buy',1)];
     ctp.entry.marks=[{...mark('rb2701','future',10,3140),bid_price:3141,ask_price:3143,bid_lots:1,ask_lots:2}];
     await page.evaluate(f=>window.__push(f),ctp);
     assert.match(await page.locator('.attribution-gap').innerText(),/策略合计 0 手，柜台与账本相差 \+1 手/);
-    assert.equal(await page.locator('#positions .net-amount').innerText(),'¥ 31,420.00');
+    const rbAmount=page.locator('#positions tr[data-symbol="rb2701"] .net-amount');
+    assert.equal(await rbAmount.innerText(),'¥ 31,420.00');
     ctp.entry.marks[0].bid_price=3143; ctp.entry.marks[0].ask_price=3145;
     await page.evaluate(f=>window.__push(f),ctp);
-    assert.equal(await page.locator('#positions .net-amount').innerText(),'¥ 31,440.00');
+    assert.equal(await rbAmount.innerText(),'¥ 31,440.00');
     ctp.entry.marks[0].ask_lots=0;
     await page.evaluate(f=>window.__push(f),ctp);
-    assert.equal(await page.locator('#positions .net-amount').innerText(),'¥ 31,400.00');
+    assert.equal(await rbAmount.innerText(),'¥ 31,400.00');
     strategyStatus=403;
     await page.locator('#refresh').click();
     await page.getByText('当前账户或策略无查看权限',{exact:true}).waitFor();

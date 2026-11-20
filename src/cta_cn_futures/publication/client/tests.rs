@@ -102,6 +102,7 @@ fn settings(url: String) -> PublicationConfig {
         token_env: "unused_test_env".into(),
         include_trading_day: true,
         per_factor_intervals: BTreeSet::from(["1h".into()]),
+        retire_hourly_factor_members: false,
         products: BTreeSet::new(),
     }
 }
@@ -175,6 +176,74 @@ async fn lost_ack_retries_the_identical_batch_after_process_restart() {
     let state = state.lock().unwrap();
     assert_eq!(state.requests.len(), 2);
     assert_eq!(state.requests[0], state.requests[1]);
+    task.abort();
+}
+
+#[tokio::test]
+async fn aggregate_hourly_batch_zeroes_only_retired_members_and_retries_exactly() {
+    let old = desired();
+    let (url, state, task) = server(&old, true).await;
+    let mut settings = settings(url);
+    settings.per_factor_intervals.clear();
+    settings.retire_hourly_factor_members = true;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("outbox.json");
+    let mut client = Client::with_token(
+        &settings,
+        "cn-futures-01".into(),
+        path.clone(),
+        "test-secret",
+    )
+    .unwrap();
+    let mut aggregate = old.clone();
+    let active = "cn-futures-01-1h".to_owned();
+    aggregate.positions = BTreeMap::from([(
+        active.clone(),
+        StrategyPosition {
+            targets: BTreeMap::from([("SHFE:sn2612".into(), -1)]),
+            decision_ms: old.trigger_us / 1000,
+        },
+    )]);
+    aggregate.signature = signature(&aggregate.positions).unwrap();
+    assert!(client.prepare(&aggregate).await.is_err());
+    state.lock().unwrap().members.insert(active.clone());
+    client.prepare(&aggregate).await.unwrap();
+    assert!(client.deliver().await.is_err());
+    let mut restarted =
+        Client::with_token(&settings, "cn-futures-01".into(), path, "test-secret").unwrap();
+    restarted
+        .check_pending_members(aggregate.positions.keys())
+        .unwrap();
+    let old_name = old.positions.keys().next().unwrap();
+    let pending = restarted.outbox.pending.as_mut().unwrap();
+    pending
+        .request
+        .strategies
+        .get_mut(old_name)
+        .unwrap()
+        .insert("SHFE:sn2612".into(), 1);
+    assert!(restarted
+        .check_pending_members(aggregate.positions.keys())
+        .is_err());
+    let pending = restarted.outbox.pending.as_mut().unwrap();
+    pending
+        .request
+        .strategies
+        .get_mut(old_name)
+        .unwrap()
+        .insert("SHFE:sn2612".into(), 0);
+    restarted.deliver().await.unwrap();
+    let mut state = state.lock().unwrap();
+    assert_eq!(state.requests[0], state.requests[1]);
+    let rows = state.requests[1]["strategies"].as_object().unwrap();
+    assert_eq!(rows[&active]["SHFE:sn2612"], -1);
+    assert!(old
+        .positions
+        .keys()
+        .all(|name| rows[name]["SHFE:sn2612"] == 0));
+    state.members.insert("unrelated-manual".into());
+    drop(state);
+    assert!(restarted.prepare(&aggregate).await.is_err());
     task.abort();
 }
 
