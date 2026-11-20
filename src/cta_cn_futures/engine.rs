@@ -728,8 +728,10 @@ mod tests {
 
     #[test]
     fn one_lot_direction_uses_independent_votes_or_the_mean_with_strict_thresholds() {
-        let mut cfg: Config =
-            serde_json::from_str(include_str!("../../config/cta_cn_futures_01.json")).unwrap();
+        let mut cfg: Config = serde_json::from_str(include_str!(
+            "../../tests/fixtures/cta_cn_futures_legacy.json"
+        ))
+        .unwrap();
         cfg.rules.truncate(2);
         cfg.entry.nq_change_enabled = false;
         let points = |quantiles: [f64; 2]| {

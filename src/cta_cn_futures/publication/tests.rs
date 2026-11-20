@@ -68,7 +68,14 @@ fn instance_01_has_exactly_one_hourly_strategy_per_product() {
         };
         assert_eq!(cfg.strategy_group().unwrap(), group_name);
         assert_eq!(cfg.publication_settings().unwrap().token_env, token);
-        assert_eq!(enabled_settings.enabled_for(&cfg.symbol), suffix == "rb");
+        assert_eq!(
+            enabled_settings.enabled_for(&cfg.symbol),
+            matches!(suffix.as_str(), "rb" | "sa")
+        );
+        assert_eq!(
+            cfg.position_algorithm,
+            crate::cta_perp::config::PositionAlgorithm::V1
+        );
         let engine = Engine::new(&cfg, Ledger::default()).unwrap();
         let positions = engine.publication_positions().unwrap();
         assert_eq!(
