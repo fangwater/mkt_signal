@@ -37,6 +37,7 @@ pub const SETTLEMENT_STATUS: i32 = 20;
 #[derive(Debug)]
 pub enum ColdRestartRequired {
     AccountQuery(&'static str),
+    TransportOrControlTimeout,
     MarketDataTradingDay,
 }
 
@@ -47,6 +48,9 @@ impl ColdRestartRequired {
     pub(crate) fn observation_reason(&self) -> &'static str {
         match self {
             Self::AccountQuery(_) => "CTP account query unavailable; cold restart required",
+            Self::TransportOrControlTimeout => {
+                "CTP transport or control response timed out; cold restart required"
+            }
             Self::MarketDataTradingDay => {
                 "CTP market-data trading day unavailable; cold restart required"
             }
@@ -58,6 +62,9 @@ impl std::fmt::Display for ColdRestartRequired {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::AccountQuery(message) => message,
+            Self::TransportOrControlTimeout => {
+                "CTP transport or control response timed out; retry after SDK restart"
+            }
             Self::MarketDataTradingDay => {
                 "MD login returned no valid trading day; retry after SDK restart"
             }

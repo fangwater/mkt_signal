@@ -1409,28 +1409,28 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                 }
             }
             if runtime.trader.events.is_empty() {
-                if session.timed_out(now)
-                    || (!wait_for_front
-                        && !transport_online
-                        && now.saturating_duration_since(transport_progress)
-                            >= Duration::from_millis(config.response_timeout_ms))
-                {
-                    let account_timeout = session.account_query_in_flight();
+                let control_timeout = session.timed_out(now);
+                let front_timeout = !wait_for_front
+                    && !transport_online
+                    && now.saturating_duration_since(transport_progress)
+                        >= Duration::from_millis(config.response_timeout_ms);
+                if control_timeout || front_timeout {
+                    let account_timeout = control_timeout && session.account_query_in_flight();
                     runtime.core.disconnect();
                     journal.state(&runtime.core, &[])?;
-                    let reason = if account_timeout {
-                        "account query timeout"
-                    } else {
-                        "transport or control response timeout"
-                    };
-                    journal.record(json!({"type":"restart_required","reason":reason,"venue_orders_cancelled":false}), true)?;
-                    if account_timeout {
-                        return Err(ctp::ColdRestartRequired::AccountQuery(
-                            "CTP account query timed out",
+                    let (reason, restart) = if account_timeout {
+                        (
+                            "account query timeout",
+                            ctp::ColdRestartRequired::AccountQuery("CTP account query timed out"),
                         )
-                        .into());
-                    }
-                    anyhow::bail!("CTP timeout requires supervisor restart; SDK lifecycle work is excluded from the business loop");
+                    } else {
+                        (
+                            "transport or control response timeout",
+                            ctp::ColdRestartRequired::TransportOrControlTimeout,
+                        )
+                    };
+                    journal.record(json!({"type":"restart_required","reason":reason,"transport_online":transport_online,"front_timeout":front_timeout,"control_timeout":control_timeout,"venue_orders_cancelled":false}), true)?;
+                    return Err(restart.into());
                 }
                 if let Some(kind) = session.request_due(now)? {
                     let id = runtime.trader.next_id()?;
