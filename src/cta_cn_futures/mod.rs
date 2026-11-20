@@ -212,6 +212,13 @@ impl Stream {
             ..Self::default()
         };
     }
+    fn begin_recovery(&mut self) {
+        let extras = self.extras.take();
+        *self = Self {
+            extras,
+            ..Self::default()
+        };
+    }
     fn activate(&mut self) {
         self.aligned = true;
         self.minutes = Vec::new();
@@ -673,6 +680,15 @@ async fn run_worker(worker: Worker) -> Result<()> {
                 stream.reset();
                 health.pause(format!("ZMQ input: {e:#}"));
             }
+            if stream.needs_restart {
+                stream.begin_recovery();
+                history = Some(history::History::default());
+                market_context = None;
+                hours = engine::Bars::default();
+                load_start = history_begin(&cfg);
+                loaded = false;
+                next_fetch = tokio::time::Instant::now();
+            }
         }
         if let Some(input) = stream.input.as_mut() {
             let rows = input.clock(chrono::Utc::now().timestamp_millis(), &current);
@@ -688,6 +704,15 @@ async fn run_worker(worker: Worker) -> Result<()> {
                 stream.reset();
                 health.pause(format!("ZMQ minute: {e:#}"));
             }
+        }
+        if stream.needs_restart {
+            stream.begin_recovery();
+            history = Some(history::History::default());
+            market_context = None;
+            hours = engine::Bars::default();
+            load_start = history_begin(&cfg);
+            loaded = false;
+            next_fetch = tokio::time::Instant::now();
         }
         // Persist every new factual decision before any await or factor rebuild.
         if engine.ledger.last_decision_ms != decision_before {

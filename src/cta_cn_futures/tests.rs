@@ -436,6 +436,25 @@ fn input_pause_keeps_status_available_and_cannot_be_cleared_by_rest_recovery() {
     assert_eq!(engine.ledger.last_decision_ms, 123);
 }
 
+#[test]
+fn reset_reopens_capture_without_losing_frequency_ledgers() {
+    let (_dir, cfg, _) = live_fixture();
+    let extras = super::extras::Extras::new(&cfg).unwrap();
+    let ledgers = extras.ledgers();
+    let mut stream = super::Stream {
+        aligned: true,
+        extras: Some(extras),
+        ..Default::default()
+    };
+    stream.reset();
+    assert!(stream.needs_restart);
+    stream.begin_recovery();
+    assert!(!stream.needs_restart);
+    assert!(!stream.aligned);
+    assert!(stream.input.is_none());
+    assert!(stream.extras.as_ref().unwrap().ledgers() == ledgers);
+}
+
 fn warmed_engine(cfg: &Config) -> Engine {
     let mut engine = Engine::new(
         cfg,
