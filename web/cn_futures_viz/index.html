@@ -463,9 +463,10 @@
           for (const [market, attribution] of Object.entries(state.strategy.contracts || {})) {
             const [venue, symbol] = market.split(':');
             if (!symbol || !match(venue, symbol, snapshot?.trading_day)) continue;
-            if (!groups.has(JSON.stringify([source.source_id, venue, symbol])) &&
-                !showZero && !attribution.strategies.some(activeStrategy)) continue;
-            group(venue, symbol).attribution = attribution;
+            const key = JSON.stringify([source.source_id, venue, symbol]);
+            if (groups.has(key) || (showZero && attribution.strategies.some(activeStrategy))) {
+              group(venue, symbol).attribution = attribution;
+            }
           }
         }
       }

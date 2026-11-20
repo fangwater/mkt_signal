@@ -23,6 +23,9 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         {name:'short-factor',target_lots:-2,attributed_lots:-2},
         {name:'inactive-factor',target_lots:0,attributed_lots:0},
       ]},
+      'SHFE:sn2701': {target_lots:0,attributed_lots:0,strategies:[
+        {name:'reset-factor',target_lots:0,attributed_lots:0},
+      ]},
     };
     await page.route(url=>url.origin==='http://cn-viz.test'&&url.pathname==='/',route=>route.fulfill({contentType:'text/html',body:html}));
     await page.route('**/strategy-positions/ctp',route=>route.fulfill({status:strategyStatus,json:strategy}));
@@ -173,8 +176,6 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.equal(await page.locator('#futures-amount').innerText(),'¥ 29,825.00');
     assert.match(await page.locator('#quote-status').innerText(),/历史行情/);
     assert.match(await page.locator('#positions .net-amount span').getAttribute('title'),/14:59–15:00.*已完成分钟/);
-    ctp.entry.positions=[]; ctp.entry.marks=[];
-    await page.evaluate(f=>window.__push(f),ctp);
     strategyStatus=200;
     await page.locator('#refresh').click();
     await page.getByText('long-factor',{exact:true}).waitFor();
@@ -191,9 +192,19 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.equal(await strategyTable.locator('.strategy-target').count(),1);
     await page.locator('#show-zero').uncheck();
     assert.equal(await page.getByText('inactive-factor',{exact:true}).count(),0);
+    assert.equal(await page.locator('#positions .aggregate-row').count(),1);
+    ctp.entry.positions=[]; ctp.entry.marks=[];
+    await page.evaluate(f=>window.__push(f),ctp);
+    assert.equal(await page.locator('#positions .aggregate-row').count(),0);
+    assert.match(await page.locator('#positions').innerText(),/当前无持仓/);
+    await page.locator('#show-zero').check();
+    assert.equal(await page.locator('#positions .aggregate-row').count(),1);
+    assert.equal(await page.locator('#positions tr[data-symbol="sn2701"]').count(),0);
     assert.deepEqual((await page.locator('#positions tr[data-symbol="rb2701"] td').allTextContents()).slice(1,3),['0','+1']);
     assert.equal(await page.locator('#contract-count').innerText(),'0');
     assert.equal(await page.locator('.attribution-gap').count(),0);
+    await page.locator('#show-zero').uncheck();
+    assert.equal(await page.locator('#positions .aggregate-row').count(),0);
     ctp.entry.positions=[row('SHFE','rb2701','buy',1)];
     ctp.entry.marks=[{...mark('rb2701','future',10,3140),bid_price:3141,ask_price:3143,bid_lots:1,ask_lots:2}];
     await page.evaluate(f=>window.__push(f),ctp);
