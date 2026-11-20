@@ -806,14 +806,12 @@ fn fixed_first_minute_handoff_succeeds_while_grpc_still_lags_the_local_tail() {
     assert_eq!(completed.len(), 1);
     assert_eq!(completed[0].minutes, 60);
     assert_eq!(completed[0].start_ms, anchor);
-    // Even with a later matching minute, a conflicting first minute blocks.
+    // A conflicting completed historical boundary leaves the captured live minute authoritative.
     first.buy_volume_lots += 1.;
     history.minutes.insert(anchor, first);
-    assert!(attempt(&history)
-        .err()
-        .unwrap()
-        .to_string()
-        .contains("inputs differ"));
+    let recovered = attempt(&history).unwrap();
+    assert_eq!(recovered.anchor_ms, anchor);
+    assert!(recovered.engine.ledger == ledger);
 }
 #[test]
 fn equality_requires_complete_baseline_fields_not_just_a_timestamp() {

@@ -1,4 +1,4 @@
-//! Match server minutes to independently captured ZMQ minutes, then keep the live tail.
+//! Warm from completed history, then keep the independently captured live tail.
 use super::{
     config::Config,
     engine::{Bars, Engine, Ledger},
@@ -186,9 +186,15 @@ pub fn recover(
         "gRPC has not finalized first ZMQ minute {anchor}"
     );
     ensure!(
-        same_minute(remote, first),
-        "gRPC/first ZMQ minute inputs differ at {anchor}"
+        remote.trading_day == first.trading_day,
+        "historical and live boundary trading days differ"
     );
+    if !same_minute(remote, first) {
+        eprintln!(
+            "historical and live boundary differ for {} at {anchor}; retaining the live minute",
+            main.contract
+        );
+    }
     ensure!(
         history
             .minutes
@@ -222,7 +228,7 @@ pub fn recover(
     }
     for row in history
         .minutes
-        .range(..=anchor)
+        .range(..anchor)
         .filter(|(ts, _)| {
             history
                 .hfq
@@ -230,7 +236,7 @@ pub fn recover(
                 .is_none_or(|archive| **ts > archive.cutoff)
         })
         .map(|(_, r)| r.clone())
-        .chain(local.iter().filter(|r| r.open_time_ms > anchor).cloned())
+        .chain(local.iter().filter(|r| r.open_time_ms >= anchor).cloned())
     {
         count += 1;
         extras.push(row.clone(), multiple, main, &input.context, None, false)?;
