@@ -1,6 +1,16 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新于 2026-11-20 12:53 UTC。**部署、迁移、下线任何绑核进程时，请同步更新本表。**
+最后更新于 2026-11-20 13:45 UTC。**部署、迁移、下线任何绑核进程时，请同步更新本表。**
+
+2026-11-20 13:43–13:45 UTC，JP 单独发布 Binance FR `binance_fr_arb03` 的
+`trade_engine` 和 `pre_trade`（`arbmm 7ab80bc0`）。暂停信号，连续两次确认交易所
+现货、合约和条件单均已排空，本地 release 产物通过 SHA-256 核验后安装。
+新 `trade_engine` PID 1939760、`pre_trade` PID 1939917、`trade_signal` PID 1940468
+继续使用 CPU `0-5,48-95`。风险为 `free_trade`，96 个在线标的交易规则齐全，
+信号加载本盘正套开仓 P10 和撤单 P25。Binance PM FR 开仓买单撤单保留所借 USDT，
+定时还款保留 2,000 可用 USDT。启动还款跳过约 399.88 USDT，随后既有启动归集将可用
+USDT 提高至 9,373.86。回滚产物、日志和运行回执位于
+`~/binance_fr_arb03/backups/binance_fr_arb03_usdt_7ab80bc0_20261120T133905Z/`。
 
 2026-11-20 12:53 UTC，JP 单独发布 Binance FR `binance_fr_arb03` 的
 `trade_signal`（`arbmm 2bca671b`）。PID 1928111 使用 CPU `0-5,48-95`。
