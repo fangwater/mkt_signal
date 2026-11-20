@@ -47,9 +47,7 @@ fn account_funds_codec_preserves_actual_values_and_query_time() {
     let account = sample_funds(s.observed_us - 1);
     s.account = Some(account);
     s.validate().unwrap();
-    let encoded = bincode::serialize(&s).unwrap();
-    let mut frame = Vec::from((encoded.len() as u32).to_le_bytes());
-    frame.extend(encoded);
+    let frame = bincode::serialize(&s).unwrap();
     let decoded = transport::decode(&frame).unwrap().account.unwrap();
     assert_eq!(decoded.available, -10.25);
     assert_eq!(decoded.observed_us, account.observed_us);
@@ -68,9 +66,7 @@ fn account_funds_codec_preserves_actual_values_and_query_time() {
 #[test]
 fn fixed_text_and_framed_codec_reject_truncation_and_invalid_positions() {
     let s = sample();
-    let encoded = bincode::serialize(&s).unwrap();
-    let mut frame = Vec::from((encoded.len() as u32).to_le_bytes());
-    frame.extend(encoded);
+    let frame = bincode::serialize(&s).unwrap();
     let decoded = transport::decode(&frame).unwrap();
     assert_eq!(decoded.positions[0].position.today, 2);
     assert_eq!(decoded.positions[0].symbol.as_str(), "cu2612");
@@ -88,7 +84,7 @@ fn fixed_text_and_framed_codec_reject_truncation_and_invalid_positions() {
 #[test]
 fn ipc_full_replacement_carries_freezing_flat_state_and_terminal_status() {
     let namespace = format!("native_positions_{}", publisher::now_us());
-    let publisher = transport::StatePublisher::new(&namespace).unwrap();
+    let mut publisher = transport::StatePublisher::new(&namespace).unwrap();
     let subscriber = transport::StateSubscriber::open(&namespace).unwrap();
     let mut s = sample();
     publisher.publish(&s).unwrap();
@@ -116,7 +112,7 @@ fn ipc_full_replacement_carries_freezing_flat_state_and_terminal_status() {
     );
 }
 #[test]
-fn bounded_background_publisher_replaces_pending_complete_snapshots() {
+fn inline_publisher_delivers_the_latest_complete_snapshot() {
     let namespace = format!("native_mailbox_{}", publisher::now_us());
     let cfg = Config {
         namespace: namespace.clone(),
@@ -160,7 +156,6 @@ fn bounded_background_publisher_replaces_pending_complete_snapshots() {
     assert_eq!(last.sequence, 100);
     assert_eq!(last.positions.len(), 1);
     assert_eq!(last.positions[0].position.today, 100);
-    assert!(last.replaced_snapshots > 0);
     producer.finish().unwrap();
 }
 
@@ -278,7 +273,7 @@ unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
     }
 }
 #[test]
-fn snapshot_capture_does_not_allocate_or_wait_for_encoding() {
+fn inline_snapshot_publication_does_not_allocate() {
     let cfg = Config {
         namespace: format!("native_capture_{}", publisher::now_us()),
         interval_ms: 1000,
@@ -396,7 +391,7 @@ fn maximum_full_snapshot_fits_one_complete_ipc_message() {
         });
     }
     s.validate().unwrap();
-    assert!(bincode::serialized_size(&s).unwrap() < (PAYLOAD - 4) as u64);
+    assert!(bincode::serialized_size(&s).unwrap() < MAX_SNAPSHOT_BYTES as u64);
 }
 
 #[test]

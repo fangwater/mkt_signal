@@ -9,6 +9,7 @@ use anyhow::{ensure, Context, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use serde::Deserialize;
 use std::{
+    cell::RefCell,
     fs,
     net::{SocketAddr, TcpListener},
     os::unix::{
@@ -17,8 +18,8 @@ use std::{
     },
     path::{Path, PathBuf},
     pin::Pin,
+    rc::Rc,
     sync::Arc,
-    thread::JoinHandle,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{oneshot, Semaphore};
@@ -144,29 +145,36 @@ struct Pending {
 pub struct Ingress {
     pending: Receiver<Pending>,
     stop: Option<oneshot::Sender<()>>,
-    worker: Option<JoinHandle<Result<()>>>,
+    /// Set when the I/O task ends; an executable ingress never ends on its own.
+    ended: Rc<RefCell<Option<std::result::Result<(), String>>>>,
 }
 
 impl Ingress {
-    pub fn start(config: &Config) -> Result<Self> {
-        Self::start_with_mode(config, false)
+    pub fn start(config: &Config, io: &crate::IoLoop) -> Result<Self> {
+        Self::start_with_mode(config, false, io)
     }
 
-    pub fn start_observer(config: &Config) -> Result<Self> {
+    pub fn start_observer(config: &Config, io: &crate::IoLoop) -> Result<Self> {
         config.validate_observer()?;
-        Self::start_with_mode(config, true)
+        Self::start_with_mode(config, true, io)
     }
 
-    fn start_with_mode(config: &Config, observation: bool) -> Result<Self> {
+    fn start_with_mode(config: &Config, observation: bool, io: &crate::IoLoop) -> Result<Self> {
         let manager = config
             .manager_plan
             .as_ref()
             .map(|manager| PlanReader::from_env(manager, &config.source_id, observation))
             .transpose()?;
-        Self::start_with_reader(config, manager)
+        Self::start_with_reader(config, manager, io)
     }
 
-    pub(crate) fn start_with_reader(config: &Config, manager: Option<PlanReader>) -> Result<Self> {
+    /// Listeners and the Manager subscription run as local tasks of the
+    /// business thread's `IoLoop`.
+    pub(crate) fn start_with_reader(
+        config: &Config,
+        manager: Option<PlanReader>,
+        io: &crate::IoLoop,
+    ) -> Result<Self> {
         config.validate()?;
         let local = config
             .ipc_socket
@@ -199,41 +207,36 @@ impl Ingress {
             streams: Arc::new(Semaphore::new(8)),
         };
         let (stop, stopping) = oneshot::channel();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let worker = std::thread::Builder::new()
-            .name("cn-futures-target-io".into())
-            .spawn(move || {
-                let remote_service = service.clone();
-                let manager_service = service.clone();
-                runtime.block_on(async move {
-                    tokio::select! {
-                    _ = stopping => Ok(()),
-                    result = async move {
-                        let Some((listener, _path)) = local else { return std::future::pending().await; };
-                        let listener = UnixListenerStream::new(tokio::net::UnixListener::from_std(listener)?);
-                        server().add_service(grpc_service(service)).serve_with_incoming(listener).await?;
-                        Ok(())
-                    } => result,
-                    result = async move {
-                        let Some((listener, mut server)) = remote else { return std::future::pending().await; };
-                        let listener = TcpListenerStream::new(tokio::net::TcpListener::from_std(listener)?);
-                        server.add_service(grpc_service(remote_service)).serve_with_incoming(listener).await?;
-                        Ok(())
-                    } => result,
-                    result = async move {
-                        let Some(manager) = manager else { return std::future::pending().await; };
-                        manager.run(manager_service).await
-                    } => result,
-                    }
-                })
-            })
-            .context("spawn target ingress I/O worker")?;
+        let ended = Rc::new(RefCell::new(None));
+        let outcome = ended.clone();
+        io.spawn(async move {
+            let remote_service = service.clone();
+            let manager_service = service.clone();
+            let result: Result<()> = tokio::select! {
+                _ = stopping => Ok(()),
+                result = async move {
+                    let Some((listener, _path)) = local else { return std::future::pending().await; };
+                    let listener = UnixListenerStream::new(tokio::net::UnixListener::from_std(listener)?);
+                    server().add_service(grpc_service(service)).serve_with_incoming(listener).await?;
+                    Ok(())
+                } => result,
+                result = async move {
+                    let Some((listener, mut server)) = remote else { return std::future::pending().await; };
+                    let listener = TcpListenerStream::new(tokio::net::TcpListener::from_std(listener)?);
+                    server.add_service(grpc_service(remote_service)).serve_with_incoming(listener).await?;
+                    Ok(())
+                } => result,
+                result = async move {
+                    let Some(manager) = manager else { return std::future::pending().await; };
+                    manager.run(manager_service).await
+                } => result,
+            };
+            *outcome.borrow_mut() = Some(result.map_err(|error| format!("{error:#}")));
+        });
         Ok(Self {
             pending,
             stop: Some(stop),
-            worker: Some(worker),
+            ended,
         })
     }
 
@@ -255,7 +258,7 @@ impl Ingress {
     }
 
     pub fn is_finished(&self) -> bool {
-        self.worker.as_ref().is_some_and(JoinHandle::is_finished)
+        self.ended.borrow().is_some()
     }
 }
 
@@ -264,12 +267,8 @@ impl Drop for Ingress {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
-        if let Some(worker) = self.worker.take() {
-            match worker.join() {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => eprintln!("position target ingress stopped: {error:#}"),
-                Err(_) => eprintln!("position target ingress worker panicked"),
-            }
+        if let Some(Err(error)) = self.ended.borrow().as_ref() {
+            log::error!("position target ingress stopped: {error}");
         }
     }
 }

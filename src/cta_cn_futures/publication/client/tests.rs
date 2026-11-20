@@ -14,7 +14,7 @@ struct Mock {
 async fn metadata(State(state): State<Arc<Mutex<Mock>>>) -> Json<Value> {
     Json(
         json!({"source_id":"native-account","strategy_group":"cn-futures-01","revision":7,
-        "members":state.lock().unwrap().members,"contracts":["SHFE:sn2611","SHFE:sn2612"],"external_demand_open":false}),
+        "members":state.lock().unwrap().members,"contracts":["SHFE:sn2611","SHFE:sn2612"]}),
     )
 }
 async fn receive(
@@ -60,15 +60,6 @@ fn desired() -> Desired {
         trigger_us: now,
         trading_day: Some(20261118),
         live_ready: true,
-        quotes: BTreeMap::from([(
-            "SHFE:sn2612".into(),
-            Quote {
-                bid: 100.0,
-                ask: 102.0,
-                observed_us: now,
-                source: "fixture_bbo".into(),
-            },
-        )]),
     }
 }
 async fn server(desired: &Desired, fail_first: bool) -> (String, Arc<Mutex<Mock>>, JoinHandle<()>) {

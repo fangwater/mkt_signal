@@ -36,11 +36,11 @@ PM2 管理。01 的 Client27 小时配置覆盖 21 个品种、147 条规则：
 - 同品种的策略组成独立发布组，每次提交该品种的完整策略批次。01 实例的 SN 沿用
   `cn-futures-01`，附加品种 RB、SA、SM 分别使用 `cn-futures-01-rb`、
   `cn-futures-01-sa`、`cn-futures-01-sm`。各品种共用 Redis 入口，独立封 bar、触发发布和重试。
-  Manager 按账户输出净目标，并在相同原生合约内匹配策略需求。
+  Manager 把账户全部策略的完整目标交给 Exec；与 crypto 一致，由 Exec 轧差、内部对冲并归因成交。
 - 01 的每个品种使用一个 `1h` 策略，纯碱为 `cn-futures-01-sa-1h`。
   `/state` 的 `factor_signals` 展示各因子的 `-1/0/+1` 方向，最终手数见 `positions`。
   `publication.retire_hourly_factor_members` 用于已登记旧因子的组。切换前核对并结清旧批次，随后在原组登记聚合策略。
-  下一次有效实时决策在同一批次提交聚合目标和旧成员的零目标，历史归因按 Manager 的事实成交和内部划转保留。
+  下一次有效实时决策在同一批次提交聚合目标和旧成员的零目标；旧成员的持仓由 Exec 内部对冲转给聚合策略，归因记录在 Exec 的 uniform order 流水。
 
 2026-11-20 午休，01 按品种启用小时聚合。21 个品种的 147 条规则通过预检，切换前后的工作进程账本校验一致。Manager 对账后结清 11:30 已过租约的纯碱外部需求，并为锡、螺纹和纯碱登记各自的小时聚合策略。Viz 验收确认纯碱显示 10 条因子信号。发布收据位于 `data/ops/cta-hourly-live.df06r6ya/`（Git 忽略）。
 
@@ -62,15 +62,15 @@ PM2 管理。01 的 Client27 小时配置覆盖 21 个品种、147 条规则：
 附加品种继承 Manager 地址、源账户和归因配置，
 令牌环境名在根变量后附品种后缀，例如 `CN_CTA_01_PUBLISH_TOKEN_RB`。
 各组在 Manager 单独登记成员及令牌。已有 SN 归因可通过 Manager 的 `extend-scope` 注册附加品种组，
-保留原组和已归属仓位。同账户的批次继续共享 revision 和未结清执行需求保护。
+保留原组和已归属仓位。同账户的批次共享 revision；新批次随时替换目标，不等待旧批次成交或归因。
 
 `manager_url` 使用部署网关实际地址，不包含凭据；组级发布令牌只从环境变量读入，不进入配置面板、状态、出站日志或 outbox。先在 Manager 创建子策略、核对账户事实持仓并初始化 `strategy_groups`，再通过原会话授权的 `POST /api/native/sources/{id}/netting/publish-token` 为该组生成令牌。每个发布组使用独立令牌，令牌绑定对应源账户和组名。
 
-发送端先读取 `netting/publication?strategy_group=cn-futures-01` 的组名单、完整合约范围和 revision，补齐合约零目标后，原子 POST `target-batches`。批次含 `strategy_group / batch_id / expected_revision / decision_us / signal_times / strategies / quotes`。`signal_times` 留存各子策略的真实 bar 决策时间；外层 `decision_us` 是整批发布时点。BBO 来自当前公司 Redis，原生合约和价格观测时间原样保留。
+发送端先读取 `netting/publication?strategy_group=cn-futures-01` 的组名单、完整合约范围和 revision，补齐合约零目标后，原子 POST `target-batches`。批次含 `strategy_group / batch_id / expected_revision / decision_us / signal_times / strategies`。`signal_times` 留存各子策略的真实 bar 决策时间；外层 `decision_us` 是整批发布时点。批次不再携带 BBO：内部对冲由 Exec 用自己的实时行情定价。
 
-准备由 Exec 消费轧差目标的账户启用 `publication.include_trading_day`。发布批次附带本次实时决策的原生交易日，Manager 校验该日与当前账户快照一致。执行侧配置见 [Manager 目标交付](native_ctaker.md#manager-delivery)。
+准备由 Exec 执行的账户启用 `publication.include_trading_day`。发布批次附带本次实时决策的原生交易日，Exec 接纳目标时与柜台交易日核对；Manager 接收批次不读取 Exec 副本。执行侧配置见 [Manager 目标交付](native_exec.md#manager-delivery)。
 
-首次启动仅记录既有决策基线，历史预热不发过去目标；实际新决策才可触发推送。断网时保留最新完整目标；已派发但结果未知的请求在 `data/manager_publication.json` 中持久化，重启后逐字重试原批次，不能改写它的 revision、价格或部分策略。附加品种在各自
+首次启动仅记录既有决策基线，历史预热不发过去目标；实际新决策才可触发推送。断网时保留最新完整目标；已派发但结果未知的请求在 `data/manager_publication.json` 中持久化，重启后逐字重试原批次，不能改写它的 revision 或部分策略。附加品种在各自
 `data/products/<品种>/manager_publication.json` 保存待确认批次。拆分旧发布组前须结清旧组待确认批次。Manager 409 表示该请求未接纳，才重新获取 CAS；过期且已明确拒绝的信号不重放。任何未落盘的待发请求不得发送。
 
 01 组首次启用逐因子发布时，已核对 Manager 只有空仓初始化记录，并归档旧的 +3 手本地信号目标。2026-11-18 从空信号账本启动，历史分钟和小时只用于因子预热，目标从接续完成后的首个有效实时小时决策开始计算。后续例行重启继续从已保存的实时决策接续。
@@ -78,7 +78,7 @@ PM2 管理。01 的 Client27 小时配置覆盖 21 个品种、147 条规则：
 `/state` 和 `/targets` 的 `strategy_group / strategies / manager_publication` 对应主品种，
 附加品种状态在 `products`，也可从各自的 `/products/<小写品种>/state` 和 `/targets` 读取。已有 `positions` 是本地聚合展示，消费端不能把它与 `strategies` 再求和。发布状态显示待确认批次、已确认批次和错误，不暴露令牌。
 
-本轮统一执行边界是 Manager 的整批净目标输出与可拆分归因，未新增原生自动报撤单适配器；Manager 的 `execution_enabled=false` 保持真实。环境切换必须另行完成真实输入预热、归因初始化与存量持仓核对，不能直接把旧聚合策略的真实归属改名。
+执行与归因边界与 crypto 一致：Manager 只路由策略目标并读取 Exec 证据计算策略 NAV；Exec 的策略账本见 [Strategy ledger](native_exec.md#strategy-ledger)。环境切换必须另行完成真实输入预热、归因初始化与存量持仓核对，不能直接把旧聚合策略的真实归属改名。
 
 ## 数据接续
 

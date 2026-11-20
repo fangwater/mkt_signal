@@ -57,7 +57,8 @@ fn bar_close_delay_ms(venue: TradingVenue) -> i64 {
         TradingVenue::AsterMargin
         | TradingVenue::AsterFutures
         | TradingVenue::HyperliquidMargin
-        | TradingVenue::HyperliquidFutures => DEFAULT_BAR_CLOSE_DELAY_MS,
+        | TradingVenue::HyperliquidFutures
+        | order_common::domestic_venues!() => DEFAULT_BAR_CLOSE_DELAY_MS,
     }
 }
 #[derive(Debug, Clone)]

@@ -231,6 +231,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "async_log"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "libc",
+ "log",
+]
+
+[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -758,16 +767,22 @@ name = "cn_futures"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async_log",
+ "bincode",
+ "bytemuck",
  "cc",
  "chrono",
  "cn_futures_state",
  "cn_futures_target",
  "crossbeam-channel",
  "encoding_rs",
+ "iceoryx2",
  "libc",
+ "log",
+ "order_common",
  "persist_common",
- "persist_manager",
  "reqwest",
+ "rocksdb",
  "serde",
  "serde_json",
  "sha2",
@@ -809,7 +824,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
- "crossbeam-channel",
  "iceoryx2",
  "persist_common",
  "serde",
@@ -825,6 +839,7 @@ dependencies = [
  "crossbeam-channel",
  "hyper-util",
  "libc",
+ "log",
  "prost 0.13.5",
  "serde",
  "serde_json",
@@ -2884,6 +2899,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "async-trait",
+ "async_log",
  "axum 0.7.9",
  "base64 0.21.7",
  "bincode",
@@ -3400,6 +3416,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "cn_futures",
  "crc32fast",
  "csv",
  "env_logger",

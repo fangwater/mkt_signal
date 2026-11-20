@@ -561,6 +561,9 @@ impl TradeEngExchangeSlot {
             TradingVenue::GateMargin | TradingVenue::GateFutures => Self::Gate,
             TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => Self::Hyperliquid,
             TradingVenue::AsterMargin | TradingVenue::AsterFutures => Self::Aster,
+            order_common::domestic_venues!() => {
+                unreachable!("domestic futures orders go through the native Exec, not trade_engine")
+            }
         }
     }
 

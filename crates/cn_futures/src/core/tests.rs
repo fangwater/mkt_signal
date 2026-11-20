@@ -1,25 +1,6 @@
 use super::*;
 
 #[test]
-fn async_recovery_gates_orders_and_cancels_without_clearing_other_failures() {
-    let mut c = core();
-    let now = Instant::now();
-    let order = c.prepare(intent(Side::Buy, Offset::Open, 1), now).unwrap();
-    c.recovery_pending(true);
-    assert!(!c.is_ready());
-    assert_eq!(c.view().reason, "recovery persistence pending");
-    assert!(c.prepare(intent(Side::Buy, Offset::Open, 1), now).is_err());
-    assert!(c.prepare_cancel(&order.key, now).is_err());
-    c.recovery_pending(false);
-    assert!(c.is_ready());
-    c.recovery_pending(true);
-    c.block("conflicting native evidence");
-    c.recovery_pending(false);
-    assert!(!c.is_ready());
-    assert_eq!(c.view().reason, "conflicting native evidence");
-}
-
-#[test]
 fn prefaulting_capacity_preserves_live_orders_references_and_action_rate_history() {
     let mut c = core();
     c.limits.max_actions_per_second = 2;
@@ -30,7 +11,7 @@ fn prefaulting_capacity_preserves_live_orders_references_and_action_rate_history
     assert_eq!(serde_json::to_value(c.view()).unwrap(), before);
     assert!(c
         .order(&OrderKey {
-            session: a.key.session.clone(),
+            session: a.key.session,
             order_ref: "4095".into()
         })
         .is_none());
@@ -168,7 +149,7 @@ fn czce_three_digit_contract_uses_its_native_product_status_and_symbol_override(
     let mut request = intent(Side::Buy, Offset::Open, 1);
     request.venue = Venue::Czce;
     request.symbol = "SR701".into();
-    assert!(core.prepare(request.clone(), Instant::now()).is_ok());
+    assert!(core.prepare(request, Instant::now()).is_ok());
     core.set_trading_status(Venue::Czce, "SR701", false);
     assert!(core.prepare(request, Instant::now()).is_err());
 }
@@ -221,10 +202,10 @@ fn intent(side: Side, offset: Offset, lots: i32) -> Intent {
 }
 fn update(request: &PreparedOrder, traded: i32, status: OrderStatus) -> OrderUpdate {
     OrderUpdate {
-        key: request.key.clone(),
-        symbol: request.intent.symbol.clone(),
+        key: request.key,
+        symbol: request.intent.symbol,
         venue: Venue::Cffex,
-        system_id: format!("SYS-{}", request.key.order_ref),
+        system_id: Text::format(format_args!("SYS-{}", request.key.order_ref)).unwrap(),
         side: request.intent.side,
         offset: request.intent.offset,
         lots: request.intent.lots,
@@ -241,14 +222,14 @@ fn fill(request: &PreparedOrder, id: &str, lots: i32) -> Fill {
     Fill {
         identity: TradeIdentity {
             venue: Venue::Cffex,
-            symbol: request.intent.symbol.clone(),
+            symbol: request.intent.symbol,
             trading_day: "20261109".into(),
-            trade_id: id.into(),
+            trade_id: Text::new(id).unwrap(),
             side: request.intent.side,
         },
-        order_ref: request.key.order_ref.clone(),
+        order_ref: request.key.order_ref,
         order_key: None,
-        system_id: format!("SYS-{}", request.key.order_ref),
+        system_id: Text::format(format_args!("SYS-{}", request.key.order_ref)).unwrap(),
         offset: request.intent.offset,
         lots,
         price: request.limit_price,
@@ -346,7 +327,7 @@ fn documented_local_failure_releases_once() {
     assert!(runtime
         .submit(intent(Side::Buy, Offset::Open, 3), Instant::now())
         .is_err());
-    let key = runtime.core.view().orders[0].key.clone();
+    let key = *runtime.core.view().orders[0].key;
     runtime.core.reject(&key).unwrap();
     assert_eq!(runtime.core.view().available_local_budget, 1_000_000.0);
     assert_eq!(runtime.core.order(&key).unwrap().remaining(), 0);
@@ -556,7 +537,7 @@ fn snapshot_seeds_trade_deduplication_and_existing_open_reservations() {
     let f = fill(&request, "PAST-TRADE", 1);
     let mut s = snapshot();
     s.orders.push(update(&request, 1, OrderStatus::Working));
-    s.trades.push(f.clone());
+    s.trades.push(f);
     s.positions.push(PositionSnapshot {
         venue: Venue::Cffex,
         symbol: "IF2612".into(),
@@ -904,7 +885,8 @@ fn recovered_manual_reference_zero_does_not_erase_system_order_identity() {
     for (venue, symbol) in [(Venue::Shfe, "cu2612"), (Venue::Ine, "sc2612")] {
         s.orders.push(OrderUpdate {
             key: OrderKey {
-                session: format!("yida:20261109:{}:sys:77", venue.as_str()),
+                session: Text::format(format_args!("yida:20261109:{}:sys:77", venue.as_str()))
+                    .unwrap(),
                 order_ref: "0".into(),
             },
             venue,
@@ -919,7 +901,7 @@ fn recovered_manual_reference_zero_does_not_erase_system_order_identity() {
             limit_price: 4000.0,
             status: OrderStatus::Working,
             cancel_rejected: false,
-            trading_day: s.trading_day.clone(),
+            trading_day: s.trading_day,
         });
     }
     c.restore(s).unwrap();
@@ -1017,7 +999,7 @@ fn market_self_trade_protection_covers_both_order_arrival_directions() {
             first.side = side;
             // Choose a limit well away from a crossing price. A market order can still cross it.
             first.price_ticks = if side == Side::Buy { 1 } else { 100000 };
-            let mut second = first.clone();
+            let mut second = first;
             second.side = side.opposite();
             if market_first {
                 first = market_intent(side, 1);
@@ -1047,7 +1029,7 @@ fn recovery_preserves_zero_price_market_orders_and_self_trade_protection() {
         minimum: 1,
         maximum: 10,
     });
-    s.orders.push(u.clone());
+    s.orders.push(u);
     c.restore(s.clone()).unwrap();
     assert_eq!(
         c.order(&p.key).unwrap().request.price_type,
@@ -1264,14 +1246,14 @@ fn duplicate_or_invalid_batch_cancel_never_leaves_a_false_pending_flag() {
         .unwrap()
         .key;
     assert!(runtime
-        .cancel_batch_with(vec![key.clone(), key.clone()], Instant::now(), |_| Ok(()))
+        .cancel_batch_with(vec![key, key], Instant::now(), |_| Ok(()))
         .is_err());
     let bad = OrderKey {
-        session: key.session.clone(),
+        session: key.session,
         order_ref: "99999".into(),
     };
     assert!(runtime
-        .cancel_batch_with(vec![key.clone(), bad], Instant::now(), |_| Ok(()))
+        .cancel_batch_with(vec![key, bad], Instant::now(), |_| Ok(()))
         .is_err());
     assert!(!runtime.core.order(&key).unwrap().cancel_pending);
     assert_eq!(runtime.trader.cancel_calls, 0);
@@ -1286,7 +1268,7 @@ fn fill_reference_from_another_native_group_cannot_match_a_local_order() {
     let mut fill = cn_fill(&order, "group-collision", 1);
     fill.order_key = Some(OrderKey {
         session: crate::yida::group_session_key(20261109, 7),
-        order_ref: order.key.order_ref.clone(),
+        order_ref: order.key.order_ref,
     });
     assert!(runtime.on_fill(&fill).is_err());
     assert_eq!(runtime.order(&order.key).unwrap().filled, 0);
@@ -1317,7 +1299,7 @@ fn option_snapshot() -> Snapshot {
     for side in [Side::Buy, Side::Sell] {
         s.positions.push(PositionSnapshot {
             venue: Venue::Shfe,
-            symbol: rule.symbol.clone(),
+            symbol: rule.symbol,
             side,
             today: 2,
             yesterday: 3,
@@ -1369,14 +1351,14 @@ fn option_market_buy_reserves_the_native_daily_upper_bound_and_rejects_missing_o
         let mut i = option_intent(Side::Buy, offset, 1);
         i.price_type = PriceType::Market;
         i.price_ticks = 0;
-        let order = c.prepare(i.clone(), Instant::now()).unwrap();
+        let order = c.prepare(i, Instant::now()).unwrap();
         assert_eq!(order.option_market_buy_ceiling, 12000.0);
         assert_eq!(c.order(&order.key).unwrap().local_cash_held, 60010.0);
         let mut snapshot = option_snapshot();
         snapshot.available_cash = 2000.0;
         let mut c = option_core();
         c.restore(snapshot).unwrap();
-        assert!(c.prepare(i.clone(), Instant::now()).is_err());
+        assert!(c.prepare(i, Instant::now()).is_err());
         let mut snapshot = option_snapshot();
         snapshot.instruments[0]
             .option
@@ -1628,7 +1610,7 @@ fn failed_in_place_updates_leave_orders_positions_cash_and_indexes_unchanged() {
     c.on_order(&update(&a, 0, OrderStatus::Working)).unwrap();
     let before = serde_json::to_value(c.view()).unwrap();
     let mut collision = update(&b, 0, OrderStatus::Working);
-    collision.system_id = c.order(&a.key).unwrap().system_id.clone();
+    collision.system_id = *c.order(&a.key).unwrap().system_id;
     assert!(c.on_order(&collision).is_err());
     assert_eq!(serde_json::to_value(c.view()).unwrap(), before);
     assert!(c.order(&b.key).unwrap().system_id.is_empty());

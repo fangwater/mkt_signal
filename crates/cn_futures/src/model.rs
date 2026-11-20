@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 pub struct OrderView<'a> {
     pub request: &'a Intent,
     pub key: &'a OrderKey,
-    pub system_id: &'a String,
+    pub system_id: &'a NativeId,
     pub limit_price: f64,
     pub status: OrderStatus,
     pub filled: i32,
@@ -28,9 +28,9 @@ impl OrderView<'_> {
     }
     pub fn to_order(self) -> Order {
         Order {
-            request: self.request.clone(),
-            key: self.key.clone(),
-            system_id: self.system_id.clone(),
+            request: *self.request,
+            key: *self.key,
+            system_id: *self.system_id,
             limit_price: self.limit_price,
             status: self.status,
             filled: self.filled,
@@ -126,19 +126,19 @@ impl RiskLimits {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PreparedOrder {
     pub key: OrderKey,
     pub intent: Intent,
     pub limit_price: f64,
     pub option_market_buy_ceiling: f64,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PreparedCancel {
     pub key: OrderKey,
-    pub symbol: String,
+    pub symbol: Symbol,
     pub venue: Venue,
-    pub system_id: String,
+    pub system_id: NativeId,
     pub execution_route: Option<ExecutionRoute>,
 }
 

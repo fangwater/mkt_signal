@@ -1,5 +1,6 @@
 use super::*;
 use crate::{config::Config, core::TradingCore};
+use std::collections::BTreeMap;
 use std::time::Instant;
 const NOW: u64 = 1_794_877_200_000_000;
 fn config() -> Config {
@@ -7,12 +8,14 @@ fn config() -> Config {
         toml::from_str(include_str!("../../../../../config/ctp_trade.example.toml")).unwrap();
     c.risk.max_actions_per_second = 20;
     c.risk.enable_fak_fok = true;
-    c.ctaker = Some(Settings {
+    c.exec = Some(Settings {
         source_id: "test-account".into(),
         contracts: None,
         quote_max_age_ms: 1000,
         target_max_age_ms: 30000,
         retry_interval_ms: 500,
+        algorithm: ExecutionAlgorithm::Ctaker,
+        chase: Default::default(),
     });
     c
 }
@@ -20,16 +23,16 @@ fn config() -> Config {
 #[test]
 fn ctp_contract_scope_preserves_the_manager_quantity_and_rejects_other_markets() {
     let mut c = config();
-    let settings = c.ctaker.as_mut().unwrap();
+    let settings = c.exec.as_mut().unwrap();
     settings.contracts = Some(BTreeSet::from(["SHFE:cu2612".into()]));
     let c = core(0, 0);
     let mut batch = target(7);
-    batch.net_targets.insert("SHFE:sn2612".into(), 0);
+    with_market(&mut batch, "SHFE:sn2612", 0);
     assert_eq!(
         validate_target(settings, &batch, &c, NOW, false).unwrap(),
-        [(Venue::Shfe, "cu2612", 7)]
+        [(Venue::Shfe, "cu2612", true)]
     );
-    batch.net_targets.insert("SHFE:sn2612".into(), 1);
+    with_market(&mut batch, "SHFE:sn2612", 1);
     assert!(validate_target(settings, &batch, &c, NOW, false).is_err());
 }
 fn core(long: i32, short: i32) -> TradingCore {
@@ -91,7 +94,45 @@ fn target(qty: i32) -> Target {
         target_revision: 1,
         trading_day: "20261117".into(),
         expires_at_us: NOW + 30_000_000,
-        net_targets: BTreeMap::from([("SHFE:cu2612".into(), qty)]),
+        strategies: BTreeMap::from([(
+            "cta-a".into(),
+            BTreeMap::from([("SHFE:cu2612".into(), qty)]),
+        )]),
+    }
+}
+fn roster(rows: &[(&str, i32)]) -> Target {
+    let mut t = target(0);
+    t.strategies = rows
+        .iter()
+        .map(|(name, qty)| {
+            (
+                name.to_string(),
+                BTreeMap::from([("SHFE:cu2612".into(), *qty)]),
+            )
+        })
+        .collect();
+    t
+}
+fn with_market(t: &mut Target, market: &str, qty: i32) {
+    for vector in t.strategies.values_mut() {
+        vector.insert(market.into(), qty);
+    }
+}
+fn fill(key: &OrderKey, id: &str, side: Side, lots: i32) -> Fill {
+    Fill {
+        identity: TradeIdentity {
+            venue: Venue::Shfe,
+            symbol: "cu2612".into(),
+            trading_day: "20261117".into(),
+            trade_id: Text::new(id).unwrap(),
+            side,
+        },
+        order_ref: key.order_ref,
+        order_key: Some(*key),
+        system_id: Text::format(format_args!("sys-{id}")).unwrap(),
+        offset: Offset::Open,
+        lots,
+        price: 101.0,
     }
 }
 fn tick(at: u64) -> TickRecord {
@@ -107,20 +148,20 @@ fn tick(at: u64) -> TickRecord {
     e.upper_limit = 200.0;
     TickRecord::capture(&e, at, 7, Venue::Shfe)
 }
-fn strategy(core: &TradingCore, qty: i32) -> Ctaker {
-    let mut s = Ctaker::new(&config()).unwrap();
+fn strategy(core: &TradingCore, qty: i32) -> Exec {
+    let mut s = Exec::new(&config()).unwrap();
     s.on_market_state(true, 7).unwrap();
     s.accept(target(qty), context(core), NOW).unwrap();
     s
 }
-fn decide(s: &mut Ctaker, c: &TradingCore, t: TickRecord, now: u64) -> Vec<Action> {
+fn decide(s: &mut Exec, c: &TradingCore, t: TickRecord, now: u64) -> Vec<Action> {
     let mut a = Actions::default();
     s.decide(&t, context(c), &mut a, now).unwrap();
     a.drain().collect()
 }
 fn request(a: Action) -> (Intent, Arc<Target>) {
     match a {
-        Action::SubmitCtaker { intent, target, .. } => (intent, target),
+        Action::SubmitExec { intent, target, .. } => (intent, target),
         _ => panic!("unexpected action"),
     }
 }
@@ -129,7 +170,7 @@ fn request(a: Action) -> (Intent, Arc<Target>) {
 fn callback_backlog_defers_unsent_ctp_action_within_original_target_lease() {
     for (md, trade) in [(true, false), (false, true), (true, true)] {
         let c = core(0, 0);
-        let mut ctaker = strategy(&c, -2);
+        let mut exec = strategy(&c, -2);
         let checks = CtpDispatchChecks {
             strategy_can_trade: true,
             execution_enabled: true,
@@ -142,34 +183,33 @@ fn callback_backlog_defers_unsent_ctp_action_within_original_target_lease() {
         };
         assert!(!checks.can_dispatch());
         assert!(checks.can_retry());
-        let action = decide(&mut ctaker, &c, tick(NOW), NOW).remove(0);
-        ctaker
-            .on_result(
-                &ActionOutcome::CtpDispatchBlocked {
-                    action,
-                    checks,
-                    quote_received_us: NOW,
-                    quote_generation: 7,
-                },
-                context(&c),
-            )
-            .unwrap();
+        let action = decide(&mut exec, &c, tick(NOW), NOW).remove(0);
+        exec.on_result(
+            &ActionOutcome::CtpDispatchBlocked {
+                action,
+                checks,
+                quote_received_us: NOW,
+                quote_generation: 7,
+            },
+            context(&c),
+        )
+        .unwrap();
         let early = NOW + 499_999;
-        assert!(decide(&mut ctaker, &c, tick(early), early).is_empty());
+        assert!(decide(&mut exec, &c, tick(early), early).is_empty());
         let retry = NOW + 500_000;
-        let (intent, original) = request(decide(&mut ctaker, &c, tick(retry), retry).remove(0));
+        let (intent, original) = request(decide(&mut exec, &c, tick(retry), retry).remove(0));
         assert_eq!((intent.side, intent.lots), (Side::Sell, 2));
         assert_eq!(*original, target(-2));
         let expired = target(-2).expires_at_us;
-        assert!(decide(&mut ctaker, &c, tick(expired), expired).is_empty());
+        assert!(decide(&mut exec, &c, tick(expired), expired).is_empty());
     }
 }
 
 #[test]
 fn failed_dispatch_health_check_halts_even_with_callback_backlog() {
     let c = core(0, 0);
-    let mut ctaker = strategy(&c, -2);
-    let action = decide(&mut ctaker, &c, tick(NOW), NOW).remove(0);
+    let mut exec = strategy(&c, -2);
+    let action = decide(&mut exec, &c, tick(NOW), NOW).remove(0);
     let checks = CtpDispatchChecks {
         strategy_can_trade: true,
         execution_enabled: true,
@@ -181,25 +221,24 @@ fn failed_dispatch_health_check_halts_even_with_callback_backlog() {
         trade_ingress_failed: false,
     };
     assert!(!checks.can_retry());
-    ctaker
-        .on_result(
-            &ActionOutcome::CtpDispatchBlocked {
-                action,
-                checks,
-                quote_received_us: NOW,
-                quote_generation: 7,
-            },
-            context(&c),
-        )
-        .unwrap();
+    exec.on_result(
+        &ActionOutcome::CtpDispatchBlocked {
+            action,
+            checks,
+            quote_received_us: NOW,
+            quote_generation: 7,
+        },
+        context(&c),
+    )
+    .unwrap();
     let later = NOW + 1_000_000;
-    assert!(decide(&mut ctaker, &c, tick(later), later).is_empty());
+    assert!(decide(&mut exec, &c, tick(later), later).is_empty());
 }
 #[test]
 fn configuration_requires_tested_fak_and_removes_local_lot_limits() {
     let c: Config =
         toml::from_str(include_str!("../../../../../config/ctp_trade.example.toml")).unwrap();
-    assert!(c.ctaker.is_none());
+    assert!(c.exec.is_none());
     let mut c = config();
     c.validate().unwrap();
     c.risk.enable_fak_fok = false;
@@ -214,7 +253,7 @@ fn configuration_requires_tested_fak_and_removes_local_lot_limits() {
 #[test]
 fn target_admission_rejects_wrong_identity_scope_day_lease_and_closed_gates() {
     let c = core(0, 0);
-    let mut s = Ctaker::new(&config()).unwrap();
+    let mut s = Exec::new(&config()).unwrap();
     s.on_market_state(true, 7).unwrap();
     let mut bad = vec![];
     let mut t = target(1);
@@ -224,10 +263,16 @@ fn target_admission_rejects_wrong_identity_scope_day_lease_and_closed_gates() {
     t.trading_day = "20261116".into();
     bad.push(t);
     let mut t = target(1);
-    t.net_targets.clear();
+    t.strategies.clear();
     bad.push(t);
     let mut t = target(1);
-    t.net_targets.insert("SHFE:CU2612".into(), 0);
+    with_market(&mut t, "SHFE:CU2612", 0);
+    bad.push(t);
+    let mut t = roster(&[("cta-a", 1), ("cta-b", 0)]);
+    t.strategies
+        .get_mut("cta-b")
+        .unwrap()
+        .insert("SHFE:sn2612".into(), 0);
     bad.push(t);
     let mut t = target(1);
     t.expires_at_us = NOW;
@@ -277,10 +322,11 @@ fn roll_uses_exact_target_contracts_and_requires_zero_for_the_held_month() {
     let mut roll = target(0);
     roll.target_revision = 2;
     roll.batch_id = "roll".into();
-    roll.net_targets = BTreeMap::from([("SHFE:cu2701".into(), 1)]);
+    roll.strategies =
+        BTreeMap::from([("cta-a".into(), BTreeMap::from([("SHFE:cu2701".into(), 1)]))]);
     assert!(s.accept(roll.clone(), context(&c), NOW).is_err());
 
-    roll.net_targets.insert("SHFE:cu2612".into(), 0);
+    with_market(&mut roll, "SHFE:cu2612", 0);
     s.accept(roll, context(&c), NOW).unwrap();
     let (close, _) = request(decide(&mut s, &c, tick(NOW), NOW).remove(0));
     assert_eq!(
@@ -328,7 +374,7 @@ fn aggressive_bbo_limit_fak_uses_integer_ticks_and_chunk_bounds_with_frozen_batc
     let planned = c_for_order.plan(i).unwrap();
     assert_eq!(
         c_for_order
-            .prepare(planned[0].clone(), Instant::now())
+            .prepare(planned[0], Instant::now())
             .unwrap()
             .intent
             .lots,
@@ -346,7 +392,7 @@ fn opposite_gross_inventory_closes_before_new_opening_and_only_factual_fills_adv
     assert_eq!((i.side, i.offset, i.lots), (Side::Buy, Offset::Close, 2));
     let children = c.plan(i).unwrap();
     assert_eq!(children[0].offset, Offset::CloseToday);
-    let p = c.prepare(children[0].clone(), Instant::now()).unwrap();
+    let p = c.prepare(children[0], Instant::now()).unwrap();
     assert!(decide(&mut s, &c, tick(NOW + 1_000_000), NOW + 1_000_000).is_empty());
     c.on_fill(&Fill {
         identity: TradeIdentity {
@@ -356,8 +402,8 @@ fn opposite_gross_inventory_closes_before_new_opening_and_only_factual_fills_adv
             trade_id: "closing-trade".into(),
             side: Side::Buy,
         },
-        order_ref: p.key.order_ref.clone(),
-        order_key: Some(p.key.clone()),
+        order_ref: p.key.order_ref,
+        order_key: Some(p.key),
         system_id: "sys1".into(),
         offset: Offset::CloseToday,
         lots: 2,
@@ -368,13 +414,13 @@ fn opposite_gross_inventory_closes_before_new_opening_and_only_factual_fills_adv
     assert_eq!((i.side, i.offset, i.lots), (Side::Buy, Offset::Open, 1));
 }
 #[test]
-fn filled_order_report_without_trade_facts_remains_unresolved_and_blocks_replacement() {
+fn filled_order_report_without_trade_facts_blocks_new_orders_but_not_target_replacement() {
     let mut c = core(0, 0);
     let mut s = strategy(&c, 2);
     let (i, _) = request(decide(&mut s, &c, tick(NOW), NOW).remove(0));
     let p = c.prepare(i, Instant::now()).unwrap();
     c.on_order(&OrderUpdate {
-        key: p.key.clone(),
+        key: p.key,
         symbol: "cu2612".into(),
         venue: Venue::Shfe,
         system_id: "sys1".into(),
@@ -390,13 +436,113 @@ fn filled_order_report_without_trade_facts_remains_unresolved_and_blocks_replace
         trading_day: "20261117".into(),
     })
     .unwrap();
-    assert!(c.has_working_orders(Venue::Shfe, "cu2612"));
+    assert!(c.working_orders(Venue::Shfe, "cu2612").next().is_some());
     assert_eq!(c.position(Venue::Shfe, "cu2612", Side::Buy).total(), 0);
     assert!(decide(&mut s, &c, tick(NOW + 1_000_000), NOW + 1_000_000).is_empty());
+    // Like crypto, a newer target replaces the old one at any time; the late
+    // fill is attributed against the new strategy gaps.
     let mut t = target(3);
     t.target_revision = 2;
     t.batch_id = "batch-02".into();
-    assert!(s.accept(t, context(&c), NOW).is_err());
+    s.accept(t, context(&c), NOW).unwrap();
+    assert!(decide(&mut s, &c, tick(NOW + 1_000_000), NOW + 1_000_000).is_empty());
+}
+#[test]
+fn opposite_strategy_targets_cross_at_the_mid_without_an_order() {
+    let c = core(1, 0);
+    let mut s = Exec::new(&config()).unwrap();
+    s.restore_ledger(vec![(
+        "SHFE:cu2612".into(),
+        BTreeMap::from([("cta-a".into(), 1)]),
+    )])
+    .unwrap();
+    s.on_market_state(true, 7).unwrap();
+    s.accept(roster(&[("cta-a", 0), ("cta-b", 1)]), context(&c), NOW)
+        .unwrap();
+    assert!(decide(&mut s, &c, tick(NOW), NOW).is_empty());
+    let events = s.take_ledger_events();
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        LedgerEvent::StrategyCross(StrategyCross {
+            price,
+            transfers,
+            ledger,
+            ..
+        }) => {
+            assert_eq!(*price, 100.5);
+            assert_eq!(
+                (transfers[0].buyer.as_str(), transfers[0].seller.as_str()),
+                ("cta-b", "cta-a")
+            );
+            assert_eq!(ledger, &BTreeMap::from([("cta-b".into(), 1)]));
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert!(decide(&mut s, &c, tick(NOW), NOW).is_empty());
+    assert!(s.take_ledger_events().is_empty());
+}
+#[test]
+fn cutover_moves_the_unallocated_account_position_to_strategies() {
+    let c = core(2, 0);
+    let mut s = Exec::new(&config()).unwrap();
+    s.on_market_state(true, 7).unwrap();
+    s.accept(roster(&[("cta-a", 2), ("cta-b", 0)]), context(&c), NOW)
+        .unwrap();
+    assert!(decide(&mut s, &c, tick(NOW), NOW).is_empty());
+    match &s.take_ledger_events()[0] {
+        LedgerEvent::StrategyCross(StrategyCross { transfers, .. }) => {
+            assert_eq!(transfers[0].seller, cn_futures_target::ledger::UNALLOCATED);
+            assert_eq!(transfers[0].lots, 2);
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+#[test]
+fn own_fills_are_attributed_to_strategy_gaps_and_foreign_fills_stay_unallocated() {
+    let mut c = core(0, 0);
+    let mut s = Exec::new(&config()).unwrap();
+    s.on_market_state(true, 7).unwrap();
+    s.accept(roster(&[("cta-a", 2), ("cta-b", 1)]), context(&c), NOW)
+        .unwrap();
+    let (i, _) = request(decide(&mut s, &c, tick(NOW), NOW).remove(0));
+    assert_eq!(i.lots, 3);
+    let p = c.prepare(i, Instant::now()).unwrap();
+    let first = fill(&p.key, "t1", Side::Buy, 2);
+    assert!(c.on_fill(&first).unwrap());
+    s.on_fill(&first, true);
+    let foreign = fill(&p.key, "t2", Side::Buy, 1);
+    s.on_fill(&foreign, false);
+    let events = s.take_ledger_events();
+    assert_eq!(events.len(), 2);
+    match &events[0] {
+        LedgerEvent::StrategyFillAllocation(FillAllocation {
+            lots,
+            allocations,
+            batch_id,
+            ..
+        }) => {
+            assert_eq!(*lots, 2);
+            assert_eq!(batch_id.as_deref(), Some("batch-01"));
+            assert_eq!(allocations, &BTreeMap::from([("cta-a".into(), 2)]));
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    match &events[1] {
+        LedgerEvent::StrategyFillAllocation(FillAllocation {
+            allocations,
+            batch_id,
+            ledger,
+            ..
+        }) => {
+            assert!(batch_id.is_none());
+            assert_eq!(
+                allocations,
+                &BTreeMap::from([(cn_futures_target::ledger::UNALLOCATED.into(), 1)])
+            );
+            assert_eq!(ledger, &BTreeMap::from([("cta-a".into(), 2)]));
+        }
+        other => panic!("unexpected {other:?}"),
+    }
 }
 #[test]
 fn stale_crossed_off_grid_limit_missing_depth_and_foreign_generation_quotes_do_not_submit() {
@@ -497,8 +643,9 @@ fn reconnect_requires_a_new_batch_instead_of_reactivating_a_stale_target() {
 }
 
 #[test]
-fn fake_transport_keeps_acceptance_factual_and_blocks_before_sdk_when_audit_fails() {
-    use crate::{core::SingleLoop, runtime::Journal};
+fn evidence_follows_the_sdk_call_and_a_publish_failure_blocks_later_trading() {
+    use crate::core::SingleLoop;
+    use crate::persist::tests::{broken_channel, channel};
     #[derive(Default)]
     struct Fake {
         calls: usize,
@@ -521,47 +668,32 @@ fn fake_transport_keeps_acceptance_factual_and_blocks_before_sdk_when_audit_fail
             trader: Fake::default(),
             execute: true,
         };
-        let root = std::env::temp_dir().join(format!(
-            "ctaker-fake-{}-{}-{fail}",
-            std::process::id(),
-            crate::persistence::now_us()
-        ));
-        let journal = Journal::start(
-            None,
-            64,
-            vec![],
-            &root.join("db"),
-            crate::persistence::store_identity("test", &[b"ctaker-fake"]),
-            false,
-        )
-        .unwrap();
-        if fail {
-            journal
-                .failed
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
+        let (journal, records) = if fail {
+            (broken_channel(), Default::default())
+        } else {
+            channel(vec![])
+        };
         let result =
             super::super::strategy::dispatch(&mut runtime, &journal, action, true, Instant::now());
-        assert_eq!(runtime.trader.calls, usize::from(!fail));
-        assert_eq!(
-            runtime
-                .core
-                .position(Venue::Shfe, "cu2612", Side::Buy)
-                .total(),
-            0
-        );
+        // The order is never delayed or withheld for evidence.
+        assert_eq!(runtime.trader.calls, 1);
+        assert!(runtime
+            .core
+            .working_orders(Venue::Shfe, "cu2612")
+            .next()
+            .is_some());
         if fail {
             assert!(result.is_err());
             assert!(!runtime.core.is_ready());
-            let _ = journal.finish();
         } else {
             assert!(
                 matches!(result.unwrap(),ActionOutcome::Submitted{receipt,..} if receipt.all_submitted_locally)
             );
-            assert!(runtime.core.has_working_orders(Venue::Shfe, "cu2612"));
+            let orders = crate::persist::tests::uniform_orders(&records);
+            assert_eq!(orders[0].from_key, b"exec:batch-01");
+            assert_eq!(orders[0].amount_update, 0.0);
             journal.finish().unwrap();
         }
-        std::fs::remove_dir_all(root).unwrap();
     }
 }
 #[test]
@@ -573,7 +705,11 @@ fn quote_decisions_note_each_stable_reason_once_and_ignore_the_flapping_callback
     assert!(decide(&mut s, &c, stale, NOW).is_empty());
     let note = s.take_wait_note().unwrap();
     assert_eq!(
-        (note.market.as_str(), note.reason, note.batch_id.as_str()),
+        (
+            note.market.as_str(),
+            note.reason,
+            note.target.batch_id.as_str()
+        ),
         ("SHFE:cu2612", "quote_stale", "batch-01")
     );
     assert!(decide(&mut s, &c, stale, NOW).is_empty());
@@ -603,4 +739,35 @@ fn quote_decisions_note_each_stable_reason_once_and_ignore_the_flapping_callback
     let mut s = strategy(&held, 1);
     assert!(decide(&mut s, &held, tick(NOW), NOW).is_empty());
     assert_eq!(s.take_wait_note().unwrap().reason, "target_reached");
+}
+#[test]
+fn assigned_legacy_position_is_a_priced_cross_and_is_not_crossed_again() {
+    let c = core(2, 0);
+    let mut s = Exec::new(&config()).unwrap();
+    s.assign_position(&c, "cta-a", "SHFE:cu2612", 2, 98_000.0, NOW)
+        .unwrap();
+    match &s.take_ledger_events()[..] {
+        [LedgerEvent::StrategyCross(StrategyCross {
+            price,
+            transfers,
+            ledger,
+            ..
+        })] => {
+            assert_eq!(*price, 98_000.0);
+            assert_eq!(transfers[0].buyer, "cta-a");
+            assert_eq!(transfers[0].seller, cn_futures_target::ledger::UNALLOCATED);
+            assert_eq!(ledger, &BTreeMap::from([("cta-a".into(), 2)]));
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert!(
+        s.assign_position(&c, "cta-b", "SHFE:cu2612", 1, 98_000.0, NOW)
+            .is_err(),
+        "nothing unallocated is left"
+    );
+    // With the target already matching, the first quote needs no cross.
+    s.on_market_state(true, 7).unwrap();
+    s.accept(roster(&[("cta-a", 2)]), context(&c), NOW).unwrap();
+    assert!(decide(&mut s, &c, tick(NOW), NOW).is_empty());
+    assert!(s.take_ledger_events().is_empty());
 }

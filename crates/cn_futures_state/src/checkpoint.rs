@@ -1,5 +1,5 @@
 //! Last confirmed account observation for display during a cold restart.
-use crate::{service_name, Adapter, RuntimeStatus, Snapshot, Text, PAYLOAD};
+use crate::{service_name, Adapter, RuntimeStatus, Snapshot, Text, MAX_SNAPSHOT_BYTES};
 use anyhow::{ensure, Context, Result};
 use bincode::Options;
 use serde::{Deserialize, Serialize};
@@ -51,7 +51,7 @@ pub fn for_display(mut snapshot: Snapshot) -> Snapshot {
 fn options() -> impl Options {
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
-        .with_limit(PAYLOAD as u64)
+        .with_limit(MAX_SNAPSHOT_BYTES as u64)
         .reject_trailing_bytes()
 }
 
@@ -67,9 +67,10 @@ pub fn load(
         Err(error) => return Err(error).context("open account snapshot"),
     };
     let mut bytes = Vec::new();
-    file.take(PAYLOAD as u64 + 1).read_to_end(&mut bytes)?;
+    file.take(MAX_SNAPSHOT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
     ensure!(
-        bytes.len() <= PAYLOAD,
+        bytes.len() <= MAX_SNAPSHOT_BYTES,
         "account snapshot exceeds size limit"
     );
     let file: Checkpoint = options()

@@ -28,6 +28,7 @@ fn lifecycle(price: f64, quantity: f64, role: Option<FillLiquidity>) -> Lifecycl
         from_key: b"batch_exec:alpha".to_vec(),
         signal_bbo: None,
         fill_liquidity: role.unwrap_or(FillLiquidity::Unknown),
+        extension: None,
     };
     record.refresh_lengths();
     Lifecycle {
@@ -219,4 +220,38 @@ fn persisted_execution_role_is_joined_only_to_its_factual_trade() {
     let mut conflict = role;
     conflict.record.execution.price = "101".into();
     assert!(normalize(&rows, &[first], &[conflict], "123", "BINANCE").is_err());
+}
+
+#[test]
+fn stored_uniform_order_round_trips_the_cross_market_extension() {
+    let mut value = lifecycle(101.5, 2.0, Some(FillLiquidity::Unknown)).value;
+    value.record.venue = 65;
+    value.record.extension = Some(crate::record_extension::RecordExtension {
+        position_effect: Some(order_common::PositionEffect::CloseYesterday),
+        trading_day: Some("20261120".into()),
+        trade_id: Some("  88".into()),
+        last_filled_quantity: Some(2.0),
+        commission: Some(1.5),
+        client_order_text: Some("ctp:1:2/17".into()),
+    });
+    let encoded = encode(&value).unwrap();
+    let decoded = decode(&encoded).unwrap();
+    assert_eq!(decoded.record, value.record);
+    assert_eq!(decoded.bbo_spread, "audit-bbo");
+    // Crypto records keep their exact bytes: no extension block is written.
+    let mut crypto = value.clone();
+    crypto.record.extension = None;
+    let plain = encode(&crypto).unwrap();
+    assert_eq!(encoded.len() - plain.len(), {
+        let mut block = Vec::new();
+        value
+            .record
+            .extension
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .write(&mut block);
+        block.len()
+    });
+    assert_eq!(decode(&plain).unwrap().record.extension, None);
 }

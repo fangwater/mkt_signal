@@ -1,6 +1,7 @@
 [workspace]
 members = [
     ".",
+    "crates/async_log",
     "crates/hyperliquid_l4",
     "crates/account_common",
     "crates/cn_futures",
@@ -362,6 +363,7 @@ trade_engine = { path = "crates/trade_engine" }
 order_common = { path = "crates/order_common" }
 signal_common = { path = "crates/signal_common" }
 runtime_common = { path = "crates/runtime_common" }
+async_log = { path = "crates/async_log" }
 symbol_utils = { path = "crates/symbol_utils" }
 ipc_common = { path = "crates/ipc_common" }
 depth_pub_common = { package = "depth_pub", path = "crates/depth_pub" }

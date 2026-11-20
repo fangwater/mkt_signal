@@ -5,6 +5,7 @@ use anyhow::Result;
 use log::info;
 
 use bbo_spread::BboSpreadRuntime;
+use cn_native_persist::CnNativePersistor;
 use hyperliquid_account_fact::HyperliquidAccountFactPersistor;
 use order_queue_position::OrderQueuePositionPersistor;
 use order_update::{OrderUpdatePersistor, OrderUpdateUnmatchedPersistor};
@@ -31,6 +32,7 @@ pub fn required_column_families() -> Vec<&'static str> {
     cf_names.extend_from_slice(order_queue_position::required_column_families());
     cf_names.extend_from_slice(rapidx_execution::required_column_families());
     cf_names.extend_from_slice(uniform_order_persist::required_column_families());
+    cf_names.extend_from_slice(cn_futures::COLUMN_FAMILIES);
     cf_names
 }
 
@@ -40,6 +42,8 @@ pub fn default_tuning() -> RocksDbTuning {
         write_buffer_size_bytes: Some(ROCKSDB_WRITE_BUFFER_BYTES),
         db_write_buffer_size_bytes: Some(ROCKSDB_DB_WRITE_BUFFER_BYTES),
         max_write_buffer_number: Some(ROCKSDB_MAX_WRITE_BUFFER_NUMBER),
+        // Domestic collectors may finish a fixed audit cut after WAL rotation.
+        wal_ttl_seconds: cn_futures::tuning().wal_ttl_seconds,
         ..Default::default()
     }
 }
@@ -119,6 +123,9 @@ impl PersistManager {
         info!("starting order queue position persistor");
         let order_queue_position = OrderQueuePositionPersistor::new(store.clone(), sync_enabled)?;
 
+        info!("starting domestic native journal persistor");
+        let cn_native = CnNativePersistor::new(store.clone())?;
+
         info!("starting uniform order persistor");
         let uniform_order = if let Some(runtime) = bbo_runtime {
             UniformOrderPersistor::new_with_bbo_spread(
@@ -143,6 +150,7 @@ impl PersistManager {
                 order_update_unmatched,
                 order_queue_position,
                 uniform_order,
+                cn_native,
             )
             .await;
         });
@@ -167,6 +175,7 @@ async fn run_persistors(
     order_update_unmatched: OrderUpdateUnmatchedPersistor,
     order_queue_position: OrderQueuePositionPersistor,
     uniform_order: UniformOrderPersistor,
+    mut cn_native: CnNativePersistor,
 ) {
     info!(
         "persistors polling unified: max_drain_per_channel={} idle_sleep_ms={}",
@@ -187,6 +196,7 @@ async fn run_persistors(
         stats.merge(order_update_unmatched.poll_available());
         stats.merge(order_queue_position.poll_available());
         stats.merge(uniform_order.poll_available(&mut uniform_pending));
+        stats.merge(cn_native.poll_available());
         if let Err(error) = uniform_order.poll_normalized() {
             log::warn!("RapidX uniform projection pending: {error:#}");
         }

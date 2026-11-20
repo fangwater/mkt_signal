@@ -25,7 +25,7 @@ preallocated_orders = 4096 # cold-path capacity hint, grows automatically; not a
 query_interval_ms = 1100
 response_timeout_ms = 30000
 # Fixed sleep after an empty business-loop iteration, 64 ms in this example. Zero spins.
-idle_sleep_us = 64000
+poll = { mode = "sleep", idle_us = 64000 }
 
 [risk]
 max_actions_per_second = 2

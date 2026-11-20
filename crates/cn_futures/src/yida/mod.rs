@@ -42,15 +42,24 @@ pub fn scope() -> ExecutionScope {
         allow_options: true,
     }
 }
-pub fn session_key(day: i32) -> String {
-    format!("yida:{day}")
+pub fn session_key(day: i32) -> Session {
+    Session::format(format_args!("yida:{day}")).expect("an i32 day fits the Yida session capacity")
 }
-pub fn group_session_key(day: i32, group: i32) -> String {
+pub fn group_session_key(day: i32, group: i32) -> Session {
     if group == 0 {
         session_key(day)
     } else {
-        format!("yida:{day}:group:{group}")
+        Session::format(format_args!("yida:{day}:group:{group}"))
+            .expect("i32 day and group fit the Yida session capacity")
     }
+}
+/// A native integer identity as fixed text, without allocating.
+pub(crate) fn int<const N: usize>(value: impl Into<i64>) -> Text<N> {
+    let value: i64 = value.into();
+    Text::format(format_args!("{value}")).expect("an i64 fits every native identity capacity")
+}
+fn valid_day(day: i32) -> bool {
+    (10_000_000..100_000_000).contains(&day)
 }
 pub fn parse_group_key(key: &OrderKey) -> Result<(i32, i32, i32)> {
     let mut parts = key.session.split(':');
@@ -81,7 +90,7 @@ pub fn parse_group_key(key: &OrderKey) -> Result<(i32, i32, i32)> {
 
 /// Passive SDK copies. The mark time behind the derived SDK values is unknown.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RawAccount {
     present: u64,
     balance: f64,
@@ -161,7 +170,7 @@ impl Serialize for RawAccount {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Serialize, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RawEvent {
     pub kind: i32,
     pub error: i32,
@@ -224,6 +233,9 @@ pub struct RawEvent {
     #[serde(serialize_with = "serialize_bytes")]
     pub underlying: [u8; 64],
     pub underlying_exchange: [u8; 12],
+    /// Explicit C alignment padding before `account`; never read or audited.
+    #[serde(skip)]
+    pub reserved: [u8; 4],
     #[serde(skip_serializing_if = "RawAccount::is_absent")]
     pub account: RawAccount,
 }
@@ -238,7 +250,7 @@ impl Default for RawEvent {
         unsafe { std::mem::zeroed() }
     }
 }
-pub fn text(bytes: &[u8]) -> Result<String> {
+pub fn text<const N: usize>(bytes: &[u8]) -> Result<Text<N>> {
     crate::ctp::text(bytes)
 }
 impl RawEvent {
@@ -258,7 +270,7 @@ impl RawEvent {
         }
         ensure!(self.product_class == 2, "unsupported native product class");
         ensure!(
-            text(&self.underlying_exchange)? == venue.as_str(),
+            crate::ctp::text_ref(&self.underlying_exchange)? == venue.as_str(),
             "option underlying venue mismatch"
         );
         let option = OptionContract {
@@ -307,7 +319,7 @@ impl RawEvent {
             );
             return Ok(OrderKey {
                 session: group_session_key(self.day, self.order_group),
-                order_ref: self.reference.to_string(),
+                order_ref: int(self.reference),
             });
         }
         ensure!(
@@ -315,13 +327,13 @@ impl RawEvent {
             "recovered order without system identity"
         );
         Ok(OrderKey {
-            session: format!(
+            session: Session::format(format_args!(
                 "{}:{}:sys:{}",
                 session_key(self.day),
                 self.venue()?.as_str(),
                 self.system_id
-            ),
-            order_ref: self.reference.to_string(),
+            ))?,
+            order_ref: int(self.reference),
         })
     }
     pub fn to_order(&self, key: OrderKey) -> Result<OrderUpdate> {
@@ -369,7 +381,7 @@ impl RawEvent {
         ensure!(
             matches!(venue, Venue::Shfe | Venue::Ine)
                 && scope().supports_symbol(venue, &symbol)
-                && self.day.to_string().len() == 8,
+                && valid_day(self.day),
             "native order outside supported futures/day scope"
         );
         ensure!(
@@ -384,9 +396,9 @@ impl RawEvent {
             symbol,
             venue,
             system_id: if self.system_id > 0 {
-                self.system_id.to_string()
+                int(self.system_id)
             } else {
-                String::new()
+                NativeId::default()
             },
             side: self.side()?,
             offset: self.offset()?,
@@ -402,7 +414,7 @@ impl RawEvent {
             limit_price: self.price,
             status,
             cancel_rejected: false,
-            trading_day: self.day.to_string(),
+            trading_day: int(self.day),
         })
     }
     pub fn to_fill(&self) -> Result<Fill> {
@@ -426,24 +438,24 @@ impl RawEvent {
         ensure!(
             matches!(venue, Venue::Shfe | Venue::Ine)
                 && scope().supports_symbol(venue, &symbol)
-                && self.day.to_string().len() == 8,
+                && valid_day(self.day),
             "native fill outside supported futures/day scope"
         );
         Ok(Fill {
             identity: TradeIdentity {
                 venue,
                 symbol,
-                trading_day: self.day.to_string(),
-                trade_id: self.trade_id.to_string(),
+                trading_day: int(self.day),
+                trade_id: int(self.trade_id),
                 side: self.side()?,
             },
-            order_ref: self.reference.to_string(),
+            order_ref: int(self.reference),
             order_key: if self.order_group != 0 {
                 Some(self.recovered_key()?)
             } else {
                 None
             },
-            system_id: self.system_id.to_string(),
+            system_id: int(self.system_id),
             offset: self.offset()?,
             lots: self.lots,
             price: self.price,
@@ -460,7 +472,7 @@ pub fn decode_event(e: &RawEvent, historical_rejection: bool) -> Result<DecodedU
             let key = if historical_rejection {
                 OrderKey {
                     session: group_session_key(e.day, e.order_group),
-                    order_ref: e.reference.to_string(),
+                    order_ref: int(e.reference),
                 }
             } else {
                 e.recovered_key()?

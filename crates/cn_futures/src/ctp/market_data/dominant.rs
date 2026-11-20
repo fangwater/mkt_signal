@@ -1,11 +1,9 @@
 use super::{Subscription, Venue};
 use anyhow::{ensure, Context, Result};
 use chrono::{Datelike, NaiveDate, Weekday};
-use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
-use reqwest::{blocking::Client, Url};
+use reqwest::{Client, Url};
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::io::Read;
 use std::time::{Duration, Instant};
 
 const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
@@ -132,13 +130,13 @@ fn parse(body: &[u8], broker_day: &str) -> Result<List> {
     })
 }
 
-fn fetch(client: &Client, url: &Url, day: &str) -> Result<List> {
+async fn fetch(client: Client, mut url: Url, day: String) -> Result<List> {
     // Build the query with the broker's native date; no credentials are sent.
-    let mut url = url.clone();
-    url.query_pairs_mut().append_pair("trading_day", day);
-    let response = client
+    url.query_pairs_mut().append_pair("trading_day", &day);
+    let mut response = client
         .get(url)
         .send()
+        .await
         .map_err(|_| anyhow::anyhow!("Market Replay dominant HTTP request failed"))?;
     ensure!(
         response.status().is_success(),
@@ -146,20 +144,28 @@ fn fetch(client: &Client, url: &Url, day: &str) -> Result<List> {
         response.status()
     );
     let mut bytes = Vec::new();
-    response
-        .take(MAX_RESPONSE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| anyhow::anyhow!("cannot read Market Replay dominant response"))?;
-    ensure!(
-        bytes.len() as u64 <= MAX_RESPONSE_BYTES,
-        "Market Replay dominant response is too large"
-    );
-    parse(&bytes, day)
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| anyhow::anyhow!("cannot read Market Replay dominant response"))?
+    {
+        bytes.extend_from_slice(&chunk);
+        ensure!(
+            bytes.len() as u64 <= MAX_RESPONSE_BYTES,
+            "Market Replay dominant response is too large"
+        );
+    }
+    parse(&bytes, &day)
 }
 
+type Slot = std::rc::Rc<std::cell::RefCell<Option<(u64, Result<List>)>>>;
+
+/// Fetches run as local tasks of the business thread's I/O loop.
 pub(super) struct Lookup {
-    requests: Sender<(u64, String)>,
-    results: Receiver<(u64, Result<List>)>,
+    client: Client,
+    url: Url,
+    spawner: cn_futures_target::Spawner,
+    result: Slot,
     pending: Option<(u64, String)>,
     in_flight: bool,
     next_attempt: Instant,
@@ -167,7 +173,11 @@ pub(super) struct Lookup {
 }
 
 impl Lookup {
-    pub(super) fn new(url: &str, backoff: Duration) -> Result<Self> {
+    pub(super) fn new(
+        url: &str,
+        backoff: Duration,
+        spawner: cn_futures_target::Spawner,
+    ) -> Result<Self> {
         let url = endpoint(url)?;
         let client = Client::builder()
             .no_proxy()
@@ -176,24 +186,11 @@ impl Lookup {
             .timeout(Duration::from_secs(6))
             .build()
             .context("build Market Replay dominant HTTP client")?;
-        let (requests, incoming) = bounded::<(u64, String)>(1);
-        let (outgoing, results) = bounded(1);
-        std::thread::Builder::new()
-            .name("ctp-md-dominant".into())
-            .spawn(move || {
-                for (generation, day) in incoming {
-                    if outgoing
-                        .send((generation, fetch(&client, &url, &day)))
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            })
-            .context("spawn Market Replay dominant worker")?;
         Ok(Self {
-            requests,
-            results,
+            client,
+            url,
+            spawner,
+            result: Slot::default(),
             pending: None,
             in_flight: false,
             next_attempt: Instant::now(),
@@ -215,32 +212,29 @@ impl Lookup {
     }
 
     pub(super) fn poll(&mut self, now: Instant) -> Result<Option<Result<List>>> {
-        match self.results.try_recv() {
-            Ok((generation, result)) => {
-                self.in_flight = false;
-                if self
-                    .pending
-                    .as_ref()
-                    .is_some_and(|(active, _)| *active == generation)
-                {
-                    if result.is_ok() {
-                        self.pending = None;
-                    } else {
-                        self.next_attempt = now + self.backoff;
-                    }
-                    return Ok(Some(result));
+        if let Some((generation, result)) = self.result.borrow_mut().take() {
+            self.in_flight = false;
+            if self
+                .pending
+                .as_ref()
+                .is_some_and(|(active, _)| *active == generation)
+            {
+                if result.is_ok() {
+                    self.pending = None;
+                } else {
+                    self.next_attempt = now + self.backoff;
                 }
-            }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                anyhow::bail!("Market Replay dominant worker stopped")
+                return Ok(Some(result));
             }
         }
-        if let Some(request) = &self.pending {
+        if let Some((generation, day)) = &self.pending {
             if !self.in_flight && now >= self.next_attempt {
-                self.requests
-                    .try_send(request.clone())
-                    .context("queue Market Replay dominant request")?;
+                let (generation, slot) = (*generation, self.result.clone());
+                let fetch = fetch(self.client.clone(), self.url.clone(), day.clone());
+                self.spawner.spawn(async move {
+                    let result = fetch.await;
+                    *slot.borrow_mut() = Some((generation, result));
+                });
                 self.in_flight = true;
             }
         }

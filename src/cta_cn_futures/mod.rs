@@ -884,12 +884,6 @@ async fn run_worker(worker: Worker) -> Result<()> {
                     anyhow::bail!("Redis capture thread stopped")
                 }
             };
-            if let Ok(Some(publisher)) = &mut publisher {
-                match &event {
-                    live::Event::Quote(q) => publisher.quote(q),
-                    live::Event::Reset => publisher.reset(),
-                }
-            }
             if let live::Event::Quote(q) = &event {
                 if q.trading_day > current.trading_day {
                     match current.for_day(q.trading_day) {
@@ -937,9 +931,6 @@ async fn run_worker(worker: Worker) -> Result<()> {
                             .map_or(minute, |last| (last + 60_000).min(minute))
                     });
                     stream.interrupt(&current, suspected, &error);
-                    if let Ok(Some(publisher)) = &mut publisher {
-                        publisher.reset();
-                    }
                 } else {
                     stream.reset();
                     health.pause(error);
@@ -987,9 +978,6 @@ async fn run_worker(worker: Worker) -> Result<()> {
                     Some(missing),
                     "trading minute not received by the close grace period",
                 );
-                if let Ok(Some(publisher)) = &mut publisher {
-                    publisher.reset();
-                }
             }
         }
         if stream.needs_restart {

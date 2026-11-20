@@ -41,6 +41,9 @@ impl From<TradingVenue> for Venue {
             TradingVenue::AsterFutures => Venue::AsterFutures,
             TradingVenue::HyperliquidMargin => Venue::HyperliquidMargin,
             TradingVenue::HyperliquidFutures => Venue::HyperliquidFutures,
+            order_common::domestic_venues!() => {
+                unreachable!("domestic futures never enter crypto quote planning")
+            }
         }
     }
 }

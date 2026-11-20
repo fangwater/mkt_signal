@@ -1,14 +1,9 @@
-//! Cold-created three-buffer mailbox. Capture never waits for serialization,
-//! IPC subscribers, a mutex, a database or a worker acknowledgment.
-use crate::{
-    checkpoint, transport::StatePublisher, Adapter, Config, RuntimeStatus, Snapshot, Text,
-};
+//! Inline position snapshots from the business loop, like crypto's in-loop IPC
+//! publication: encode into a reused buffer and copy into shared memory. No
+//! worker thread, mailbox, mutex or acknowledgement.
+use crate::{checkpoint, transport::StatePublisher, Adapter, Config, Snapshot};
 use anyhow::{Context, Result};
-use crossbeam_channel::{bounded, Receiver, Sender};
-use std::{
-    thread::JoinHandle,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
-};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub fn now_us() -> u64 {
     SystemTime::now()
@@ -17,86 +12,35 @@ pub fn now_us() -> u64 {
         .as_micros() as u64
 }
 pub struct Producer {
-    free: Receiver<Snapshot>,
-    ready: Sender<Snapshot>,
-    pending: Receiver<Snapshot>,
-    worker: Option<JoinHandle<Result<()>>>,
+    publisher: StatePublisher,
+    snapshot: Snapshot,
     next: Instant,
     interval: Duration,
     sequence: u64,
     epoch: u64,
-    replaced: u64,
+    namespace: String,
+    /// Last broker-confirmed state, written once on shutdown when configured.
+    checkpoint: Option<(std::path::PathBuf, Option<Snapshot>)>,
 }
 impl Producer {
-    /// Call during cold initialization on the configured background CPU domain;
-    /// the worker inherits that affinity and NUMA policy.
     pub fn start(config: &Config, adapter: Adapter, account_hash: &str) -> Result<Self> {
         config.validate()?;
-        let (free_tx, free) = bounded(3);
-        for _ in 0..3 {
-            free_tx
-                .send(Snapshot::empty(adapter, account_hash)?)
-                .map_err(|_| anyhow::anyhow!("initialize position pool"))?;
-        }
-        let (ready, pending) = bounded::<Snapshot>(1);
-        let (init_tx, init_rx) = std::sync::mpsc::sync_channel(1);
-        let namespace = config.namespace.clone();
-        let account_snapshot_path = config.account_snapshot_path.clone();
-        let worker_rx = pending.clone();
-        let worker = std::thread::spawn(move || -> Result<()> {
-            let publisher = match StatePublisher::new(&namespace) {
-                Ok(p) => {
-                    let _ = init_tx.send(Ok(()));
-                    p
-                }
-                Err(e) => {
-                    let _ = init_tx.send(Err(format!("{e:#}")));
-                    return Err(e);
-                }
-            };
-            let mut confirmed: Option<Snapshot> = None;
-            let outcome = (|| -> Result<()> {
-                while let Ok(snapshot) = worker_rx.recv() {
-                    publisher.publish(&snapshot)?;
-                    if account_snapshot_path.is_some() && checkpoint::confirmed(&snapshot) {
-                        let mut retained = snapshot.clone();
-                        if retained.account.is_none() {
-                            retained.account = confirmed
-                                .as_ref()
-                                .filter(|previous| previous.trading_day == snapshot.trading_day)
-                                .and_then(|previous| previous.account);
-                        }
-                        confirmed = Some(retained);
-                    }
-                    if free_tx.send(snapshot).is_err() {
-                        break;
-                    }
-                }
-                Ok(())
-            })();
-            if let Some((path, snapshot)) = account_snapshot_path.as_deref().zip(confirmed) {
-                if let Err(error) = checkpoint::save(path, &namespace, snapshot) {
-                    eprintln!("native account checkpoint: {error:#}");
-                }
-            }
-            outcome
-        });
-        init_rx
-            .recv()
-            .context("start position IPC worker")?
-            .map_err(anyhow::Error::msg)?;
         Ok(Self {
-            free,
-            ready,
-            pending,
-            worker: Some(worker),
+            publisher: StatePublisher::new(&config.namespace)?,
+            snapshot: Snapshot::empty(adapter, account_hash)?,
             next: Instant::now(),
             interval: Duration::from_millis(config.interval_ms),
             sequence: 0,
             epoch: now_us(),
-            replaced: 0,
+            namespace: config.namespace.clone(),
+            checkpoint: config
+                .account_snapshot_path
+                .clone()
+                .map(|path| (path, None)),
         })
     }
+    /// Captures and publishes when due (or forced). A failed fill never
+    /// publishes a partial book: it publishes an explicitly failed, empty state.
     pub fn capture(
         &mut self,
         force: bool,
@@ -107,52 +51,48 @@ impl Producer {
             return Ok(false);
         }
         self.next = now + self.interval;
-        let mut snapshot = match self.pending.try_recv() {
-            Ok(buffer) => {
-                self.replaced = self.replaced.saturating_add(1);
-                buffer
-            }
-            Err(_) => match self.free.try_recv() {
-                Ok(buffer) => buffer,
-                Err(_) => anyhow::bail!("position IPC worker unavailable"),
-            },
-        };
-        snapshot.positions.clear();
-        snapshot.marks.clear();
         self.sequence = self
             .sequence
             .checked_add(1)
             .context("position IPC sequence exhausted")?;
+        let snapshot = &mut self.snapshot;
+        snapshot.positions.clear();
+        snapshot.marks.clear();
         snapshot.publisher_epoch = self.epoch;
         snapshot.sequence = self.sequence;
         snapshot.observed_us = now_us();
-        snapshot.replaced_snapshots = self.replaced;
-        if let Err(error) = fill(&mut snapshot) {
-            // Invalidate the entire snapshot rather than publishing a partial book.
+        if let Err(error) = fill(snapshot) {
             snapshot.positions.clear();
             snapshot.marks.clear();
             snapshot.position_ready = false;
             snapshot.ready = false;
             snapshot.can_trade = false;
-            snapshot.runtime_status = RuntimeStatus::Failed;
-            snapshot.reason = Text::new("position snapshot capture failed; monitor unavailable")?;
-            self.ready
-                .try_send(snapshot)
-                .map_err(|_| anyhow::anyhow!("position IPC worker unavailable"))?;
+            snapshot.runtime_status = crate::RuntimeStatus::Failed;
+            snapshot.reason =
+                crate::Text::new("position snapshot capture failed; monitor unavailable")?;
+            self.publisher.publish(snapshot)?;
             return Err(error);
         }
-        self.ready
-            .try_send(snapshot)
-            .map_err(|_| anyhow::anyhow!("position IPC worker unavailable"))?;
+        self.publisher.publish(snapshot)?;
+        if let Some((_, confirmed)) = &mut self.checkpoint {
+            if checkpoint::confirmed(snapshot) {
+                let account = confirmed
+                    .as_ref()
+                    .filter(|previous| previous.trading_day == snapshot.trading_day)
+                    .and_then(|previous| previous.account);
+                let retained = confirmed.get_or_insert_with(|| snapshot.clone());
+                retained.clone_from(snapshot);
+                if retained.account.is_none() {
+                    retained.account = account;
+                }
+            }
+        }
         Ok(true)
     }
-    /// Only after the business loop has ended. Drain the latest terminal state.
-    pub fn finish(mut self) -> Result<()> {
-        drop(self.ready);
-        if let Some(worker) = self.worker.take() {
-            worker
-                .join()
-                .map_err(|_| anyhow::anyhow!("position IPC worker panicked"))??;
+    /// Shutdown only: persist the last confirmed account state once.
+    pub fn finish(self) -> Result<()> {
+        if let Some((path, Some(snapshot))) = self.checkpoint {
+            checkpoint::save(&path, &self.namespace, snapshot)?;
         }
         Ok(())
     }

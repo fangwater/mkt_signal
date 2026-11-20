@@ -4,8 +4,7 @@ use anyhow::{ensure, Context, Result};
 use cn_futures::{
     core::{SingleLoop, TradingCore},
     model::*,
-    persistence,
-    runtime::{lock_flow, Journal},
+    runtime::{lock_flow, PersistChannel},
     yida::{self, config::Config, sdk::YidaTrader, session::Session},
 };
 use serde_json::json;
@@ -44,16 +43,13 @@ fn marked_fixture(path: &std::path::Path) -> Result<()> {
     }
     Ok(())
 }
-fn flush(j: Option<&Journal>) -> Result<()> {
-    if let Some(j) = j {
-        j.record_with(
-            json!({"type":"benchmark_barrier"}),
-            false,
-            Default::default(),
-            true,
-        )?;
+/// Discards records: measures only the business-loop encode cost.
+struct Discard;
+impl cn_futures::persist::RecordSink for Discard {
+    fn publish(&self, record: &[u8]) -> Result<()> {
+        std::hint::black_box(record);
+        Ok(())
     }
-    Ok(())
 }
 struct Timings {
     submit: Vec<u64>,
@@ -61,8 +57,7 @@ struct Timings {
     callback_cpu: Vec<u64>,
     callback_to_oms: Vec<u64>,
     terminal: Vec<u64>,
-    burst_flush: Vec<u64>,
-    backlog_peak: u64,
+    burst: Vec<u64>,
     first_trade: Option<yida::RawEvent>,
     first_order: Option<yida::RawEvent>,
 }
@@ -74,21 +69,15 @@ impl Timings {
             callback_cpu: Vec::with_capacity(n * 12),
             callback_to_oms: Vec::with_capacity(n * 12),
             terminal: Vec::with_capacity(n * 2),
-            burst_flush: Vec::new(),
-            backlog_peak: 0,
+            burst: Vec::new(),
             first_trade: None,
             first_order: None,
-        }
-    }
-    fn backlog(&mut self, j: Option<&Journal>) {
-        if let Some(j) = j {
-            self.backlog_peak = self.backlog_peak.max(j.stats().backlog);
         }
     }
 }
 fn drain(
     runtime: &mut SingleLoop<YidaTrader>,
-    j: Option<&Journal>,
+    j: Option<&PersistChannel>,
     times: &mut Timings,
 ) -> Result<()> {
     while let Ok(received) = runtime.trader.events.try_recv() {
@@ -128,13 +117,12 @@ fn drain(
                 true,
             )?;
         }
-        times.backlog(j);
     }
     Ok(())
 }
 fn submit(
     runtime: &mut SingleLoop<YidaTrader>,
-    j: Option<&Journal>,
+    j: Option<&PersistChannel>,
     times: &mut Timings,
     side: Side,
     offset: Offset,
@@ -155,7 +143,7 @@ fn submit(
     let before = Instant::now();
     let receipt = runtime.submit_planned_with(black_box(intent), Instant::now(), |p| {
         if let Some(j) = j {
-            j.prepared_submit(&day, p)
+            j.prepared(day, p, None)
         } else {
             Ok(())
         }
@@ -175,7 +163,7 @@ fn submit(
         .context("empty native receipt")?
         .key;
     if let Some(j) = j {
-        j.orders(&runtime.core, std::slice::from_ref(&key), &[])?;
+        j.orders(&runtime.core, std::slice::from_ref(&key))?;
     }
     drain(runtime, j, times)?;
     if tif != TimeInForce::Day {
@@ -217,17 +205,14 @@ fn main() -> Result<()> {
     let journal = if without_journal {
         None
     } else {
-        Some(Journal::start(
-            Some(&config.journal),
-            config.event_capacity,
+        Some(PersistChannel::start(
+            &config.flow_directory.join("persist_manager"),
             vec![
                 "fixture-only".into(),
                 "fixture-app".into(),
                 "fixture-auth".into(),
             ],
-            &config.flow_directory.join("persist_manager"),
-            persistence::store_identity("offline_pipeline", &[b"synthetic"]),
-            false,
+            Box::new(Discard),
         )?)
     };
     let trader = YidaTrader::new(&config, config.credentials()?)?;
@@ -334,15 +319,10 @@ fn main() -> Result<()> {
             "offline callback queue overflow"
         );
         if (n + 1) % burst == 0 {
-            times.backlog(journal.as_ref());
-            flush(journal.as_ref())?;
-            times
-                .burst_flush
-                .push(burst_begin.elapsed().as_nanos() as u64);
+            times.burst.push(burst_begin.elapsed().as_nanos() as u64);
             burst_begin = Instant::now();
         }
     }
-    flush(journal.as_ref())?;
     let elapsed = begin.elapsed();
     ensure!(
         runtime.core.position(Venue::Shfe, "cu2612", Side::Buy) == initial_buy
@@ -367,10 +347,10 @@ fn main() -> Result<()> {
             "late duplicate fill was counted twice"
         );
     }
-    let stats = journal.as_ref().map(Journal::stats);
+    let stats = journal.as_ref().map(PersistChannel::stats);
     println!(
         "{}",
-        json!({"benchmark":"native_sdk_pipeline","synthetic_sdk":true,"network":false,"profiling_feature":true,"protocol":config.trading_protocol,"journal":!without_journal,"mode":if passive{"passive_cancel"}else{"fak_open_close"},"cycles":cycles,"native_requests":cycles*2,"burst_cycles":burst,"wall_ns":elapsed.as_nanos() as u64,"native_requests_per_second":cycles as f64*2.0/elapsed.as_secs_f64(),"submit_path":percentiles(times.submit),"native_bridge_call":percentiles(times.ffi),"callback_processing":percentiles(times.callback_cpu),"callback_to_oms":percentiles(times.callback_to_oms),"terminal_path":percentiles(times.terminal),"burst_through_durability":percentiles(times.burst_flush),"backlog_peak_observed":times.backlog_peak,"durable_records":stats.map(|s|s.durable),"synced_wal_batches":stats.map(|s|s.synced_batches),"largest_wal_batch":stats.map(|s|s.max_batch),"late_duplicate_verified":true,"pending_requests_after_run":runtime.trader.pending_response_count()})
+        json!({"benchmark":"native_sdk_pipeline","synthetic_sdk":true,"network":false,"profiling_feature":true,"protocol":config.trading_protocol,"journal":!without_journal,"mode":if passive{"passive_cancel"}else{"fak_open_close"},"cycles":cycles,"native_requests":cycles*2,"burst_cycles":burst,"wall_ns":elapsed.as_nanos() as u64,"native_requests_per_second":cycles as f64*2.0/elapsed.as_secs_f64(),"submit_path":percentiles(times.submit),"native_bridge_call":percentiles(times.ffi),"callback_processing":percentiles(times.callback_cpu),"callback_to_oms":percentiles(times.callback_to_oms),"terminal_path":percentiles(times.terminal),"burst_wall":percentiles(times.burst),"published_records":stats.map(|s|s.published),"publish_failures":stats.map(|s|s.failures),"late_duplicate_verified":true,"pending_requests_after_run":runtime.trader.pending_response_count()})
     );
     let tail = runtime.trader.events.clone();
     drop(runtime.trader);

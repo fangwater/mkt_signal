@@ -228,6 +228,7 @@ mod linux {
         }
     }
     pub struct Placement {
+        business_cpu: usize,
         original_cpu: libc::cpu_set_t,
         original_policy: i32,
         original_nodes: Vec<libc::c_ulong>,
@@ -336,6 +337,7 @@ mod linux {
                 nodes,
             });
             let placement = Self {
+                business_cpu: config.business_cpu,
                 original_cpu,
                 original_policy,
                 original_nodes,
@@ -414,6 +416,67 @@ mod linux {
             scope.restore()?;
             result
         }
+        /// Moves an existing helper thread (the logger) to the background CPUs.
+        pub fn pin_background_thread(&self, tid: i32) -> Result<()> {
+            // tid 0 would address the calling (business) thread itself.
+            ensure!(tid > 0, "helper thread id unavailable for placement");
+            ensure!(
+                unsafe {
+                    libc::sched_setaffinity(
+                        tid,
+                        std::mem::size_of_val(&self.background),
+                        &self.background,
+                    )
+                } == 0,
+                "pin thread {tid} to background CPUs: {}",
+                std::io::Error::last_os_error()
+            );
+            Ok(())
+        }
+        /// Runs at the start of threads spawned from the business thread
+        /// (Tokio's resolver pool), which would otherwise inherit its CPU.
+        pub fn background_hook(&self) -> impl Fn() + Send + Sync + 'static {
+            let mask = self.background;
+            move || {
+                if !set_affinity(&mask) {
+                    log::warn!(
+                        "helper thread stays on the business CPU: {}",
+                        std::io::Error::last_os_error()
+                    );
+                }
+            }
+        }
+        /// Threads other than the business owner that the kernel may still
+        /// schedule on the business CPU, as `tid:name:cpus`.
+        pub fn business_intruders(&self) -> Result<Vec<String>> {
+            let mut intruders = Vec::new();
+            for entry in std::fs::read_dir("/proc/self/task").context("list process threads")? {
+                let path = entry?.path();
+                let tid: libc::pid_t = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.parse().ok())
+                    .context("unexpected /proc task entry")?;
+                if tid == self.sdk.owner {
+                    continue;
+                }
+                // A thread may exit between listing and reading.
+                let Ok(status) = std::fs::read_to_string(path.join("status")) else {
+                    continue;
+                };
+                let field = |key: &str| {
+                    status
+                        .lines()
+                        .find_map(|line| line.strip_prefix(key))
+                        .map(str::trim)
+                };
+                let cpus = field("Cpus_allowed_list:").context("missing thread CPU list")?;
+                if parse_list(cpus)?.contains(&self.business_cpu) {
+                    intruders.push(format!("{tid}:{}:{cpus}", field("Name:").unwrap_or("?")));
+                }
+            }
+            Ok(intruders)
+        }
     }
     use std::ffi::c_void;
     impl Drop for Placement {
@@ -472,6 +535,15 @@ mod unsupported {
         }
         pub fn on_background<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
             f()
+        }
+        pub fn pin_background_thread(&self, _: i32) -> Result<()> {
+            Ok(())
+        }
+        pub fn background_hook(&self) -> impl Fn() + Send + Sync + 'static {
+            || {}
+        }
+        pub fn business_intruders(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
         }
     }
 }

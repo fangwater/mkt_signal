@@ -49,16 +49,6 @@ pub fn router(cfg: &crate::config::HttpCfg, hub: Hub, positions: manager::Positi
                 }
             }),
         )
-        .route(
-            "/account-observation/:source",
-            get(move |Path(source): Path<String>, headers: HeaderMap| {
-                let positions = positions.clone();
-                async move {
-                    let result = positions.account(&source, &headers).await;
-                    ([(header::CACHE_CONTROL, "no-store")], result.map(Json))
-                }
-            }),
-        )
         .route(&cfg.ws_path, get(ws_route))
         .with_state(hub)
 }

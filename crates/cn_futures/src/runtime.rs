@@ -1,33 +1,23 @@
-//! Operational I/O stays off the business thread. No automatic order cancellation,
-//! cross-account routing, or strategy attribution is performed on startup/recovery.
-use crate::compact::{CancelAudit, FillAudit, OrderAudit, SubmitAudit};
+//! Single business loop. Evidence goes to persist_manager through
+//! `PersistChannel`; no automatic order cancellation or cross-account routing is
+//! performed on startup/recovery. Strategy attribution is restored from
+//! persist_manager; fills recovered by query stay unallocated.
 use crate::model::{Intent, OrderKey};
+pub use crate::persist::PersistChannel;
 use anyhow::{Context, Result};
-#[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
-use crossbeam_channel::Receiver;
-use crossbeam_channel::Sender;
-use persist_common::cn_futures::{NativeMutation, NativeTradeRecord, StoreIdentity};
-use persist_manager::cn_futures::NativeStore;
 use serde::Deserialize;
-use serde_json::Value;
-use smallvec::SmallVec;
-use std::cell::Cell;
 use std::fs::{File, OpenOptions};
-#[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
-use std::io::BufRead;
-use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc,
-};
+#[cfg(feature = "ctp-sdk")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "ctp-sdk")]
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
-    CtakerTarget {
-        target: crate::ctp::ctaker::Target,
+    ExecTarget {
+        target: crate::ctp::exec::Target,
     },
     Submit {
         intent: Intent,
@@ -45,6 +35,14 @@ pub enum Command {
         #[serde(default)]
         execution_route: Option<crate::model::ExecutionRoute>,
     },
+    /// Cutover only: credit `lots` (signed) of the unallocated account
+    /// position in `market` to `strategy` at cost `price`.
+    AssignPosition {
+        strategy: String,
+        market: String,
+        lots: i64,
+        price: f64,
+    },
     Connections {},
     State {},
     Reconcile {},
@@ -54,907 +52,104 @@ pub enum Command {
 #[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
 pub(crate) fn command_order_keys(command: &Command) -> Vec<OrderKey> {
     match command {
-        Command::Cancel { key, .. } => vec![key.clone()],
+        Command::Cancel { key, .. } => vec![*key],
         Command::CancelBatch { keys, .. } => keys.clone(),
         _ => vec![],
     }
 }
 
-struct Record {
-    payload: AuditPayload,
-    display: bool,
-    mutation: NativeMutation,
-    ack: Option<Sender<std::result::Result<(), String>>>,
-}
-// Native messages occupy preallocated queue storage. Building JSON and owned
-// persistence records stays on the writer; no Box or String is allocated here.
-#[allow(clippy::large_enum_variant)] // Intentional preallocated inline audit storage.
-enum AuditPayload {
-    Json(Value),
-    CtakerTargetAccepted(Arc<crate::ctp::ctaker::Target>),
-    #[cfg(feature = "ctp-sdk")]
-    CtakerTargetObserved(crate::ctp::ctaker::Target),
-    #[cfg(feature = "ctp-sdk")]
-    SettledAccount {
-        observed_us: u64,
-        trading_day: cn_futures_state::Text<16>,
-        available_local_budget: f64,
-        positions: Vec<cn_futures_state::PositionRow>,
-        can_trade: bool,
-    },
-    Yida {
-        event: crate::yida::RawEvent,
-        received_us: u64,
-        shutdown_tail: bool,
-    },
-    Ctp {
-        event: crate::ctp::ingress::Event,
-        received_us: u64,
-        shutdown_tail: bool,
-    },
-    PreparedSubmit(SubmitAudit),
-    PreparedCtaker {
-        submit: SubmitAudit,
-        target: Arc<crate::ctp::ctaker::Target>,
-    },
-    PreparedCancel(CancelAudit),
-    StrategyResult(crate::ctp::strategy::ActionOutcome),
-    OrderProjection(SmallVec<[OrderAudit; 1]>),
-    NormalizedTrade,
-    ProjectedTrade {
-        fill: FillAudit,
-        order: Option<OrderAudit>,
-        live_report: bool,
-        commission: Option<f64>,
-        native_time: Option<i32>,
-        received_us: u64,
-    },
-}
-impl AuditPayload {
-    fn observation_time(&self) -> Option<u64> {
-        match self {
-            #[cfg(feature = "ctp-sdk")]
-            Self::SettledAccount { observed_us, .. } => Some(*observed_us),
-            _ => None,
-        }
-    }
-
-    fn materialize(self, mut mutation: NativeMutation) -> (Value, NativeMutation) {
-        let value = match self {
-            Self::Json(value) => value,
-            Self::CtakerTargetAccepted(target) => {
-                serde_json::json!({"type":"ctaker_target_accepted","target":target,"venue_accepted":false})
-            }
-            #[cfg(feature = "ctp-sdk")]
-            Self::CtakerTargetObserved(target) => {
-                serde_json::json!({"type":"ctaker_target_observed","target":target,"execution_enabled":false})
-            }
-            #[cfg(feature = "ctp-sdk")]
-            Self::SettledAccount {
-                trading_day,
-                available_local_budget,
-                positions,
-                can_trade,
-                ..
-            } => {
-                serde_json::json!({
-                    "type": "state", "transport_ready": true, "can_trade": can_trade,
-                    "state": {"ready":true,"connected":true,"trading_day":trading_day,
-                        "available_local_budget":available_local_budget,"positions":positions,
-                        "orders":[]}
-                })
-            }
-            Self::Yida {
-                event,
-                received_us,
-                shutdown_tail,
-            } => {
-                let mut value = serde_json::json!({"type":"yida_event","received_us":received_us,"event":event});
-                if shutdown_tail {
-                    value["shutdown_tail"] = Value::Bool(true);
-                }
-                value
-            }
-            Self::Ctp {
-                event,
-                received_us,
-                shutdown_tail,
-            } => {
-                let mut value =
-                    serde_json::json!({"type":"ctp_event","event":event.audit(received_us)});
-                if shutdown_tail {
-                    value["shutdown_tail"] = Value::Bool(true);
-                }
-                value
-            }
-            Self::PreparedSubmit(audit) => {
-                let order = audit.owned();
-                mutation = crate::persistence::prepared_at(audit.day(), &order, audit.received_us);
-                serde_json::json!({"type":"prepared_submit","key":order.key,"intent":order.intent,"limit_price":order.limit_price})
-            }
-            Self::PreparedCtaker { submit, target } => {
-                let order = submit.owned();
-                mutation =
-                    crate::persistence::prepared_at(submit.day(), &order, submit.received_us);
-                serde_json::json!({"type":"prepared_submit","key":order.key,"intent":order.intent,"limit_price":order.limit_price,"prepared_at_us":submit.received_us,"ctaker_target":target})
-            }
-            Self::PreparedCancel(audit) => {
-                let order = audit.owned();
-                serde_json::json!({"type":"prepared_cancel","key":order.key,"venue":order.venue,"symbol":order.symbol,"system_id":order.system_id,"execution_route":order.execution_route})
-            }
-            Self::StrategyResult(result) => match result {
-                crate::ctp::strategy::ActionOutcome::Submitted { tag, receipt } => {
-                    serde_json::json!({"type":"strategy_submit_receipt","tag":tag,"receipt":receipt})
-                }
-                crate::ctp::strategy::ActionOutcome::CancelledLocally { tag, key } => {
-                    serde_json::json!({"type":"strategy_cancel_submitted_locally","tag":tag,"key":key})
-                }
-                crate::ctp::strategy::ActionOutcome::Rejected { tag, error } => {
-                    serde_json::json!({"type":"strategy_action_rejected","tag":tag,"error":error})
-                }
-                #[cfg(any(feature = "ctp-sdk", test))]
-                crate::ctp::strategy::ActionOutcome::CtpDispatchBlocked {
-                    action,
-                    checks,
-                    quote_received_us,
-                    quote_generation,
-                } => {
-                    use crate::ctp::strategy::Action;
-                    let action = match action {
-                        Action::Submit { tag, intent } => {
-                            serde_json::json!({"op":"submit","tag":tag,"intent":intent})
-                        }
-                        Action::SubmitCtaker {
-                            tag,
-                            intent,
-                            target,
-                        } => serde_json::json!({
-                            "op":"submit_ctaker","tag":tag,"intent":intent,
-                            "source_id":target.source_id,"batch_id":target.batch_id,
-                            "target_revision":target.target_revision,
-                            "trading_day":target.trading_day,"expires_at_us":target.expires_at_us,
-                        }),
-                        Action::Cancel { tag, key } => {
-                            serde_json::json!({"op":"cancel","tag":tag,"key":key})
-                        }
-                    };
-                    serde_json::json!({
-                        "type":"ctp_strategy_dispatch_blocked","sent_to_sdk":false,
-                        "retryable":checks.can_retry(),"checks":checks,"action":action,
-                        "quote_received_us":quote_received_us,"quote_generation":quote_generation,
-                    })
-                }
-            },
-            Self::OrderProjection(orders) => {
-                for order in orders {
-                    order.append(&mut mutation);
-                }
-                serde_json::json!({"type":"order_projection"})
-            }
-            Self::NormalizedTrade => {
-                let trade = mutation
-                    .trades
-                    .last_mut()
-                    .expect("normalized trade payload has one factual trade");
-                trade.commission_currency = trade.commission.map(|_| "CNY".into());
-                serde_json::json!({"type":"normalized_trade","identity":trade.fill.identity,"origin":"unclassified"})
-            }
-            Self::ProjectedTrade {
-                fill,
-                order,
-                live_report,
-                commission,
-                native_time,
-                received_us,
-            } => {
-                if let Some(order) = order {
-                    order.append(&mut mutation);
-                }
-                let fill = fill.owned();
-                let mut value = serde_json::json!({"type":"normalized_trade","identity":fill.identity,"origin":if live_report {"live_report"}else{"recovery_report"}});
-                if let Some(order) = mutation.orders.last().filter(|order| {
-                    live_report
-                        && !fill.system_id.is_empty()
-                        && order.order.system_id == fill.system_id
-                        && order.identity.trading_day == fill.identity.trading_day
-                        && order.identity.venue == fill.identity.venue
-                        && order.identity.native.order_ref == fill.order_ref
-                        && order.order.request.symbol == fill.identity.symbol
-                        && order.order.request.side == fill.identity.side
-                }) {
-                    value["order_link"] = serde_json::json!(order.identity);
-                }
-                mutation.trades.push(NativeTradeRecord {
-                    fill,
-                    commission,
-                    commission_currency: commission.map(|_| "CNY".into()),
-                    native_time,
-                    received_us,
-                    evidence_seq: 0,
-                });
-                value
-            }
-        };
-        (value, mutation)
-    }
-}
-pub(crate) fn redact(value: &mut Value, secrets: &[String]) {
-    match value {
-        Value::String(text) => {
-            for secret in secrets {
-                if !secret.is_empty() {
-                    *text = text.replace(secret, "[redacted]");
-                }
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                redact(value, secrets);
-            }
-        }
-        Value::Object(values) => {
-            for value in values.values_mut() {
-                redact(value, secrets);
-            }
-        }
-        _ => {}
-    }
-}
-#[derive(Default)]
-struct WriterStats {
-    records: AtomicU64,
-    confirmed: AtomicU64,
-    batches: AtomicU64,
-    max_batch: AtomicU64,
-}
-#[derive(Debug, Clone, Copy)]
-pub struct JournalStats {
-    pub enqueued: u64,
-    pub durable: u64,
-    pub synced_batches: u64,
-    pub max_batch: u64,
-    pub backlog: u64,
-}
-/// A persistence checkpoint is polled by the event loop; it never waits on a channel.
-pub struct DurabilityTicket {
-    target: u64,
-    deadline: Instant,
-}
-pub struct Journal {
-    sender: Option<Sender<Record>>,
-    enqueued: Cell<u64>, // Enforces the single business-thread producer contract.
-    stats: Arc<WriterStats>,
-    pub failed: Arc<AtomicBool>,
-    worker: Option<std::thread::JoinHandle<()>>,
-    sync_before_send: bool,
-    reference_floors: std::collections::HashMap<(String, String), u64>,
-}
-impl Journal {
-    pub fn start(
-        text_audit: Option<&Path>,
-        capacity: usize,
-        redactions: Vec<String>,
-        database: &Path,
-        identity: StoreIdentity,
-        sync_before_send: bool,
-    ) -> Result<Self> {
-        let mut store = NativeStore::open(database, &identity)?;
-        let reference_floors = store.reference_floors();
-        let mut text_audit = text_audit
-            .map(|path| -> Result<_> {
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).context("create text audit directory")?;
-                }
-                let mut options = OpenOptions::new();
-                options.create(true).append(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.mode(0o600);
-                }
-                Ok(BufWriter::new(
-                    options.open(path).context("open text audit")?,
-                ))
-            })
-            .transpose()?;
-        let (sender, receiver) = crossbeam_channel::bounded::<Record>(capacity);
-        let failed = Arc::new(AtomicBool::new(false));
-        let flag = failed.clone();
-        let stats = Arc::new(WriterStats::default());
-        let writer_stats = stats.clone();
-        let worker = std::thread::Builder::new()
-            .name("cn-futures-journal".into())
-            .spawn(move || {
-                let mut write = || -> Result<()> {
-                    let mut last_sync = Instant::now();
-                    const MAX_BATCH: usize = 64;
-                    let mut records = Vec::with_capacity(MAX_BATCH);
-                    let mut events = Vec::with_capacity(MAX_BATCH);
-                    let mut output = Vec::with_capacity(MAX_BATCH);
-                    loop {
-                        match receiver.recv_timeout(Duration::from_millis(100)) {
-                            Ok(first) => {
-                                records.push(first);
-                                while records.len() < MAX_BATCH {
-                                    match receiver.try_recv() {
-                                        Ok(record) => records.push(record),
-                                        Err(_) => break,
-                                    }
-                                }
-                                for record in records.drain(..) {
-                                    let observed_us = record.payload.observation_time();
-                                    let (mut value, mutation) =
-                                        record.payload.materialize(record.mutation);
-                                    redact(&mut value, &redactions);
-                                    let line = (record.display || text_audit.is_some())
-                                        .then(|| serde_json::to_string(&value))
-                                        .transpose()?;
-                                    events.push((
-                                        observed_us.unwrap_or_else(crate::persistence::now_us),
-                                        value,
-                                        mutation,
-                                    ));
-                                    output.push((record.display, record.ack, line));
-                                }
-                                let result = store.append_batch(events.drain(..));
-                                let (committed, failure) = match result {
-                                    Ok(batch) => (batch.committed, batch.projection_error),
-                                    Err(error) => (0, Some(error.to_string())),
-                                };
-                                if committed > 0 {
-                                    writer_stats
-                                        .records
-                                        .fetch_add(committed as u64, Ordering::Release);
-                                    writer_stats.batches.fetch_add(1, Ordering::Relaxed);
-                                    writer_stats
-                                        .max_batch
-                                        .fetch_max(committed as u64, Ordering::Relaxed);
-                                }
-                                let good = if failure.is_some() {
-                                    committed.saturating_sub(1)
-                                } else {
-                                    committed
-                                };
-                                writer_stats
-                                    .confirmed
-                                    .fetch_add(good as u64, Ordering::Release);
-                                for (index, (display, ack, line)) in output.drain(..).enumerate() {
-                                    if let Some(ack) = ack {
-                                        let result = if index < good {
-                                            Ok(())
-                                        } else {
-                                            Err(failure.clone().unwrap_or_else(|| {
-                                                "native write was not committed".into()
-                                            }))
-                                        };
-                                        let _ = ack.send(result);
-                                    }
-                                    if let Some(line) = line {
-                                        if let Some(writer) =
-                                            text_audit.as_mut().filter(|_| index < committed)
-                                        {
-                                            writeln!(writer, "{line}")?;
-                                        }
-                                        if display && index < good {
-                                            let stdout = std::io::stdout();
-                                            let mut out = stdout.lock();
-                                            writeln!(out, "{line}")?;
-                                            out.flush()?;
-                                        }
-                                    }
-                                }
-                                if let Some(error) = failure {
-                                    anyhow::bail!(error);
-                                }
-                            }
-                            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-                            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                                if let Some(writer) = &mut text_audit {
-                                    writer.flush()?;
-                                    writer.get_ref().sync_all()?;
-                                }
-                                return Ok(());
-                            }
-                        }
-                        if let Some(writer) = text_audit
-                            .as_mut()
-                            .filter(|_| last_sync.elapsed() >= Duration::from_millis(100))
-                        {
-                            writer.flush()?;
-                            writer.get_ref().sync_data()?;
-                            last_sync = Instant::now();
-                        }
-                    }
-                };
-                if let Err(error) = write() {
-                    flag.store(true, Ordering::Release);
-                    let mut error =
-                        Value::String(format!("native persistence writer failed: {error:#}"));
-                    redact(&mut error, &redactions);
-                    eprintln!(
-                        "{}",
-                        error.as_str().unwrap_or("native persistence writer failed")
-                    );
-                }
-            })
-            .context("spawn native journal writer")?;
-        Ok(Self {
-            sender: Some(sender),
-            enqueued: Cell::new(0),
-            stats,
-            failed,
-            worker: Some(worker),
-            sync_before_send,
-            reference_floors,
-        })
-    }
-    pub fn record(&self, value: Value, display: bool) -> Result<()> {
-        self.record_with(value, display, NativeMutation::default(), false)
-    }
-    pub fn target_accepted(&self, target: Arc<crate::ctp::ctaker::Target>) -> Result<()> {
-        self.enqueue(
-            AuditPayload::CtakerTargetAccepted(target),
-            true,
-            NativeMutation::default(),
-            false,
-        )
-    }
-    pub fn strategy_result(
-        &self,
-        outcome: crate::ctp::strategy::ActionOutcome,
-        display: bool,
-    ) -> Result<()> {
-        self.enqueue(
-            AuditPayload::StrategyResult(outcome),
-            display,
-            NativeMutation::default(),
-            false,
-        )
-    }
-    pub fn record_with(
-        &self,
-        value: Value,
-        display: bool,
-        mutation: NativeMutation,
-        wait: bool,
-    ) -> Result<()> {
-        self.enqueue(AuditPayload::Json(value), display, mutation, wait)
-    }
-    fn enqueue(
-        &self,
-        payload: AuditPayload,
-        display: bool,
-        mutation: NativeMutation,
-        wait: bool,
-    ) -> Result<()> {
-        anyhow::ensure!(
-            !self.failed.load(Ordering::Acquire),
-            "native persistence writer failed"
-        );
-        let (ack, receiver) = if wait {
-            let (s, r) = crossbeam_channel::bounded(1);
-            (Some(s), Some(r))
-        } else {
-            (None, None)
-        };
-        let result = self
-            .sender
-            .as_ref()
-            .context("journal closed")?
-            .try_send(Record {
-                payload,
-                display,
-                mutation,
-                ack,
-            });
-        if result.is_err() {
-            self.failed.store(true, Ordering::Release);
-            anyhow::bail!("reliable native persistence queue full/disconnected");
-        }
-        self.enqueued.set(self.enqueued.get().wrapping_add(1));
-        if let Some(receiver) = receiver {
-            let deadline = Instant::now() + Duration::from_secs(30);
-            loop {
-                match receiver.recv_timeout(Duration::from_millis(10)) {
-                    Ok(Ok(())) => break,
-                    Ok(Err(error)) => {
-                        self.failed.store(true, Ordering::Release);
-                        anyhow::bail!(error);
-                    }
-                    Err(crossbeam_channel::RecvTimeoutError::Timeout)
-                        if Instant::now() < deadline && !self.failed.load(Ordering::Acquire) => {}
-                    Err(_) => {
-                        self.failed.store(true, Ordering::Release);
-                        anyhow::bail!("native persistence acknowledgement timed out/disconnected or writer failed");
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-    pub fn yida_event(
-        &self,
-        event: &crate::yida::RawEvent,
-        received_us: u64,
-        shutdown_tail: bool,
-    ) -> Result<()> {
-        self.enqueue(
-            AuditPayload::Yida {
-                event: *event,
-                received_us,
-                shutdown_tail,
-            },
-            false,
-            NativeMutation::default(),
-            false,
-        )
-    }
-    pub fn ctp_event(
-        &self,
-        event: &crate::ctp::ingress::Event,
-        received_us: u64,
-        shutdown_tail: bool,
-    ) -> Result<()> {
-        // Successful catalogue rows only refresh in-memory contract rules.
-        if event.kind == crate::ctp::INSTRUMENT && event.error == 0 {
-            return Ok(());
-        }
-        // Order, fill, cancel and error callbacks are low-volume operator
-        // facts; account, position and rate queries remain audit-only.
-        let display = event.error != 0
-            || matches!(
-                event.kind,
-                crate::ctp::ORDER
-                    | crate::ctp::TRADE
-                    | crate::ctp::INSERT_RESPONSE
-                    | crate::ctp::CANCEL_RESPONSE
-                    | crate::ctp::ERROR
-            );
-        self.enqueue(
-            AuditPayload::Ctp {
-                event: event.clone(),
-                received_us,
-                shutdown_tail,
-            },
-            display,
-            NativeMutation::default(),
-            false,
-        )
-    }
-    pub fn prepared_submit(&self, day: &str, p: &crate::model::PreparedOrder) -> Result<()> {
-        self.enqueue(
-            AuditPayload::PreparedSubmit(SubmitAudit::new(day, p, crate::persistence::now_us())?),
-            true,
-            NativeMutation::default(),
-            self.sync_before_send,
-        )
-    }
-    pub fn prepared_ctaker(
-        &self,
-        day: &str,
-        p: &crate::model::PreparedOrder,
-        target: Arc<crate::ctp::ctaker::Target>,
-    ) -> Result<()> {
-        self.enqueue(
-            AuditPayload::PreparedCtaker {
-                submit: SubmitAudit::new(day, p, crate::persistence::now_us())?,
-                target,
-            },
-            true,
-            NativeMutation::default(),
-            self.sync_before_send,
-        )
-    }
-    pub fn prepared_cancel(&self, p: &crate::model::PreparedCancel) -> Result<()> {
-        self.enqueue(
-            AuditPayload::PreparedCancel(CancelAudit::new(p)?),
-            true,
-            NativeMutation::default(),
-            self.sync_before_send,
-        )
-    }
-    pub fn trade(
-        &self,
-        fill: crate::model::Fill,
-        commission: Option<f64>,
-        native_time: Option<i32>,
-        received_us: u64,
-    ) -> Result<()> {
-        self.trade_with_projection(
-            fill,
-            commission,
-            native_time,
-            received_us,
-            NativeMutation::default(),
-        )
-    }
-    pub fn trade_with_projection(
-        &self,
-        fill: crate::model::Fill,
-        commission: Option<f64>,
-        native_time: Option<i32>,
-        received_us: u64,
-        mut mutation: NativeMutation,
-    ) -> Result<()> {
-        mutation.trades.push(NativeTradeRecord {
-            fill,
-            commission,
-            commission_currency: None,
-            native_time,
-            received_us,
-            evidence_seq: 0,
-        });
-        self.enqueue(AuditPayload::NormalizedTrade, false, mutation, false)
-    }
-    pub fn trade_for(
-        &self,
-        core: &crate::core::TradingCore,
-        fill: &crate::model::Fill,
-        commission: Option<f64>,
-        native_time: Option<i32>,
-        received_us: u64,
-        applied: bool,
-        live_report: bool,
-    ) -> Result<()> {
-        let order = if applied {
-            core.fill_order_key(fill)
-                .and_then(|key| core.order(key))
-                .map(|order| {
-                    OrderAudit::new(
-                        core.trading_day(),
-                        order,
-                        core.instrument_handle(order.request.venue, &order.request.symbol),
-                        core.is_ready(),
-                        false,
-                        crate::persistence::now_us(),
-                    )
-                })
-                .transpose()?
-        } else {
-            None
-        };
-        self.enqueue(
-            AuditPayload::ProjectedTrade {
-                fill: FillAudit::new(fill)?,
-                order,
-                live_report,
-                commission,
-                native_time,
-                received_us,
-            },
-            live_report,
-            NativeMutation::default(),
-            false,
-        )
-    }
-    pub fn state(&self, core: &crate::core::TradingCore, observed: &[OrderKey]) -> Result<()> {
-        self.enqueue(
-            AuditPayload::OrderProjection(SmallVec::new()),
-            false,
-            crate::persistence::projection(core, observed, false),
-            false,
-        )
-    }
-    #[cfg(feature = "ctp-sdk")]
-    fn settled_account(
-        &self,
-        snapshot: &mut cn_futures_state::Snapshot,
-        can_trade: bool,
-    ) -> Result<()> {
-        self.enqueue(
-            AuditPayload::SettledAccount {
-                observed_us: crate::persistence::now_us(),
-                trading_day: snapshot.trading_day,
-                available_local_budget: snapshot.available_local_budget,
-                positions: std::mem::take(&mut snapshot.positions),
-                can_trade,
-            },
-            false,
-            NativeMutation::default(),
-            false,
-        )
-    }
-    pub fn orders(
-        &self,
-        core: &crate::core::TradingCore,
-        keys: &[OrderKey],
-        observed: &[OrderKey],
-    ) -> Result<()> {
-        if keys.is_empty() {
-            return Ok(());
-        }
-        let mut orders = SmallVec::new();
-        for key in keys {
-            if let Some(order) = core.order(key) {
-                orders.push(OrderAudit::new(
-                    core.trading_day(),
-                    order,
-                    core.instrument_handle(order.request.venue, &order.request.symbol),
-                    core.is_ready(),
-                    observed.contains(key),
-                    crate::persistence::now_us(),
-                )?);
-            }
-        }
-        self.enqueue(
-            AuditPayload::OrderProjection(orders),
-            false,
-            NativeMutation::default(),
-            false,
-        )
-    }
-    pub fn command_state(
-        &self,
-        core: &crate::core::TradingCore,
-        result: &Result<Value>,
-        mut keys: Vec<OrderKey>,
-    ) -> Result<()> {
-        if let Ok(value) = result {
-            if let Some(children) = value["receipt"]["children"].as_array() {
-                for child in children {
-                    let key: OrderKey = serde_json::from_value(child["key"].clone())?;
-                    if !keys.contains(&key) {
-                        keys.push(key);
-                    }
-                }
-            }
-        }
-        self.orders(core, &keys, &[])
-    }
-    pub fn reconciled(
-        &self,
-        core: &mut crate::core::TradingCore,
-        trades: Vec<crate::model::Fill>,
-    ) -> Result<()> {
-        self.recovery_checkpoint(core, trades, true)
-    }
-    fn recovery_checkpoint(
-        &self,
-        core: &mut crate::core::TradingCore,
-        trades: Vec<crate::model::Fill>,
-        wait: bool,
-    ) -> Result<()> {
-        core.apply_reference_floors(&self.reference_floors)?;
-        let mut mutation = crate::persistence::projection(core, &[], true);
-        mutation.trades = trades
-            .into_iter()
-            .map(|fill| NativeTradeRecord {
-                fill,
-                commission: None,
-                commission_currency: None,
-                native_time: None,
-                received_us: crate::persistence::now_us(),
-                evidence_seq: 0,
-            })
-            .collect();
-        // A new process may trade only after durable unresolved requests have reconciled.
-        self.record_with(
-            serde_json::json!({"type":if wait { "reconciled" } else { "recovery_checkpoint" },"state":core.view()}),
-            wait,
-            mutation,
-            wait,
-        )
-    }
-    pub fn begin_recovery(
-        &self,
-        core: &mut crate::core::TradingCore,
-        trades: Vec<crate::model::Fill>,
-        now: Instant,
-    ) -> Result<DurabilityTicket> {
-        self.recovery_checkpoint(core, trades, false)?;
-        core.recovery_pending(true);
-        Ok(DurabilityTicket {
-            target: self.enqueued.get(),
-            deadline: now + Duration::from_secs(30),
-        })
-    }
-    pub fn poll_checkpoint(&self, ticket: &DurabilityTicket, now: Instant) -> Result<bool> {
-        anyhow::ensure!(
-            !self.failed.load(Ordering::Acquire),
-            "native recovery writer failed"
-        );
-        if self.stats.confirmed.load(Ordering::Acquire) >= ticket.target {
-            anyhow::ensure!(
-                !self.failed.load(Ordering::Acquire),
-                "native recovery writer failed"
-            );
-            return Ok(true);
-        }
-        if now >= ticket.deadline {
-            self.failed.store(true, Ordering::Release);
-            anyhow::bail!("native recovery checkpoint timed out");
-        }
-        Ok(false)
-    }
-    pub fn close_async(&mut self) -> Result<()> {
-        self.record(serde_json::json!({"type":"persistence_flushed"}), false)?;
-        self.sender.take();
-        Ok(())
-    }
-    pub fn poll_closed(&mut self) -> Result<bool> {
-        anyhow::ensure!(
-            self.sender.is_none(),
-            "close_async must precede poll_closed"
-        );
-        if self
-            .worker
-            .as_ref()
-            .is_some_and(|worker| !worker.is_finished())
-        {
-            return Ok(false);
-        }
-        if let Some(worker) = self.worker.take() {
-            worker
-                .join()
-                .map_err(|_| anyhow::anyhow!("native persistence worker panicked"))?;
-        }
-        anyhow::ensure!(
-            !self.failed.load(Ordering::Acquire),
-            "native persistence writer failed on close"
-        );
-        Ok(true)
-    }
-    pub fn stats(&self) -> JournalStats {
-        let enqueued = self.enqueued.get();
-        let durable = self.stats.records.load(Ordering::Acquire);
-        JournalStats {
-            enqueued,
-            durable,
-            synced_batches: self.stats.batches.load(Ordering::Relaxed),
-            max_batch: self.stats.max_batch.load(Ordering::Relaxed),
-            backlog: enqueued.saturating_sub(durable),
-        }
-    }
-    pub fn finish(mut self) -> Result<()> {
-        self.record_with(
-            serde_json::json!({"type":"persistence_flushed"}),
-            false,
-            NativeMutation::default(),
-            true,
-        )?;
-        self.sender.take();
-        if let Some(worker) = self.worker.take() {
-            worker
-                .join()
-                .map_err(|_| anyhow::anyhow!("native persistence worker panicked"))?;
-        }
-        anyhow::ensure!(
-            !self.failed.load(Ordering::Acquire),
-            "native persistence writer failed on close"
-        );
-        Ok(())
-    }
-}
-impl Drop for Journal {
-    fn drop(&mut self) {
-        self.sender.take();
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
-}
-
 #[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
-pub(crate) fn input_commands() -> Result<Receiver<Result<Command>>> {
-    let (sender, receiver) = crossbeam_channel::bounded(64);
-    std::thread::Builder::new()
-        .name("cn-futures-commands".into())
-        .spawn(move || {
-            let stdin = std::io::stdin();
-            for line in stdin.lock().lines() {
-                let command = match line {
-                    Ok(line) if line.len() <= 16384 => serde_json::from_str(&line)
-                        .map_err(|_| anyhow::anyhow!("invalid command schema")),
-                    Ok(_) => Err(anyhow::anyhow!("command exceeds 16 KiB")),
-                    Err(_) => Err(anyhow::anyhow!("command input error")),
-                };
-                if sender.send(command).is_err() {
-                    break;
+pub(crate) fn input_commands() -> Result<CommandInput> {
+    CommandInput::stdin()
+}
+
+/// Operator JSON-line commands read from non-blocking stdin inside the business
+/// loop. Polled at a bounded rate so idle spinning issues no per-iteration syscall.
+#[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
+pub(crate) struct CommandInput {
+    pending: Vec<u8>,
+    oversized: bool,
+    closed: bool,
+    next_read: std::time::Instant,
+}
+#[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
+impl CommandInput {
+    const MAX_LINE: usize = 16384;
+    const READ_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
+    fn stdin() -> Result<Self> {
+        // SAFETY: fcntl on the process's own stdin descriptor.
+        let flags = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_GETFL) };
+        anyhow::ensure!(flags >= 0, "read stdin flags");
+        let set =
+            unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        anyhow::ensure!(set >= 0, "make stdin non-blocking");
+        Ok(Self {
+            pending: Vec::with_capacity(Self::MAX_LINE),
+            oversized: false,
+            closed: false,
+            next_read: std::time::Instant::now(),
+        })
+    }
+
+    /// Same contract as a channel: `Empty` when no complete line is buffered,
+    /// `Disconnected` once stdin has closed and every line was delivered.
+    pub(crate) fn try_recv(
+        &mut self,
+    ) -> std::result::Result<Result<Command>, crossbeam_channel::TryRecvError> {
+        if let Some(command) = self.next_line() {
+            return Ok(command);
+        }
+        if self.closed {
+            return Err(crossbeam_channel::TryRecvError::Disconnected);
+        }
+        let now = std::time::Instant::now();
+        if now < self.next_read {
+            return Err(crossbeam_channel::TryRecvError::Empty);
+        }
+        self.next_read = now + Self::READ_INTERVAL;
+        let mut chunk = [0u8; 4096];
+        // SAFETY: reads into a local buffer of the given length.
+        let n = unsafe { libc::read(libc::STDIN_FILENO, chunk.as_mut_ptr().cast(), chunk.len()) };
+        match n {
+            0 => self.closed = true,
+            n if n > 0 => self.pending.extend_from_slice(&chunk[..n as usize]),
+            _ => {
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::WouldBlock
+                    && error.kind() != std::io::ErrorKind::Interrupted
+                {
+                    self.closed = true;
+                    return Ok(Err(anyhow::anyhow!("command input error")));
                 }
             }
-        })
-        .context("spawn native command input")?;
-    Ok(receiver)
+        }
+        self.next_line()
+            .ok_or(crossbeam_channel::TryRecvError::Empty)
+    }
+
+    fn next_line(&mut self) -> Option<Result<Command>> {
+        loop {
+            let Some(end) = self.pending.iter().position(|b| *b == b'\n') else {
+                if self.pending.len() > Self::MAX_LINE {
+                    self.pending.clear();
+                    self.oversized = true;
+                }
+                return None;
+            };
+            let line: Vec<u8> = self.pending.drain(..=end).collect();
+            if std::mem::take(&mut self.oversized) || line.len() > Self::MAX_LINE + 1 {
+                return Some(Err(anyhow::anyhow!("command exceeds 16 KiB")));
+            }
+            let line = &line[..line.len() - 1];
+            if line.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            return Some(
+                serde_json::from_slice(line).map_err(|_| anyhow::anyhow!("invalid command schema")),
+            );
+        }
+    }
 }
 
 pub fn lock_flow(path: &Path) -> Result<File> {
@@ -977,8 +172,8 @@ pub fn lock_flow(path: &Path) -> Result<File> {
 #[cfg(feature = "ctp-sdk")]
 pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
     anyhow::ensure!(
-        config.ctaker.is_none(),
-        "ctaker requires a combined MD/Trader runtime"
+        config.exec.is_none(),
+        "exec requires a combined MD/Trader runtime"
     );
     run_with_strategy(
         config,
@@ -987,6 +182,14 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
         crate::ctp::strategy::NoStrategy,
         &AtomicBool::new(false),
     )
+}
+
+/// Whether a factual fill belongs to an order this process submitted.
+#[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
+pub(crate) fn own_order(core: &crate::core::TradingCore, fill: &crate::model::Fill) -> bool {
+    core.fill_order_key(fill)
+        .and_then(|key| core.order(key))
+        .is_some_and(|order| order.owned)
 }
 
 #[cfg(feature = "ctp-sdk")]
@@ -1005,7 +208,7 @@ fn prepare_ctp_contracts(
         session.require_active_future(venue, symbol)?;
     }
     for &(venue, symbol) in contracts {
-        session.request_rates(venue, symbol, now);
+        session.request_rates(venue, symbol, now)?;
     }
     if let Some(feed) = market_data {
         anyhow::ensure!(
@@ -1024,19 +227,20 @@ fn prepare_ctp_contracts(
 
 #[cfg(feature = "ctp-sdk")]
 fn prepare_ctp_target(
-    settings: &crate::ctp::ctaker::Settings,
-    target: &crate::ctp::ctaker::Target,
+    settings: &crate::ctp::exec::Settings,
+    target: &crate::ctp::exec::Target,
+    attributes: impl Fn(&str) -> bool,
     session: &mut crate::ctp::session::Session,
     core: &crate::core::TradingCore,
     feed: Option<&mut crate::ctp::market_data::Feed>,
     now: std::time::Instant,
-    now_us: u64,
 ) -> Result<()> {
-    let contracts = crate::ctp::ctaker::validate_target(settings, target, core, now_us, false)?;
+    let now_us = crate::persistence::now_us();
+    let contracts = crate::ctp::exec::validate_target(settings, target, core, now_us, false)?;
     let required: Vec<_> = contracts
         .into_iter()
-        .filter(|&(venue, symbol, lots)| {
-            crate::ctp::ctaker::needs_contract(core, venue, symbol, lots)
+        .filter(|&(venue, symbol, required)| {
+            required || attributes(&format!("{}:{symbol}", venue.as_str()))
         })
         .map(|(venue, symbol, _)| (venue, symbol))
         .collect();
@@ -1064,8 +268,8 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     if let Some(ingress) = &config.position_target_ingress {
         if execute {
             anyhow::ensure!(
-                config.ctaker.is_some() && market_data.is_some(),
-                "executable target ingress requires ctaker and combined market data"
+                config.exec.is_some() && market_data.is_some(),
+                "executable target ingress requires exec and combined market data"
             );
         } else {
             ingress.validate_observer()?;
@@ -1094,48 +298,36 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
         .persistence_directory
         .clone()
         .unwrap_or_else(|| config.flow_directory.join("persist_manager"));
-    let identity = crate::persistence::store_identity(
-        "ctp",
-        &[
-            config.front.as_bytes(),
-            credentials.broker.as_bytes(),
-            credentials.investor.as_bytes(),
-        ],
-    );
-    let mut plan_snapshot = config
-        .position_target_ingress
+    let account_hash = crate::persistence::account_hash(&[
+        config.front.as_bytes(),
+        credentials.broker.as_bytes(),
+        credentials.investor.as_bytes(),
+    ]);
+
+    // Both publish inline from this thread; neither creates a worker.
+    let mut position_ipc = config
+        .position_ipc
         .as_ref()
-        .filter(|cfg| execute && cfg.manager_plan.is_some())
-        .map(|_| {
-            cn_futures_state::Snapshot::empty(
+        .map(|cfg| {
+            cn_futures_state::publisher::Producer::start(
+                cfg,
                 cn_futures_state::Adapter::Ctp,
-                &identity.account_hash,
+                &account_hash,
             )
         })
         .transpose()?;
-    let mut position_ipc = placement.on_background(|| {
-        config
-            .position_ipc
-            .as_ref()
-            .map(|cfg| {
-                cn_futures_state::publisher::Producer::start(
-                    cfg,
-                    cn_futures_state::Adapter::Ctp,
-                    &identity.account_hash,
-                )
-            })
-            .transpose()
-    })?;
-    let mut journal = placement.on_background(|| {
-        Journal::start(
-            None,
-            config.event_capacity,
-            redactions,
-            &database,
-            identity,
-            false, // CTP always queues intent audit without waiting for durability.
-        )
-    })?;
+    let journal = PersistChannel::start(
+        &database,
+        redactions,
+        PersistChannel::persist_manager_sink()?,
+    )?;
+    let restored = journal.take_previous_ledger();
+    let restored_markets = restored.len();
+    strategy.restore_ledger(restored)?;
+    journal.record(
+        json!({"type":"strategy_ledger_restored","markets":restored_markets}),
+        true,
+    )?;
     let trader = placement.on_sdk(|| CtpTrader::new(&config, credentials, placement.callback()))?;
     let investor = trader
         .investor()
@@ -1153,18 +345,23 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
         trader,
         execute,
     };
-    let input = placement.on_background(input_commands)?;
+    let mut input = input_commands()?;
+    // Network I/O (Manager subscription, target listeners, dominant lookup) runs
+    // as local tasks driven from this loop; no I/O thread exists.
+    let mut io = cn_futures_target::IoLoop::new(placement.background_hook())?;
+    let mut idle = crate::poll::Idle::new(config.poll);
     let target_ingress = if let Some(cfg) = &config.position_target_ingress {
-        Some(placement.on_background(|| {
-            if execute {
-                cn_futures_target::Ingress::start(cfg)
-            } else {
-                cn_futures_target::Ingress::start_observer(cfg)
-            }
-        })?)
+        Some(if execute {
+            cn_futures_target::Ingress::start(cfg, &io)?
+        } else {
+            cn_futures_target::Ingress::start_observer(cfg, &io)?
+        })
     } else {
         None
     };
+    // Only the business thread may run on the business CPU; the logger joins
+    // the background CPUs before trading.
+    placement.pin_background_thread(async_log::thread_id())?;
     let sdk_version = placement.on_sdk(|| ctp::sdk::version(&config.sdk_library))?;
     journal.record(json!({"type":"runtime_start","execute":execute,"exchanges":crate::model::Venue::ALL.map(|v|v.as_str()),"production_mode":config.production_mode,"sdk":sdk_version}), true)?;
     crate::position_ipc::publish(
@@ -1186,8 +383,16 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     })?;
     let mut feed = market_data
         .as_ref()
-        .map(|md| ctp::market_data::Feed::new(md, &placement))
+        .map(|md| ctp::market_data::Feed::new(md, &placement, io.spawner()))
         .transpose()?;
+    let intruders = placement.business_intruders()?;
+    if !intruders.is_empty() {
+        log::warn!("threads may run on the business CPU: {intruders:?}");
+    }
+    journal.record(
+        json!({"type":"placement_audit","business_cpu":config.placement.business_cpu,"intruders":intruders}),
+        true,
+    )?;
     let mut feed_failed = false;
     let mut actions = Actions::default();
     let mut md_latency = ctp::market_data::latency::LatencyStats::new(Instant::now());
@@ -1195,8 +400,6 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     let mut commands_open = true;
     let mut transport_online = false;
     let mut transport_progress = Instant::now();
-    let mut next_plan_snapshot = Instant::now();
-    let mut recovery: Option<DurabilityTicket> = None;
     let mut reconcile_after_account_retry = false;
     let outcome = (|| -> Result<()> {
         while !stopping && !stop.load(Ordering::Acquire) {
@@ -1204,9 +407,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                 runtime.core.block("CTP SDK CPU/NUMA binding failed");
                 anyhow::bail!("CTP SDK CPU/NUMA binding failed; no fallback is permitted");
             }
-            if runtime.trader.fault.load(Ordering::Acquire)
-                || journal.failed.load(Ordering::Acquire)
-            {
+            if runtime.trader.fault.load(Ordering::Acquire) || journal.failed() {
                 runtime.core.block(
                     "reliable event ingress/journal failed; stop and reconcile before resubmitting",
                 );
@@ -1216,6 +417,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
             }
             let mut work = false;
             let batch_now = Instant::now();
+            io.drive(batch_now);
             for _ in 0..256 {
                 let Ok(received) = runtime.trader.events.try_recv() else {
                     break;
@@ -1235,23 +437,15 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                 } else {
                     Ok(crate::model::DecodedUpdate::None)
                 };
-                if event.kind == ctp::QUERY_TRADE || (event.kind == ctp::TRADE && !session.ready())
-                {
-                    if let Ok(crate::model::DecodedUpdate::Trade(fill)) = &decoded {
-                        journal.trade(fill.clone(), None, None, received.received_us)?;
-                    }
-                }
                 if event.kind == ctp::CONNECTED {
                     transport_online = true;
                     transport_progress = Instant::now();
-                    recovery = None;
                     reconcile_after_account_retry = false;
                     runtime.core.connected();
                 }
                 if event.kind == ctp::DISCONNECTED {
                     transport_online = false;
                     transport_progress = Instant::now();
-                    recovery = None;
                     reconcile_after_account_retry = false;
                     runtime.core.disconnect();
                     if wait_for_front {
@@ -1261,7 +455,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                 if event.kind == ctp::INSTRUMENT_STATUS {
                     runtime.core.set_trading_status(
                         crate::model::Venue::parse(ctp::text_ref(&event.exchange)?)?,
-                        &ctp::text(&event.symbol)?,
+                        ctp::text_ref(&event.symbol)?,
                         event.status == i32::from(b'2'),
                     );
                 }
@@ -1281,13 +475,17 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                             .core
                             .block("settlement not confirmed; read-only queries remain available");
                     }
-                    recovery =
-                        Some(journal.begin_recovery(&mut runtime.core, trades, batch_now)?);
+                    if let Err(error) = journal.reconciled(&mut runtime.core, trades) {
+                        runtime.core.block("durable recovery failed");
+                        journal.record(
+                            json!({"type":"trading_blocked","error":error.to_string()}),
+                            true,
+                        )?;
+                    }
                 }
                 if let Some(available) = session.take_cash_update() {
                     if reconcile_after_account_retry {
                         session.restart_queries(batch_now)?;
-                        recovery = None;
                         reconcile_after_account_retry = false;
                     } else {
                         runtime.core.constrain_cash(available)?;
@@ -1300,6 +498,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     runtime.core.replace_instruments(rules)?;
                 }
                 if session.ready() {
+                    let mut new_fill = false;
                     let outcome = match event.kind {
                         ctp::ORDER | ctp::TRADE if owns => decoded
                             .as_ref()
@@ -1309,7 +508,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     runtime.core.on_order(order)
                                 }
                                 crate::model::DecodedUpdate::Trade(fill) => {
-                                    runtime.core.on_fill(fill).map(|_| ())
+                                    runtime.core.on_fill(fill).map(|new| new_fill = new)
                                 }
                                 _ => Ok(()),
                             }),
@@ -1327,18 +526,11 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                         )),
                         _ => Ok(()),
                     };
-                    if event.kind == ctp::TRADE {
-                        if let Ok(crate::model::DecodedUpdate::Trade(fill)) = &decoded {
-                            journal.trade_for(
-                                &runtime.core,
-                                fill,
-                                None,
-                                None,
-                                received.received_us,
-                                outcome.is_ok(),
-                                true,
-                            )?;
-                        }
+                    // A fill the OMS could not apply is still a venue fact.
+                    if let (true, Ok(crate::model::DecodedUpdate::Trade(fill))) =
+                        (event.kind == ctp::TRADE && outcome.is_err(), &decoded)
+                    {
+                        journal.fill(&runtime.core, fill, None, received.received_us, None)?;
                     }
                     if outcome.is_ok()
                         && matches!(
@@ -1346,33 +538,15 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                             ctp::ORDER | ctp::INSERT_RESPONSE | ctp::CANCEL_RESPONSE
                         )
                     {
-                        let observed = if event.kind == ctp::ORDER {
-                            decoded
-                                .as_ref()
-                                .ok()
-                                .and_then(|p| p.order())
-                                .map(|o| o.key.clone())
-                                .into_iter()
-                                .collect::<Vec<_>>()
-                        } else {
-                            vec![]
-                        };
-                        let keys = if !observed.is_empty() {
-                            observed.clone()
-                        } else {
-                            runtime
-                                .trader
-                                .response_key(&event)
-                                .ok()
-                                .into_iter()
-                                .collect()
-                        };
-                        let observed = if event.kind == ctp::INSERT_RESPONSE && event.error != 0 {
-                            keys.clone()
-                        } else {
-                            observed
-                        };
-                        journal.orders(&runtime.core, &keys, &observed)?;
+                        let key = decoded
+                            .as_ref()
+                            .ok()
+                            .and_then(|p| p.order())
+                            .map(|o| o.key)
+                            .or_else(|| runtime.trader.response_key(&event).ok());
+                        if let Some(key) = key {
+                            journal.orders(&runtime.core, &[key])?;
+                        }
                     }
                     if let Err(error) = outcome {
                         runtime.core.block(
@@ -1393,21 +567,19 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     && runtime.trader.events.is_empty(),
                             },
                         )?;
+                        if let (true, crate::model::DecodedUpdate::Trade(fill)) = (new_fill, update)
+                        {
+                            strategy.on_fill(fill, own_order(&runtime.core, fill));
+                            journal.ledger(
+                                &runtime.core,
+                                &strategy.take_ledger_events(),
+                                Some((fill, None, received.received_us)),
+                            )?;
+                        }
                     }
                 }
             }
             let now = Instant::now();
-            if let Some(ticket) = &recovery {
-                if journal.poll_checkpoint(ticket, now)? {
-                    runtime.core.recovery_pending(false);
-                    recovery = None;
-                    journal.record(
-                        json!({"type":"reconciled","state":runtime.core.view()}),
-                        true,
-                    )?;
-                    work = true;
-                }
-            }
             if runtime.trader.events.is_empty() {
                 let control_timeout = session.timed_out(now);
                 let front_timeout = !wait_for_front
@@ -1417,7 +589,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                 if control_timeout || front_timeout {
                     let account_timeout = control_timeout && session.account_query_in_flight();
                     runtime.core.disconnect();
-                    journal.state(&runtime.core, &[])?;
+                    journal.state(&runtime.core)?;
                     let (reason, restart) = if account_timeout {
                         (
                             "account query timeout",
@@ -1487,10 +659,12 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                 },
                                 &mut actions,
                             )?;
+                            journal.ledger(&runtime.core, &strategy.take_ledger_events(), None)?;
                             if let Some(note) = strategy.take_wait_note() {
-                                journal.record(
-                                    json!({"type":"ctaker_quote_decision","source_id":note.source_id,"batch_id":note.batch_id,"target_revision":note.target_revision,"market":note.market,"reason":note.reason,"quote_received_us":tick.received_us,"quote_generation":tick.connection_generation}),
-                                    true,
+                                journal.quote_decision(
+                                    &note,
+                                    tick.received_us,
+                                    tick.connection_generation,
                                 )?;
                             }
                             for action in actions.drain() {
@@ -1502,7 +676,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     market_data_ready: md.ready(),
                                     newer_contract_quote_queued: md.newer_contract_quote_queued(),
                                     trade_event_backlog: !runtime.trader.events.is_empty(),
-                                    journal_failed: journal.failed.load(Ordering::Acquire),
+                                    journal_failed: journal.failed(),
                                     trade_ingress_failed: runtime
                                         .trader
                                         .fault
@@ -1533,7 +707,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     },
                                 )?;
                                 // Every CTP order decision outcome belongs in the operator log.
-                                journal.strategy_result(outcome, true)?;
+                                journal.strategy_result(&outcome, true)?;
                             }
                         }
                         ctp::market_data::FeedEvent::Connected { generation } => {
@@ -1586,20 +760,20 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                         let recorded = if execute {
                             anyhow::ensure!(
                                 can_trade,
-                                "ctaker target admission requires recovered account and ready MD"
+                                "exec target admission requires recovered account and ready MD"
                             );
                             let now_us = crate::persistence::now_us();
                             prepare_ctp_target(
                                 config
-                                    .ctaker
+                                    .exec
                                     .as_ref()
                                     .context("target execution is not configured")?,
                                 &target,
+                                |market| strategy.attributes(market),
                                 &mut session,
                                 &runtime.core,
                                 feed.as_mut(),
                                 now,
-                                now_us,
                             )?;
                             let admitted = strategy.on_target(
                                 target,
@@ -1609,14 +783,9 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                 },
                                 now_us,
                             )?;
-                            journal.target_accepted(admitted)
+                            journal.target_accepted(&admitted)
                         } else {
-                            journal.enqueue(
-                                AuditPayload::CtakerTargetObserved(target),
-                                true,
-                                NativeMutation::default(),
-                                false,
-                            )
+                            journal.target_observed(&target)
                         };
                         if let Err(error) = recorded {
                             audit_error = Some(error);
@@ -1640,7 +809,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                             .map(command_order_keys)
                             .unwrap_or_default();
                         let result = match command {
-                            Ok(Command::CtakerTarget { target }) => {
+                            Ok(Command::ExecTarget { target }) => {
                                 let now_us = crate::persistence::now_us();
                                 let can_trade = execute
                                     && runtime.core.is_ready()
@@ -1649,21 +818,21 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     prepare_ctp_target(
                                         settings,
                                         &target,
+                                        |market| strategy.attributes(market),
                                         &mut session,
                                         &runtime.core,
                                         feed.as_mut(),
                                         now,
-                                        now_us,
                                     )
                                 };
                                 let prepared = if can_trade {
                                     config
-                                        .ctaker
+                                        .exec
                                         .as_ref()
                                         .context("target execution is not configured")
                                         .and_then(admit)
                                 } else {
-                                    Err(anyhow::anyhow!("ctaker target admission requires recovered account and ready MD"))
+                                    Err(anyhow::anyhow!("exec target admission requires recovered account and ready MD"))
                                 };
                                 prepared.and_then(|()| {
                                     strategy.on_target(
@@ -1671,8 +840,26 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                         StrategyContext { core: &runtime.core, can_trade },
                                         now_us,
                                     )
-                                }).map(|target| json!({"type":"ctaker_target_accepted","target":target,"venue_accepted":false}))
+                                }).map(|target| json!({"type":"exec_target_accepted","target":target,"venue_accepted":false}))
                             }
+                            Ok(Command::AssignPosition {
+                                strategy: name,
+                                market,
+                                lots,
+                                price,
+                            }) => strategy
+                                .assign_position(
+                                    &runtime.core,
+                                    &name,
+                                    &market,
+                                    lots,
+                                    price,
+                                    crate::persistence::now_us(),
+                                )
+                                .and_then(|()| {
+                                    journal.ledger(&runtime.core, &strategy.take_ledger_events(), None)
+                                })
+                                .map(|()| json!({"type":"position_assigned","strategy":name,"market":market,"lots":lots,"price":price})),
                             Ok(Command::State {}) => Ok(
                                 json!({"type":"state","state":runtime.core.view(),"account":session.account(),"settlement_confirmed":session.settlement_confirmed()}),
                             ),
@@ -1682,15 +869,14 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                             }
                             Ok(Command::Reconcile {}) => {
                                 session.restart_queries(Instant::now()).map(|_| {
-                                    recovery = None;
                                     reconcile_after_account_retry = false;
                                     runtime.core.block("operator-requested reconciliation");
                                     json!({"type":"reconciling"})
                                 })
                             }
-                            Ok(Command::Submit { .. }) if config.ctaker.is_some() => {
+                            Ok(Command::Submit { .. }) if config.exec.is_some() => {
                                 Err(anyhow::anyhow!(
-                                    "ctaker owns account targets; manual submits are disabled"
+                                    "exec owns account targets; manual submits are disabled"
                                 ))
                             }
                             Ok(Command::Submit { .. })
@@ -1711,7 +897,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     now,
                                 )?;
                                 runtime.submit_planned_with(intent, Instant::now(), |prepared| {
-                                    journal.prepared_submit(&day, prepared)
+                                    journal.prepared(day, prepared, None)
                                 }).map(|receipt| json!({"type":"submit_receipt","receipt":receipt}))
                             })(),
                             Ok(Command::Cancel {
@@ -1756,19 +942,6 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                 && transport_online
                 && md_ready
                 && runtime.trader.events.is_empty();
-            if let Some(snapshot) = &mut plan_snapshot {
-                if batch_now >= next_plan_snapshot
-                    && transport_online
-                    && runtime.core.is_ready()
-                    && runtime.trader.events.is_empty()
-                {
-                    next_plan_snapshot = batch_now + Duration::from_secs(5);
-                    if runtime.core.orders_settled() {
-                        runtime.core.capture_positions(snapshot)?;
-                        journal.settled_account(snapshot, can_trade)?;
-                    }
-                }
-            }
             crate::position_ipc::publish(
                 &mut position_ipc,
                 &runtime.core,
@@ -1784,14 +957,12 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     ..Default::default()
                 },
             );
-            if !work {
-                if wait_for_front && !transport_online {
-                    std::thread::sleep(Duration::from_millis(10));
-                } else if config.idle_sleep_us == 0 {
-                    std::hint::spin_loop();
-                } else {
-                    std::thread::sleep(Duration::from_micros(config.idle_sleep_us));
-                }
+            if work {
+                idle.busy();
+            } else if wait_for_front && !transport_online {
+                std::thread::sleep(Duration::from_millis(10));
+            } else {
+                idle.wait();
             }
         }
         Ok(())
@@ -1818,22 +989,26 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     for received in tail.try_iter() {
         let event = received.event;
         journal.ctp_event(&event, received.received_us, true)?;
-        if ctp::text(&event.investor).is_ok_and(|v| v == investor)
-            && ctp::text(&event.exchange).is_ok_and(|v| crate::model::Venue::parse(&v).is_ok())
+        if ctp::text_ref(&event.investor).is_ok_and(|v| v == investor)
+            && ctp::text_ref(&event.exchange).is_ok_and(|v| crate::model::Venue::parse(v).is_ok())
         {
-            if matches!(event.kind, ctp::TRADE | ctp::QUERY_TRADE) {
+            if event.kind == ctp::TRADE {
                 if let Ok(fill) = event.to_fill() {
-                    journal.trade(fill.clone(), None, None, received.received_us)?;
-                    if event.kind == ctp::TRADE && core.on_fill(&fill).is_err() {
-                        core.block("shutdown fill requires recovery");
+                    match core.on_fill(&fill) {
+                        Ok(false) => {}
+                        Ok(true) => journal.fill(&core, &fill, None, received.received_us, None)?,
+                        Err(_) => {
+                            core.block("shutdown fill requires recovery");
+                            journal.fill(&core, &fill, None, received.received_us, None)?;
+                        }
                     }
                 }
             }
             if event.kind == ctp::ORDER {
                 if let Ok(update) = event.to_order() {
-                    let key = update.key.clone();
+                    let key = update.key;
                     if core.on_order(&update).is_ok() {
-                        journal.state(&core, &[key])?;
+                        journal.orders(&core, &[key])?;
                     } else {
                         core.block("shutdown order requires recovery");
                     }
@@ -1841,7 +1016,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
             }
         }
     }
-    journal.state(&core, &[])?;
+    journal.state(&core)?;
     let shutdown_ok = !fault.load(Ordering::Acquire);
     crate::position_ipc::publish(
         &mut position_ipc,
@@ -1860,10 +1035,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
         serde_json::json!({"type":"runtime_stopped","venue_orders_cancelled":false}),
         true,
     )?;
-    journal.close_async()?;
-    while !journal.poll_closed()? {
-        std::hint::spin_loop();
-    }
+    journal.finish()?;
     if let Some(publisher) = position_ipc {
         publisher.finish()?;
     }
@@ -1891,500 +1063,6 @@ mod tests {
         drop(lock);
         let lock = lock_flow(&path).unwrap();
         drop(lock);
-        std::fs::remove_dir_all(path).unwrap();
-    }
-    #[test]
-    fn credential_redaction_happens_before_json_escaping() {
-        let secret = "quoted\"and\\escaped".to_owned();
-        let mut value = serde_json::json!({"nested":[{"message":format!("bad {secret}")} ]});
-        redact(&mut value, &[secret]);
-        assert_eq!(value["nested"][0]["message"], "bad [redacted]");
-    }
-}
-
-#[cfg(test)]
-mod checkpoint_tests {
-    use super::*;
-    fn fixture() -> (Journal, crossbeam_channel::Receiver<Record>) {
-        let (sender, receiver) = crossbeam_channel::bounded(8);
-        (
-            Journal {
-                sender: Some(sender),
-                enqueued: Cell::new(0),
-                stats: Arc::new(WriterStats::default()),
-                failed: Arc::new(AtomicBool::new(false)),
-                worker: None,
-                sync_before_send: false,
-                reference_floors: Default::default(),
-            },
-            receiver,
-        )
-    }
-    #[test]
-    fn ctp_journal_omits_catalogue_rows_and_keeps_errors_and_trade_reports() {
-        use crate::ctp::{ingress::Event, HotEvent, INSTRUMENT, TRADE};
-
-        let (journal, receiver) = fixture();
-        for (kind, error) in [(INSTRUMENT, 0), (INSTRUMENT, 42), (TRADE, 0)] {
-            let event = Event::Hot(HotEvent {
-                kind,
-                error,
-                ..Default::default()
-            });
-            journal.ctp_event(&event, 123, false).unwrap();
-        }
-        let logged: Vec<_> = receiver
-            .try_iter()
-            .map(|record| record.payload.materialize(record.mutation).0)
-            .collect();
-        assert_eq!(logged.len(), 2);
-        assert_eq!(logged[0]["event"]["kind"], INSTRUMENT);
-        assert_eq!(logged[0]["event"]["error_code"], 42);
-        assert_eq!(logged[1]["event"]["kind"], TRADE);
-    }
-    #[test]
-    fn checkpoint_polling_never_reads_an_ack_channel_and_requires_a_valid_prefix() {
-        let (journal, receiver) = fixture();
-        journal
-            .record(serde_json::json!({"type":"fixture"}), false)
-            .unwrap();
-        assert!(receiver.try_recv().unwrap().ack.is_none());
-        let now = Instant::now();
-        let ticket = DurabilityTicket {
-            target: 1,
-            deadline: now + Duration::from_secs(30),
-        };
-        assert!(!journal.poll_checkpoint(&ticket, now).unwrap());
-        // An error-evidence record may be durable without being a valid projection.
-        journal.stats.records.store(1, Ordering::Release);
-        assert!(!journal.poll_checkpoint(&ticket, now).unwrap());
-        journal.stats.confirmed.store(1, Ordering::Release);
-        assert!(journal.poll_checkpoint(&ticket, now).unwrap());
-        journal.failed.store(true, Ordering::Release);
-        assert!(journal.poll_checkpoint(&ticket, now).is_err());
-    }
-    #[test]
-    fn checkpoint_timeout_latches_failure_without_waiting() {
-        let (journal, _receiver) = fixture();
-        let now = Instant::now();
-        let ticket = DurabilityTicket {
-            target: 1,
-            deadline: now,
-        };
-        assert!(journal.poll_checkpoint(&ticket, now).is_err());
-        assert!(journal.failed.load(Ordering::Acquire));
-        assert!(journal.record(serde_json::Value::Null, false).is_err());
-    }
-    #[test]
-    fn async_close_disconnects_the_queue_and_has_no_ack_request() {
-        let (mut journal, receiver) = fixture();
-        journal.close_async().unwrap();
-        assert!(receiver.try_recv().unwrap().ack.is_none());
-        assert!(matches!(
-            receiver.try_recv(),
-            Err(crossbeam_channel::TryRecvError::Disconnected)
-        ));
-        assert!(journal.poll_closed().unwrap());
-    }
-}
-
-#[cfg(test)]
-mod persistence_tests {
-    use super::*;
-    use crate::model::*;
-    use persist_manager::cn_futures::{COLUMN_FAMILIES, EVENTS, ORDERS, TRADES};
-    use std::path::PathBuf;
-    fn identity() -> StoreIdentity {
-        crate::persistence::store_identity("fixture", &[b"account", b"endpoint"])
-    }
-    fn prepared() -> PreparedOrder {
-        PreparedOrder {
-            key: OrderKey {
-                session: "yida:20261110:group:1".into(),
-                order_ref: "101".into(),
-            },
-            intent: Intent {
-                venue: Venue::Shfe,
-                symbol: "cu2612".into(),
-                side: Side::Sell,
-                offset: Offset::Open,
-                lots: 1,
-                price_type: PriceType::Limit,
-                price_ticks: 20000,
-                time_in_force: TimeInForce::Day,
-                execution_route: None,
-            },
-            limit_price: 40000.0,
-            option_market_buy_ceiling: 0.0,
-        }
-    }
-    fn path(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "cn-journal-{label}-{}-{}",
-            std::process::id(),
-            crate::persistence::now_us()
-        ))
-    }
-    fn journal(path: &Path) -> Journal {
-        Journal::start(
-            None,
-            64,
-            vec!["fixture-secret".into()],
-            &path.join("db"),
-            identity(),
-            true,
-        )
-        .unwrap()
-    }
-    #[test]
-    fn ctaker_prepared_children_keep_exact_batch_and_native_order_identity() {
-        let path = path("ctaker-batch");
-        let journal = journal(&path);
-        let prepared = prepared();
-        let target = Arc::new(crate::ctp::ctaker::Target {
-            source_id: "explicit-account".into(),
-            batch_id: "explicit-batch".into(),
-            target_revision: 17,
-            trading_day: "20261110".into(),
-            expires_at_us: crate::persistence::now_us() + 1_000_000,
-            net_targets: std::collections::BTreeMap::from([("SHFE:cu2612".into(), -1)]),
-        });
-        journal
-            .prepared_ctaker("20261110", &prepared, target.clone())
-            .unwrap();
-        journal.finish().unwrap();
-        let store = persist_manager::RocksDbStore::open_read_only(
-            path.join("db").to_str().unwrap(),
-            COLUMN_FAMILIES,
-        )
-        .unwrap();
-        let entries = store.scan(EVENTS, None, false, None).unwrap();
-        let events: Vec<serde_json::Value> = entries
-            .iter()
-            .map(|(_, bytes)| serde_json::from_slice(bytes).unwrap())
-            .collect();
-        let submit = events
-            .iter()
-            .find(|event| event["value"]["type"] == "prepared_submit")
-            .unwrap();
-        assert_eq!(
-            submit["value"]["key"],
-            serde_json::to_value(&prepared.key).unwrap()
-        );
-        assert_eq!(
-            submit["value"]["ctaker_target"],
-            serde_json::to_value(&target).unwrap()
-        );
-        let orders = store.scan(ORDERS, None, false, None).unwrap();
-        assert_eq!(orders.len(), 1);
-        let order: NativeOrderRecord = serde_json::from_slice(&orders[0].1).unwrap();
-        assert_eq!(order.evidence_seq, submit["sequence"].as_u64().unwrap());
-        assert_eq!(order.order.key, prepared.key);
-        drop(store);
-        std::fs::remove_dir_all(path).unwrap();
-    }
-    #[test]
-    fn normalized_trade_origins_persist_without_changing_factual_fill_fields() {
-        let path = path("trade-origin");
-        let journal = journal(&path);
-        for (number, live_report) in [(1, true), (2, false)] {
-            let fill = crate::model::Fill {
-                identity: crate::model::TradeIdentity {
-                    venue: Venue::Shfe,
-                    symbol: "cu2612".into(),
-                    trading_day: "20261110".into(),
-                    trade_id: number.to_string(),
-                    side: Side::Buy,
-                },
-                order_ref: "101".into(),
-                order_key: None,
-                system_id: "2001".into(),
-                offset: Offset::Open,
-                lots: 2,
-                price: 40000.0,
-            };
-            journal
-                .enqueue(
-                    AuditPayload::ProjectedTrade {
-                        fill: FillAudit::new(&fill).unwrap(),
-                        order: None,
-                        live_report,
-                        commission: None,
-                        native_time: None,
-                        received_us: 123 + number,
-                    },
-                    false,
-                    NativeMutation::default(),
-                    false,
-                )
-                .unwrap();
-        }
-        journal.finish().unwrap();
-        let store = persist_manager::RocksDbStore::open_read_only(
-            path.join("db").to_str().unwrap(),
-            COLUMN_FAMILIES,
-        )
-        .unwrap();
-        let events = store.scan(EVENTS, None, false, None).unwrap();
-        let origins: Vec<_> = events
-            .iter()
-            .filter_map(|(_, bytes)| {
-                let event: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-                (event["value"]["type"] == "normalized_trade")
-                    .then(|| event["value"]["origin"].as_str().unwrap().to_owned())
-            })
-            .collect();
-        assert_eq!(origins, vec!["live_report", "recovery_report"]);
-        let facts = store.scan(TRADES, None, false, None).unwrap();
-        assert_eq!(facts.len(), 2);
-        for (_, bytes) in facts {
-            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(value["fill"]["lots"], 2);
-            assert_eq!(value["fill"]["price"], 40000.0);
-            assert!(value["commission"].is_null());
-        }
-        drop(store);
-        std::fs::remove_dir_all(path).unwrap();
-    }
-    #[test]
-    fn shutdown_drains_async_records_and_redacts_rocksdb_evidence() {
-        let path = path("drain");
-        let journal = journal(&path);
-        for i in 0..20 {
-            journal
-                .record(serde_json::json!({"i":i,"message":"fixture-secret"}), false)
-                .unwrap();
-        }
-        journal.prepared_submit("20261110", &prepared()).unwrap();
-        journal.finish().unwrap();
-        assert_eq!(std::fs::read_dir(&path).unwrap().count(), 1);
-        let store = persist_manager::RocksDbStore::open_read_only(
-            path.join("db").to_str().unwrap(),
-            COLUMN_FAMILIES,
-        )
-        .unwrap();
-        let events = store.scan(EVENTS, None, false, None).unwrap();
-        assert_eq!(events.len(), 22);
-        assert!(events
-            .iter()
-            .all(|(_, v)| !String::from_utf8_lossy(v).contains("fixture-secret")));
-        assert_eq!(store.scan(ORDERS, None, false, None).unwrap().len(), 1);
-        drop(store);
-        std::fs::remove_dir_all(path).unwrap();
-    }
-    #[test]
-    fn writer_failure_is_acknowledged_and_blocks_subsequent_records() {
-        let path = path("failure");
-        let journal = journal(&path);
-        journal.prepared_submit("20261110", &prepared()).unwrap();
-        let mut conflict = crate::persistence::prepared("20261110", &prepared());
-        conflict.orders[0].order.request.lots = 2;
-        assert!(journal
-            .record_with(
-                serde_json::json!({"type":"conflict"}),
-                false,
-                conflict,
-                true
-            )
-            .is_err());
-        // Drop joins even when a write error disconnected the acknowledgement channel.
-        assert!(journal.finish().is_err());
-        let store = persist_manager::RocksDbStore::open_read_only(
-            path.join("db").to_str().unwrap(),
-            COLUMN_FAMILIES,
-        )
-        .unwrap();
-        let events = store.scan(EVENTS, None, true, Some(1)).unwrap();
-        assert!(
-            serde_json::from_slice::<serde_json::Value>(&events[0].1).unwrap()["projection_error"]
-                .is_string()
-        );
-        drop(store);
-        std::fs::remove_dir_all(path).unwrap();
-    }
-    #[test]
-    fn process_exit_without_destructors_retains_acknowledged_intent_and_reference_floor() {
-        let path = path("crash");
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--ignored",
-                "--exact",
-                "runtime::persistence_tests::crash_writer",
-            ])
-            .env("CN_TEST_CRASH_DB", &path)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let mut store = NativeStore::open(&path.join("db"), &identity()).unwrap();
-        assert_eq!(
-            store
-                .reference_floors()
-                .get(&("20261110".into(), prepared().key.session)),
-            Some(&109)
-        );
-        let error = store
-            .append(
-                1,
-                serde_json::json!({"type":"recovery"}),
-                NativeMutation {
-                    reconciliation_day: Some("20261110".into()),
-                    ..Default::default()
-                },
-            )
-            .unwrap_err();
-        assert!(error.to_string().contains("absent from complete recovery"));
-        drop(store);
-        let store = persist_manager::RocksDbStore::open_read_only(
-            path.join("db").to_str().unwrap(),
-            COLUMN_FAMILIES,
-        )
-        .unwrap();
-        assert_eq!(store.scan(ORDERS, None, false, None).unwrap().len(), 8);
-        drop(store);
-        std::fs::remove_dir_all(path).unwrap();
-    }
-    #[test]
-    #[ignore = "child process fixture; invoked by the crash recovery test"]
-    fn crash_writer() {
-        let path = PathBuf::from(
-            std::env::var_os("CN_TEST_CRASH_DB").expect("parent crash test sets path"),
-        );
-        let journal = journal(&path);
-        for reference in 101..109 {
-            let mut order = prepared();
-            order.key.order_ref = reference.to_string();
-            journal
-                .record_with(
-                    serde_json::json!({"type":"async_crash_intent","reference":reference}),
-                    false,
-                    crate::persistence::prepared("20261110", &order),
-                    false,
-                )
-                .unwrap();
-        }
-        journal
-            .record_with(
-                serde_json::json!({"type":"crash_barrier"}),
-                false,
-                NativeMutation::default(),
-                true,
-            )
-            .unwrap();
-        std::process::exit(0);
-    }
-}
-
-#[cfg(test)]
-mod deferred_audit_tests {
-    use super::*;
-    #[test]
-    fn copied_native_events_keep_ids_float_bits_tail_flags_and_redaction_on_disk() {
-        let path = std::env::temp_dir().join(format!(
-            "cn-deferred-audit-{}-{}",
-            std::process::id(),
-            crate::persistence::now_us()
-        ));
-        let j = Journal::start(
-            Some(&path.join("audit.jsonl")),
-            64,
-            vec!["fixture-secret".into()],
-            &path.join("db"),
-            crate::persistence::store_identity("fixture", &[b"deferred-audit"]),
-            false,
-        )
-        .unwrap();
-        let mut yida = crate::yida::RawEvent {
-            kind: crate::yida::TRADE,
-            trade_id: 9_007_199_254_740_997,
-            system_id: 9_007_199_254_740_993,
-            commission: 52.660000000000004,
-            ..Default::default()
-        };
-        yida.original_trade_id[0] = 255;
-        j.yida_event(&yida, 123, false).unwrap();
-        j.yida_event(&yida, 124, true).unwrap();
-        yida.trade_id = 17; // The producer may immediately reuse its event buffer.
-        let mut ctp = crate::ctp::RawEvent {
-            hot: crate::ctp::HotEvent {
-                kind: crate::ctp::ERROR,
-                error: 31,
-                ..crate::ctp::RawEvent::default().hot
-            },
-
-            ..Default::default()
-        };
-        ctp.message[..14].copy_from_slice(b"fixture-secret");
-        let pool = crate::ctp::ingress::ControlPool::new(1).unwrap();
-        let event = crate::ctp::ingress::Event::Control(pool.capture(&ctp).unwrap());
-        j.ctp_event(&event, 125, true).unwrap();
-        let prepared = crate::model::PreparedOrder {
-            key: OrderKey {
-                session: "yida:20261110:group:1".into(),
-                order_ref: "101".into(),
-            },
-            intent: Intent {
-                venue: crate::model::Venue::Shfe,
-                symbol: "cu2612".into(),
-                side: crate::model::Side::Buy,
-                offset: crate::model::Offset::Open,
-                lots: 1,
-                price_type: crate::model::PriceType::Limit,
-                price_ticks: 20000,
-                time_in_force: crate::model::TimeInForce::Day,
-                execution_route: None,
-            },
-            limit_price: 100000.0,
-            option_market_buy_ceiling: 0.0,
-        };
-        let before = crate::persistence::now_us();
-        j.prepared_submit("20261110", &prepared).unwrap();
-        let enqueued = crate::persistence::now_us();
-        j.finish().unwrap();
-        let store = persist_manager::RocksDbStore::open_read_only(
-            path.join("db").to_str().unwrap(),
-            persist_manager::cn_futures::COLUMN_FAMILIES,
-        )
-        .unwrap();
-        let rows = store
-            .scan(persist_manager::cn_futures::EVENTS, None, false, None)
-            .unwrap();
-        let records: Vec<Value> = rows
-            .iter()
-            .map(|(_, v)| serde_json::from_slice::<Value>(v).unwrap()["value"].clone())
-            .collect();
-        assert_eq!(
-            records[0]["event"]["trade_id"].as_i64(),
-            Some(9_007_199_254_740_997)
-        );
-        assert_eq!(
-            records[0]["event"]["system_id"].as_i64(),
-            Some(9_007_199_254_740_993)
-        );
-        assert_eq!(
-            records[0]["event"]["commission"]
-                .as_f64()
-                .unwrap()
-                .to_bits(),
-            yida.commission.to_bits()
-        );
-        assert_eq!(records[0]["event"]["original_trade_id"][0], 255);
-        assert_eq!(records[0]["received_us"], 123);
-        assert!(records[0].get("shutdown_tail").is_none());
-        assert_eq!(records[1]["shutdown_tail"], true);
-        assert_eq!(records[2]["event"]["received_us"], 125);
-        assert_eq!(records[2]["event"]["message"], "[redacted]");
-        let orders = store
-            .scan(persist_manager::cn_futures::ORDERS, None, false, None)
-            .unwrap();
-        let order: persist_common::cn_futures::NativeOrderRecord =
-            serde_json::from_slice(&orders[0].1).unwrap();
-        assert!(
-            (before..=enqueued).contains(&order.first_received_us),
-            "prepared time must be captured on the producer, before the writer drains its backlog"
-        );
-        let audit = std::fs::read_to_string(path.join("audit.jsonl")).unwrap();
-        assert!(!audit.contains("fixture-secret"));
-        drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }
 }

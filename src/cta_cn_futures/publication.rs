@@ -20,13 +20,6 @@ pub struct StrategyPosition {
     pub decision_ms: i64,
     pub targets: Targets,
 }
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Quote {
-    pub bid: f64,
-    pub ask: f64,
-    pub observed_us: i64,
-    pub source: String,
-}
 #[derive(Clone)]
 struct Desired {
     signature: String,
@@ -34,7 +27,6 @@ struct Desired {
     trigger_us: i64,
     trading_day: Option<u32>,
     live_ready: bool,
-    quotes: BTreeMap<String, Quote>,
 }
 
 #[derive(Default, Serialize)]
@@ -49,7 +41,6 @@ struct Status {
 pub struct Publisher {
     positions: BTreeMap<String, StrategyPosition>,
     latest: Option<Desired>,
-    quotes: BTreeMap<String, Quote>,
     tx: watch::Sender<Option<Desired>>,
     state: Arc<Mutex<Status>>,
     task: JoinHandle<()>,
@@ -103,45 +94,10 @@ impl Publisher {
         Ok(Some(Self {
             positions,
             latest: None,
-            quotes: BTreeMap::new(),
             tx,
             state,
             task,
         }))
-    }
-    pub fn reset(&mut self) {
-        self.quotes.clear();
-    }
-    pub fn quote(&mut self, q: &cn_futures_pbs::msg::MarketDataMsg) {
-        if q.bid[0].price.is_finite()
-            && q.ask[0].price.is_finite()
-            && q.bid[0].price > 0.0
-            && q.ask[0].price >= q.bid[0].price
-            && q.exchange_ts_us > 0
-        {
-            let Ok(symbol) = std::str::from_utf8(q.symbol()) else {
-                return;
-            };
-            let venue = String::from_utf8_lossy(&q.venue)
-                .trim_end_matches('\0')
-                .to_owned();
-            let market = format!("{venue}:{symbol}");
-            if self
-                .quotes
-                .get(&market)
-                .is_none_or(|old| old.observed_us <= q.exchange_ts_us)
-            {
-                self.quotes.insert(
-                    market,
-                    Quote {
-                        bid: q.bid[0].price,
-                        ask: q.ask[0].price,
-                        observed_us: q.exchange_ts_us,
-                        source: "company_redis".into(),
-                    },
-                );
-            }
-        }
     }
     pub fn observe(
         &mut self,
@@ -169,7 +125,6 @@ impl Publisher {
                         trigger_us,
                         trading_day: Some(trading_day),
                         live_ready,
-                        quotes: BTreeMap::new(),
                     });
                 }
             }
@@ -177,7 +132,6 @@ impl Publisher {
         }
         if let Some(latest) = &mut self.latest {
             latest.live_ready = live_ready && latest.trading_day == Some(active_trading_day);
-            latest.quotes.clone_from(&self.quotes);
             self.tx.send_replace(Some(latest.clone()));
         }
         Ok(())

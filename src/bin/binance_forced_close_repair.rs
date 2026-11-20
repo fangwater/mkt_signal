@@ -117,6 +117,7 @@ fn main() -> Result<()> {
         from_key: from_key.as_bytes().to_vec(),
         signal_bbo: None,
         fill_liquidity: persist_common::FillLiquidity::Unknown,
+        extension: None,
     };
     record.refresh_lengths();
 

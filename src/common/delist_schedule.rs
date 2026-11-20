@@ -84,7 +84,8 @@ pub fn provider_for_venue(venue: TradingVenue) -> Box<dyn DelistScheduleProvider
         TradingVenue::BybitMargin
         | TradingVenue::AsterMargin
         | TradingVenue::HyperliquidMargin
-        | TradingVenue::HyperliquidFutures => Box::new(UnsupportedDelistProvider { venue }),
+        | TradingVenue::HyperliquidFutures
+        | order_common::domestic_venues!() => Box::new(UnsupportedDelistProvider { venue }),
     }
 }
 

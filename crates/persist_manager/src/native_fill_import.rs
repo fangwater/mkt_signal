@@ -892,6 +892,7 @@ impl Inputs {
                 from_key: from.as_bytes().to_vec(),
                 signal_bbo: None,
                 fill_liquidity: fill_liquidity(market),
+                extension: None,
             };
             let raw = RestTrade {
                 symbol: symbol.into(),
@@ -1251,6 +1252,7 @@ mod tests {
             from_key: from.as_bytes().to_vec(),
             signal_bbo: None,
             fill_liquidity: FillLiquidity::Maker,
+            extension: None,
         }
     }
     fn fixture() -> Fixture {

@@ -408,34 +408,15 @@
       return Number.isFinite(total)?total:null;
     }
     const activeStrategy = row => row.attributed_lots !== 0 || row.signal_target_lots !== 0;
-    const managerObservation = source => source && state.strategy?.id === source.source_id ? state.strategy.observation : null;
     const freshAt = (us, limit) => {
       const age = Date.now() - Number(us) / 1000;
       return us > 0 && age >= 0 && age <= limit;
     };
     function positionView(source) {
       const live=source.entry, saved=source.saved_entry;
-      const http=managerObservation(source)?.position;
-      const currentHttp=http?.current && freshAt(http.observed_us, source.stale_after_ms);
       const currentLive=live?.position_ready && !source.error
         && (status(source)==='observing' || (live.runtime_status==='running' && live.connected && live.transport_ready &&
             live.ready && freshAt(live.observed_us, source.stale_after_ms)));
-      if (currentHttp || (!currentLive && http && (!saved || http.observed_us >= saved.observed_us))) {
-        const marks=new Map((http.marks||[]).map(m=>[marketKey(m.venue,m.symbol),m]));
-        let l1_connected=http.l1_connected;
-        for (const entry of [saved,live]) {
-          if (entry?.trading_day!==http.trading_day) continue;
-          l1_connected ||= entry.l1_connected;
-          for (const mark of entry.marks||[]) {
-            const key=marketKey(mark.venue,mark.symbol);
-            const previous=marks.get(key);
-            const newerLive=entry===live && !mark.initial && hasQuote(mark) &&
-              (previous?.initial || Number(mark.received_us)>=Number(previous?.received_us));
-            if (!previous || (!hasQuote(previous) && hasQuote(mark)) || newerLive) marks.set(key,mark);
-          }
-        }
-        return {...http, position_ready:true, marks:[...marks.values()], l1_connected, historical:!currentHttp, label:currentHttp?'柜台查询':'Manager 历史持仓'};
-      }
       if (currentLive) return live;
       if (saved) return {...saved,historical:true,label:'上次账户快照'};
       if (live?.position_ready && source.adapter==='ctp') return {...live,historical:true,label:'保留上次持仓'};
@@ -495,29 +476,12 @@
         if (state.strategy === strategy) render();
       }
     }
-    async function loadObservation() {
-      const strategy=state.strategy;
-      if (!strategy || strategy.loadingObservation) return;
-      strategy.loadingObservation=true;
-      try {
-        const response=await fetch('/account-observation/' + encodeURIComponent(strategy.id), {
-          cache:'no-store',signal:strategy.controller.signal
-        });
-        strategy.observation=response.ok ? await response.json() : null;
-      } catch {
-        strategy.observation=null;
-      } finally {
-        strategy.loadingObservation=false;
-        if (state.strategy===strategy) render();
-      }
-    }
     function selectStrategySource(source) {
       const id = STRATEGY_SOURCES.has(source?.source_id) ? source.source_id : null;
       if (id === (state.strategy?.id ?? null)) return;
       state.strategy?.controller.abort();
-      state.strategy = id ? {id, controller:new AbortController(), loading:false, status:null, contracts:null, observation:null, loadingObservation:false} : null;
+      state.strategy = id ? {id, controller:new AbortController(), loading:false, status:null, contracts:null} : null;
       void loadStrategy();
-      void loadObservation();
     }
     function strategyMessage() {
       const strategy = state.strategy;
@@ -540,14 +504,12 @@
 
     function renderFunds(source) {
       const entry=source?.entry, live=entry?.account, saved=source?.saved_entry?.account;
-      const http=managerObservation(source)?.account;
       const liveCurrent=live && !source.error && entry.runtime_status==='running' && entry.connected && entry.transport_ready
         && freshAt(live.observed_us,30000) && freshAt(entry.observed_us,source.stale_after_ms);
-      const httpCurrent=http?.current && freshAt(http.observed_us,30000);
-      const historical=[http,saved,live].filter(Boolean).sort((a,b)=>b.observed_us-a.observed_us)[0];
-      const account=httpCurrent ? http : liveCurrent ? live : historical;
-      const current=account && (account===http ? httpCurrent : account===live && liveCurrent);
-      const label=current?'柜台查询':account===http?'Manager 历史资金':account===saved?'上次账户快照':'保留上次查询';
+      const historical=[saved,live].filter(Boolean).sort((a,b)=>b.observed_us-a.observed_us)[0];
+      const account=liveCurrent ? live : historical;
+      const current=account && account===live && liveCurrent;
+      const label=current?'柜台查询':account===saved?'上次账户快照':'保留上次查询';
       const values={
         'account-balance':account?.balance, 'account-available':account?.available,
         'account-withdrawable':account?.withdraw_quota, 'account-margin':account?.curr_margin,
@@ -727,8 +689,8 @@
     });
 
     $('show-zero').onchange=render;$('symbol').oninput=render;
-    $('refresh').onclick=()=>{connect();void loadStrategy();void loadObservation();};
-    render();setInterval(render,1000);setInterval(loadStrategy,5000);setInterval(loadObservation,15000);connect();
+    $('refresh').onclick=()=>{connect();void loadStrategy();};
+    render();setInterval(render,1000);setInterval(loadStrategy,5000);connect();
   })();
   </script>
 </body></html>

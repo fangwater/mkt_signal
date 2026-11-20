@@ -4,9 +4,8 @@ use cn_futures::{
     core::{SingleLoop, TradingCore},
     ctp,
     model::*,
-    persistence,
-    runtime::Journal,
-    yida,
+    persist::{PersistChannel, RecordSink},
+    persistence, yida,
 };
 use serde_json::json;
 use std::{
@@ -72,11 +71,11 @@ fn snapshot(history: usize, working: usize) -> Snapshot {
             .map(|i| OrderUpdate {
                 key: OrderKey {
                     session: ctp::session_key(7, 11),
-                    order_ref: (i + 1).to_string(),
+                    order_ref: Reference::decimal(i as u64 + 1).unwrap(),
                 },
                 symbol: "IF2612".into(),
                 venue: Venue::Cffex,
-                system_id: (i + 1).to_string(),
+                system_id: NativeId::decimal(i as u64 + 1).unwrap(),
                 side: Side::Sell,
                 offset: Offset::Open,
                 lots: 1,
@@ -223,7 +222,7 @@ fn planned_bench(samples: usize, ops: usize) -> Result<()> {
     );
     Ok(())
 }
-fn projection_bench(j: &Journal, samples: usize, ops: usize) -> Result<()> {
+fn projection_bench(j: &PersistChannel, samples: usize, ops: usize) -> Result<()> {
     let mut core = TradingCore::new(limits(), ctp::scope())?;
     core.set_trading_status(Venue::Cffex, "IF", true);
     core.restore(snapshot(0, 0))?;
@@ -236,8 +235,8 @@ fn projection_bench(j: &Journal, samples: usize, ops: usize) -> Result<()> {
             trade_id: "projection-benchmark".into(),
             side: Side::Buy,
         },
-        order_ref: p.key.order_ref.clone(),
-        order_key: Some(p.key.clone()),
+        order_ref: p.key.order_ref,
+        order_key: Some(p.key),
         system_id: "projection-system-id".into(),
         offset: Offset::Open,
         lots: 1,
@@ -248,18 +247,13 @@ fn projection_bench(j: &Journal, samples: usize, ops: usize) -> Result<()> {
         let mut times = Vec::with_capacity(samples * ops);
         let (mut allocs, mut bytes) = (0, 0);
         for _ in 0..samples {
-            barrier(j)?;
             ALLOCS.with(|c| c.set(Some((0, 0))));
             for _ in 0..ops {
                 let start = Instant::now();
                 if trade {
-                    j.trade_for(&core, &fill, Some(1.25), Some(16230), 123, true, true)?;
+                    j.fill(&core, &fill, Some(1.25), 123, None)?;
                 } else {
-                    j.orders(
-                        &core,
-                        std::slice::from_ref(&p.key),
-                        std::slice::from_ref(&p.key),
-                    )?;
+                    j.orders(&core, std::slice::from_ref(&p.key))?;
                 }
                 times.push(start.elapsed().as_nanos() as u64);
             }
@@ -267,7 +261,6 @@ fn projection_bench(j: &Journal, samples: usize, ops: usize) -> Result<()> {
             allocs += n;
             bytes += b;
         }
-        barrier(j)?;
         report(
             if trade {
                 "trade_and_order_projection_enqueue"
@@ -282,15 +275,15 @@ fn projection_bench(j: &Journal, samples: usize, ops: usize) -> Result<()> {
     }
     Ok(())
 }
-fn barrier(j: &Journal) -> Result<()> {
-    j.record_with(
-        json!({"type":"benchmark_barrier"}),
-        false,
-        Default::default(),
-        true,
-    )
+/// Discards records: measures only the business-loop encode cost.
+struct Discard;
+impl RecordSink for Discard {
+    fn publish(&self, record: &[u8]) -> Result<()> {
+        black_box(record);
+        Ok(())
+    }
 }
-fn journal_bench(j: &Journal, samples: usize, ops: usize, legacy: bool) -> Result<()> {
+fn journal_bench(j: &PersistChannel, samples: usize, ops: usize) -> Result<()> {
     let mut e = yida::RawEvent {
         kind: yida::ORDER,
         day: 20261110,
@@ -322,21 +315,11 @@ fn journal_bench(j: &Journal, samples: usize, ops: usize, legacy: bool) -> Resul
         let mut allocs = 0;
         let mut bytes = 0;
         for _ in 0..samples {
-            barrier(j)?;
             ALLOCS.with(|c| c.set(Some((0, 0))));
             for _ in 0..ops {
                 let t = Instant::now();
                 if prepared {
-                    if legacy {
-                        j.record_with(json!({"type":"prepared_submit","key":p.key,"intent":p.intent,"limit_price":p.limit_price}),false,persistence::prepared("20261110",black_box(&p)),false)?;
-                    } else {
-                        j.prepared_submit("20261110", black_box(&p))?;
-                    }
-                } else if legacy {
-                    j.record(
-                        json!({"type":"yida_event","received_us":1,"event":black_box(e)}),
-                        false,
-                    )?;
+                    j.prepared("20261110".into(), black_box(&p), None)?;
                 } else {
                     j.yida_event(black_box(&e), 1, false)?;
                 }
@@ -346,7 +329,6 @@ fn journal_bench(j: &Journal, samples: usize, ops: usize, legacy: bool) -> Resul
             allocs += n;
             bytes += b;
         }
-        barrier(j)?;
         report(
             if prepared {
                 "prepared_submit_enqueue"
@@ -356,7 +338,7 @@ fn journal_bench(j: &Journal, samples: usize, ops: usize, legacy: bool) -> Resul
             times,
             allocs,
             bytes,
-            json!({"fsync_wait_in_timing":false,"audit_mode":if legacy { "business_thread_json" } else { "writer_thread_json" },"writer_thread_affinity":"original process mask"}),
+            json!({"fsync_wait_in_timing":false,"encoding":"binary_in_loop"}),
         );
     }
     Ok(())
@@ -377,14 +359,7 @@ fn main() -> Result<()> {
         std::process::id(),
         persistence::now_us()
     ));
-    let j = Journal::start(
-        None,
-        8192,
-        vec![],
-        &path.join("db"),
-        persistence::store_identity("offline_benchmark", &[b"synthetic"]),
-        false,
-    )?;
+    let j = PersistChannel::start(&path.join("db"), vec![], Box::new(Discard))?;
     let cpu = option("--cpu", usize::MAX);
     #[cfg(target_os = "linux")]
     if cpu != usize::MAX {
@@ -406,7 +381,7 @@ fn main() -> Result<()> {
     );
     core_bench(samples, ops)?;
     planned_bench(samples, ops)?;
-    journal_bench(&j, samples, ops, args.iter().any(|s| s == "--legacy-audit"))?;
+    journal_bench(&j, samples, ops)?;
     projection_bench(&j, samples, ops)?;
     j.finish()?;
     std::fs::remove_dir_all(path)?;

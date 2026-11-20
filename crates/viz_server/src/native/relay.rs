@@ -27,7 +27,6 @@ fn display_entry(snapshot: &Snapshot) -> Result<Value> {
         .remove("account_hash");
     entry["publisher_epoch"] = json!(snapshot.publisher_epoch.to_string());
     entry["sequence"] = json!(snapshot.sequence.to_string());
-    entry["replaced_snapshots"] = json!(snapshot.replaced_snapshots.to_string());
     entry["l1_dropped"] = json!(snapshot.l1_dropped.to_string());
     Ok(entry)
 }

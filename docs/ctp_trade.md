@@ -64,11 +64,11 @@ SDK 注册主/备用前置并负责传输重连，每次重新连接仍重新认
 
 行情驱动交易采用[固定四核布局](ctp_layout.md)：行情消费、策略、风控、OMS 和报撤单调用共用一个业务核，Trader/Md SDK 各一核，后台 I/O 一核。两个配置的业务核、后台核和 NUMA 节点相同，SDK 核不同；合并检查四个域不共享 SMT 物理核。配置字段 `sdk_cpus` 和 `background_cpus` 均只允许一个 CPU。仍强制 `MPOL_BIND | MPOL_F_STATIC_NODES`，失败退出，不放宽策略。
 
-CTP 保持异步发送审计和单核轮询。Trader TOML 的 `idle_sleep_us` 默认 0，表示纯自旋。设为 1–100000 时，整轮无柜台回报、行情、目标或其他工作才按该微秒数固定休眠。示例设置为 `64000`（64 ms）。实际唤醒时间受操作系统调度影响。`sync_before_send` 与交易端 `reconnect_backoff_ms` 已移除。恢复屏障使用非阻塞 checkpoint 轮询，未完成时继续处理行情和回报，成功后才发布 `reconciled`。
+CTP 是单线程业务循环，与 crypto pre_trade 的 fast-poll 一样提供两种部署：`poll = { mode = "busy", spin = 2048 }`（默认）用于独占隔离核，空闲先自旋 `spin` 轮、再 `sched_yield` 一次，从不休眠；`poll = { mode = "sleep", idle_us = 64000 }` 用于共享主机，整轮无柜台回报、行情、目标或其他工作才休眠（1–100000 µs）。示例为 sleep 64 ms；实际唤醒时间受操作系统调度影响。旧的 `idle_sleep_us` 会被拒绝。`sync_before_send` 与交易端 `reconnect_backoff_ms` 已移除。持久化由同目录的独立 `persist_manager` 进程完成（与 crypto 对齐，异步推送、不回 ack，见[持久化说明](cn_order_persistence.md)）；完整对账后即发布 `reconciled` 并可交易，不等待落盘。
 
 高频回报仍使用 328 字节紧凑事件，928 字节控制响应池化，后台审计持有槽引用至序列化结束；尺寸为编译期结果。报撤单复用不可变模板，避免逐笔构造固定字段字符串。请求 ID 使用每页 1024 项直接索引，`preallocated_requests` 默认 16384，只是初始容量提示，仍保留迟到响应和跨会话歧义检查。
 
-行情接口提供固定 `TickRecord`，同进程策略直接消费它，不经过 stdout JSON。独立 `ctp-md` 的后台输出保留为观测工具，不构成自动交易的数据交接。默认 `NoStrategy` 不产生订单，显式配置 ctaker 时按 Manager 目标执行。应用业务循环不等待队列、磁盘或消费者；厂商 SDK 同步调用内部是否阻塞尚未实测，启动/关闭仍有生命周期 I/O。详见布局文档的边界说明。
+行情接口提供固定 `TickRecord`，同进程策略直接消费它，不经过 stdout JSON。独立 `ctp-md` 的后台输出保留为观测工具，不构成自动交易的数据交接。默认 `NoStrategy` 不产生订单，显式配置 exec 时按 Manager 目标执行。应用业务循环不等待队列、磁盘或消费者；厂商 SDK 同步调用内部是否阻塞尚未实测，启动/关闭仍有生命周期 I/O。详见布局文档的边界说明。
 
 ## SDK 与本地构建
 
@@ -100,7 +100,7 @@ target/release/ctp-md --sdk-version /absolute/path/libthostmduserapi_se.so
 
 ## 配置与命令
 
-无凭据示例为 `config/ctp_trade.example.toml` 与 `config/ctp_market_data.example.toml`。交易示例的 `front`/`fallback_fronts`、行情示例的 `fronts` 均是本地占位地址，运行前须复制到私有目录填写。合并运行可按目标自动订阅，行情 TOML 的显式订阅或 Market Replay 主力订阅用于基础观察。独立 `ctp-md` 需要显式订阅。Md 与 Trader 使用独立的 flow；合并到同一进程时也不共享 SDK 状态目录。独立行情工具写自己的 journal，合并模式由交易 journal 记录控制状态和交易证据，tick 直接交给策略接口。
+无凭据示例为 `config/ctp_trade.example.toml` 与 `config/ctp_market_data.example.toml`。交易示例的 `front`/`fallback_fronts`、行情示例的 `fronts` 均是本地占位地址，运行前须复制到私有目录填写。合并运行可按目标自动订阅，行情 TOML 的显式订阅或 Market Replay 主力订阅用于基础观察。独立 `ctp-md` 需要显式订阅。Md 与 Trader 使用独立的 flow；合并到同一进程时也不共享 SDK 状态目录。独立行情工具写自己的 journal，合并模式的控制状态和交易证据经 `PersistChannel` 写入独立 `persist_manager`，tick 直接交给策略接口。
 
 交易凭据从配置指定的 `CTP_USER_ID`、`CTP_PASSWORD`、`CTP_APP_ID`、`CTP_AUTH_CODE` 读取；InvestorID 不同时使用 `investor_id_env`。MdApi 只使用账号密码及 BrokerID，没有交易端的 `ReqAuthenticate`，不能用行情登录证明交易端 AppID/AuthCode 授权有效。
 
@@ -154,24 +154,13 @@ CTP_SDK_DIR=/absolute/ctp \
 cargo test -p persist_common
 cargo test -p persist_manager --features embedded --lib cn_futures
 
-# 官方头文件 ABI + 合成交易 SDK：每个市场独立验证真实 Rust/C++ 路径与 RocksDB 导出
-# 先复制并按获准外部主机拓扑修改 config/ctp_placement.example.toml
-python3 crates/cn_futures/tests/ctp_bridge_smoke.py \
-  --sdk-dir /absolute/ctp --binary target/release/ctp-trader --venue CZCE --symbol SR701 \
-  --placement-config /absolute/private/ctp_placement.toml
-# 同样覆盖 CFFEX/IF2612、SHFE/rb2701、INE/sc2701、DCE/m2701、GFEX/lc2701
-python3 crates/cn_futures/tests/ctp_bridge_smoke.py \
-  --sdk-dir /absolute/ctp --binary target/release/ctp-trader --unconfirmed-settlement \
-  --placement-config /absolute/private/ctp_placement.toml
-python3 crates/cn_futures/tests/ctp_bridge_smoke.py \
-  --sdk-dir /absolute/ctp --binary target/release/ctp-trader --account-query-recovery \
-  --placement-config /absolute/private/ctp_placement.toml
+# 合成行情 SDK：独立 ctp-md 的五档、断线 gap 与重新登录/订阅
 python3 crates/cn_futures/tests/ctp_md_bridge_smoke.py \
   --sdk-dir /absolute/ctp --binary target/release/ctp-md \
   --placement-config /absolute/private/ctp_placement.toml
 ```
 
-交易联测覆盖认证、只读结算状态查询、账户字段、合约乘数、手续费、相对保证金率合并、两轮对账、限价撤单、FAK/FOK、重复成交、平仓、异步拒单及持久化导出。未确认结算的联测要求账户/规则仍可读，但交易被阻断且没有结算确认或订单请求。行情联测覆盖五档、断线 gap、重新登录/订阅和错误密码只尝试一次。这些合成 SDK 不发起网络连接，不能代替真实柜台仿真或实盘验证。
+行情联测覆盖五档、断线 gap、重新登录/订阅和错误密码只尝试一次。原交易桥接联测脚本已删除（依赖已移除的进程内审计与 JSON 存储），交易路径以 `cn_futures` 单元测试为准。这些合成 SDK 不发起网络连接，不能代替真实柜台仿真或实盘验证。
 
 
 ### 扩展实现后的只读复测

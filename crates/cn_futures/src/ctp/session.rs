@@ -18,13 +18,13 @@ pub struct Session {
     next_kind: Option<i32>,
     waiting: Option<(i32, i32, Instant)>,
     next_send: Instant,
-    login: Option<(String, i32, i32, u64)>,
-    catalogue: HashMap<(Venue, String), Instrument>,
-    instruments: HashMap<(Venue, String), Instrument>,
+    login: Option<(Day, i32, i32, u64)>,
+    catalogue: HashMap<(Venue, Symbol), Instrument>,
+    instruments: HashMap<(Venue, Symbol), Instrument>,
     rate_rule: Option<Instrument>,
-    rate_retry_after: HashMap<(Venue, String), Instant>,
-    products: HashMap<(Venue, String), String>,
-    rate_targets: VecDeque<(Venue, String)>,
+    rate_retry_after: HashMap<(Venue, Symbol), Instant>,
+    products: HashMap<(Venue, Symbol), Symbol>,
+    rate_targets: VecDeque<(Venue, Symbol)>,
     rate_seen: bool,
     relative_margin: bool,
     account: Option<AccountSnapshot>,
@@ -34,7 +34,7 @@ pub struct Session {
     available: Option<f64>,
     orders: Vec<OrderUpdate>,
     trades: Vec<Fill>,
-    positions: HashMap<(Venue, String, Side, i32), PositionSnapshot>,
+    positions: HashMap<(Venue, Symbol, Side, i32), PositionSnapshot>,
     revision: u64,
     pass_revision: u64,
     previous: Option<(String, f64)>,
@@ -105,14 +105,14 @@ impl Session {
             "CTP instrument catalogue refresh pending"
         );
         ensure!(
-            self.catalogue.contains_key(&(venue, symbol.to_owned())),
+            self.catalogue.contains_key(&(venue, Symbol::new(symbol)?)),
             "CTP catalogue has no active future {}:{symbol}",
             venue.as_str()
         );
         Ok(())
     }
-    pub fn request_rates(&mut self, venue: Venue, symbol: &str, now: Instant) {
-        let key = (venue, symbol.to_owned());
+    pub fn request_rates(&mut self, venue: Venue, symbol: &str, now: Instant) -> Result<()> {
+        let key = (venue, Symbol::new(symbol)?);
         if !self.instruments.contains_key(&key)
             && !self.rate_targets.contains(&key)
             && !self
@@ -122,6 +122,7 @@ impl Session {
         {
             self.rate_targets.push_back(key);
         }
+        Ok(())
     }
     pub fn query_target(&self) -> Option<(Venue, &str)> {
         self.rate_targets
@@ -238,7 +239,7 @@ impl Session {
         let rule = self.rate_rule.take().context("missing pending rates")?;
         if complete {
             rule.validate()?;
-            self.instruments.insert(key.clone(), rule);
+            self.instruments.insert(key, rule);
             self.rate_retry_after.remove(&key);
         } else {
             self.instruments.remove(&key);
@@ -347,9 +348,9 @@ impl Session {
         match kind {
             LOGGED_IN => {
                 ensure!(e.present != 0, "login success without response fields");
-                let day = text(&e.trading_day)?;
+                let day: Day = text(&e.trading_day)?;
                 ensure!(day.len() == 8, "invalid login trading day");
-                let order_ref = text(&e.control()?.max_order_ref)?;
+                let order_ref = text_ref(&e.control()?.max_order_ref)?;
                 let max_ref = if order_ref.trim().is_empty() {
                     0
                 } else {
@@ -364,9 +365,9 @@ impl Session {
                 let control = e.control()?;
                 if control.product_class == i32::from(b'1') && control.active != 0 {
                     if let Ok(venue) = Venue::parse(text_ref(&e.exchange)?) {
-                        let symbol = text_ref(&e.symbol)?;
+                        let symbol: Symbol = text(&e.symbol)?;
                         let expiry = control.expiry;
-                        if is_future_symbol(venue, symbol)
+                        if is_future_symbol(venue, &symbol)
                             && self.login.as_ref().is_some_and(|login| {
                                 login.0.parse::<i32>().is_ok_and(|day| expiry >= day)
                             })
@@ -379,7 +380,7 @@ impl Session {
                             let instrument = Instrument {
                                 option: None,
                                 venue,
-                                symbol: symbol.to_owned(),
+                                symbol,
                                 price_tick: control.price_tick,
                                 contract_multiple: control.contract_multiple,
                                 expiry_date: expiry,
@@ -391,9 +392,9 @@ impl Session {
                                 active: true,
                                 cash_budget_per_open_lot: 0.0,
                             };
-                            let key = (venue, symbol.to_owned());
-                            let product = text(&control.product)?;
-                            if let Some(old) = self.products.insert(key.clone(), product.clone()) {
+                            let key = (venue, symbol);
+                            let product: Symbol = text(&control.product)?;
+                            if let Some(old) = self.products.insert(key, product) {
                                 ensure!(old == product, "conflicting duplicate instrument product");
                             }
                             if let Some(old) = self.catalogue.insert(key, instrument.clone()) {
@@ -405,14 +406,14 @@ impl Session {
             }
             ACCOUNT if e.present != 0 => {
                 ensure!(
-                    text(&e.investor)? == self.investor && text(&e.exchange)? == "CNY",
+                    text_ref(&e.investor)? == self.investor && text_ref(&e.exchange)? == "CNY",
                     "unexpected CTP account/currency snapshot"
                 );
                 ensure!(
                     e.control()?.available.is_finite(),
                     "nonfinite CTP account available"
                 );
-                let day = text(&e.trading_day)?;
+                let day = text_ref(&e.trading_day)?;
                 ensure!(
                     day.is_empty() || self.login.as_ref().is_some_and(|login| login.0 == day),
                     "account trading day changed; reconnect and reconcile"
@@ -427,23 +428,24 @@ impl Session {
             SETTLEMENT_STATUS => {
                 if e.present != 0 {
                     ensure!(
-                        text(&e.investor)? == self.investor,
+                        text_ref(&e.investor)? == self.investor,
                         "settlement status for another investor"
                     );
-                    let day = text(&e.trading_day)?;
-                    self.settlement_confirmed =
-                        self.login.as_ref().is_some_and(|login| day >= login.0);
+                    let day = text_ref(&e.trading_day)?;
+                    self.settlement_confirmed = self
+                        .login
+                        .as_ref()
+                        .is_some_and(|login| day >= login.0.as_str());
                 }
             }
             SETTLED => self.settlement_confirmed = true,
             COMMISSION | MARGIN | EXCHANGE_MARGIN if e.present != 0 => {
-                let key = self
+                let key = *self
                     .rate_targets
                     .front()
-                    .context("rate response without target")?
-                    .clone();
-                let exchange = text(&e.exchange)?;
-                let symbol = text(&e.symbol)?;
+                    .context("rate response without target")?;
+                let exchange = text_ref(&e.exchange)?;
+                let symbol = text_ref(&e.symbol)?;
                 ensure!(
                     (exchange.is_empty() || exchange == key.0.as_str())
                         && (symbol == key.1
@@ -456,7 +458,7 @@ impl Session {
                 if kind != EXCHANGE_MARGIN {
                     ensure!(
                         e.control()?.investor_range != i32::from(b'3')
-                            || text(&e.investor)? == self.investor,
+                            || text_ref(&e.investor)? == self.investor,
                         "rate response belongs to another investor"
                     );
                 }
@@ -507,22 +509,20 @@ impl Session {
             }
             QUERY_ORDER if e.present != 0 && self.owns(&e)? => {
                 self.orders.push(
-                    decoded
+                    *decoded
                         .as_ref()
                         .map_err(|error| anyhow::anyhow!(error.to_string()))?
                         .order()
-                        .context("missing decoded CTP order")?
-                        .clone(),
+                        .context("missing decoded CTP order")?,
                 );
             }
             QUERY_TRADE if e.present != 0 && self.owns(&e)? => {
                 self.trades.push(
-                    decoded
+                    *decoded
                         .as_ref()
                         .map_err(|error| anyhow::anyhow!(error.to_string()))?
                         .fill()
-                        .context("missing decoded CTP fill")?
-                        .clone(),
+                        .context("missing decoded CTP fill")?,
                 );
             }
             POSITION if e.present != 0 && self.owns(&e)? && e.volume != 0 => {
@@ -539,9 +539,9 @@ impl Session {
                     51 => Side::Sell,
                     _ => anyhow::bail!("unsupported CTP position direction"),
                 };
-                let symbol = text(&e.symbol)?;
+                let symbol: Symbol = text(&e.symbol)?;
                 // YdPosition is the opening historical inventory, not necessarily today's remaining yesterday position.
-                let venue = Venue::parse(&text(&e.exchange)?)?;
+                let venue = Venue::parse(text_ref(&e.exchange)?)?;
                 let today = if venue.separate_close_dates() {
                     ensure!(
                         matches!(e.control()?.position_date, 49 | 50),
@@ -557,7 +557,7 @@ impl Session {
                 };
                 let row = PositionSnapshot {
                     venue,
-                    symbol: symbol.clone(),
+                    symbol,
                     side,
                     today,
                     yesterday: e.volume - today,
@@ -585,7 +585,7 @@ impl Session {
             if self.maintenance {
                 for key in self.instruments.keys() {
                     if self.catalogue.contains_key(key) && !self.rate_targets.contains(key) {
-                        self.rate_targets.push_back(key.clone());
+                        self.rate_targets.push_back(*key);
                     }
                 }
                 self.rate_targets
@@ -669,13 +669,13 @@ impl Session {
             self.passes <= 12,
             "account snapshot did not converge; keep new orders blocked"
         );
-        let mut positions = HashMap::<(Venue, String, Side), PositionSnapshot>::new();
+        let mut positions = HashMap::<(Venue, Symbol, Side), PositionSnapshot>::new();
         for row in self.positions.values() {
             let p = positions
-                .entry((row.venue, row.symbol.clone(), row.side))
+                .entry((row.venue, row.symbol, row.side))
                 .or_insert_with(|| PositionSnapshot {
                     venue: row.venue,
-                    symbol: row.symbol.clone(),
+                    symbol: row.symbol,
                     side: row.side,
                     today: 0,
                     yesterday: 0,
@@ -693,7 +693,7 @@ impl Session {
         positions.sort_by_key(|p| {
             (
                 p.venue.as_str(),
-                p.symbol.clone(),
+                p.symbol,
                 match p.side {
                     Side::Buy => 0,
                     Side::Sell => 1,
@@ -701,12 +701,12 @@ impl Session {
             )
         });
         self.orders
-            .sort_by_key(|o| (o.key.session.clone(), o.key.order_ref.clone()));
+            .sort_by_key(|o| (o.key.session, o.key.order_ref));
         self.trades.sort_by_key(|f| {
             (
                 f.identity.venue.as_str(),
-                f.identity.symbol.clone(),
-                f.identity.trade_id.clone(),
+                f.identity.symbol,
+                f.identity.trade_id,
                 match f.identity.side {
                     Side::Buy => 0,
                     Side::Sell => 1,
@@ -720,7 +720,7 @@ impl Session {
             if let Some((previous, previous_cash)) = &self.previous {
                 if previous == &signature {
                     let (day, front, session, max_ref) =
-                        self.login.clone().context("missing login state")?;
+                        self.login.context("missing login state")?;
                     self.ready = true;
                     self.next_kind = None;
                     self.last_cash_poll = now;

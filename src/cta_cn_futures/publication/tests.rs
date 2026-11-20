@@ -145,7 +145,6 @@ async fn products_publish_only_their_own_positions_on_independent_clocks() {
             Publisher {
                 positions,
                 latest: None,
-                quotes: BTreeMap::new(),
                 tx,
                 state: Arc::new(Mutex::new(Status::default())),
                 task: tokio::spawn(std::future::pending()),

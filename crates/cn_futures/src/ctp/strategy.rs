@@ -17,10 +17,10 @@ pub enum Action {
         tag: u64,
         intent: Intent,
     },
-    SubmitCtaker {
+    SubmitExec {
         tag: u64,
         intent: Intent,
-        target: std::sync::Arc<super::ctaker::Target>,
+        target: std::sync::Arc<super::exec::Target>,
     },
     Cancel {
         tag: u64,
@@ -40,6 +40,10 @@ impl Actions {
         self.values.push(action);
         Ok(())
     }
+    /// Actions still allowed in this decision.
+    pub fn remaining(&self) -> usize {
+        MAX_ACTIONS_PER_TICK - self.values.len()
+    }
     #[cfg(any(feature = "ctp-sdk", feature = "yida-sdk", test))]
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = Action> + '_ {
         self.values.drain(..)
@@ -58,6 +62,13 @@ pub enum ActionOutcome {
         tag: u64,
         error: String,
     },
+    /// A cancel the OMS refused locally (already terminal or pending); the
+    /// order's own reports settle it, so execution continues.
+    CancelRejected {
+        tag: u64,
+        key: OrderKey,
+        error: String,
+    },
     #[cfg(any(feature = "ctp-sdk", test))]
     CtpDispatchBlocked {
         action: Action,
@@ -67,8 +78,7 @@ pub enum ActionOutcome {
     },
 }
 
-#[cfg(any(feature = "ctp-sdk", test))]
-#[derive(Clone, Copy, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CtpDispatchChecks {
     pub strategy_can_trade: bool,
     pub execution_enabled: bool,
@@ -105,10 +115,10 @@ impl CtpDispatchChecks {
 pub trait Strategy {
     fn on_target(
         &mut self,
-        _target: super::ctaker::Target,
+        _target: super::exec::Target,
         _context: StrategyContext<'_>,
         _now_us: u64,
-    ) -> Result<Arc<super::ctaker::Target>> {
+    ) -> Result<Arc<super::exec::Target>> {
         anyhow::bail!("target execution is not configured")
     }
     fn on_tick(
@@ -121,7 +131,7 @@ pub trait Strategy {
         Ok(())
     }
     /// Latest change in why a target quote did or did not emit an action.
-    fn take_wait_note(&mut self) -> Option<super::ctaker::WaitNote> {
+    fn take_wait_note(&mut self) -> Option<super::exec::WaitNote> {
         None
     }
     fn on_result(&mut self, _outcome: &ActionOutcome, _context: StrategyContext<'_>) -> Result<()> {
@@ -134,6 +144,34 @@ pub trait Strategy {
     ) -> Result<()> {
         Ok(())
     }
+    /// Durable strategy attribution read at startup.
+    fn restore_ledger(
+        &mut self,
+        _rows: Vec<(String, cn_futures_target::ledger::Row)>,
+    ) -> Result<()> {
+        Ok(())
+    }
+    /// A newly applied live factual fill; `own_order` marks this process's order.
+    fn on_fill(&mut self, _fill: &crate::model::Fill, _own_order: bool) {}
+    fn take_ledger_events(&mut self) -> Vec<super::exec::LedgerEvent> {
+        Vec::new()
+    }
+    /// Whether any strategy still holds attribution on this contract.
+    fn attributes(&self, _market: &str) -> bool {
+        false
+    }
+    /// Operator cutover: credit unallocated holdings to a strategy at a cost.
+    fn assign_position(
+        &mut self,
+        _core: &TradingCore,
+        _strategy: &str,
+        _market: &str,
+        _lots: i64,
+        _price: f64,
+        _now_us: u64,
+    ) -> Result<()> {
+        anyhow::bail!("position assignment requires target execution")
+    }
 }
 pub struct NoStrategy;
 impl Strategy for NoStrategy {
@@ -142,7 +180,7 @@ impl Strategy for NoStrategy {
     }
 }
 
-pub struct ConfiguredStrategy(pub Option<super::ctaker::Ctaker>);
+pub struct ConfiguredStrategy(pub Option<super::exec::Exec>);
 impl Strategy for ConfiguredStrategy {
     fn on_tick(
         &mut self,
@@ -157,13 +195,13 @@ impl Strategy for ConfiguredStrategy {
     }
     fn on_target(
         &mut self,
-        target: super::ctaker::Target,
+        target: super::exec::Target,
         context: StrategyContext<'_>,
         now_us: u64,
-    ) -> Result<Arc<super::ctaker::Target>> {
+    ) -> Result<Arc<super::exec::Target>> {
         self.0
             .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("ctaker is not configured"))?
+            .ok_or_else(|| anyhow::anyhow!("exec is not configured"))?
             .on_target(target, context, now_us)
     }
     fn on_market_state(&mut self, ready: bool, generation: u64) -> Result<()> {
@@ -172,10 +210,8 @@ impl Strategy for ConfiguredStrategy {
         }
         Ok(())
     }
-    fn take_wait_note(&mut self) -> Option<super::ctaker::WaitNote> {
-        self.0
-            .as_mut()
-            .and_then(super::ctaker::Ctaker::take_wait_note)
+    fn take_wait_note(&mut self) -> Option<super::exec::WaitNote> {
+        self.0.as_mut().and_then(super::exec::Exec::take_wait_note)
     }
     fn on_result(&mut self, outcome: &ActionOutcome, context: StrategyContext<'_>) -> Result<()> {
         if let Some(strategy) = &mut self.0 {
@@ -183,20 +219,57 @@ impl Strategy for ConfiguredStrategy {
         }
         Ok(())
     }
+    fn restore_ledger(
+        &mut self,
+        rows: Vec<(String, cn_futures_target::ledger::Row)>,
+    ) -> Result<()> {
+        match &mut self.0 {
+            Some(strategy) => strategy.restore_ledger(rows),
+            None => Ok(()),
+        }
+    }
+    fn on_fill(&mut self, fill: &crate::model::Fill, own_order: bool) {
+        if let Some(strategy) = &mut self.0 {
+            strategy.on_fill(fill, own_order);
+        }
+    }
+    fn take_ledger_events(&mut self) -> Vec<super::exec::LedgerEvent> {
+        self.0
+            .as_mut()
+            .map(super::exec::Exec::take_ledger_events)
+            .unwrap_or_default()
+    }
+    fn attributes(&self, market: &str) -> bool {
+        self.0.as_ref().is_some_and(|c| c.attributes(market))
+    }
+    fn assign_position(
+        &mut self,
+        core: &TradingCore,
+        strategy: &str,
+        market: &str,
+        lots: i64,
+        price: f64,
+        now_us: u64,
+    ) -> Result<()> {
+        self.0
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("exec is not configured"))?
+            .assign_position(core, strategy, market, lots, price, now_us)
+    }
 }
 
 #[cfg(any(feature = "ctp-sdk", feature = "yida-sdk", test))]
 pub(crate) fn dispatch<T: crate::model::Trader>(
     runtime: &mut crate::core::SingleLoop<T>,
-    journal: &crate::runtime::Journal,
+    journal: &crate::persist::PersistChannel,
     action: Action,
     can_trade: bool,
     now: std::time::Instant,
 ) -> Result<ActionOutcome> {
-    let day = runtime.core.trading_day().to_owned();
+    let day = runtime.core.trading_day();
     let tag = match &action {
         Action::Submit { tag, .. }
-        | Action::SubmitCtaker { tag, .. }
+        | Action::SubmitExec { tag, .. }
         | Action::Cancel { tag, .. } => *tag,
     };
     if !can_trade || !runtime.execute || !runtime.core.is_ready() {
@@ -206,26 +279,22 @@ pub(crate) fn dispatch<T: crate::model::Trader>(
         });
     }
     let target = match &action {
-        Action::SubmitCtaker { target, .. } => Some(target.clone()),
+        Action::SubmitExec { target, .. } => Some(target.clone()),
         _ => None,
     };
     let outcome = match action {
-        Action::Submit { tag, intent } | Action::SubmitCtaker { tag, intent, .. } => {
-            match runtime.submit_planned_with(intent, now, |p| {
-                if let Some(target) = &target {
-                    journal.prepared_ctaker(&day, p, target.clone())
-                } else {
-                    journal.prepared_submit(&day, p)
-                }
-            }) {
+        Action::Submit { tag, intent } | Action::SubmitExec { tag, intent, .. } => {
+            match runtime
+                .submit_planned_with(intent, now, |p| journal.prepared(day, p, target.as_deref()))
+            {
                 Ok(receipt) => {
                     let keys: SmallVec<[OrderKey; 2]> =
-                        receipt.children.iter().map(|c| c.key.clone()).collect();
-                    journal.orders(&runtime.core, &keys, &[])?;
+                        receipt.children.iter().map(|c| c.key).collect();
+                    journal.orders(&runtime.core, &keys)?;
                     ActionOutcome::Submitted { tag, receipt }
                 }
                 Err(error) => {
-                    journal.state(&runtime.core, &[])?;
+                    journal.state(&runtime.core)?;
                     ActionOutcome::Rejected {
                         tag,
                         error: error.to_string(),
@@ -236,11 +305,12 @@ pub(crate) fn dispatch<T: crate::model::Trader>(
         Action::Cancel { tag, key } => {
             match runtime.cancel_with(&key, now, |p| journal.prepared_cancel(p)) {
                 Ok(()) => {
-                    journal.orders(&runtime.core, std::slice::from_ref(&key), &[])?;
+                    journal.orders(&runtime.core, std::slice::from_ref(&key))?;
                     ActionOutcome::CancelledLocally { tag, key }
                 }
-                Err(error) => ActionOutcome::Rejected {
+                Err(error) => ActionOutcome::CancelRejected {
                     tag,
+                    key,
                     error: error.to_string(),
                 },
             }

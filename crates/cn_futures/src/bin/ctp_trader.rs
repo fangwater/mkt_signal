@@ -19,6 +19,8 @@ fn main() {
     }
 }
 fn run() -> Result<()> {
+    // Drained when `run` returns, before the final error is printed.
+    let _log = async_log::init_default("info")?;
     let mut args = std::env::args().skip(1);
     let mut config = None;
     let mut market_data_config: Option<PathBuf> = None;
@@ -53,7 +55,7 @@ fn run() -> Result<()> {
             "--confirm-settlement" => confirm_settlement = true,
             "--check-config" => check_config = true,
             "--help" | "-h" => {
-                println!("ctp-trader --config PATH [--market-data-config MD_PATH] [--read-only] [--check-config] [--connect [--execute] [--confirm-settlement]]\nctp-trader --sdk-version /absolute/path/libthosttraderapi_se.so\n\nDefault: validate configuration only; no network or credentials required.\n--market-data-config consumes MdApi on the trading business thread; strategy defaults to NoStrategy; an explicit [ctaker] section enables bounded limit/FAK target execution.\n--read-only rejects execution, ctaker and settlement confirmation.\n--connect logs in and queries account state.\n--confirm-settlement explicitly permits confirming the broker settlement.\n--execute additionally permits explicit JSON-line submit/cancel commands.\nWithout --execute, no order placement or cancellation is permitted.\nCommands: state, reconcile, ctaker_target, submit, cancel, shutdown. EOF stops trade-only mode; combined MD mode continues. SIGINT/SIGTERM request shutdown.\nExisting venue orders are never automatically cancelled on startup or exit.");
+                println!("ctp-trader --config PATH [--market-data-config MD_PATH] [--read-only] [--check-config] [--connect [--execute] [--confirm-settlement]]\nctp-trader --sdk-version /absolute/path/libthosttraderapi_se.so\n\nDefault: validate configuration only; no network or credentials required.\n--market-data-config consumes MdApi on the trading business thread; strategy defaults to NoStrategy; an explicit [exec] section enables bounded limit/FAK target execution.\n--read-only rejects execution, exec and settlement confirmation.\n--connect logs in and queries account state.\n--confirm-settlement explicitly permits confirming the broker settlement.\n--execute additionally permits explicit JSON-line submit/cancel commands.\nWithout --execute, no order placement or cancellation is permitted.\nCommands: state, reconcile, exec_target, submit, cancel, shutdown. EOF stops trade-only mode; combined MD mode continues. SIGINT/SIGTERM request shutdown.\nExisting venue orders are never automatically cancelled on startup or exit.");
                 return Ok(());
             }
             _ => bail!("unknown argument; use --help"),
@@ -85,8 +87,8 @@ fn run() -> Result<()> {
             || !(execute
                 || confirm_settlement
                 || config.confirm_settlement
-                || config.ctaker.is_some()),
-        "--read-only requires execution, ctaker and settlement confirmation to be disabled"
+                || config.exec.is_some()),
+        "--read-only requires execution, exec and settlement confirmation to be disabled"
     );
     let market_data = market_data_config
         .map(|path| cn_futures::ctp::market_data::Config::load(&path))
@@ -95,8 +97,8 @@ fn run() -> Result<()> {
         config.validate_market_data(md)?;
     }
     anyhow::ensure!(
-        config.ctaker.is_none() || market_data.is_some(),
-        "ctaker requires --market-data-config"
+        config.exec.is_none() || market_data.is_some(),
+        "exec requires --market-data-config"
     );
     if confirm_settlement {
         anyhow::ensure!(connect, "settlement confirmation requires --connect");
@@ -116,9 +118,9 @@ fn run() -> Result<()> {
         }
         let strategy = cn_futures::ctp::strategy::ConfiguredStrategy(
             config
-                .ctaker
+                .exec
                 .as_ref()
-                .map(|_| cn_futures::ctp::ctaker::Ctaker::new(&config))
+                .map(|_| cn_futures::ctp::exec::Exec::new(&config))
                 .transpose()?,
         );
         cn_futures::runtime::run_with_strategy(config, market_data, execute, strategy, &STOP)

@@ -6548,6 +6548,10 @@ impl MonitorChannel {
                 TradingVenue::AsterMargin | TradingVenue::AsterFutures => {
                     Err("尚未实现 Aster 的订单对齐".to_string())
                 }
+                order_common::domestic_venues!() => Err(format!(
+                    "symbol={} {:?} is a domestic futures venue outside crypto pre_trade",
+                    symbol_key, venue
+                )),
             }
         })
     }
@@ -8511,6 +8515,7 @@ fn build_uta_external_uniform_order(
         .into_bytes(),
         signal_bbo: None,
         fill_liquidity: persist_common::FillLiquidity::from_is_maker(fill.is_maker),
+        extension: None,
     };
     record.refresh_lengths();
     Some(record)
@@ -8565,6 +8570,7 @@ fn build_binance_external_uniform_order(
         fill_liquidity: persist_common::FillLiquidity::from_is_maker(
             order_common::TradeUpdate::factual_is_maker(update),
         ),
+        extension: None,
     };
     record.refresh_lengths();
     Some(record)
@@ -8624,6 +8630,7 @@ fn build_hyperliquid_external_uniform_order(
         fill_liquidity: persist_common::FillLiquidity::from_is_maker(
             order_common::TradeUpdate::factual_is_maker(update),
         ),
+        extension: None,
     };
     record.refresh_lengths();
     Some(record)

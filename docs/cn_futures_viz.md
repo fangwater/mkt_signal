@@ -54,7 +54,7 @@ namespace 必须匹配交易进程，每个账户独立；账户摘要与 adapte
 
 服务名 `<namespace>/viz_pubs/cn_futures_positions`，长度前缀 bincode，固定 4 MiB IPC 容量、历史 1 条、订阅缓冲 2 条、单发布者和安全覆盖。交易端默认每秒采集一次；Viz 每 10 ms 检查接收队列，源晚启动时每秒重试打开服务。
 
-快照保留业务线程采集时间、柜台原生交易日、进程 epoch、序号、完整持仓恢复标记、原始连接／就绪／可交易标记、本地预算，以及按交易所、合约、多空方向隔离的今仓、昨仓、冻结今仓和冻结昨仓。策略归因取 Manager 账本中的有符号手数，目标取当前有效目标，暂停策略以账本持仓为目标。柜台净仓和策略合计存在差额时，界面显示差额。合约目标和策略归因数量缺失时显示不可用。
+快照保留业务线程采集时间、柜台原生交易日、进程 epoch、序号、完整持仓恢复标记、原始连接／就绪／可交易标记、本地预算，以及按交易所、合约、多空方向隔离的今仓、昨仓、冻结今仓和冻结昨仓。策略归因取 Exec 策略账本（经 Manager 读取）中的有符号手数，目标取当前有效目标。柜台净仓和策略合计存在差额时，界面显示差额。合约目标和策略归因数量缺失时显示不可用。
 
 每帧整体替换。已恢复的空快照表示空仓；`position_ready=false` 表示未知，不能当成空仓。断线保留最后已知仓位，心跳超时明确显示过期。重启 epoch 切换后直接展示新帧，不拼接旧仓位。Viz 校验完整帧、账户绑定及同 epoch 序号，拒绝倒退帧。
 
@@ -93,11 +93,10 @@ CTP 按相关联的成功资金查询更新；易达未提供对应账户资金�
 | `/healthz` | 运维健康摘要：来源新鲜度、原始就绪标记、持仓行数；HTTP 在线不代表账户就绪 |
 | 配置 `ws_path`，默认 `/ws` | 连接即重放每个源最新帧，后续即时转发 |
 | `/strategy-positions/<source>` | 对显式绑定的账户转发同主机 Manager 会话，按合约返回目标与归因净仓 |
-| `/account-observation/<source>` | 沿用 Manager 会话和来源权限，返回原生账户接口的持仓和资金观察，保留实际时间和新鲜度，并为 CTP 期货持仓补充同交易日 L1 |
 
 柜台资金和持仓由 WebSocket 初始化与更新。已配置归因的账户每五秒读取策略明细。Manager 负责验证登录、账户和策略查看权限，响应不缓存。未配置来源返回 404。慢 WebSocket 客户端发送超时断开，队列溢出时重放所有源最新完整帧。
 
-唯一 WS 帧类型 `cn_futures_state`：`source_id`、展示 `label`／`account`、`adapter`、`namespace`、`stale_after_ms`、`entry`、`error`。`entry` 来自公共 Snapshot，CTP 行情可由 Viz 补充。账户摘要不发送，epoch／sequence／replaced_snapshots／l1_dropped 编成十进制字符串以保留 JS 整数精度。源不可用时 `entry=null` 或保留最后已知帧并附错误。
+唯一 WS 帧类型 `cn_futures_state`：`source_id`、展示 `label`／`account`、`adapter`、`namespace`、`stale_after_ms`、`entry`、`error`。`entry` 来自公共 Snapshot，CTP 行情可由 Viz 补充。账户摘要不发送，epoch／sequence／l1_dropped 编成十进制字符串以保留 JS 整数精度。源不可用时 `entry=null` 或保留最后已知帧并附错误。
 
 交易端 `position_ipc.account_snapshot_path` 和 Viz 同账户的 `account_snapshot_path`
 可指向同一个私有文件。退出时，交易后台线程把最后一份确认的账户观察写到同一

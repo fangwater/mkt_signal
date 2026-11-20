@@ -4,8 +4,6 @@ use serde::Deserialize;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
-const MAX_IDLE_SLEEP_US: u64 = 100_000;
-
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -35,10 +33,11 @@ pub struct Config {
     pub event_capacity: usize,
     pub query_interval_ms: u64,
     pub response_timeout_ms: u64,
+    /// `busy` on an isolated core, `sleep` on a shared host.
     #[serde(default)]
-    pub idle_sleep_us: u64,
+    pub poll: crate::poll::PollMode,
     pub risk: RiskLimits,
-    pub ctaker: Option<crate::ctp::ctaker::Settings>,
+    pub exec: Option<crate::ctp::exec::Settings>,
     pub position_target_ingress: Option<cn_futures_target::Config>,
 }
 
@@ -69,21 +68,20 @@ mod tests {
         }
     }
     #[test]
-    fn idle_sleep_is_optional_and_bounded() {
+    fn poll_mode_defaults_to_busy_and_rejects_the_removed_idle_knob() {
         let trade = include_str!("../../../config/ctp_trade.example.toml");
-        let mut example: Config = toml::from_str(trade).unwrap();
-        assert_eq!(example.idle_sleep_us, 64_000);
+        let example: Config = toml::from_str(trade).unwrap();
+        assert_eq!(
+            example.poll,
+            crate::poll::PollMode::Sleep { idle_us: 64_000 }
+        );
         example.validate().unwrap();
-
         let mut table: toml::Table = toml::from_str(trade).unwrap();
-        table.remove("idle_sleep_us");
-        let default: Config = toml::Value::Table(table).try_into().unwrap();
-        assert_eq!(default.idle_sleep_us, 0);
-
-        example.idle_sleep_us = MAX_IDLE_SLEEP_US;
-        example.validate().unwrap();
-        example.idle_sleep_us += 1;
-        assert!(example.validate().is_err());
+        table.remove("poll");
+        let default: Config = toml::Value::Table(table.clone()).try_into().unwrap();
+        assert_eq!(default.poll, crate::poll::PollMode::default());
+        table.insert("idle_sleep_us".into(), toml::Value::Integer(0));
+        assert!(toml::Value::Table(table).try_into::<Config>().is_err());
     }
 }
 /// Intentionally not Debug / Serialize. Secrets are only passed to the official SDK.
@@ -125,21 +123,21 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
-        if let Some(ctaker) = &self.ctaker {
-            ctaker.validate(&self.risk)?;
+        if let Some(exec) = &self.exec {
+            exec.validate(&self.risk)?;
             ensure!(
                 self.risk.max_order_lots.is_none()
                     && self.risk.max_position_lots_per_side.is_none()
                     && self.risk.max_working_lots.is_none(),
-                "CTP ctaker sizes from the Manager target and exchange rules; remove local lot limits"
+                "CTP exec sizes from the Manager target and exchange rules; remove local lot limits"
             );
         }
         if let Some(ingress) = &self.position_target_ingress {
-            if let Some(ctaker) = &self.ctaker {
+            if let Some(exec) = &self.exec {
                 ingress.validate()?;
                 ensure!(
-                    ctaker.source_id == ingress.source_id,
-                    "position_target_ingress requires ctaker with the same source_id"
+                    exec.source_id == ingress.source_id,
+                    "position_target_ingress requires exec with the same source_id"
                 );
             } else {
                 ingress.validate_observer()?;
@@ -183,10 +181,7 @@ impl Config {
             "CTP query interval must be at least 1000 ms"
         );
         ensure!(self.response_timeout_ms >= 5000, "invalid response timeout");
-        ensure!(
-            self.idle_sleep_us <= MAX_IDLE_SLEEP_US,
-            "idle_sleep_us must be 0..{MAX_IDLE_SLEEP_US}"
-        );
+        self.poll.validate(crate::poll::MAX_SLEEP_US)?;
         ensure!(
             self.flow_directory.is_absolute() && self.sdk_library.is_absolute(),
             "SDK and flow paths must be absolute"

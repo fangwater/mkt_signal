@@ -34,6 +34,14 @@ pub enum TradingVenue {
     BinanceCoinFutures = 14,
     /// Bitget UTA coin-margined inverse futures (`COIN-FUTURES`).
     BitgetCoinFutures = 15,
+    /// Domestic (China) futures exchanges; codes start at 64 so the crypto
+    /// range can grow without renumbering.
+    CffexFutures = 64,
+    ShfeFutures = 65,
+    IneFutures = 66,
+    DceFutures = 67,
+    CzceFutures = 68,
+    GfexFutures = 69,
 }
 
 impl TradingVenue {
@@ -50,6 +58,12 @@ impl TradingVenue {
             TradingVenue::GateMargin | TradingVenue::GateFutures => "gate",
             TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => "hyperliquid",
             TradingVenue::AsterMargin | TradingVenue::AsterFutures => "aster",
+            TradingVenue::CffexFutures => "cffex",
+            TradingVenue::ShfeFutures => "shfe",
+            TradingVenue::IneFutures => "ine",
+            TradingVenue::DceFutures => "dce",
+            TradingVenue::CzceFutures => "czce",
+            TradingVenue::GfexFutures => "gfex",
         }
     }
 
@@ -71,6 +85,12 @@ impl TradingVenue {
             TradingVenue::AsterFutures => "aster-futures",
             TradingVenue::HyperliquidMargin => "hyperliquid-margin",
             TradingVenue::HyperliquidFutures => "hyperliquid-futures",
+            TradingVenue::CffexFutures => "cffex-futures",
+            TradingVenue::ShfeFutures => "shfe-futures",
+            TradingVenue::IneFutures => "ine-futures",
+            TradingVenue::DceFutures => "dce-futures",
+            TradingVenue::CzceFutures => "czce-futures",
+            TradingVenue::GfexFutures => "gfex-futures",
         }
     }
 
@@ -132,6 +152,12 @@ impl TradingVenue {
             13 => Some(TradingVenue::HyperliquidFutures),
             14 => Some(TradingVenue::BinanceCoinFutures),
             15 => Some(TradingVenue::BitgetCoinFutures),
+            64 => Some(TradingVenue::CffexFutures),
+            65 => Some(TradingVenue::ShfeFutures),
+            66 => Some(TradingVenue::IneFutures),
+            67 => Some(TradingVenue::DceFutures),
+            68 => Some(TradingVenue::CzceFutures),
+            69 => Some(TradingVenue::GfexFutures),
             _ => None,
         }
     }
@@ -154,6 +180,12 @@ impl TradingVenue {
             TradingVenue::AsterFutures => "AsterFutures",
             TradingVenue::HyperliquidMargin => "HyperliquidMargin",
             TradingVenue::HyperliquidFutures => "HyperliquidFutures",
+            TradingVenue::CffexFutures => "CffexFutures",
+            TradingVenue::ShfeFutures => "ShfeFutures",
+            TradingVenue::IneFutures => "IneFutures",
+            TradingVenue::DceFutures => "DceFutures",
+            TradingVenue::CzceFutures => "CzceFutures",
+            TradingVenue::GfexFutures => "GfexFutures",
         }
     }
 
@@ -175,6 +207,12 @@ impl TradingVenue {
             TradingVenue::AsterFutures => "aster_futures",
             TradingVenue::HyperliquidMargin => "hyperliquid_margin",
             TradingVenue::HyperliquidFutures => "hyperliquid_futures",
+            TradingVenue::CffexFutures => "cffex_futures",
+            TradingVenue::ShfeFutures => "shfe_futures",
+            TradingVenue::IneFutures => "ine_futures",
+            TradingVenue::DceFutures => "dce_futures",
+            TradingVenue::CzceFutures => "czce_futures",
+            TradingVenue::GfexFutures => "gfex_futures",
         }
     }
 
@@ -196,6 +234,12 @@ impl TradingVenue {
             TradingVenue::AsterFutures => "futures",
             TradingVenue::HyperliquidMargin => "margin",
             TradingVenue::HyperliquidFutures => "futures",
+            TradingVenue::CffexFutures
+            | TradingVenue::ShfeFutures
+            | TradingVenue::IneFutures
+            | TradingVenue::DceFutures
+            | TradingVenue::CzceFutures
+            | TradingVenue::GfexFutures => "futures",
         }
     }
 
@@ -211,7 +255,18 @@ impl TradingVenue {
                 | TradingVenue::GateFutures
                 | TradingVenue::AsterFutures
                 | TradingVenue::HyperliquidFutures
+                | TradingVenue::CffexFutures
+                | TradingVenue::ShfeFutures
+                | TradingVenue::IneFutures
+                | TradingVenue::DceFutures
+                | TradingVenue::CzceFutures
+                | TradingVenue::GfexFutures
         )
+    }
+
+    /// Domestic (China) futures exchange venue.
+    pub fn is_domestic(&self) -> bool {
+        (64..=69).contains(&self.to_u8())
     }
 
     pub fn is_inverse_futures(&self) -> bool {
@@ -732,4 +787,18 @@ mod tests {
         assert_eq!(gate_currency_pair_from_symbol("CC_USDT"), "CC_USDT");
         assert_eq!(gate_currency_pair_from_symbol("CC-USDT-SWAP"), "CC_USDT");
     }
+}
+
+/// Pattern for every domestic (China) futures venue, for crypto-only tables
+/// that domestic execution never reaches: `domestic_venues!() => ...`.
+#[macro_export]
+macro_rules! domestic_venues {
+    () => {
+        $crate::TradingVenue::CffexFutures
+            | $crate::TradingVenue::ShfeFutures
+            | $crate::TradingVenue::IneFutures
+            | $crate::TradingVenue::DceFutures
+            | $crate::TradingVenue::CzceFutures
+            | $crate::TradingVenue::GfexFutures
+    };
 }
