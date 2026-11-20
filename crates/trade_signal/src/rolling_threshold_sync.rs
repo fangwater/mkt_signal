@@ -130,7 +130,7 @@ pub(crate) fn default_xarb_spread_mapping() -> HashMap<String, String> {
     ])
 }
 
-pub(crate) fn default_fr_spread_mapping() -> HashMap<String, String> {
+fn default_fr_spread_mapping() -> HashMap<String, String> {
     HashMap::from([
         ("forward_open_mm".to_string(), "spread_15".to_string()),
         ("forward_open_mt".to_string(), "bidask_10".to_string()),
@@ -376,19 +376,16 @@ pub(crate) fn parse_funding_chain_config(raw: Option<String>) -> StoredFundingCh
     }
 }
 
-pub(crate) fn parse_plain_mapping_config(
-    raw: HashMap<String, String>,
-    default_mapping: HashMap<String, String>,
-) -> StoredXarbMappingConfig {
-    let mapping = normalize_threshold_mapping(raw);
-    StoredXarbMappingConfig {
-        rolling_key: None,
-        mapping: if mapping.is_empty() {
-            default_mapping
-        } else {
-            mapping
-        },
+pub(crate) fn resolve_fr_spread_mapping(
+    shared: HashMap<String, String>,
+    overrides: HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut mapping = normalize_threshold_mapping(shared);
+    if mapping.is_empty() {
+        mapping = default_fr_spread_mapping();
     }
+    mapping.extend(normalize_threshold_mapping(overrides));
+    mapping
 }
 
 pub(crate) fn normalize_xarb_symbol(symbol: &str) -> String {
@@ -812,8 +809,8 @@ mod tests {
         alias_single_side_payloads, apply_xarb_spread_thresholds, build_xarb_spread_sync_entries,
         default_fr_spread_mapping, extract_quantile_value, factor_chain_to_funding_mapping,
         factor_field_name, intra_mt_factor_overrides, merge_rolling_payloads,
-        normalize_xarb_symbol, parse_funding_chain_config, parse_plain_mapping_config,
-        parse_xarb_mapping_config, resolve_funding_thresholds, resolve_symbol_quantile_thresholds,
+        normalize_xarb_symbol, parse_funding_chain_config, parse_xarb_mapping_config,
+        resolve_fr_spread_mapping, resolve_funding_thresholds, resolve_symbol_quantile_thresholds,
         resolve_threshold_value, xarb_spread_threshold_order, StoredFactorChainEntry,
     };
     use crate::common::{ArbDirection, FactorMode, OperationType};
@@ -1078,11 +1075,26 @@ mod tests {
     }
 
     #[test]
-    fn plain_mapping_config_falls_back_to_default_when_empty() {
-        let defaults = default_fr_spread_mapping();
-        let parsed = parse_plain_mapping_config(HashMap::new(), defaults.clone());
-        assert_eq!(parsed.mapping, defaults);
-        assert!(parsed.rolling_key.is_none());
+    fn fr_spread_mapping_falls_back_to_default_when_empty() {
+        let mapping = resolve_fr_spread_mapping(HashMap::new(), HashMap::new());
+        assert_eq!(mapping, default_fr_spread_mapping());
+    }
+
+    #[test]
+    fn fr_spread_mapping_overrides_one_field_for_the_environment() {
+        let mut shared = default_fr_spread_mapping();
+        shared.insert("forward_open_mm".to_string(), "spread_10".to_string());
+        shared.insert("forward_cancel_mm".to_string(), "spread_15".to_string());
+        let overrides = HashMap::from([("forward_cancel_mm".to_string(), "spread_25".to_string())]);
+        let mapping = resolve_fr_spread_mapping(shared.clone(), overrides);
+        assert_eq!(mapping["forward_cancel_mm"], "spread_25");
+        assert_eq!(mapping["forward_open_mm"], "spread_10");
+        assert_eq!(mapping["backward_cancel_mm"], shared["backward_cancel_mm"]);
+        assert_eq!(mapping.len(), shared.len());
+        assert_eq!(
+            resolve_fr_spread_mapping(shared.clone(), HashMap::new()),
+            shared
+        );
     }
 
     #[test]
