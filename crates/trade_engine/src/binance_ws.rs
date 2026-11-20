@@ -408,7 +408,7 @@ fn build_new_order_payload_fast(
     } else {
         None
     };
-    let side_effect_type = if is_margin && params.margin_buy {
+    let side_effect_type = if is_margin && params.margin_borrow.auto_borrows() {
         Some("MARGIN_BUY")
     } else {
         None
@@ -894,6 +894,7 @@ mod tests {
         parse_order_status_u8, parse_ws_response, sign_ordered_params_hmac_fast, BinanceWsSigner,
     };
     use crate::query_request::{QueryRequestMsg, QueryRequestType};
+    use crate::trade_request::BinanceMarginBorrow;
     use crate::trade_request::{
         BinanceCancelOrderParams, BinanceModifyOrderParams, BinanceNewOrderParams, TradeRequestMsg,
         TradeRequestType,
@@ -994,7 +995,7 @@ mod tests {
             quote_order_qty_qv: QuantizedValue::zero(),
             price_qv: QuantizedValue::from_parts(1, -2, 12345),
             reduce_only: true,
-            margin_buy: false,
+            margin_borrow: BinanceMarginBorrow::None,
             ws_response_full: false,
             ws_um_response_result: true,
             ws_margin_limit_maker: false,
@@ -1023,7 +1024,7 @@ mod tests {
             quote_order_qty_qv: QuantizedValue::zero(),
             price_qv: QuantizedValue::from_parts(1, -2, 12345),
             reduce_only: true,
-            margin_buy: false,
+            margin_borrow: BinanceMarginBorrow::None,
             ws_response_full: false,
             ws_um_response_result: true,
             ws_margin_limit_maker: false,

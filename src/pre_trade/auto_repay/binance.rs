@@ -2,7 +2,7 @@
 //!
 //! - 状态查询：`GET /papi/v1/balance` → 数组 `[{asset, crossMarginBorrowed, crossMarginInterest, crossMarginFree, ...}]`
 //! - 还款触发：`crossMarginBorrowed > 0 且 crossMarginFree > 0`（per-asset）。
-//! - 还款额：`min(crossMarginBorrowed + crossMarginInterest, crossMarginFree)`。
+//! - 还款额以负债和可用于还款的余额为上限，Binance FR 保留配置的空闲 USDT。
 //! - 还款：`POST /papi/v1/repayLoan?asset=&amount=&timestamp=&recvWindow=&signature=`
 //!
 //! 仅在 `BinanceAccountMode::Unified`（PM）账户下注册。非 PM 走不通 `/papi/*`。
@@ -28,6 +28,7 @@ pub struct BinanceRepayer {
     api_key: String,
     api_secret: String,
     recv_window_ms: u64,
+    usdt_reserve: f64,
 }
 
 impl BinanceRepayer {
@@ -36,6 +37,7 @@ impl BinanceRepayer {
         api_key: impl Into<String>,
         api_secret: impl Into<String>,
         recv_window_ms: u64,
+        usdt_reserve: f64,
     ) -> Self {
         Self {
             client: Client::new(),
@@ -43,6 +45,7 @@ impl BinanceRepayer {
             api_key: api_key.into(),
             api_secret: api_secret.into(),
             recv_window_ms,
+            usdt_reserve,
         }
     }
 
@@ -152,7 +155,7 @@ impl Repayer for BinanceRepayer {
 
         let decisions: Vec<RepayDecision> = borrowed_entries
             .iter()
-            .map(|e| RepayDecision::from_entry(e))
+            .map(|e| RepayDecision::from_entry(e, self.usdt_reserve))
             .collect();
         info!(
             "binance auto-repay tick: 共 {} 项有借头，详情:\n{}",
@@ -218,16 +221,18 @@ pub(crate) struct RepayDecision {
 }
 
 impl RepayDecision {
-    fn from_entry(e: &BalanceEntry) -> Self {
-        let action = if e.free <= 0.0 {
-            RepayAction::SkipNoFree
-        } else {
+    fn from_entry(e: &BalanceEntry, usdt_reserve: f64) -> Self {
+        let reserve = if e.asset == "USDT" { usdt_reserve } else { 0.0 };
+        let repayable_free = (e.free - reserve).max(0.0);
+        let mut repay_amount = (e.borrowed + e.interest).max(0.0).min(repayable_free);
+        if reserve > 0.0 {
+            // The wire amount has eight decimals. Round down to preserve the reserve.
+            repay_amount = (repay_amount * 1e8).floor() / 1e8;
+        }
+        let action = if repay_amount > 0.0 {
             RepayAction::Repay
-        };
-        let repay_amount = if matches!(action, RepayAction::Repay) {
-            (e.borrowed + e.interest).min(e.free)
         } else {
-            0.0
+            RepayAction::SkipNoFree
         };
         Self {
             asset: e.asset.clone(),
@@ -371,7 +376,7 @@ mod tests {
             interest: 0.5,
             free: 50.0,
         };
-        let d = RepayDecision::from_entry(&e);
+        let d = RepayDecision::from_entry(&e, 0.0);
         assert_eq!(d.action, RepayAction::Repay);
         assert_eq!(d.repay_amount, 50.0); // min(100.5, 50)
     }
@@ -384,7 +389,7 @@ mod tests {
             interest: 0.001,
             free: 0.0,
         };
-        let d = RepayDecision::from_entry(&e);
+        let d = RepayDecision::from_entry(&e, 0.0);
         assert_eq!(d.action, RepayAction::SkipNoFree);
         assert_eq!(d.repay_amount, 0.0);
     }
@@ -397,25 +402,63 @@ mod tests {
             interest: 0.001,
             free: 100.0,
         };
-        let d = RepayDecision::from_entry(&e);
+        let d = RepayDecision::from_entry(&e, 0.0);
         assert_eq!(d.repay_amount, 1.001);
+    }
+
+    #[test]
+    fn binance_fr_repayment_preserves_the_usdt_reserve() {
+        let mut entry = BalanceEntry {
+            asset: "USDT".into(),
+            borrowed: 500.0,
+            interest: 0.5,
+            free: 50.0,
+        };
+        for free in [0.0, 50.0, 1_999.9, 2_000.0] {
+            entry.free = free;
+            let decision = RepayDecision::from_entry(&entry, 2_000.0);
+            assert_eq!(decision.action, RepayAction::SkipNoFree);
+            assert_eq!(decision.repay_amount, 0.0);
+        }
+        entry.free = 2_010.5;
+        assert_eq!(
+            RepayDecision::from_entry(&entry, 2_000.0).repay_amount,
+            10.5
+        );
+        entry.free = 2_800.0;
+        assert_eq!(
+            RepayDecision::from_entry(&entry, 2_000.0).repay_amount,
+            500.5
+        );
+        entry.asset = "ETH".into();
+        entry.free = 100.0;
+        assert_eq!(
+            RepayDecision::from_entry(&entry, 2_000.0).repay_amount,
+            100.0
+        );
     }
 
     #[test]
     fn render_table_includes_three_horizontal_lines() {
         let decisions = vec![
-            RepayDecision::from_entry(&BalanceEntry {
-                asset: "USDT".into(),
-                borrowed: 100.0,
-                interest: 0.5,
-                free: 50.0,
-            }),
-            RepayDecision::from_entry(&BalanceEntry {
-                asset: "ETH".into(),
-                borrowed: 2.0,
-                interest: 0.0,
-                free: 0.0,
-            }),
+            RepayDecision::from_entry(
+                &BalanceEntry {
+                    asset: "USDT".into(),
+                    borrowed: 100.0,
+                    interest: 0.5,
+                    free: 50.0,
+                },
+                0.0,
+            ),
+            RepayDecision::from_entry(
+                &BalanceEntry {
+                    asset: "ETH".into(),
+                    borrowed: 2.0,
+                    interest: 0.0,
+                    free: 0.0,
+                },
+                0.0,
+            ),
         ];
         let s = render_decisions_table(&decisions);
         assert!(s.contains("USDT"));

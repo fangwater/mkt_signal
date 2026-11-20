@@ -1,10 +1,11 @@
 //! Native Binance PM FR cash buying power, independent of portfolio margin headroom.
 use crate::pre_trade::signal_throttle::SIGNAL_THROTTLE_ERROR_CODE_BALANCE_INSUFFICIENT;
 use crate::pre_trade::{monitor_channel::MonitorChannel, QueryEngHub};
+use crate::strategy::order_query_parser::parse_compact_order_query_resp;
 use bytes::Bytes;
 use log::{info, warn};
 use once_cell::sync::Lazy;
-use order_common::{trade_error_code::binance, Side, TradingVenue};
+use order_common::{trade_error_code::binance, OrderExecutionStatus, Side, TradingVenue};
 use parking_lot::Mutex;
 use persist_common::SignalBbo;
 use runtime_common::exchange::Exchange;
@@ -16,12 +17,14 @@ use signal_common::tick_math::QuantizedValue;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicI64, Ordering};
 use trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
+use trade_signal::ArbMode;
 
 const POLL_INTERVAL_US: i64 = 30_000_000;
 const MINIMUM_BORROW_REFRESH_INTERVAL_US: i64 = 10_000_000;
 const MAX_AGE_US: i64 = 180_000_000;
 const RETRY_US: i64 = 60_000_000;
 const MAX_RETRY_US: i64 = 15 * RETRY_US;
+const BORROW_NOT_FOUND_GRACE_US: i64 = 15_000_000;
 const BUY_BUFFER: f64 = 1.001;
 const USDT_MINIMUM_BORROW: f64 = 5.0;
 
@@ -37,6 +40,12 @@ struct SubmittedBuy {
     reserved: f64,
 }
 
+struct PendingBorrow {
+    client_order_id: i64,
+    sent_us: i64,
+    first_not_found_us: Option<i64>,
+}
+
 #[derive(Clone, Copy)]
 struct Snapshot {
     cash: f64,
@@ -50,8 +59,20 @@ struct FrequencyCooldown {
     delay_us: i64,
 }
 
+impl FrequencyCooldown {
+    fn back_off(&mut self, now: i64) {
+        self.delay_us = if now - self.retry_us > MAX_RETRY_US {
+            RETRY_US
+        } else {
+            (self.delay_us * 2).clamp(RETRY_US, MAX_RETRY_US)
+        };
+        self.retry_us = now + self.delay_us;
+    }
+}
+
 #[derive(Default)]
 struct State {
+    native: bool,
     poll_us: i64,
     cash_id: Option<i64>,
     borrow_id: Option<i64>,
@@ -65,6 +86,8 @@ struct State {
     borrow_retry_us: i64,
     cash_refresh_after_us: i64,
     frequency_cooldowns: HashMap<String, FrequencyCooldown>,
+    borrow_frequency: FrequencyCooldown,
+    pending_borrow: Option<PendingBorrow>,
 }
 
 impl State {
@@ -120,6 +143,12 @@ impl State {
             return Ok(OpenFunding::CashOnly {
                 max_notional: (free_cash / BUY_BUFFER).min(required),
             });
+        }
+        if now < self.borrow_frequency.retry_us {
+            return Err("binance_usdt_borrow_frequency_cooldown");
+        }
+        if self.pending_borrow.is_some() {
+            return Err("binance_usdt_borrow_submission_pending");
         }
         if required * BUY_BUFFER > free_cash + 1e-8 && now < self.borrow_retry_us {
             return Err("binance_usdt_borrow_cooldown");
@@ -178,6 +207,13 @@ impl State {
             sent_us: now,
             reserved: notional * BUY_BUFFER,
         });
+        if self.native && !cash_only {
+            self.pending_borrow = Some(PendingBorrow {
+                client_order_id,
+                sent_us: now,
+                first_not_found_us: None,
+            });
+        }
         Ok(())
     }
 
@@ -186,8 +222,73 @@ impl State {
             .retain(|buy| buy.client_order_id != client_order_id);
     }
 
+    fn has_pending_borrow(&self, client_order_id: i64) -> bool {
+        self.pending_borrow
+            .as_ref()
+            .is_some_and(|pending| pending.client_order_id == client_order_id)
+    }
+
+    fn abandon_unsent_buy(&mut self, client_order_id: i64) {
+        self.release_buy(client_order_id);
+        if self.has_pending_borrow(client_order_id) {
+            self.pending_borrow = None;
+        }
+    }
+
+    fn resolve_borrow(&mut self, client_order_id: i64, rejection: Option<i32>, now: i64) -> bool {
+        if !self.has_pending_borrow(client_order_id) {
+            return false;
+        }
+        self.pending_borrow = None;
+        match rejection {
+            None => self.borrow_frequency = FrequencyCooldown::default(),
+            Some(code) => {
+                self.release_buy(client_order_id);
+                if code == binance::OPERATION_TOO_FREQUENT {
+                    self.borrow_frequency.back_off(now);
+                } else {
+                    self.borrow_frequency.retry_us = now + self.borrow_frequency.delay_us;
+                }
+            }
+        }
+        true
+    }
+
+    fn reconcile_borrow_query(&mut self, client_order_id: i64, body: &Bytes, now: i64) {
+        if !self.has_pending_borrow(client_order_id) {
+            return;
+        }
+        if let Some(order) = parse_compact_order_query_resp(body).filter(|o| o.order_id > 0) {
+            let rejection = (order.status_u8 == OrderExecutionStatus::Rejected.to_u8()
+                && order.executed_qty == 0.0)
+                .then_some(0);
+            self.resolve_borrow(client_order_id, rejection, now);
+            return;
+        }
+
+        let Some(pending) = &mut self.pending_borrow else {
+            return;
+        };
+        let end = body
+            .iter()
+            .rposition(|byte| *byte != 0)
+            .map_or(0, |end| end + 1);
+        let not_found = serde_json::from_slice::<Value>(&body[..end])
+            .is_ok_and(|value| value["code"].as_i64() == Some(-2013));
+        if !not_found {
+            pending.first_not_found_us = None;
+            return;
+        }
+        // An early query can race an in-flight REST request. Require a second
+        // factual miss after the request has had time to reach Binance.
+        let first = *pending.first_not_found_us.get_or_insert(now);
+        if now.saturating_sub(pending.sent_us) >= BORROW_NOT_FOUND_GRACE_US && now > first {
+            self.resolve_borrow(client_order_id, Some(-2013), now);
+        }
+    }
+
     fn reject(&mut self, symbol: &str, side: Side, code: i32, now: i64) {
-        if code == binance::OPERATION_TOO_FREQUENT {
+        if code == binance::OPERATION_TOO_FREQUENT && !self.native {
             let cooldown = self
                 .frequency_cooldowns
                 .entry(symbol.to_owned())
@@ -195,12 +296,7 @@ impl State {
             // Responses already in flight belong to the same cooldown; do not
             // multiply the delay once per rejected order in that burst.
             if now >= cooldown.retry_us {
-                cooldown.delay_us = if now - cooldown.retry_us > MAX_RETRY_US {
-                    RETRY_US
-                } else {
-                    (cooldown.delay_us * 2).clamp(RETRY_US, MAX_RETRY_US)
-                };
-                cooldown.retry_us = now + cooldown.delay_us;
+                cooldown.back_off(now);
             }
         } else if side == Side::Buy && symbol.ends_with("USDT") {
             if code == binance::BORROW_BELOW_MINIMUM {
@@ -262,19 +358,35 @@ impl State {
     }
 }
 
-static STATE: Lazy<Mutex<State>> = Lazy::new(|| Mutex::new(State::default()));
+static STATE: Lazy<Mutex<State>> = Lazy::new(|| {
+    Mutex::new(State {
+        native: *NATIVE_EXECUTION,
+        ..State::default()
+    })
+});
 static NATIVE_EXECUTION: Lazy<bool> = Lazy::new(|| {
     ExecBackend::for_exchange(Exchange::Binance).is_ok_and(|b| b == ExecBackend::Native)
 });
 static NEXT_QUERY_ID: AtomicI64 = AtomicI64::new(-9_200_000);
 
+pub fn is_binance_fr_pair(open: TradingVenue, hedge: TradingVenue, mode: ArbMode) -> bool {
+    open == TradingVenue::BinanceMargin
+        && hedge == TradingVenue::BinanceFutures
+        && mode == ArbMode::FundingArb
+}
+
+fn binance_fr() -> bool {
+    MonitorChannel::try_venues().is_some_and(|(open, hedge)| {
+        is_binance_fr_pair(open, hedge, MonitorChannel::instance().arb_mode())
+    })
+}
+
+pub(super) fn native_fr() -> bool {
+    binance_fr() && *NATIVE_EXECUTION
+}
+
 pub fn enabled() -> bool {
-    if MonitorChannel::try_venues()
-        != Some((TradingVenue::BinanceMargin, TradingVenue::BinanceFutures))
-    {
-        return false;
-    }
-    MonitorChannel::instance().arb_mode() == trade_signal::ArbMode::FundingArb
+    binance_fr()
         && MonitorChannel::try_order_manager().is_some_and(|m| !m.borrow().binance_is_standard())
 }
 
@@ -306,7 +418,13 @@ fn publish_poll(now: i64, queries: Option<(i64, i64)>) {
     }
 }
 
-pub fn handle_query_response(kind: QueryRequestType, id: i64, body: &[u8]) -> bool {
+pub fn handle_query_response(kind: QueryRequestType, id: i64, body: &Bytes) -> bool {
+    if kind == QueryRequestType::BinanceMarginQuery && *NATIVE_EXECUTION {
+        STATE
+            .lock()
+            .reconcile_borrow_query(id, body, get_timestamp_us());
+        return false;
+    }
     if !matches!(
         kind,
         QueryRequestType::BinancePmUsdtCash | QueryRequestType::BinancePmUsdtMaxBorrowable
@@ -451,7 +569,17 @@ pub(crate) fn reserve_submission(
 
 pub(crate) fn release_submission(venue: TradingVenue, client_order_id: i64) {
     if venue == TradingVenue::BinanceMargin && enabled() {
-        STATE.lock().release_buy(client_order_id);
+        STATE.lock().abandon_unsent_buy(client_order_id);
+    }
+}
+
+pub(super) fn resolve_borrow_submission(client_order_id: i64, rejection: Option<i32>) {
+    let mut s = STATE.lock();
+    if s.resolve_borrow(client_order_id, rejection, get_timestamp_us()) {
+        info!(
+            "BinancePmBuyCapacity: borrow submission resolved client_order_id={} rejection={:?} frequency_retry_us={}",
+            client_order_id, rejection, s.borrow_frequency.retry_us
+        );
     }
 }
 
@@ -490,7 +618,9 @@ pub(crate) fn record_rejection(
         let poll_us = get_timestamp_us().max(rejected_us + 1);
         (
             s.borrow_retry_us,
-            s.frequency_retry_us(symbol),
+            s.borrow_frequency
+                .retry_us
+                .max(s.frequency_retry_us(symbol)),
             poll_us,
             s.begin_poll(poll_us, true),
         )
@@ -509,6 +639,7 @@ mod tests {
 
     fn ready(cash: f64, borrow: f64) -> State {
         State {
+            native: true,
             snapshot: Some(Snapshot {
                 cash,
                 borrow,
@@ -729,8 +860,9 @@ mod tests {
     }
 
     #[test]
-    fn frequency_cooldown_is_per_symbol_and_backs_off_independently() {
+    fn rapidx_frequency_cooldown_remains_per_symbol() {
         let mut s = ready(1000.0, 0.0);
+        s.native = false;
         s.reject(BTC_USDT, Side::Buy, binance::OPERATION_TOO_FREQUENT, NOW);
         s.reject(
             BTC_USDT,
@@ -755,6 +887,60 @@ mod tests {
         assert!(s
             .funding(ETH_USDT, Side::Buy, 10.0, false, retry + RETRY_US)
             .is_ok());
+    }
+
+    #[test]
+    fn native_frequency_cooldown_is_account_wide_and_allows_cash() {
+        let mut s = ready(101.0, 1000.0);
+        s.reserve_buy(BTC_USDT, 1, 200.0, false, NOW).unwrap();
+        assert!(s.resolve_borrow(1, Some(binance::OPERATION_TOO_FREQUENT), NOW));
+        assert!(!s.resolve_borrow(1, Some(binance::OPERATION_TOO_FREQUENT), NOW + 1));
+        assert_eq!(
+            s.funding(ETH_USDT, Side::Buy, 200.0, true, NOW + 2),
+            Err("binance_usdt_borrow_frequency_cooldown")
+        );
+        s.reserve_buy(ETH_USDT, 2, 100.0, true, NOW + 2).unwrap();
+        assert_eq!(s.borrow_frequency.retry_us, NOW + RETRY_US);
+        assert!(s
+            .funding(BTC_USDT, Side::Sell, 200.0, false, NOW + 2)
+            .is_ok());
+
+        let retry = NOW + RETRY_US;
+        s.reserve_buy(ETH_USDT, 3, 200.0, false, retry).unwrap();
+        assert_eq!(
+            s.reserve_buy(BTC_USDT, 4, 200.0, false, retry),
+            Err("binance_usdt_borrow_submission_pending")
+        );
+        assert!(!s.resolve_borrow(1, None, retry));
+        assert!(s.resolve_borrow(3, Some(binance::OPERATION_TOO_FREQUENT), retry));
+        assert_eq!(s.borrow_frequency.retry_us, retry + 2 * RETRY_US);
+        let retry = s.borrow_frequency.retry_us;
+        s.snapshot.as_mut().unwrap().started_us = retry;
+        s.reserve_buy(ETH_USDT, 4, 200.0, false, retry).unwrap();
+        assert!(s.resolve_borrow(4, None, retry + 1));
+        assert_eq!(s.borrow_frequency.retry_us, 0);
+        assert!(s.reserve_buy(BTC_USDT, 5, 200.0, false, retry + 2).is_ok());
+    }
+
+    #[test]
+    fn native_borrow_probe_waits_for_factual_query_or_definitive_response() {
+        let mut s = ready(0.0, 1000.0);
+        s.reserve_buy(BTC_USDT, 1, 100.0, false, NOW).unwrap();
+        let missing = Bytes::from_static(br#"{"code":-2013,"msg":"Order does not exist."}"#);
+        let grace = NOW + BORROW_NOT_FOUND_GRACE_US;
+        s.reconcile_borrow_query(1, &missing, NOW + 1);
+        s.reconcile_borrow_query(1, &missing, NOW + 2);
+        s.reconcile_borrow_query(1, &Bytes::from_static(b"E"), NOW + 3);
+        s.reconcile_borrow_query(1, &missing, grace);
+        s.reconcile_borrow_query(2, &missing, grace + 1);
+        assert!(s.has_pending_borrow(1));
+        s.reconcile_borrow_query(1, &missing, grace + 2);
+        assert!(!s.has_pending_borrow(1));
+        assert_eq!(s.reserved(), 0.0);
+
+        s.reserve_buy(BTC_USDT, 2, 100.0, false, grace + 3).unwrap();
+        s.abandon_unsent_buy(2);
+        assert!(s.reserve_buy(ETH_USDT, 3, 100.0, false, grace + 4).is_ok());
     }
 
     #[test]

@@ -695,6 +695,29 @@ pub struct BinanceWsNewMarginOrderRequest {
     pub params: Bytes, // 额外的请求参数（JSON或其他格式）
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum BinanceMarginBorrow {
+    None = 0,
+    AutoBorrow = 1,
+    KeepOnCancel = 2,
+}
+
+impl BinanceMarginBorrow {
+    fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::None),
+            1 => Some(Self::AutoBorrow),
+            2 => Some(Self::KeepOnCancel),
+            _ => None,
+        }
+    }
+
+    pub fn auto_borrows(self) -> bool {
+        self != Self::None
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinanceNewOrderParams {
     pub symbol: String,
@@ -704,7 +727,7 @@ pub struct BinanceNewOrderParams {
     pub quote_order_qty_qv: QuantizedValue,
     pub price_qv: QuantizedValue,
     pub reduce_only: bool,
-    pub margin_buy: bool,
+    pub margin_borrow: BinanceMarginBorrow,
     pub ws_response_full: bool,
     pub ws_um_response_result: bool,
     pub ws_margin_limit_maker: bool,
@@ -719,7 +742,7 @@ pub struct BinanceNewOrderParamsRef<'a> {
     pub quote_order_qty_qv: QuantizedValue,
     pub price_qv: QuantizedValue,
     pub reduce_only: bool,
-    pub margin_buy: bool,
+    pub margin_borrow: BinanceMarginBorrow,
     pub ws_response_full: bool,
     pub ws_um_response_result: bool,
     pub ws_margin_limit_maker: bool,
@@ -736,7 +759,7 @@ impl BinanceNewOrderParams {
         write_qv(&mut buf, self.quote_order_qty_qv);
         write_qv(&mut buf, self.price_qv);
         buf.put_u8(self.reduce_only as u8);
-        buf.put_u8(self.margin_buy as u8);
+        buf.put_u8(self.margin_borrow as u8);
         buf.put_u8(self.ws_response_full as u8);
         buf.put_u8(self.ws_um_response_result as u8);
         buf.put_u8(self.ws_margin_limit_maker as u8);
@@ -754,7 +777,7 @@ impl BinanceNewOrderParams {
             quote_order_qty_qv: params.quote_order_qty_qv,
             price_qv: params.price_qv,
             reduce_only: params.reduce_only,
-            margin_buy: params.margin_buy,
+            margin_borrow: params.margin_borrow,
             ws_response_full: params.ws_response_full,
             ws_um_response_result: params.ws_um_response_result,
             ws_margin_limit_maker: params.ws_margin_limit_maker,
@@ -772,7 +795,7 @@ impl BinanceNewOrderParams {
         quantity_qv: QuantizedValue,
         price_qv: QuantizedValue,
         reduce_only: bool,
-        margin_buy: bool,
+        margin_borrow: BinanceMarginBorrow,
         ws_response_full: bool,
         ws_um_response_result: bool,
         ws_margin_limit_maker: bool,
@@ -787,7 +810,7 @@ impl BinanceNewOrderParams {
             quantity_qv,
             price_qv,
             reduce_only,
-            margin_buy,
+            margin_borrow,
             ws_response_full,
             ws_um_response_result,
             ws_margin_limit_maker,
@@ -806,7 +829,7 @@ impl BinanceNewOrderParams {
         quantity_qv: QuantizedValue,
         price_qv: QuantizedValue,
         reduce_only: bool,
-        margin_buy: bool,
+        margin_borrow: BinanceMarginBorrow,
         ws_response_full: bool,
         ws_um_response_result: bool,
         ws_margin_limit_maker: bool,
@@ -822,7 +845,7 @@ impl BinanceNewOrderParams {
             quantity_qv,
             price_qv,
             reduce_only,
-            margin_buy,
+            margin_borrow,
             ws_response_full,
             ws_um_response_result,
             ws_margin_limit_maker,
@@ -842,7 +865,7 @@ impl BinanceNewOrderParams {
         quantity_qv: QuantizedValue,
         price_qv: QuantizedValue,
         reduce_only: bool,
-        margin_buy: bool,
+        margin_borrow: BinanceMarginBorrow,
         ws_response_full: bool,
         ws_um_response_result: bool,
         ws_margin_limit_maker: bool,
@@ -857,7 +880,7 @@ impl BinanceNewOrderParams {
             quantity_qv,
             price_qv,
             reduce_only,
-            margin_buy,
+            margin_borrow,
             ws_response_full,
             ws_um_response_result,
             ws_margin_limit_maker,
@@ -876,7 +899,7 @@ impl BinanceNewOrderParams {
         quantity_qv: QuantizedValue,
         price_qv: QuantizedValue,
         reduce_only: bool,
-        margin_buy: bool,
+        margin_borrow: BinanceMarginBorrow,
         ws_response_full: bool,
         ws_um_response_result: bool,
         ws_margin_limit_maker: bool,
@@ -899,7 +922,7 @@ impl BinanceNewOrderParams {
                 write_qv_at(out, &mut offset, quote_order_qty_qv)?;
                 write_qv_at(out, &mut offset, price_qv)?;
                 write_u8_at(out, &mut offset, reduce_only as u8)?;
-                write_u8_at(out, &mut offset, margin_buy as u8)?;
+                write_u8_at(out, &mut offset, margin_borrow as u8)?;
                 write_u8_at(out, &mut offset, ws_response_full as u8)?;
                 write_u8_at(out, &mut offset, ws_um_response_result as u8)?;
                 write_u8_at(out, &mut offset, ws_margin_limit_maker as u8)?;
@@ -951,8 +974,11 @@ impl BinanceNewOrderParams {
         } else if is_ws_um && self.ws_um_response_result {
             params.push_str("&newOrderRespType=RESULT");
         }
-        if is_margin && self.margin_buy {
+        if is_margin && self.margin_borrow.auto_borrows() {
             params.push_str("&sideEffectType=MARGIN_BUY");
+            if !is_ws_margin && self.margin_borrow == BinanceMarginBorrow::KeepOnCancel {
+                params.push_str("&autoRepayAtCancel=false");
+            }
         }
         if self.order_type.is_limit() {
             if is_margin {
@@ -991,7 +1017,7 @@ impl<'a> BinanceNewOrderParamsRef<'a> {
         }
         let reduce_only = raw[offset] != 0;
         offset += 1;
-        let margin_buy = raw[offset] != 0;
+        let margin_borrow = BinanceMarginBorrow::from_u8(raw[offset])?;
         offset += 1;
         let ws_response_full = raw[offset] != 0;
         offset += 1;
@@ -1008,7 +1034,7 @@ impl<'a> BinanceNewOrderParamsRef<'a> {
             quote_order_qty_qv,
             price_qv,
             reduce_only,
-            margin_buy,
+            margin_borrow,
             ws_response_full,
             ws_um_response_result,
             ws_margin_limit_maker,
@@ -3064,6 +3090,7 @@ impl HyperliquidCancelOrderParams {
 
 #[cfg(test)]
 mod tests {
+    use super::BinanceMarginBorrow;
     use super::{
         BinanceBatchModifyOrdersParams, BinanceCancelOrderParams, BinanceModifyOrderParams,
         BinanceNewOrderParams, BinancePriceMatch, BitgetCancelOrderParams, BitgetNewOrderParams,
@@ -3097,7 +3124,7 @@ mod tests {
             quote_order_qty_qv: QuantizedValue::zero(),
             price_qv: QuantizedValue::from_parts(1, -2, 12345),
             reduce_only: true,
-            margin_buy: false,
+            margin_borrow: BinanceMarginBorrow::None,
             ws_response_full: false,
             ws_um_response_result: true,
             ws_margin_limit_maker: false,
@@ -3126,7 +3153,7 @@ mod tests {
             quote_order_qty_qv: QuantizedValue::zero(),
             price_qv: QuantizedValue::from_parts(1, 0, 0),
             reduce_only: false,
-            margin_buy: false,
+            margin_borrow: BinanceMarginBorrow::None,
             ws_response_full: false,
             ws_um_response_result: true,
             ws_margin_limit_maker: false,
@@ -3243,7 +3270,7 @@ mod tests {
             QuantizedValue::from_decimal(0.25).unwrap(),
             QuantizedValue::from_decimal(65000.0).unwrap(),
             false,
-            false,
+            BinanceMarginBorrow::None,
             false,
             true,
             false,
@@ -3277,7 +3304,7 @@ mod tests {
             QuantizedValue::from_decimal(0.25).unwrap(),
             QuantizedValue::from_decimal(65000.0).unwrap(),
             false,
-            false,
+            BinanceMarginBorrow::None,
             false,
             true,
             false,
@@ -3293,7 +3320,7 @@ mod tests {
             QuantizedValue::from_decimal(0.25).unwrap(),
             QuantizedValue::from_decimal(65000.0).unwrap(),
             false,
-            false,
+            BinanceMarginBorrow::None,
             false,
             true,
             false,

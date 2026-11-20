@@ -1188,11 +1188,20 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                             Ok(url) if !url.trim().is_empty() => url,
                             _ => RestConstants::BINANCE_BASE_URL.to_string(),
                         };
+                        let usdt_reserve = if mkt_signal::pre_trade::binance_pm_buy_capacity::is_binance_fr_pair(
+                            open_venue, hedge_venue, arb_mode,
+                        ) {
+                            2_000.0
+                        } else {
+                            0.0
+                        };
+                        info!("binance auto-repay: usdt_reserve={usdt_reserve}");
                         repay_svc.register(Box::new(BinanceRepayer::new(
                             rest_base,
                             binance_api_key,
                             binance_api_secret,
                             RestConstants::RECV_WINDOW_MS,
+                            usdt_reserve,
                         )));
                     }
                 } else if binance_in_play && rapidx_binance {

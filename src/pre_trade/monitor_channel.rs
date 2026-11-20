@@ -2662,6 +2662,17 @@ impl BasicAccountListener {
                             if msg.external_order_label().is_some() {
                                 dispatch_binance_external_order_update(&msg);
                             } else {
+                                if msg.venue == BinanceBasicOrderMsg::VENUE_MARGIN
+                                    && msg.order_id > 0
+                                {
+                                    let rejection = (msg.execution_type
+                                        == ExecutionType::Rejected.to_u8())
+                                    .then_some(0);
+                                    super::binance_pm_buy_capacity::resolve_borrow_submission(
+                                        msg.client_order_id,
+                                        rejection,
+                                    );
+                                }
                                 dispatch_order_update_generic(&self.strategy_mgr, &msg);
                             }
                         }

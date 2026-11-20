@@ -12,6 +12,7 @@ use runtime_common::{
 };
 use signal_common::tick_math::QuantizedValue;
 use std::time::{Duration, Instant};
+use trade_engine::trade_request::BinanceMarginBorrow;
 use trade_engine::trade_request::{
     BinanceCancelOrderParams, BinanceNewOrderParams, TradeRequestIpcPayload,
 };
@@ -221,7 +222,11 @@ fn request_bytes(args: &Args) -> Result<bytes::Bytes> {
                 quantity,
                 price,
                 args.reduce_only,
-                matches!(args.business, Business::Margin),
+                if matches!(args.business, Business::Margin) {
+                    BinanceMarginBorrow::AutoBorrow
+                } else {
+                    BinanceMarginBorrow::None
+                },
                 false,
                 false,
                 args.post_only,

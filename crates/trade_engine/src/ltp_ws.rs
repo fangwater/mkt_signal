@@ -810,6 +810,7 @@ pub fn warn_if_unsupported_ltp_exchange(exchange: Exchange) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::trade_request::BinanceMarginBorrow;
     #[test]
     fn existing_order_acknowledgements_require_a_query() {
         for code in [401009, 401117] {
@@ -850,7 +851,7 @@ mod tests {
             quote_order_qty_qv: QuantizedValue::zero(),
             price_qv: QuantizedValue::from_decimal(60000.0).unwrap(),
             reduce_only: true,
-            margin_buy: false,
+            margin_borrow: BinanceMarginBorrow::None,
             ws_response_full: false,
             ws_um_response_result: true,
             ws_margin_limit_maker: false,
@@ -880,7 +881,7 @@ mod tests {
             quote_order_qty_qv: QuantizedValue::zero(),
             price_qv: QuantizedValue::from_decimal(0.5).unwrap(),
             reduce_only: false,
-            margin_buy: false,
+            margin_borrow: BinanceMarginBorrow::None,
             ws_response_full: false,
             ws_um_response_result: false,
             ws_margin_limit_maker: true,
@@ -914,7 +915,7 @@ mod tests {
             quote_order_qty_qv: QuantizedValue::from_decimal(5.5).unwrap(),
             price_qv: QuantizedValue::zero(),
             reduce_only: false,
-            margin_buy: false,
+            margin_borrow: BinanceMarginBorrow::None,
             ws_response_full: false,
             ws_um_response_result: false,
             ws_margin_limit_maker: false,

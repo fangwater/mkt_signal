@@ -4841,6 +4841,7 @@ impl TradeWsClient {
 
 #[cfg(test)]
 mod tests {
+    use crate::trade_request::BinanceMarginBorrow;
     #[test]
     fn unified_okx_cash_uses_spot_instrument_codes() {
         use crate::trade_request::TradeRequestType;
@@ -5164,7 +5165,7 @@ mod tests {
             QuantizedValue::from_parts(1, -3, 250),
             QuantizedValue::from_parts(1, 0, 100000),
             false,
-            false,
+            BinanceMarginBorrow::None,
             false,
             true,
             false,
@@ -5735,7 +5736,7 @@ mod tests {
             QuantizedValue::from_parts(1, -3, 250),
             QuantizedValue::from_parts(1, 0, 100000),
             false,
-            false,
+            BinanceMarginBorrow::None,
             false,
             true,
             false,
@@ -5755,7 +5756,7 @@ mod tests {
             QuantizedValue::from_parts(1, -3, 500),
             QuantizedValue::zero(),
             true,
-            false,
+            BinanceMarginBorrow::None,
             false,
             true,
             false,
