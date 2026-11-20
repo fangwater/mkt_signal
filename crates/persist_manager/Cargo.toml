@@ -109,7 +109,7 @@ required-features = ["runtime"]
 
 [features]
 default = []
-embedded = ["dep:rocksdb", "dep:serde", "dep:serde_json"]
+embedded = ["dep:rocksdb", "dep:serde", "dep:serde_json", "dep:cn_futures"]
 runtime = [
     "embedded",
     "dep:cn_futures",
