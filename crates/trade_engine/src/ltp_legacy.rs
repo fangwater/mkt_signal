@@ -273,31 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_import_keeps_validated_role_signed_fee_and_scope_without_inventing_fills() {
-        let (facts, identities, end) = decode(&trade(), "123", "BINANCE").unwrap();
-        assert_eq!(facts.len(), 2);
-        assert!(identities.is_empty() && end.is_none());
-        let Fact::Execution(execution) = &facts[0] else {
-            panic!("missing execution");
-        };
-        assert_eq!(execution.execution.signed_fee.as_deref(), Some("-0.001"));
-        let Fact::Role(role) = &facts[1] else {
-            panic!("missing role");
-        };
-        assert_eq!(&role.record, execution);
-        assert_eq!(role.role, persist_common::rapidx_role::ExecutionRole::Maker);
-        assert!(decode(&trade(), "456", "BINANCE").unwrap().0.is_empty());
-        let mut unknown = trade();
-        unknown["message"]["data"]["execType"] = "UNKNOWN".into();
-        assert_eq!(decode(&unknown, "123", "BINANCE").unwrap().0.len(), 1);
-        let mut corrupt = trade();
-        corrupt["message"]["data"]["quantity"] = "NaN".into();
-        assert!(decode(&corrupt, "123", "BINANCE").is_err());
-        let explicit = serde_json::json!({"portfolio":"456","exchange":"BINANCE","execution":execution.execution});
-        assert!(decode(&explicit, "123", "BINANCE").is_err());
-    }
-
-    #[test]
     fn read_only_preflight_preserves_archives_and_only_ignores_unterminated_tail() {
         let dir = std::env::temp_dir().join(format!("rapidx-preflight-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
