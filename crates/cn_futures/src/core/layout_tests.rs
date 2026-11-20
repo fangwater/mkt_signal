@@ -294,7 +294,7 @@ fn arena_preserves_noncanonical_identities_and_replaces_both_halves_together() {
         .unwrap();
     let original = c.order(&p.key).unwrap().to_order();
     let mut arena = OrderArena::default();
-    for reference in ["1", "01", "external", "18446744073709551616"] {
+    for reference in ["1", "01", "external", "+1"] {
         let mut order = original;
         order.key.order_ref = reference.into();
         order.system_id = Text::format(format_args!("{}-{reference}", "s".repeat(40))).unwrap();

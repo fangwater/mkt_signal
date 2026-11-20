@@ -253,7 +253,7 @@ impl OrderArena {
 mod tests {
     use super::*;
     #[test]
-    fn numeric_index_preserves_noncanonical_and_overflowing_reference_identities() {
+    fn numeric_index_preserves_noncanonical_reference_identities() {
         let mut refs = References::default();
         refs.reserve(4096).unwrap();
         assert!(refs.numbers.is_empty() && refs.text.is_empty());
@@ -263,8 +263,7 @@ mod tests {
             "01",
             "0001",
             "+1",
-            "18446744073709551615",
-            "18446744073709551616",
+            "9999999999999999",
             "manual-ref",
         ];
         for (i, reference) in identities.iter().enumerate() {
@@ -276,5 +275,7 @@ mod tests {
         }
         assert_eq!(refs.id("0000"), None);
         assert_eq!(refs.numbers.len(), 3);
+        // Native references are at most 16 bytes, so none can overflow u64.
+        assert!(Reference::new("18446744073709551616").is_err());
     }
 }

@@ -76,21 +76,21 @@ fn incomplete_fact_queries_cannot_restore_reported_fills() {
 }
 
 #[test]
-fn failed_pre_submit_audit_never_reaches_the_sdk() {
+fn evidence_failure_after_the_sdk_call_keeps_the_order_and_blocks_trading() {
     let mut runtime = SingleLoop {
         core: core(),
         trader: Fake::default(),
         execute: true,
     };
-    assert!(runtime
-        .submit_with(
-            intent(Side::Buy, Offset::Open, 1),
-            Instant::now(),
-            |_| bail!("audit unavailable")
-        )
-        .is_err());
-    assert_eq!(runtime.trader.inserts, 0);
-    assert_eq!(runtime.core.view().available_local_budget, 1_000_000.0);
+    // Evidence is published after the SDK call and never withholds the order.
+    let key = runtime
+        .submit_with(intent(Side::Buy, Offset::Open, 1), Instant::now(), |_| {
+            bail!("audit unavailable")
+        })
+        .unwrap();
+    assert_eq!(runtime.trader.inserts, 1);
+    assert!(runtime.core.order(&key).is_some());
+    assert!(runtime.core.view().available_local_budget < 1_000_000.0);
     assert!(!runtime.core.is_ready());
 }
 
@@ -1154,34 +1154,39 @@ fn native_batch_outcomes_release_only_certainly_unsent_reservations() {
 }
 
 #[test]
-fn batch_preflight_and_audit_failure_send_nothing() {
-    for audit_failure in [false, true] {
-        let mut runtime = batch_loop(BatchBehavior::Success);
-        let mut intents = close_batch();
-        if !audit_failure {
-            intents[1].lots = 10000;
-        }
-        let result = runtime.submit_batch_with(intents, Instant::now(), |_| {
+fn batch_preflight_failure_sends_nothing_and_evidence_failure_blocks_after_send() {
+    let mut runtime = batch_loop(BatchBehavior::Success);
+    let mut intents = close_batch();
+    intents[1].lots = 10000;
+    let result = runtime.submit_batch_with(intents, Instant::now(), |_| Ok(()));
+    assert!(result.is_err());
+    assert_eq!(runtime.trader.insert_calls, 0);
+    assert_eq!(
+        runtime
+            .core
+            .position(Venue::Shfe, "cu2612", Side::Buy)
+            .frozen(),
+        0
+    );
+    let mut runtime = batch_loop(BatchBehavior::Success);
+    let mut recorded = 0;
+    let receipt = runtime
+        .submit_batch_with(close_batch(), Instant::now(), |_| {
+            recorded += 1;
             anyhow::bail!("audit unavailable")
-        });
-        assert_eq!(runtime.trader.insert_calls, 0);
-        assert_eq!(
-            runtime
-                .core
-                .position(Venue::Shfe, "cu2612", Side::Buy)
-                .frozen(),
-            0
-        );
-        if audit_failure {
-            assert!(result
-                .unwrap()
-                .children
-                .iter()
-                .all(|c| matches!(c.outcome, ChildOutcome::NotSent)));
-        } else {
-            assert!(result.is_err());
-        }
-    }
+        })
+        .unwrap();
+    assert_eq!(runtime.trader.insert_calls, 1);
+    assert_eq!(
+        recorded,
+        receipt.children.len(),
+        "every child is still recorded"
+    );
+    assert!(receipt
+        .children
+        .iter()
+        .all(|c| matches!(c.outcome, ChildOutcome::SubmittedLocally)));
+    assert!(!runtime.core.is_ready());
     let mut runtime = batch_loop(BatchBehavior::Success);
     assert!(runtime
         .submit_batch_with(vec![], Instant::now(), |_| Ok(()))
@@ -1540,7 +1545,7 @@ fn terminal_reports_and_stale_duplicates_keep_working_risk_until_factual_fills()
 }
 
 #[test]
-fn working_index_matches_account_snapshot_and_batch_rollback() {
+fn working_index_matches_account_snapshot_and_batch_uncertainty() {
     let mut c = core();
     let a = c
         .prepare(intent(Side::Buy, Offset::Open, 2), Instant::now())
@@ -1584,9 +1589,12 @@ fn working_index_matches_account_snapshot_and_batch_rollback() {
             },
         )
         .unwrap();
+    // The batch was handed to the SDK before evidence failed: reservations stay
+    // (this fake has no batch API, so the outcome is uncertain) and trading stops.
     assert!(!receipt.all_submitted_locally);
-    assert_eq!(r.trader.inserts, 0);
-    assert_eq!(r.core.working_lots, 0);
+    assert_eq!(n, 2, "every child is recorded");
+    assert_eq!(r.core.working_lots, 2);
+    assert!(!r.core.is_ready());
     assert_working_index(&r.core);
 }
 

@@ -56,7 +56,12 @@ impl<T: Trader> SingleLoop<T> {
         let requests: Vec<_> = prepared.iter().map(|(_, order)| *order).collect();
         // Evidence follows the SDK call so publishing never delays the batch.
         let result = self.trader.insert_batch(&requests);
-        if requests.iter().any(|order| after_native(order).is_err()) {
+        // Record every child even after one failure; any failure blocks trading.
+        let mut evidence_failed = false;
+        for order in &requests {
+            evidence_failed |= after_native(order).is_err();
+        }
+        if evidence_failed {
             self.core
                 .block("batch submission evidence unavailable after SDK call");
         }
@@ -142,7 +147,12 @@ impl<T: Trader> SingleLoop<T> {
             }
         }
         let result = self.trader.cancel_batch(&requests);
-        if requests.iter().any(|order| after_native(order).is_err()) {
+        // Record every child even after one failure; any failure blocks trading.
+        let mut evidence_failed = false;
+        for order in &requests {
+            evidence_failed |= after_native(order).is_err();
+        }
+        if evidence_failed {
             self.core
                 .block("batch cancellation evidence unavailable after SDK call");
         }
