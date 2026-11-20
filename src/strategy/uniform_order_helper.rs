@@ -105,6 +105,7 @@ pub fn build_uniform_order_record(
         } else {
             FillLiquidity::Unknown
         },
+        extension: None,
     };
     record.refresh_lengths();
     record

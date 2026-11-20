@@ -1,6 +1,8 @@
 #[cfg(feature = "runtime")]
 mod bbo_spread;
 #[cfg(feature = "runtime")]
+mod cn_native_persist;
+#[cfg(feature = "runtime")]
 pub mod exporter;
 #[cfg(feature = "runtime")]
 mod hyperliquid_account_fact;

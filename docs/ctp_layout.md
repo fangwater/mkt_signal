@@ -1,6 +1,6 @@
 # CTP 单业务核固定布局
 
-最后更新：2026-11-16
+最后更新：2026-11-20
 
 本布局用于行情驱动交易的同进程接入接口。策略规则尚未配置，默认 `NoStrategy` 不产生订单。**用户已指定外部部署／执行主机 `sh_dev`（`ssh sh_dev`）；当前开发机和所有内网机器禁止执行 CTP**，包括配置检查程序、离线 SDK、测试、探针和基准。主机登记不代表已部署或已运行；运行限制见 [AGENTS.md](../AGENTS.md#ctp-execution-location-restriction)。
 
@@ -11,21 +11,32 @@
 | 业务 B | 0 | 消费行情与委托/成交回报、策略回调、风控、OMS、报撤单 SDK 调用 |
 | Trader SDK T | 1 | Trader SDK 内部网络与回报工作线程 |
 | Md SDK M | 2 | Md SDK 内部网络与行情回调工作线程 |
-| 后台 I/O | 3 | Journal、JSON/脱敏、RocksDB WAL/flush/compaction、stdin 读取、可选持仓 IPC 编码/发送 |
+| 后台 | 3 | `async-log` 日志线程、Tokio 解析线程（DNS，按需创建）；不承载交易路径 |
 
 四个域在同一允许使用的 NUMA 节点，每个域一个逻辑 CPU，且四个 CPU 必须来自不同物理核。示例 ID 不是实际部署分配；在 `sh_dev` 上核对实际拓扑后填写，不能直接套用 0/1/2/3。SMT 兄弟核不应承载其他忙任务，系统和网卡 IRQ/softirq 另留 housekeeping CPU；本实现不修改内核中断亲和性。SDK 内部线程数量由官方库决定，多个 SDK 工作线程共享本域的一个核。
 
 ```mermaid
 flowchart LR
-    M[Md SDK 核 M] -->|固定事件 / 有界 MPSC| B[业务核 B: 行情 → 策略 → 风控 → OMS]
+    M[Md SDK 核 M] -->|固定事件 / 有界 MPSC| B[业务核 B: 行情 → 策略账本 → 算法 → 风控 → OMS]
     B -->|直接 ReqOrderInsert / ReqOrderAction| T[CTP Trader API]
     T --> W[Trader SDK 核 T]
     W -->|委托 / 成交回报队列| B
-    B -->|try_send 审计与投影| IO[后台核: JSON / RocksDB / 文件]
-    IO -.->|提交进度原子计数| B
+    B -->|iceoryx2 发布，无 ack| PM[独立 persist_manager 进程: JSON / RocksDB / trader log]
 ```
 
 行情消费和交易决策共用 B，不经过另一个行情业务线程、stdout JSON 或进程间转发。策略只借用只读 `TradingCore`，通过定长动作容器提交意图，仍由统一核心完成风控、仓位冻结、平今平昨拆分及事实成交处理。
+
+## 单核心绑定
+
+报单链路（行情 → 策略账本 → 执行算法 → 风控/OMS → `ReqOrderInsert`）全部在 B 上的一个线程内完成，B 上不应再有本进程的其他线程：
+
+- 业务线程在 `Placement::enter` 时绑定 B 并 `MPOL_BIND` 到配置的 NUMA 节点；SDK 在 `on_sdk` 内以 SDK 掩码创建，内部工作线程继承 T/M。
+- `async-log` 线程在读取配置前已启动，启动交易前按其 TID 移到后台 CPU。
+- Tokio `IoLoop` 是业务线程上的 current-thread 运行时；它按需创建的解析线程（最多 2 个）在线程启动钩子中移到后台 CPU。
+- 证据持久化、JSON、RocksDB 和 trader log 在独立 `persist_manager` 进程，按其自身部署绑定到其他核（例如后台核）。
+- 持仓观察 IPC 由业务线程定时直接发布定长 bincode，没有发送线程。
+
+启动后 trader log 输出 `placement_audit`，列出除业务线程外仍可能被调度到 B 的线程（`tid:名称:CPU 列表`），正常应为空；非空时同时写 warn 日志。日志格式化和入队仍在调用线程上发生（异步写出，满队丢弃计数）；busy poll 部署如需完全静默可调高 `RUST_LOG` 级别。
 
 ## 配置固定关系
 
@@ -53,21 +64,21 @@ background_cpus = [3]
 
 ## 业务循环不等待持久化
 
-CTP 的 `sync_before_send`、`idle_sleep_us` 和交易端 `reconnect_backoff_ms` 配置已移除；旧配置带这些字段会被拒绝，需删除。业务循环固定忙轮询。报撤单审计、原始回报、订单/成交投影和策略执行回执均使用有界队列 `try_send`，不等待写盘或消费者。队列满、断开及写盘失败显式终止交易，不丢弃后继续报单，也不自动重试订单。
+CTP 的 `sync_before_send`、`idle_sleep_us` 和交易端 `reconnect_backoff_ms` 配置已移除；旧配置带这些字段会被拒绝，需删除。空闲策略由 `poll` 选择（见 [CTP 交易](ctp_trade.md)）。订单生命周期、事实成交和策略归因由业务线程经 `PersistChannel` 写成 crypto uniform order / trade update 格式，发布到独立 `persist_manager` 进程原样入库；原始回报与执行决策只进 trader 日志（与 crypto 相同，见[持久化](cn_order_persistence.md)），没有 journal 线程，不等待写盘或消费者。报单的生命周期记录在 SDK 调用之后发布。本地发布失败锁定故障并阻断后续交易，不自动重试订单。Manager 订阅、目标 IPC/gRPC 监听和主力合约 HTTP 查询是同一线程 `IoLoop` 上的 local task，每 1 ms 非阻塞驱动一次；stdin 运维命令每 20 ms 非阻塞读取一次。
 
-恢复使用异步 checkpoint：柜台完整快照通过校验后提交持久化校验，业务循环继续消费行情和回报，通过原子进度计数轮询结果。checkpoint 成功前 `core.is_ready()` 为 false，新报单和撤单被阻断；失败或 30 秒超时终止运行。成功只能解除这个等待条件，不能清除断线、结算未确认或事实冲突等其他阻断。后台 WAL 仍同步提交，业务循环没有逐笔持久化确认等待。
+恢复不等待落盘：柜台完整快照通过校验后，Exec 用启动时只读加载的 `persist_manager` 库核对上一进程留下的未决请求都出现在本次完整恢复中，缺失则终止并要求人工对账；核对通过即可交易，`reconciled` 证据异步发布。断线、结算未确认或事实冲突等其他阻断照常生效。
 
 异步发送存在崩溃窗口：SDK 已收到请求时，审计尾部可能尚未落盘。不能同时保证“发送不等待落盘”和“每个已发送请求都已持久化”。重启继续依赖柜台完整追平和数据库未决请求校验，详见[持久化保证](cn_order_persistence.md)。
 
 初始化时打开文件/数据库、加载与初始化 SDK，以及退出主循环后的 SDK Release 和最终刷盘属于生命周期工作，可能阻塞。恢复落盘不会阻塞正在运行的业务循环；退出后用完成状态轮询排空后台。SDK 自带传输重连保留；需要重建对象的传输/控制响应超时会输出 `restart_required` 并退出，外部监管负责重启，业务循环不做 Release/Init。
 
-`position_ipc = { namespace = "cn_ctp_sim", interval_ms = 1000 }` 可启用与 Exec 相同思路的全量持仓观察通道。定时到期后，业务线程把今昨仓、冻结量及连接/恢复状态复制到冷初始化的三个缓冲之一，以 `try_recv` / `try_send` 替换尚未消费的旧快照；不会构造 JSON、扫描订单或等待后台。编码、4 MiB IPC 消息初始化和发送由继承后台域放置的独立线程执行。命名空间显式配置，消息绑定账户摘要、进程 epoch、序号和业务采集时间。容量为 8192 条多空持仓行，超限整帧失效，不发布部分持仓；观察发布失败不重试交易请求，Viz 最迟在心跳过期后显示不可用。该通道不替代委托/成交持久化。详见 [Viz](cn_futures_viz.md)。
+`position_ipc = { namespace = "cn_ctp_sim", interval_ms = 1000 }` 可启用与 Exec 相同思路的全量持仓观察通道。定时到期后，业务线程把今昨仓、冻结量及连接/恢复状态复制到冷初始化的快照缓冲，按实际长度 bincode 编码后直接发布到 iceoryx2 切片；不会构造 JSON、扫描订单、分配内存或等待消费者，也没有发送线程。命名空间显式配置，消息绑定账户摘要、进程 epoch、序号和业务采集时间。容量为 8192 条多空持仓行，超限整帧失效，不发布部分持仓；观察发布失败不重试交易请求，Viz 最迟在心跳过期后显示不可用。该通道不替代委托/成交持久化。详见 [Viz](cn_futures_viz.md)。
 
 CTP 的 Req 系列本身是厂商同步函数调用，不能在没有证据时保证库内部从不拿锁、触发缺页或阻塞。当前保证是应用业务路径没有阻塞式队列收发、文件 I/O、持久化确认等待或 sleep。全链路硬实时、零分配和确定的 p99 尚未获得验证。
 
 ## 策略接口
 
-`ctp::strategy::Strategy` 提供 `on_tick`、`on_update`、`on_market_state` 和 `on_result`。回调在 B 上顺序执行；实现必须只做有界 CPU 计算，不能进行网络/文件 I/O、休眠、等待或无界循环。每个 tick 最多产生 8 个带 `tag` 的 Submit/Cancel 动作，超过容量返回错误，容器不会扩容。
+`ctp::strategy::Strategy` 提供 `on_tick`、`on_target`、`on_update`、`on_fill`（策略账本归因）、`on_market_state` 和 `on_result`。回调在 B 上顺序执行；实现必须只做有界 CPU 计算，不能进行网络/文件 I/O、休眠、等待或无界循环。每个 tick 最多产生 8 个带 `tag` 的 Submit/Cancel 动作，超过容量返回错误，容器不会扩容。
 
 `StrategyContext::can_trade` 同时要求显式执行权限、核心恢复完成、行情订阅就绪、回报/行情没有已知积压，以及行情 TradingDay 与交易日一致。发送前再次检查就绪、积压和故障。tick 的原始日期/时间及本机接收时间均保留；具体策略仍需按品种交易时段与时效规则判断信号，不能把刚收到的回调直接认定为实时行情。
 

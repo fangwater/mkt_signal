@@ -38,7 +38,6 @@ pub struct Feed {
     next_request: i32,
     progress: Instant,
     timeout: Duration,
-    wait_for_front: bool,
     dominant: Option<dominant::Lookup>,
     baseline: Vec<Subscription>,
     /// Bucket and sequence of the tick most recently returned by `poll`.
@@ -46,31 +45,19 @@ pub struct Feed {
     _flow: File,
 }
 impl Feed {
-    pub fn new(config: &Config, placement: &Placement) -> Result<Self> {
-        Self::create(config, placement, true, || {
+    /// `io` runs the dominant-contract lookup on the business thread's I/O loop.
+    pub fn new(
+        config: &Config,
+        placement: &Placement,
+        io: cn_futures_target::Spawner,
+    ) -> Result<Self> {
+        let create_native = || {
             placement.on_market_data_sdk(|| {
                 let native = Native::new(config, placement.market_data_callback()?)?;
                 native.start(config)?;
                 Ok(native)
             })
-        })
-    }
-    /// Independent IPC publisher: the SDK uses the standalone MD SDK domain.
-    pub fn standalone(config: &Config, placement: &Placement) -> Result<Self> {
-        Self::create(config, placement, false, || {
-            placement.on_sdk(|| {
-                let native = Native::new(config, placement.callback())?;
-                native.start(config)?;
-                Ok(native)
-            })
-        })
-    }
-    fn create(
-        config: &Config,
-        placement: &Placement,
-        wait_for_front: bool,
-        create_native: impl FnOnce() -> Result<Native>,
-    ) -> Result<Self> {
+        };
         config.validate()?;
         let flow = crate::runtime::lock_flow(&config.flow_directory)?;
         let user = super::native::credential(&config.user_id_env, 16)?;
@@ -79,12 +66,11 @@ impl Feed {
             .shfe_dominant_url
             .as_deref()
             .map(|url| {
-                placement.on_background(|| {
-                    dominant::Lookup::new(
-                        url,
-                        Duration::from_millis(config.reconnect_backoff_ms.max(15_000)),
-                    )
-                })
+                dominant::Lookup::new(
+                    url,
+                    Duration::from_millis(config.reconnect_backoff_ms.max(15_000)),
+                    io,
+                )
             })
             .transpose()?;
         let native = create_native()?;
@@ -97,7 +83,6 @@ impl Feed {
             next_request: 0,
             progress: Instant::now(),
             timeout: Duration::from_millis(config.response_timeout_ms),
-            wait_for_front,
             dominant,
             baseline: config.symbols.clone(),
             last_quote: None,
@@ -113,7 +98,7 @@ impl Feed {
         !self.native.events.is_empty()
     }
     pub(crate) fn waiting_for_front(&self) -> bool {
-        self.wait_for_front && !self.session.connected
+        !self.session.connected
     }
     /// Queued MD events, for latency statistics only.
     pub fn queued(&self) -> usize {

@@ -13,7 +13,6 @@ pub(super) struct Request {
     pub trading_day: Option<String>,
     pub signal_times: BTreeMap<String, i64>,
     pub strategies: BTreeMap<String, Targets>,
-    pub quotes: BTreeMap<String, Quote>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Pending {
@@ -37,7 +36,6 @@ struct Watermark {
     revision: i64,
     members: BTreeSet<String>,
     contracts: BTreeSet<String>,
-    external_demand_open: bool,
 }
 #[derive(Deserialize)]
 struct Receipt {
@@ -160,10 +158,6 @@ impl Client {
                 && watermark.strategy_group == self.group,
             "native Manager metadata identity mismatch"
         );
-        ensure!(
-            !watermark.external_demand_open,
-            "previous account execution demand is unsettled"
-        );
         let current: BTreeSet<_> = desired.positions.keys().cloned().collect();
         ensure!(
             current == watermark.members,
@@ -219,12 +213,6 @@ impl Client {
             trading_day,
             signal_times,
             strategies,
-            quotes: desired
-                .quotes
-                .iter()
-                .filter(|(market, _)| watermark.contracts.contains(*market))
-                .map(|(m, q)| (m.clone(), q.clone()))
-                .collect(),
         };
         self.outbox.pending = Some(Pending {
             trigger_us: desired.trigger_us,
@@ -232,7 +220,7 @@ impl Client {
             request,
         });
         // Store the exact request before dispatch: a timeout must retry identical
-        // content, including its CAS revision and internal reference prices.
+        // content, including its CAS revision.
         if let Err(error) = self.persist().await {
             self.outbox.pending = None;
             return Err(error);

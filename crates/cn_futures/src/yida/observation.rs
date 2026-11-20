@@ -50,7 +50,7 @@ impl ReceivedL1 {
     pub(crate) fn execution_quote<'a>(
         &'a self,
         trading_day: &'a str,
-    ) -> Option<crate::ctp::ctaker::Quote<'a>> {
+    ) -> Option<crate::ctp::exec::Quote<'a>> {
         let e = &self.event;
         if e.generation == 0
             || e.connected != 1
@@ -62,7 +62,7 @@ impl ReceivedL1 {
         {
             return None;
         }
-        Some(crate::ctp::ctaker::Quote {
+        Some(crate::ctp::exec::Quote {
             venue: Venue::parse(text(&e.exchange).ok()?).ok()?,
             symbol: text(&e.symbol).ok()?,
             trading_day,

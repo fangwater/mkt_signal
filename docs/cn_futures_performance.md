@@ -114,15 +114,8 @@ YIDA_SDK_DIR=/absolute/yida/include \
   cargo build --locked --release -p cn_futures \
   --features yida-sdk,latency-metrics --bench native_pipeline
 
-cargo build --locked --release -p persist_manager --features embedded --bin cn_order_export
-python3 crates/cn_futures/tests/native_pipeline_bench.py \
-  --sdk-dir /absolute/yida/include \
-  --binary /absolute/target/release/deps/native_pipeline-HASH \
-  --exporter /absolute/target/release/cn_order_export \
-  --output-dir /absolute/new-benchmark-directory \
-  --cycles 2000 --long-run-cycles 110000 --cpu 190
 ```
 
-CPU 编号应改为本机允许使用的核，输出目录必须尚不存在。微基准使用独立临时 RocksDB，并正常关闭和删除；完整链路脚本保留离线日志和导出以便核对。两者均不发送真实订单。
+CPU 编号应改为本机允许使用的核，输出目录必须尚不存在。微基准不写盘，均不发送真实订单；原完整链路脚本 `native_pipeline_bench.py` 已删除。
 
 本轮双 SDK 核心、共享契约和持久化单测分别为 110／17／78 项通过。覆盖 25 万次 deadline 完成即删除、21 万次 CTP 请求后迟到关联、身份作用域、规则重排与遗漏、原地更新失败不污染状态、终态先到冻结、批内事实去重／冲突、WAL 失败不推进状态、同批恢复屏障，以及多个异步意图在确认屏障后直接退出进程的恢复。易达 42 个逐场景重开 DB 的桥接场景、已有仓位保护场景及 CTP 桥接通过。Clippy `--no-deps -D warnings`、格式检查和 release 构建通过。

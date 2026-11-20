@@ -124,7 +124,6 @@ fn relay_preserves_producer_fields_replaces_full_state_and_pins_identity() {
     expected.as_object_mut().unwrap().remove("account_hash");
     expected["publisher_epoch"] = json!(u64::MAX.to_string());
     expected["sequence"] = json!("1");
-    expected["replaced_snapshots"] = json!("0");
     expected["l1_dropped"] = json!("0");
     hub.apply(&source, s).unwrap();
     assert_eq!(frame(&hub)["entry"], expected);
@@ -273,7 +272,7 @@ async fn ipc_listener_relays_common_state_without_sdk_or_database() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let source = source("ipc");
-            let publisher =
+            let mut publisher =
                 cn_futures_state::transport::StatePublisher::new(&source.position_namespace)
                     .unwrap();
             let hub = Hub::new(std::slice::from_ref(&source), 1000);
@@ -312,20 +311,20 @@ async fn strategy_positions_forward_only_the_session_to_the_pinned_manager_sourc
     let ledger = Router::new().route(
         "/manager/api/native/sources/manager-ctp/netting",
         get(|headers: HeaderMap| async move {
-            if headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) != Some("cn_cta_session=allowed") {
+            if headers.get(header::COOKIE).and_then(|v| v.to_str().ok())
+                != Some("cn_cta_session=allowed")
+            {
                 return Err(StatusCode::FORBIDDEN);
             }
             Ok(Json(json!({
                 "portfolio": {
                     "source_id": "manager-ctp",
-                    "strategy_groups": {"active":{"members":["alpha"],"held":false},"held":{"members":["beta"],"held":true}},
-                    "targets": {"alpha":{"SHFE:rb2701":3},"beta":{"SHFE:rb2701":99}},
-                    "positions": {
-                        "alpha":{"SHFE:rb2701":{"fifo":[{"lots":1,"price":3100},{"lots":1,"price":3110}]}},
-                        "beta":{"SHFE:rb2701":{"fifo":[{"lots":-2,"price":3120}]}}
-                    }
+                    "strategy_groups": {"active":{"members":["alpha","beta"]}},
+                    "targets": {"alpha":{"SHFE:rb2701":3},"beta":{"SHFE:rb2701":-2}},
+                    "positions": {}
                 },
-                "net_targets":{"SHFE:rb2701":{"target_lots":1,"attributed_lots":0}}
+                "net_targets":{"SHFE:rb2701":1},
+                "exec_ledger":{"SHFE:rb2701":{"alpha":2,"beta":-2}}
             })))
         }),
     );

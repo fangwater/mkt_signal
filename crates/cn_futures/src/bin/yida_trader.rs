@@ -9,6 +9,8 @@ fn main() {
     }
 }
 fn run() -> Result<()> {
+    // Drained when `run` returns, before the final error is printed.
+    let _log = async_log::init_default("info")?;
     let mut args = std::env::args().skip(1);
     let mut config = None;
     let mut connect = false;

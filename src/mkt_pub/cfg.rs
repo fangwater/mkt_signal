@@ -212,6 +212,9 @@ impl Config {
             TradingVenue::AsterFutures => 50,
             TradingVenue::AsterMargin => 100,
             TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => 200,
+            order_common::domestic_venues!() => {
+                unreachable!("crypto market-data publisher never serves domestic futures")
+            }
         }
     }
 
@@ -1173,6 +1176,9 @@ impl Config {
             TradingVenue::AsterFutures => Self::get_futures_symbols_related_to_aster_spot().await,
             //Aster现货（与 futures 关联）
             TradingVenue::AsterMargin => Self::get_spot_symbols_related_to_aster_futures().await,
+            order_common::domestic_venues!() => {
+                anyhow::bail!("domestic futures symbols come from the native counter catalogue")
+            }
         }
     }
 

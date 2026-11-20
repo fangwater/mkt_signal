@@ -94,7 +94,7 @@ CTP 按相关联的成功资金查询更新；易达未提供对应账户资金�
 
 柜台资金和持仓由 WebSocket 初始化与更新。已配置归因的账户每五秒读取策略明细。Manager 负责验证登录、账户和策略查看权限，响应不缓存。未配置来源返回 404。慢 WebSocket 客户端发送超时断开，队列溢出时重放所有源最新完整帧。
 
-唯一 WS 帧类型 `cn_futures_state`：`source_id`、展示 `label`／`account`、`adapter`、`namespace`、`stale_after_ms`、`entry`、`error`。`entry` 来自公共 Snapshot，CTP 行情可由 Viz 补充。账户摘要不发送，epoch／sequence／replaced_snapshots／l1_dropped 编成十进制字符串以保留 JS 整数精度。源不可用时 `entry=null` 或保留最后已知帧并附错误。
+唯一 WS 帧类型 `cn_futures_state`：`source_id`、展示 `label`／`account`、`adapter`、`namespace`、`stale_after_ms`、`entry`、`error`。`entry` 来自公共 Snapshot，CTP 行情可由 Viz 补充。账户摘要不发送，epoch／sequence／l1_dropped 编成十进制字符串以保留 JS 整数精度。源不可用时 `entry=null` 或保留最后已知帧并附错误。
 
 交易端 `position_ipc.account_snapshot_path` 和 Viz 同账户的 `account_snapshot_path`
 可指向同一个私有文件。退出时，交易后台线程把最后一份确认的账户观察写到同一

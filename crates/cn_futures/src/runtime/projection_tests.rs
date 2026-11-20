@@ -2,24 +2,13 @@ use super::*;
 use crate::{
     core::{SingleLoop, TradingCore},
     model::*,
+    persist::tests::{channel, displayed, uniform_orders, Records},
 };
-use persist_manager::cn_futures::{COLUMN_FAMILIES, EVENTS, ORDERS, TRADES};
+use std::sync::Arc;
+use std::time::Instant;
 
-fn fixture(label: &str) -> (std::path::PathBuf, Journal, TradingCore) {
-    let path = std::env::temp_dir().join(format!(
-        "cn-compact-{label}-{}-{}",
-        std::process::id(),
-        crate::persistence::now_us()
-    ));
-    let journal = Journal::start(
-        None,
-        64,
-        vec![],
-        &path.join("db"),
-        crate::persistence::store_identity("compact_fixture", &[b"synthetic"]),
-        false,
-    )
-    .unwrap();
+fn fixture() -> (PersistChannel, Records, TradingCore) {
+    let (journal, records) = channel(vec![]);
     let rule = Instrument {
         venue: Venue::Cffex,
         symbol: "IF2612".into(),
@@ -60,7 +49,7 @@ fn fixture(label: &str) -> (std::path::PathBuf, Journal, TradingCore) {
         trades: vec![],
     })
     .unwrap();
-    (path, journal, core)
+    (journal, records, core)
 }
 fn intent() -> Intent {
     Intent {
@@ -79,11 +68,12 @@ fn intent() -> Intent {
 #[test]
 fn unsent_ctp_dispatch_audit_identifies_the_blocking_check_and_target() {
     use crate::ctp::{
-        ctaker::Target,
+        exec::Target,
         strategy::{Action, ActionOutcome, CtpDispatchChecks},
     };
-    let (entry, mutation) = AuditPayload::StrategyResult(ActionOutcome::CtpDispatchBlocked {
-        action: Action::SubmitCtaker {
+    let (journal, records) = channel(vec![]);
+    let outcome = ActionOutcome::CtpDispatchBlocked {
+        action: Action::SubmitExec {
             tag: 11,
             intent: intent(),
             target: Arc::new(Target {
@@ -92,7 +82,7 @@ fn unsent_ctp_dispatch_audit_identifies_the_blocking_check_and_target() {
                 target_revision: 3,
                 trading_day: "20261119".into(),
                 expires_at_us: 456,
-                net_targets: Default::default(),
+                strategies: Default::default(),
             }),
         },
         checks: CtpDispatchChecks {
@@ -107,8 +97,9 @@ fn unsent_ctp_dispatch_audit_identifies_the_blocking_check_and_target() {
         },
         quote_received_us: 123,
         quote_generation: 2,
-    })
-    .materialize(NativeMutation::default());
+    };
+    journal.strategy_result(&outcome, true).unwrap();
+    let entry = displayed(&records).remove(0);
     assert_eq!(entry["type"], "ctp_strategy_dispatch_blocked");
     assert_eq!(entry["sent_to_sdk"], false);
     assert_eq!(entry["retryable"], true);
@@ -117,139 +108,37 @@ fn unsent_ctp_dispatch_audit_identifies_the_blocking_check_and_target() {
     assert_eq!(entry["action"]["batch_id"], "rb-test-batch");
     assert_eq!(entry["action"]["target_revision"], 3);
     assert_eq!(entry["quote_received_us"], 123);
-    assert!(mutation.orders.is_empty());
-    assert!(mutation.trades.is_empty());
-}
-
-fn rows<T: serde::de::DeserializeOwned>(store: &persist_manager::RocksDbStore, cf: &str) -> Vec<T> {
-    store
-        .scan(cf, None, false, None)
-        .unwrap()
-        .into_iter()
-        .map(|(_, v)| serde_json::from_slice(&v).unwrap())
-        .collect()
+    assert!(
+        uniform_orders(&records).is_empty(),
+        "a blocked action stores nothing"
+    );
 }
 
 #[test]
-fn deferred_trade_and_order_commit_together_and_keep_the_captured_rule() {
-    let (path, journal, mut core) = fixture("atomic-trade");
-    let prepared = core.prepare(intent(), Instant::now()).unwrap();
-    journal
-        .prepared_submit(core.trading_day(), &prepared)
-        .unwrap();
-    let fill = Fill {
-        identity: TradeIdentity {
-            venue: Venue::Cffex,
-            symbol: "IF2612".into(),
-            trading_day: "20261110".into(),
-            trade_id: "9007199254740997".into(),
-            side: Side::Buy,
-        },
-        order_ref: prepared.key.order_ref.clone(),
-        order_key: Some(prepared.key.clone()),
-        system_id: "9007199254740993".into(),
-        offset: Offset::Open,
-        lots: 1,
-        price: 4000.0000000000005,
-    };
-    core.on_fill(&fill).unwrap();
-    journal
-        .trade_for(
-            &core,
-            &fill,
-            Some(52.660000000000004),
-            Some(16230),
-            123,
-            true,
-            true,
-        )
-        .unwrap();
-    let mut revised = core.instrument(Venue::Cffex, "IF2612").unwrap().clone();
-    revised.price_tick = 0.5;
-    core.replace_instruments(vec![revised]).unwrap();
-    journal.finish().unwrap();
-    let store = persist_manager::RocksDbStore::open_read_only(
-        path.join("db").to_str().unwrap(),
-        COLUMN_FAMILIES,
-    )
-    .unwrap();
-    let orders: Vec<persist_common::cn_futures::NativeOrderRecord> = rows(&store, ORDERS);
-    let trades: Vec<persist_common::cn_futures::NativeTradeRecord> = rows(&store, TRADES);
-    assert_eq!(orders.len(), 1);
-    assert_eq!(trades.len(), 1);
-    assert_eq!(orders[0].order.filled, 1);
-    assert_eq!(orders[0].instrument.as_ref().unwrap().price_tick, 0.2);
-    assert_eq!(orders[0].submitted_intent, Some(prepared.intent));
-    assert_eq!(orders[0].evidence_seq, trades[0].evidence_seq);
-    let prepared_seq = orders[0].prepared_evidence_seq.unwrap();
-    assert!(prepared_seq < trades[0].evidence_seq);
-    let prepared_event: Value = serde_json::from_slice(
-        &store
-            .get(EVENTS, &prepared_seq.to_be_bytes())
-            .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        prepared_event["value"]["key"],
-        serde_json::to_value(&orders[0].identity.native).unwrap()
-    );
-    let normalized: Value = serde_json::from_slice(
-        &store
-            .get(EVENTS, &trades[0].evidence_seq.to_be_bytes())
-            .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        normalized["value"]["order_link"],
-        serde_json::to_value(&orders[0].identity).unwrap()
-    );
-    assert_eq!(trades[0].fill, fill);
-    assert_eq!(
-        trades[0].commission.unwrap().to_bits(),
-        52.660000000000004f64.to_bits()
-    );
-    assert_eq!(trades[0].commission_currency.as_deref(), Some("CNY"));
-    assert_eq!(trades[0].native_time, Some(16230));
-    assert_eq!(trades[0].received_us, 123);
-    drop(store);
-    std::fs::remove_dir_all(path).unwrap();
-}
-
-#[test]
-fn multiple_order_projections_preserve_one_evidence_record_and_producer_state() {
-    let (path, journal, mut core) = fixture("multi-order");
-    let a = core.prepare(intent(), Instant::now()).unwrap();
+fn ctp_orders_carry_the_cffex_venue_and_close_effect_into_the_uniform_order() {
+    let (journal, records, mut core) = fixture();
+    let mut close = intent();
+    close.offset = Offset::Open;
+    let a = core.prepare(close, Instant::now()).unwrap();
     let b = core.prepare(intent(), Instant::now()).unwrap();
-    journal.prepared_submit(core.trading_day(), &a).unwrap();
-    journal.prepared_submit(core.trading_day(), &b).unwrap();
-    let keys = [a.key.clone(), b.key.clone()];
-    journal.orders(&core, &keys, &keys).unwrap();
-    core.reject(&a.key).unwrap();
-    core.reject(&b.key).unwrap();
-    journal.finish().unwrap();
-    let store = persist_manager::RocksDbStore::open_read_only(
-        path.join("db").to_str().unwrap(),
-        COLUMN_FAMILIES,
-    )
-    .unwrap();
-    let orders: Vec<persist_common::cn_futures::NativeOrderRecord> = rows(&store, ORDERS);
-    let events: Vec<persist_manager::cn_futures::Evidence> = rows(&store, EVENTS);
-    assert_eq!(orders.len(), 2);
-    assert_eq!(orders[0].evidence_seq, orders[1].evidence_seq);
+    journal.prepared(core.trading_day(), &a, None).unwrap();
+    journal.prepared(core.trading_day(), &b, None).unwrap();
+    journal.orders(&core, &[a.key, b.key]).unwrap();
+    let orders = uniform_orders(&records);
+    assert_eq!(orders.len(), 2, "unchanged orders are recorded once");
     assert!(orders
         .iter()
-        .all(|o| o.order.status == OrderStatus::Pending && o.order.local_cash_held == 100.0));
+        .all(|r| r.venue == order_common::TradingVenue::CffexFutures.to_u8()));
+    assert_ne!(orders[0].client_order_id, orders[1].client_order_id);
     assert_eq!(
-        events
-            .iter()
-            .filter(|e| e.value["type"] == "order_projection")
-            .count(),
-        1
+        orders[0]
+            .extension
+            .as_ref()
+            .unwrap()
+            .client_order_text
+            .as_deref(),
+        Some("ctp:7:11/101")
     );
-    drop(store);
-    std::fs::remove_dir_all(path).unwrap();
 }
 
 struct Accepted;
@@ -263,7 +152,7 @@ impl Trader for Accepted {
 }
 #[test]
 fn inline_receipts_keep_the_existing_json_array_contract() {
-    let (path, journal, core) = fixture("receipt");
+    let (journal, _records, core) = fixture();
     let mut runtime = SingleLoop {
         core,
         trader: Accepted,
@@ -279,5 +168,4 @@ fn inline_receipts_keep_the_existing_json_array_contract() {
     assert_eq!(value["children"][0]["key"]["order_ref"], "101");
     assert_eq!(value["children"][0]["outcome"], "submitted_locally");
     journal.finish().unwrap();
-    std::fs::remove_dir_all(path).unwrap();
 }

@@ -476,6 +476,9 @@ impl RateFetcher {
                 Exchange::Hyperliquid
             }
             TradingVenue::AsterMargin | TradingVenue::AsterFutures => Exchange::Aster,
+            order_common::domestic_venues!() => {
+                unreachable!("domestic futures have no crypto funding or lending rates")
+            }
         }
     }
 

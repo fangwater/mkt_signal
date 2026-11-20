@@ -6,10 +6,10 @@
 `/home/ubuntu/ctp_chuangyuan01`。使用上期技术官方 CTP 6.7.11，
 `ctp-trader` 在同一个进程内接入 TraderApi 和 MdApi。
 
-创元实盘以 `--connect --execute` 启动。环境配置中的 `[ctaker]` 仅允许
+创元实盘以 `--connect --execute` 启动。环境配置中的 `[exec]` 仅允许
 `SHFE:rb2701`，执行端订阅 Manager gRPC。`confirm_settlement = true` 使 Trader
 在登录后查询柜台确认状态，并在当日尚未确认时调用 CTP SDK 的结算确认接口。
-移除 `[ctaker]` 并关闭结算确认后，环境脚本以 `--read-only` 启动账户查询。
+移除 `[exec]` 并关闭结算确认后，环境脚本以 `--read-only` 启动账户查询。
 
 ## 合约范围
 
@@ -37,6 +37,25 @@ Rust 后台线程解析响应，验证生效日、来源和合约后，将名单
 手数的版本。北京时间 10:04 核验 SDK 已确认结算，柜台完成 0 持仓、0 委托对账。
 Manager 的螺纹净目标为 0 手，执行订阅已连接。
 
+## Exec 策略账本与独立持久化（待部署）
+
+`exec-strategy-ledger` 分支把策略归因从 Manager 移回 Exec，持久化拆成独立
+`persist_manager` 进程，与 crypto 一致（见[持久化说明](cn_order_persistence.md)
+和 [Strategy ledger](native_exec.md#strategy-ledger)）。上线需同时满足：
+
+- 环境内新增 `persist_manager` 服务，与 `ctp-trader` 同目录运行，写 `data/persist_manager`；
+  两者设置相同的 `IPC_NAMESPACE`。`persist_manager` 先于 `ctp-trader` 启动。
+- Manager 与信号发布端同版本切换：Manager 计划改为各策略完整目标，信号批次不再带 BBO。
+- 切换时删除旧库（`data/persist_manager`）与 Manager 的旧同步副本，全部按新格式部署；新库只有
+  `cn_uniform_orders` / `cn_trade_updates` 两张二进制表。Exec 账本为空，账户持仓整体是 `__unallocated__`。
+- 创元账户的旧持仓归属已知策略：`ctp-trader` 对账完成后、Manager 开始下发目标前，用
+  `assign_position` 命令按策略和成本价逐合约记入（见 [Strategy ledger](native_exec.md#strategy-ledger)），
+  命令拒绝超出未归属余量的手数。其余未指定的持仓留在 `__unallocated__`，由内部对冲按 mid 转给目标策略；
+  没有策略目标的合约会被 Exec 平掉。
+- trader 日志（订单、成交、exec 决策、账本事件）改由 `persist_manager` 输出，环境脚本须一起拉起并收集它的日志；`ctp-trader` 进程内只剩业务线程与 SDK 线程。
+- 交易 TOML 的 `idle_sleep_us` 改为 `poll`：独占隔离核用 `{ mode = "busy" }`，共享主机用 `{ mode = "sleep", idle_us = 64000 }`。
+- 部署前在 `sh_dev` 运行 `cn_futures` 的 exec / algo / persist / runtime 测试；开发机只编译。
+
 ## 操作入口
 
 ```bash
@@ -57,7 +76,7 @@ Ubuntu 用户 systemd 服务为 `ctp_chuangyuan01-trader.service`，已启用开
 user linger。组合进程在前置离线时等待 SDK 重连。资金查询超时、连续三次重试仍未
 就绪，柜台连接或控制请求响应超时，或行情登录成功但前置尚未返回有效交易日时，进程排空审计后以状态码 75
 结束，systemd 在 60 秒后冷启动。等待行情交易日期间，Viz 显示「等待行情交易日」。其他退出
-保持 `Restart=no`。环境脚本根据 `[ctaker]` 选择运行模式，实盘配置要求明确的
+保持 `Restart=no`。环境脚本根据 `[exec]` 选择运行模式，实盘配置要求明确的
 合约范围和 Manager gRPC 订阅。
 
 ## 文件与资源
@@ -66,7 +85,7 @@ user linger。组合进程在前置离线时等待 SDK 重连。资金查询超�
 - `config/trade.toml` / `config/md.toml` 保存环境专属配置；凭据从 `env.sh` 读取。
 - 官方库位于 `sdk/6.7.11/`；主程序为 `bin/ctp-trader` 和独立诊断工具 `bin/ctp-md`。
 - Trader/Md 分别使用 `data/trade-flow` / `data/md-flow`，主库为 `data/persist_manager`。
-- 交易审计保存在 RocksDB `cn_trading_events`。停机前仅将 `logs/trader.log` 归档到 `data/stops/`。2026-11-18 核验新版只读对账后，清理旧 `data/events.jsonl` 和 12 份停机副本，释放约 34.5 GB。RocksDB 使用原库。
+- 交易记录保存在 RocksDB `cn_uniform_orders` / `cn_trade_updates`（只有这两张二进制表）；原始回报只在 `logs/trader.log`。停机前仅将 `logs/trader.log` 归档到 `data/stops/`。2026-11-18 核验新版只读对账后，清理旧 `data/events.jsonl` 和 12 份停机副本，释放约 34.5 GB。RocksDB 使用原库。
 - 账户资金和持仓观察使用独立 IPC namespace `ctp_chuangyuan01`，接入现有 `yida_paper01` 的 8811 Viz；CTP／易达独立切换，不合并资金或持仓。
 
 按该主机实际拓扑配置 NUMA 0、业务 CPU 0、Trader SDK CPU 1、

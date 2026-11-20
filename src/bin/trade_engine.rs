@@ -334,10 +334,8 @@ async fn check_binance_fee_burn(
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    if std::env::var("RUST_LOG").is_err() {
-        std::env::set_var("RUST_LOG", "debug");
-    }
-    env_logger::init();
+    // Formatting stays on the caller; stderr writes run on the async-log thread.
+    let _log = async_log::init_default("debug")?;
 
     let args = Args::parse();
     maybe_pin_current_thread(args.core, "TRADE_ENGINE_CORE")?;

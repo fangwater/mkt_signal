@@ -262,7 +262,7 @@ impl Output {
                     let encode = |message: OutputMessage| -> Result<String> {
                         match message {
                             OutputMessage::Status(mut value) => {
-                                crate::runtime::redact(&mut value, &secrets);
+                                crate::persist::redact(&mut value, &secrets);
                                 Ok(serde_json::to_string(&value)?)
                             }
                             OutputMessage::Tick(record) => {
@@ -436,13 +436,13 @@ pub fn run(config: Config, duration: Option<Duration>, stop: &AtomicBool) -> Res
                             if session.login(&event)? {
                                 progress = Instant::now();
                                 transport.subscribe()?;
-                                output.send(json!({"type":"login_ok","received_us":received_us,"trading_day":super::super::text(&event.trading_day)?,"generation":session.generation}))?;
+                                output.send(json!({"type":"login_ok","received_us":received_us,"trading_day":super::super::text_ref(&event.trading_day)?,"generation":session.generation}))?;
                             }
                         }
                         21 => {
                             session.subscribed(&event)?;
                             progress = Instant::now();
-                            output.send(json!({"type":"subscribed","received_us":received_us,"symbol":super::super::text(&event.symbol)?,"ready":session.ready(),"generation":session.generation}))?;
+                            output.send(json!({"type":"subscribed","received_us":received_us,"symbol":super::super::text_ref(&event.symbol)?,"ready":session.ready(),"generation":session.generation}))?;
                         }
                         22 => {
                             let venue = session.tick_venue(&event)?;

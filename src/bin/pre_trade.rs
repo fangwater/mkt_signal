@@ -625,8 +625,8 @@ async fn cancel_all_orders_on_startup(
 }
 
 fn main() -> Result<()> {
-    let log_env = env_logger::Env::default().default_filter_or("info");
-    env_logger::Builder::from_env(log_env).init();
+    // Formatting stays on the caller; stderr writes run on the async-log thread.
+    let _log = async_log::init_default("info")?;
 
     let startup_context = fr_startup_context_from_cwd();
     let startup_stable = Arc::new(AtomicBool::new(false));
@@ -1484,9 +1484,14 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             }
 
             // 8. 运行主循环
-            let mut pre_trade = PreTrade::new()
-                .with_param_refresh(param_refresh)
-                .with_snapshot_query(snapshot_query);
+            let mut pre_trade = PreTrade::new().with_snapshot_query(snapshot_query);
+            // HFT keeps the fixed synchronous refresh window (open signals may be
+            // dropped); exec CTA refreshes asynchronously and never drops targets.
+            if exec_pre_trade {
+                param_refresh.spawn_async();
+            } else {
+                pre_trade = pre_trade.with_param_refresh(param_refresh);
+            }
             if let Some(channel) = order_queue_position {
                 pre_trade = pre_trade.with_order_queue_position(channel);
             }

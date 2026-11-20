@@ -1,4 +1,6 @@
-use crate::{service_name, Snapshot, BUFFER, PAYLOAD};
+//! Exact-length bincode snapshots over an iceoryx2 `[u8]` service. The
+//! publisher copies only the encoded bytes; no fixed payload is zero-filled.
+use crate::{service_name, Snapshot, BUFFER, MAX_SNAPSHOT_BYTES};
 use anyhow::{ensure, Context, Result};
 use bincode::Options;
 use iceoryx2::{
@@ -7,67 +9,77 @@ use iceoryx2::{
     service::ipc,
 };
 
+/// A handful of contracts fits; growth happens only for unusually large books.
+const INITIAL_SNAPSHOT_BYTES: usize = 16 * 1024;
+
+fn codec() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .with_limit(MAX_SNAPSHOT_BYTES as u64)
+}
+
+fn open(
+    node: &Node<ipc::Service>,
+    name: &str,
+) -> Result<iceoryx2::service::port_factory::publish_subscribe::PortFactory<ipc::Service, [u8], ()>>
+{
+    Ok(node
+        .service_builder(&ServiceName::new(name)?)
+        .publish_subscribe::<[u8]>()
+        .max_publishers(1)
+        .max_subscribers(16)
+        .max_nodes(32)
+        .history_size(1)
+        .subscriber_max_buffer_size(BUFFER)
+        .enable_safe_overflow(true)
+        .open_or_create()?)
+}
+
 pub struct StatePublisher {
     _node: Node<ipc::Service>,
-    publisher: Publisher<ipc::Service, [u8; PAYLOAD], ()>,
+    publisher: Publisher<ipc::Service, [u8], ()>,
+    /// Reused encode buffer: steady-state publishing does not allocate.
+    encoded: Vec<u8>,
 }
 impl StatePublisher {
     pub fn new(namespace: &str) -> Result<Self> {
         let node = NodeBuilder::new().create::<ipc::Service>()?;
-        let name = service_name(namespace)?;
-        let service = node
-            .service_builder(&ServiceName::new(&name)?)
-            .publish_subscribe::<[u8; PAYLOAD]>()
-            .max_publishers(1)
-            .max_subscribers(16)
-            .max_nodes(32)
-            .history_size(1)
-            .subscriber_max_buffer_size(BUFFER)
-            .enable_safe_overflow(true)
-            .open_or_create()?;
-        let publisher = service.publisher_builder().create()?;
+        let publisher = open(&node, &service_name(namespace)?)?
+            .publisher_builder()
+            .initial_max_slice_len(INITIAL_SNAPSHOT_BYTES)
+            .allocation_strategy(AllocationStrategy::PowerOfTwo)
+            .max_loaned_samples(1)
+            .create()?;
         Ok(Self {
             _node: node,
             publisher,
+            encoded: Vec::with_capacity(INITIAL_SNAPSHOT_BYTES),
         })
     }
-    pub fn publish(&self, snapshot: &Snapshot) -> Result<()> {
-        snapshot.validate()?;
-        let encoded = bincode::DefaultOptions::new()
-            .with_fixint_encoding()
-            .with_limit((PAYLOAD - 4) as u64)
-            .serialize(snapshot)
+    /// Validation (which allocates for duplicate checks) runs in `decode` on the
+    /// subscriber; the business loop only encodes and copies.
+    pub fn publish(&mut self, snapshot: &Snapshot) -> Result<()> {
+        self.encoded.clear();
+        codec()
+            .serialize_into(&mut self.encoded, snapshot)
             .context("encode native positions")?;
-        ensure!(
-            encoded.len() + 4 <= PAYLOAD,
-            "native position payload exceeds IPC capacity"
-        );
-        let mut sample = self.publisher.loan_uninit()?;
-        // Initialize the whole fixed payload: no uninitialized tail crosses IPC.
-        let slot = sample.payload_mut();
-        unsafe {
-            std::ptr::write_bytes(slot.as_mut_ptr().cast::<u8>(), 0, PAYLOAD);
-        }
-        let bytes = unsafe { &mut *slot.as_mut_ptr() };
-        bytes[..4].copy_from_slice(&(encoded.len() as u32).to_le_bytes());
-        bytes[4..4 + encoded.len()].copy_from_slice(&encoded);
-        unsafe { sample.assume_init() }.send()?;
+        ensure!(!self.encoded.is_empty(), "empty native position frame");
+        let sample = self.publisher.loan_slice_uninit(self.encoded.len())?;
+        sample.write_from_slice(&self.encoded).send()?;
         Ok(())
     }
 }
 pub struct StateSubscriber {
     _node: Node<ipc::Service>,
-    subscriber: Subscriber<ipc::Service, [u8; PAYLOAD], ()>,
+    subscriber: Subscriber<ipc::Service, [u8], ()>,
 }
 impl StateSubscriber {
     pub fn open(namespace: &str) -> Result<Self> {
         let node = NodeBuilder::new().create::<ipc::Service>()?;
-        let name = service_name(namespace)?;
-        let service = node
-            .service_builder(&ServiceName::new(&name)?)
-            .publish_subscribe::<[u8; PAYLOAD]>()
-            .open()?;
-        let subscriber = service.subscriber_builder().buffer_size(BUFFER).create()?;
+        let subscriber = open(&node, &service_name(namespace)?)?
+            .subscriber_builder()
+            .buffer_size(BUFFER)
+            .create()?;
         Ok(Self {
             _node: node,
             subscriber,
@@ -85,17 +97,9 @@ impl StateSubscriber {
     }
 }
 pub fn decode(bytes: &[u8]) -> Result<Snapshot> {
-    ensure!(bytes.len() >= 4, "short native state frame");
-    let len = u32::from_le_bytes(bytes[..4].try_into()?) as usize;
-    ensure!(
-        len > 0 && len <= PAYLOAD - 4 && len <= bytes.len() - 4,
-        "invalid native state frame length"
-    );
-    let snapshot: Snapshot = bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_limit((PAYLOAD - 4) as u64)
+    let snapshot: Snapshot = codec()
         .reject_trailing_bytes()
-        .deserialize(&bytes[4..4 + len])
+        .deserialize(bytes)
         .context("decode native positions")?;
     snapshot.validate()?;
     Ok(snapshot)

@@ -4,11 +4,7 @@ use anyhow::{ensure, Context, Result};
 use axum::http::{header, HeaderMap, StatusCode};
 use cn_futures_state::{Adapter, InstrumentMark, PositionRow, MAX_POSITIONS};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 const SESSION: &str = "cn_cta_session=";
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
@@ -282,75 +278,37 @@ struct StrategyPosition {
 #[derive(Deserialize)]
 struct Ledger {
     portfolio: Portfolio,
-    net_targets: BTreeMap<String, NetTarget>,
+    net_targets: BTreeMap<String, i64>,
+    /// Exec-owned live strategy attribution; absent rows hold zero lots.
+    exec_ledger: BTreeMap<String, BTreeMap<String, i64>>,
 }
 
 #[derive(Deserialize)]
 struct Portfolio {
     source_id: String,
-    strategy_groups: BTreeMap<String, StrategyGroup>,
     targets: BTreeMap<String, BTreeMap<String, i64>>,
-    positions: BTreeMap<String, BTreeMap<String, Position>>,
-}
-
-#[derive(Deserialize)]
-struct StrategyGroup {
-    held: bool,
-    members: BTreeSet<String>,
-}
-
-#[derive(Deserialize)]
-struct Position {
-    fifo: Vec<Lot>,
-}
-
-#[derive(Deserialize)]
-struct Lot {
-    lots: i64,
-}
-
-#[derive(Deserialize)]
-struct NetTarget {
-    target_lots: i64,
-    attributed_lots: i64,
 }
 
 impl Ledger {
     fn project(self) -> Result<BTreeMap<String, ContractPositions>> {
-        let held = self
-            .portfolio
-            .strategy_groups
-            .values()
-            .filter(|group| group.held)
-            .flat_map(|group| &group.members)
-            .collect::<BTreeSet<_>>();
         self.net_targets
             .into_iter()
             .map(|(market, net)| {
+                let attributed = self.exec_ledger.get(&market);
                 let strategies = self
                     .portfolio
                     .targets
                     .iter()
                     .map(|(name, targets)| {
-                        let position = self
-                            .portfolio
-                            .positions
-                            .get(name)
-                            .and_then(|positions| positions.get(&market))
-                            .context("missing attributed position")?;
-                        let attributed_lots = position.fifo.iter().try_fold(0i64, |sum, lot| {
-                            sum.checked_add(lot.lots)
-                                .context("attributed lots overflow")
-                        })?;
-                        let target_lots = if held.contains(name) {
-                            attributed_lots
-                        } else {
-                            *targets.get(&market).context("missing strategy target")?
-                        };
                         Ok(StrategyPosition {
                             name: name.clone(),
-                            target_lots,
-                            attributed_lots,
+                            target_lots: *targets
+                                .get(&market)
+                                .context("missing strategy target")?,
+                            attributed_lots: attributed
+                                .and_then(|row| row.get(name))
+                                .copied()
+                                .unwrap_or(0),
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -368,8 +326,8 @@ impl Ledger {
                             ))
                         })?;
                 ensure!(
-                    (target_lots, attributed_lots) == (net.target_lots, net.attributed_lots),
-                    "strategy totals do not match the Manager ledger"
+                    target_lots == net,
+                    "strategy totals do not match the Manager net target"
                 );
                 Ok((
                     market,

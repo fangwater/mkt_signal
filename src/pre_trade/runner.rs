@@ -89,6 +89,35 @@ impl ParamRefreshConfig {
             hedge_venue,
         }
     }
+
+    /// Exec (CTA) mode: CTA is insensitive to parameter refresh latency and its
+    /// targets never pass through the open-signal drop, so risk parameters are
+    /// reloaded by a local task on the reactor thread instead of a synchronous
+    /// maintenance round. The loader applies every value after its last await.
+    pub fn spawn_async(self) {
+        tokio::task::spawn_local(async move {
+            let mut interval = tokio::time::interval_at(
+                tokio::time::Instant::now() + PARAM_REFRESH_INTERVAL,
+                PARAM_REFRESH_INTERVAL,
+            );
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                match PreTradeParamsLoader::instance()
+                    .load_from_redis(
+                        &self.redis,
+                        self.env_name.as_deref(),
+                        self.open_venue,
+                        self.hedge_venue,
+                    )
+                    .await
+                {
+                    Ok(()) => debug!("exec risk parameters asynchronous refresh succeeded"),
+                    Err(err) => warn!("exec risk parameters asynchronous refresh failed: {err:#}"),
+                }
+            }
+        });
+    }
 }
 
 #[derive(Clone)]

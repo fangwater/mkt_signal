@@ -20,7 +20,16 @@ fn target(revision: i64, decision_us: u64) -> Target {
         target_revision: revision,
         trading_day: "20261118".into(),
         expires_at_us: decision_us + 5_000_000,
-        net_targets: BTreeMap::from([("SHFE:zn2701".into(), 0), ("SHFE:zn2702".into(), 1)]),
+        strategies: BTreeMap::from([
+            (
+                "alpha".into(),
+                BTreeMap::from([("SHFE:zn2701".into(), 0), ("SHFE:zn2702".into(), 2)]),
+            ),
+            (
+                "beta".into(),
+                BTreeMap::from([("SHFE:zn2701".into(), 0), ("SHFE:zn2702".into(), -1)]),
+            ),
+        ]),
     }
 }
 
@@ -38,27 +47,85 @@ fn ipc() -> (tempfile::TempDir, Config) {
     (private, config)
 }
 
+/// The Exec side: one thread owns the IoLoop and Ingress, driving I/O and
+/// polling admission in its loop exactly like the business thread.
+struct Owner {
+    stop: crossbeam_channel::Sender<()>,
+    polling: Arc<std::sync::atomic::AtomicBool>,
+    admitted: Arc<std::sync::Mutex<Vec<Target>>>,
+    thread: std::thread::JoinHandle<()>,
+}
+type Policy = Box<dyn FnMut(&Target, usize) -> anyhow::Result<()> + Send>;
+fn owner(
+    cfg: Config,
+    reader: Option<manager::PlanReader>,
+    polling: bool,
+    mut policy: Policy,
+) -> Owner {
+    let (stop, stopped) = crossbeam_channel::bounded::<()>(1);
+    let (ready, started) = crossbeam_channel::bounded::<()>(1);
+    let polling = Arc::new(std::sync::atomic::AtomicBool::new(polling));
+    let admitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (poll_flag, accepted) = (polling.clone(), admitted.clone());
+    let thread = std::thread::spawn(move || {
+        let mut io = IoLoop::new(|| {}).unwrap();
+        let ingress = Ingress::start_with_reader(&cfg, reader, &io).unwrap();
+        ready.send(()).unwrap();
+        let mut attempts = 0;
+        while stopped.try_recv().is_err() {
+            io.drive(Instant::now());
+            if poll_flag.load(Ordering::Acquire) {
+                ingress.poll(|target| {
+                    attempts += 1;
+                    let result = policy(&target, attempts);
+                    if result.is_ok() {
+                        accepted.lock().unwrap().push(target);
+                    }
+                    result
+                });
+            }
+            std::thread::yield_now();
+        }
+    });
+    started.recv().unwrap();
+    Owner {
+        stop,
+        polling,
+        admitted,
+        thread,
+    }
+}
+impl Owner {
+    fn admitted(&self) -> Vec<Target> {
+        self.admitted.lock().unwrap().clone()
+    }
+    fn finish(self) -> Vec<Target> {
+        self.stop.send(()).unwrap();
+        self.thread.join().expect("owner loop panicked");
+        self.admitted.lock().unwrap().clone()
+    }
+}
+
 #[tokio::test]
 async fn one_reused_local_stream_delivers_complete_targets_to_the_owner_loop() {
     let (_private, cfg) = ipc();
-    let ingress = Ingress::start(&cfg).unwrap();
-    let mut client = Client::connect_ipc(cfg.ipc_socket.unwrap()).await.unwrap();
-    let (stop, stopped) = crossbeam_channel::bounded::<()>(1);
-    let owner = std::thread::spawn(move || {
-        let mut admitted = 0;
-        while stopped.try_recv().is_err() {
-            if !ingress.poll(|target| {
-                admitted += 1;
-                assert_eq!(target.target_revision, admitted);
-                assert_eq!(target.net_targets["SHFE:zn2701"], 0);
-                assert_eq!(target.net_targets["SHFE:zn2702"], 1);
-                Ok(())
-            }) {
-                std::thread::yield_now();
-            }
-        }
-        admitted
-    });
+    let socket = cfg.ipc_socket.clone().unwrap();
+    let owner = owner(
+        cfg,
+        None,
+        true,
+        Box::new(|target, n| {
+            assert_eq!(target.target_revision, n as i64);
+            assert_eq!(target.net("SHFE:zn2701"), 0);
+            assert_eq!(target.net("SHFE:zn2702"), 1);
+            assert_eq!(
+                target.strategy_targets("SHFE:zn2702"),
+                vec![("alpha".to_string(), 2), ("beta".to_string(), -1)]
+            );
+            Ok(())
+        }),
+    );
+    let mut client = Client::connect_ipc(socket).await.unwrap();
     let mut micros = Vec::new();
     for revision in 1..=128 {
         let decision = now_us();
@@ -82,22 +149,28 @@ async fn one_reused_local_stream_delivers_complete_targets_to_the_owner_loop() {
         client.send(wrong, decision).await.unwrap().admission,
         Admission::Rejected as i32
     );
-    stop.send(()).unwrap();
-    assert_eq!(owner.join().unwrap(), 128);
+    assert_eq!(owner.finish().len(), 128);
 }
 
 #[tokio::test]
 async fn an_unpolled_request_times_out_and_never_subsequently_reaches_admission() {
     let (_private, cfg) = ipc();
-    let ingress = Ingress::start(&cfg).unwrap();
-    let mut client = Client::connect_ipc(cfg.ipc_socket.unwrap()).await.unwrap();
+    let socket = cfg.ipc_socket.clone().unwrap();
+    let owner = owner(
+        cfg,
+        None,
+        false,
+        Box::new(|_, _| panic!("timed-out target reached admission")),
+    );
+    let mut client = Client::connect_ipc(socket).await.unwrap();
     let decision = now_us();
     let result = client.send(target(1, decision), decision).await.unwrap();
     assert_eq!(result.admission, Admission::Busy as i32);
-    assert!(ingress.poll(|_| panic!("timed-out target reached admission")));
+    owner.polling.store(true, Ordering::Release);
+    sleep(Duration::from_millis(20)).await;
     let result = client.send(target(2, decision), 0).await.unwrap();
     assert_eq!(result.admission, Admission::Rejected as i32);
-    assert!(!ingress.poll(|_| panic!("target from the previous runtime reached admission")));
+    assert!(owner.finish().is_empty());
 }
 
 const PLAN_TOKEN: &str = "transport-test-token-for-account-a";
@@ -143,7 +216,7 @@ impl ManagerPlans for Arc<MockManager> {
                 let target = plans.borrow_and_update().clone();
                 let (status, batch_id, target_revision) = match &target {
                     Some(target) => (
-                        if observation { PlanStatus::NoExternalDemand } else { PlanStatus::Ready },
+                        if observation { PlanStatus::ObserveOnly } else { PlanStatus::Ready },
                         target.batch_id.clone(),
                         target.target_revision,
                     ),
@@ -169,7 +242,8 @@ async fn wait_for(mut ready: impl FnMut() -> bool) {
 
 async fn mock_manager(
     observation: bool,
-) -> (Arc<MockManager>, Ingress, tokio::task::JoinHandle<()>) {
+    policy: Policy,
+) -> (Arc<MockManager>, Owner, tokio::task::JoinHandle<()>) {
     let manager = Arc::new(MockManager {
         plan: watch::channel(None).0,
         subscriptions: AtomicUsize::new(0),
@@ -196,69 +270,73 @@ async fn mock_manager(
     };
     let reader =
         manager::PlanReader::new(&settings, &cfg.source_id, PLAN_TOKEN, observation).unwrap();
-    let ingress = Ingress::start_with_reader(&cfg, Some(reader)).unwrap();
-    (manager, ingress, server)
+    (manager, owner(cfg, Some(reader), true, policy), server)
 }
 
 #[tokio::test]
 async fn manager_stream_delivers_changes_and_retries_only_until_admitted() {
-    let (manager, ingress, server) = mock_manager(false).await;
+    let (manager, owner, server) = mock_manager(
+        false,
+        Box::new(|target, attempt| {
+            assert_eq!(
+                target.target_revision, 2,
+                "only the live plan reaches admission"
+            );
+            if attempt == 1 {
+                anyhow::bail!("temporary owner-loop recovery")
+            }
+            Ok(())
+        }),
+    )
+    .await;
+    let decision = now_us();
+    let current = target(2, decision);
     let subscriptions = || manager.subscriptions.load(Ordering::Acquire);
     wait_for(|| subscriptions() == 1).await;
-    assert!(!ingress.poll(|_| panic!("empty subscription produced a target")));
-    let decision = now_us();
     let mut expired = target(1, decision).into_wire(decision);
     expired.expires_at_us = decision;
     manager.plan.send_replace(Some(expired));
     sleep(Duration::from_millis(40)).await;
-    assert!(!ingress.poll(|_| panic!("expired Manager plan reached the owner loop")));
+    assert!(owner.admitted().is_empty());
 
-    let decision = now_us();
-    let current = target(2, decision);
     let plan = current.clone().into_wire(decision);
     let started = Instant::now();
     manager.plan.send_replace(Some(plan.clone()));
-    wait_for(|| {
-        ingress.poll(|first| {
-            assert_eq!(first, current);
-            anyhow::bail!("temporary owner-loop recovery")
-        })
-    })
-    .await;
+    wait_for(|| owner.admitted().len() == 1).await;
     println!(
         "Manager notification to Exec loop in {:?}",
         started.elapsed()
     );
-    wait_for(|| {
-        ingress.poll(|retry| {
-            assert_eq!(retry, current);
-            Ok(())
-        })
-    })
-    .await;
     manager.plan.send_replace(Some(plan));
     sleep(Duration::from_millis(80)).await;
-    assert!(!ingress.poll(|_| panic!("an admitted Manager plan was queued again")));
     assert_eq!(subscriptions(), 1);
+    assert_eq!(
+        owner.finish(),
+        vec![current],
+        "an admitted plan was queued again"
+    );
     server.abort();
 }
 
 #[tokio::test]
 async fn read_only_subscription_observes_existing_targets_without_an_execution_lease() {
-    let (manager, ingress, server) = mock_manager(true).await;
     let mut archived = target(1, 1);
     archived.expires_at_us = 0;
     archived.trading_day.clear();
+    let expected = archived.clone();
+    let (manager, owner, server) = mock_manager(
+        true,
+        Box::new(move |target, _| {
+            assert_eq!(*target, expected);
+            Ok(())
+        }),
+    )
+    .await;
     let message = archived.clone().into_wire(1);
     assert!(Target::try_from(message.clone()).is_err());
     manager.plan.send_replace(Some(message));
-    wait_for(|| {
-        ingress.poll(|target| {
-            assert_eq!(target, archived);
-            Ok(())
-        })
-    })
-    .await;
+    wait_for(|| owner.admitted().len() == 1).await;
+    owner.finish();
     server.abort();
 }
 
@@ -267,14 +345,14 @@ fn blocked_and_observational_statuses_cannot_carry_executable_targets() {
     let decision = now_us();
     let target = target(2, decision).into_wire(decision);
     let mut update = PlanUpdate {
-        status: PlanStatus::AccountNotReady.into(),
+        status: PlanStatus::LeaseExpired.into(),
         batch_id: target.batch_id.clone(),
         target_revision: target.target_revision,
         target: None,
     };
     assert_eq!(
         manager::update_status(&update, false).unwrap(),
-        PlanStatus::AccountNotReady
+        PlanStatus::LeaseExpired
     );
     update.target = Some(target);
     assert!(manager::update_status(&update, false).is_err());
@@ -283,4 +361,24 @@ fn blocked_and_observational_statuses_cannot_carry_executable_targets() {
     assert!(manager::update_status(&update, true).is_err());
     update.status = PlanStatus::Unspecified.into();
     assert!(manager::update_status(&update, false).is_err());
+}
+
+#[test]
+fn strategy_vectors_must_be_complete_and_identical() {
+    let mut incomplete = target(1, now_us());
+    incomplete
+        .strategies
+        .get_mut("beta")
+        .unwrap()
+        .remove("SHFE:zn2701");
+    assert!(Target::try_from(incomplete.into_wire(now_us())).is_err());
+    let mut reserved = target(1, now_us());
+    let row = reserved.strategies.remove("beta").unwrap();
+    reserved.strategies.insert(ledger::UNALLOCATED.into(), row);
+    assert!(Target::try_from(reserved.into_wire(now_us())).is_err());
+    let round_trip = target(1, now_us());
+    assert_eq!(
+        Target::try_from(round_trip.clone().into_wire(now_us())).unwrap(),
+        round_trip
+    );
 }

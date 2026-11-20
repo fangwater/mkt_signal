@@ -222,11 +222,11 @@ impl TickRecord {
             received_us: self.received_us,
             connection_generation: self.connection_generation,
             venue: self.venue,
-            symbol: super::text(&self.symbol)?,
-            exchange_reported: super::text(&self.exchange)?,
-            trading_day: super::text(&self.trading_day)?,
-            action_day: super::text(&self.action_day)?,
-            update_time: super::text(&self.update_time)?,
+            symbol: super::text_ref(&self.symbol)?.to_owned(),
+            exchange_reported: super::text_ref(&self.exchange)?.to_owned(),
+            trading_day: super::text_ref(&self.trading_day)?.to_owned(),
+            action_day: super::text_ref(&self.action_day)?.to_owned(),
+            update_time: super::text_ref(&self.update_time)?.to_owned(),
             update_millisec: self.millisec,
             last_price: value(self.last_price),
             turnover: value(self.turnover),
@@ -368,7 +368,7 @@ impl Session {
             "MD subscription rejected: {}",
             event.error
         );
-        let symbol = super::text(&event.symbol)?;
+        let symbol = super::text_ref(&event.symbol)?.to_owned();
         ensure!(
             self.allowed.contains_key(&symbol),
             "unexpected MD subscription response"

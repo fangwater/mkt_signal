@@ -502,7 +502,7 @@ impl YidaTrader {
                     Instant::now()
                         .checked_add(self.response_timeout)
                         .context("native response deadline overflow")?,
-                    Some(o.key.clone())
+                    Some(o.key)
                 )
                 .is_ok(),
             "duplicate pending native cancellation identity"

@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+log = "0.4"
 anyhow.workspace = true
 async-stream = "0.3"
 crossbeam-channel = "0.5"

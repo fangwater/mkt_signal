@@ -36,10 +36,7 @@ pub(super) fn update_status(update: &PlanUpdate, observation: bool) -> Result<Pl
         );
     }
     let expect_target = if observation {
-        matches!(
-            status,
-            PlanStatus::ObserveOnly | PlanStatus::NoExternalDemand
-        )
+        status == PlanStatus::ObserveOnly
     } else {
         status == PlanStatus::Ready
     };
@@ -160,7 +157,7 @@ impl PlanReader {
             let error = outcome.err().map(|error| format!("{error:#}"));
             if error != state.last_error {
                 if let Some(error) = &error {
-                    eprintln!(
+                    log::warn!(
                         "{}",
                         serde_json::json!({
                             "type":"manager_plan_transport_error", "source_id":self.source_id,
@@ -218,10 +215,10 @@ impl PlanReader {
                     let status = update_status(&update, self.observation)?;
                     state.reconnect = Duration::from_millis(100);
                     if first_update {
-                        eprintln!("Manager target subscription connected: source={} observe_only={}",
+                        log::info!("Manager target subscription connected: source={} observe_only={}",
                             self.source_id, self.observation);
                         if state.last_error.take().is_some() {
-                            eprintln!("{}", serde_json::json!({
+                            log::info!("{}", serde_json::json!({
                                 "type":"manager_plan_transport_recovered","level":"info",
                                 "source_id":self.source_id,
                             }));
@@ -231,11 +228,10 @@ impl PlanReader {
                     let status_key = (status, update.batch_id, update.target_revision);
                     if state.last_status.as_ref() != Some(&status_key) {
                         let level = match status {
-                            PlanStatus::Ready | PlanStatus::NoBatch | PlanStatus::NoExternalDemand |
-                            PlanStatus::ObserveOnly | PlanStatus::Refreshing => "info",
+                            PlanStatus::Ready | PlanStatus::NoBatch | PlanStatus::ObserveOnly => "info",
                             _ => "warn",
                         };
-                        eprintln!("{}", serde_json::json!({
+                        log::log!(if level == "warn" { log::Level::Warn } else { log::Level::Info }, "{}", serde_json::json!({
                             "type":"manager_plan_status","level":level,"source_id":self.source_id,
                             "observe_only":self.observation,"batch_id":status_key.1,
                             "target_revision":status_key.2,
@@ -255,13 +251,13 @@ impl PlanReader {
                     match receipt {
                         None => pending = None,
                         Some(receipt) if receipt.admission == Admission::Accepted as i32 => {
-                            eprintln!("Manager target delivered: source={} batch={} revision={} observe_only={}",
+                            log::info!("Manager target delivered: source={} batch={} revision={} observe_only={}",
                                 receipt.source_id, receipt.batch_id, receipt.target_revision, self.observation);
                             state.admitted = pending.take();
                         }
                         Some(receipt) => {
                             if rejection.as_ref() != Some(&receipt.reason) {
-                                eprintln!("Manager target admission: {}", receipt.reason);
+                                log::info!("Manager target admission: {}", receipt.reason);
                                 rejection = Some(receipt.reason);
                             }
                             retry_at = Instant::now() + delay;

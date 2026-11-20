@@ -13,13 +13,12 @@ use std::time::{Duration, Instant};
 /// Not Send/Sync: only the business-loop thread may own or mutate this state.
 pub struct TradingCore {
     limits: RiskLimits,
-    day: String,
+    day: Day,
     scope: ExecutionScope,
-    session: String,
+    session: Session,
     next_ref: u64,
     order_reserve: usize,
     ready: bool,
-    recovery_pending: bool,
     connected: bool,
     reason: String,
     cash: f64,
@@ -32,8 +31,8 @@ pub struct TradingCore {
     working_by_symbol: Vec<Vec<OrderId>>,
     pending_open: Vec<[i64; 2]>,
     working_lots: i64,
-    system_ids: [HashMap<String, OrderId>; VENUE_SLOTS],
-    fills: Vec<[HashMap<String, Fill>; 2]>,
+    system_ids: [HashMap<NativeId, OrderId>; VENUE_SLOTS],
+    fills: Vec<[HashMap<NativeId, Fill>; 2]>,
     actions: VecDeque<Instant>,
     _single_owner: PhantomData<Rc<()>>,
 }
@@ -43,7 +42,7 @@ pub struct CoreView<'a> {
     pub ready: bool,
     pub connected: bool,
     pub reason: &'a str,
-    pub trading_day: &'a str,
+    pub trading_day: Day,
     pub available_local_budget: f64,
     pub orders: Vec<OrderView<'a>>,
     pub positions: Vec<PositionView<'a>>,
@@ -52,7 +51,7 @@ pub struct CoreView<'a> {
 #[derive(Debug, Serialize)]
 pub struct PositionView<'a> {
     pub venue: Venue,
-    pub symbol: &'a str,
+    pub symbol: Symbol,
     pub side: Side,
     pub position: &'a Position,
 }
@@ -67,13 +66,12 @@ impl TradingCore {
         actions.clear();
         Ok(Self {
             limits,
-            day: String::new(),
+            day: Day::default(),
             scope,
-            session: String::new(),
+            session: Session::default(),
             next_ref: 1,
             order_reserve: INITIAL_ORDER_SLOTS,
             ready: false,
-            recovery_pending: false,
             connected: false,
             reason: "not recovered".into(),
             cash: 0.0,
@@ -91,11 +89,8 @@ impl TradingCore {
             _single_owner: PhantomData,
         })
     }
-    pub fn apply_reference_floors(
-        &mut self,
-        floors: &HashMap<(String, String), u64>,
-    ) -> Result<()> {
-        if let Some(floor) = floors.get(&(self.day.clone(), self.session.clone())) {
+    pub fn apply_reference_floors(&mut self, floors: &HashMap<(Day, Session), u64>) -> Result<()> {
+        if let Some(floor) = floors.get(&(self.day, self.session)) {
             ensure!(
                 *floor <= self.scope.reference_limit,
                 "durable native order reference exhausted"
@@ -112,7 +107,7 @@ impl TradingCore {
             .context("reserve native order slots")?;
         if !self.session.is_empty() {
             self.orders
-                .reserve_session(&self.session, self.order_reserve)
+                .reserve_session(self.session, self.order_reserve)
                 .context("reserve native reference index")?;
         }
         self.reserve_actions(self.order_reserve)?;
@@ -130,11 +125,7 @@ impl TradingCore {
         Ok(())
     }
     pub fn is_ready(&self) -> bool {
-        self.ready && self.connected && !self.recovery_pending
-    }
-    /// Gate sends while a recovery checkpoint is being committed asynchronously.
-    pub(crate) fn recovery_pending(&mut self, pending: bool) {
-        self.recovery_pending = pending;
+        self.ready && self.connected
     }
     pub fn block(&mut self, reason: impl Into<String>) {
         self.ready = false;
@@ -151,18 +142,13 @@ impl TradingCore {
         }
         self.block("session/bootstrap incomplete");
     }
-    pub fn trading_day(&self) -> &str {
-        &self.day
+    pub fn trading_day(&self) -> Day {
+        self.day
     }
     pub fn instrument(&self, venue: Venue, symbol: &str) -> Option<&Instrument> {
         self.instruments
             .get(self.symbols.id(venue, symbol)?.0)?
             .as_deref()
-    }
-    pub(crate) fn instrument_handle(&self, venue: Venue, symbol: &str) -> Option<Arc<Instrument>> {
-        self.instruments
-            .get(self.symbols.id(venue, symbol)?.0)?
-            .clone()
     }
     pub fn fill_order_key<'a>(&'a self, fill: &'a Fill) -> Option<&'a OrderKey> {
         self.system_ids[venue_index(fill.identity.venue)]
@@ -173,7 +159,7 @@ impl TradingCore {
     pub fn order(&self, key: &OrderKey) -> Option<OrderView<'_>> {
         self.orders.get(key)
     }
-    fn ensure_symbol(&mut self, venue: Venue, symbol: &str) -> SymbolId {
+    fn ensure_symbol(&mut self, venue: Venue, symbol: Symbol) -> SymbolId {
         let id = self.symbols.intern(venue, symbol);
         while self.positions.len() <= id.0 {
             self.positions.push([None, None]);
@@ -213,7 +199,7 @@ impl TradingCore {
         }
     }
     fn commit_order(&mut self, order: Order) {
-        let symbol = self.ensure_symbol(order.request.venue, &order.request.symbol);
+        let symbol = self.ensure_symbol(order.request.venue, order.request.symbol);
         let (id, previous) = self.orders.insert(order, symbol);
         self.finish_order_change(id, previous);
     }
@@ -228,13 +214,20 @@ impl TradingCore {
             .map(|id| self.position_id(id, side))
             .unwrap_or_default()
     }
-    /// Includes terminal order reports whose factual fills have not arrived.
-    pub fn has_working_orders(&self, venue: Venue, symbol: &str) -> bool {
+    /// Live orders of one contract, including terminal reports whose factual
+    /// fills have not arrived. Index walk only; never allocates.
+    pub fn working_orders(
+        &self,
+        venue: Venue,
+        symbol: &str,
+    ) -> impl Iterator<Item = OrderView<'_>> + '_ {
         self.symbols
             .id(venue, symbol)
-            .is_some_and(|id| !self.working_by_symbol[id.0].is_empty())
+            .map(|id| self.working_by_symbol[id.0].as_slice())
+            .unwrap_or_default()
+            .iter()
+            .map(|id| self.orders.view(*id))
     }
-    #[cfg(feature = "ctp-sdk")]
     pub(crate) fn orders_settled(&self) -> bool {
         self.working_lots == 0
             && self.orders.slots.iter().all(|order| {
@@ -252,14 +245,11 @@ impl TradingCore {
     pub fn capture_positions(&self, snapshot: &mut cn_futures_state::Snapshot) -> Result<()> {
         use cn_futures_state::{PositionRow, Text, MAX_POSITIONS};
         snapshot.position_ready = !self.day.is_empty();
+        snapshot.orders_settled = self.orders_settled();
         snapshot.ready = self.is_ready();
         snapshot.connected = self.connected;
         snapshot.trading_day = Text::new(&self.day)?;
-        snapshot.reason = Text::new(if self.recovery_pending && self.ready {
-            "recovery persistence pending"
-        } else {
-            &self.reason
-        })?;
+        snapshot.reason = Text::new(&self.reason)?;
         snapshot.available_local_budget = self.cash;
         snapshot.positions.clear();
         for (index, sides) in self.positions.iter().enumerate() {
@@ -272,7 +262,7 @@ impl TradingCore {
                 let (venue, symbol) = self.symbols.identity(SymbolId(index));
                 snapshot.positions.push(PositionRow {
                     venue,
-                    symbol: Text::new(symbol)?,
+                    symbol,
                     side: if side == 0 { Side::Buy } else { Side::Sell },
                     position: position.clone(),
                 });
@@ -289,12 +279,8 @@ impl TradingCore {
                 .collect(),
             ready: self.is_ready(),
             connected: self.connected,
-            reason: if self.recovery_pending && self.ready {
-                "recovery persistence pending"
-            } else {
-                &self.reason
-            },
-            trading_day: &self.day,
+            reason: &self.reason,
+            trading_day: self.day,
             available_local_budget: self.cash,
             orders: self.orders.values().collect(),
             positions: self
@@ -320,7 +306,13 @@ impl TradingCore {
         }
     }
     pub fn set_trading_status(&mut self, venue: Venue, symbol_or_product: &str, continuous: bool) {
-        self.continuous[venue_index(venue)].insert(symbol_or_product.to_owned(), continuous);
+        let statuses = &mut self.continuous[venue_index(venue)];
+        match statuses.get_mut(symbol_or_product) {
+            Some(status) => *status = continuous,
+            None => {
+                statuses.insert(symbol_or_product.to_owned(), continuous);
+            }
+        }
     }
     /// Apply only a complete new rule set; omission immediately removes trading permission.
     pub fn replace_instruments(&mut self, instruments: Vec<Instrument>) -> Result<()> {
@@ -335,7 +327,7 @@ impl TradingCore {
         }
         self.instruments.fill(None);
         for rule in instruments {
-            let id = self.ensure_symbol(rule.venue, &rule.symbol);
+            let id = self.ensure_symbol(rule.venue, rule.symbol);
             self.instruments[id.0] = Some(Arc::new(rule));
         }
         Ok(())
@@ -418,11 +410,11 @@ impl TradingCore {
             )
             .context("reserve recovered native order slots")?;
         next.orders
-            .reserve_session(&next.session, self.order_reserve)
+            .reserve_session(next.session, self.order_reserve)
             .context("reserve recovered reference index")?;
         next.replace_instruments(s.instruments)?;
         for p in s.positions {
-            let id = next.ensure_symbol(p.venue, &p.symbol);
+            let id = next.ensure_symbol(p.venue, p.symbol);
             next.positions[id.0][side_index(p.side)] = Some(Position {
                 today: p.today,
                 yesterday: p.yesterday,
@@ -430,9 +422,8 @@ impl TradingCore {
             });
         }
         for f in s.trades {
-            let symbol = next.ensure_symbol(f.identity.venue, &f.identity.symbol);
-            next.fills[symbol.0][side_index(f.identity.side)]
-                .insert(f.identity.trade_id.clone(), f);
+            let symbol = next.ensure_symbol(f.identity.venue, f.identity.symbol);
+            next.fills[symbol.0][side_index(f.identity.side)].insert(f.identity.trade_id, f);
         }
         for update in s.orders {
             ensure!(
@@ -460,7 +451,7 @@ impl TradingCore {
             let mut order = Order {
                 request: Intent {
                     venue: update.venue,
-                    symbol: update.symbol.clone(),
+                    symbol: update.symbol,
                     side: update.side,
                     offset: update.offset,
                     lots: update.lots,
@@ -469,7 +460,7 @@ impl TradingCore {
                     time_in_force: update.time_in_force,
                     execution_route: None,
                 },
-                key: update.key.clone(),
+                key: update.key,
                 system_id: update.system_id,
                 limit_price: update.limit_price,
                 // A cancel racing the final fill can be reported as cancelled with no remainder.
@@ -504,7 +495,7 @@ impl TradingCore {
                 order.reserved_yesterday = yesterday;
                 next.adjust_frozen(&order, today, yesterday)?;
             }
-            let symbol = next.ensure_symbol(order.request.venue, &order.request.symbol);
+            let symbol = next.ensure_symbol(order.request.venue, order.request.symbol);
             let id = OrderId(next.orders.slots.len());
             if !order.system_id.is_empty() {
                 ensure!(
@@ -512,8 +503,7 @@ impl TradingCore {
                         .contains_key(order.system_id.as_str()),
                     "duplicate venue system order identity"
                 );
-                next.system_ids[venue_index(order.request.venue)]
-                    .insert(order.system_id.clone(), id);
+                next.system_ids[venue_index(order.request.venue)].insert(order.system_id, id);
             }
             let _ = symbol;
             next.commit_order(order);
@@ -752,14 +742,14 @@ impl TradingCore {
             };
         self.rate_check(now)?;
         let key = OrderKey {
-            session: self.session.clone(),
-            order_ref: self.next_ref.to_string(),
+            session: self.session,
+            order_ref: Reference::decimal(self.next_ref)?,
         };
         self.next_ref += 1;
         let order = Order {
-            request: intent.clone(),
-            key: key.clone(),
-            system_id: String::new(),
+            request: intent,
+            key,
+            system_id: NativeId::default(),
             limit_price: price,
             status: OrderStatus::Pending,
             filled: 0,
@@ -872,11 +862,11 @@ impl TradingCore {
         );
         Ok(())
     }
-    fn bind_system_id(&mut self, id: OrderId, system_id: &str) {
+    fn bind_system_id(&mut self, id: OrderId, system_id: NativeId) {
         let order = &mut self.orders.identities[id.0];
         if !system_id.is_empty() && order.system_id.is_empty() {
-            self.system_ids[venue_index(order.request.venue)].insert(system_id.to_owned(), id);
-            order.system_id = system_id.to_owned();
+            self.system_ids[venue_index(order.request.venue)].insert(system_id, id);
+            order.system_id = system_id;
         }
     }
     pub fn on_order(&mut self, update: &OrderUpdate) -> Result<()> {
@@ -912,7 +902,7 @@ impl TradingCore {
                 "rejection conflicts with factual or reported fill"
             );
             self.reject_id(id)?;
-            self.bind_system_id(id, &update.system_id);
+            self.bind_system_id(id, update.system_id);
             return Ok(());
         }
         if update.status == OrderStatus::Filled {
@@ -927,7 +917,7 @@ impl TradingCore {
                 self.release_cancelled(id, cancelled)?;
             }
         }
-        self.bind_system_id(id, &update.system_id);
+        self.bind_system_id(id, update.system_id);
         let order = &mut self.orders.slots[id.0];
         order.reported_filled = reported;
         if update.cancel_rejected {
@@ -1033,7 +1023,7 @@ impl TradingCore {
             (today, yesterday)
         };
         position.validate()?;
-        self.bind_system_id(id, &fill.system_id);
+        self.bind_system_id(id, fill.system_id);
         let order = &mut self.orders.slots[id.0];
         order.reserved_today -= today;
         order.reserved_yesterday -= yesterday;
@@ -1043,16 +1033,11 @@ impl TradingCore {
         }
         self.positions[symbol.0][side_index(side)] = Some(position);
         self.finish_order_change(id, old);
-        self.fills[symbol.0][side_index(fill.identity.side)]
-            .insert(fill.identity.trade_id.clone(), fill.clone());
+        self.fills[symbol.0][side_index(fill.identity.side)].insert(fill.identity.trade_id, *fill);
         Ok(true)
     }
 
     pub fn prepare_cancel(&mut self, key: &OrderKey, now: Instant) -> Result<PreparedCancel> {
-        ensure!(
-            !self.recovery_pending,
-            "recovery persistence checkpoint pending"
-        );
         ensure!(self.connected, "cannot cancel while transport disconnected");
         let order = self.orders.get(key).context("unknown order to cancel")?;
         ensure!(
@@ -1064,10 +1049,10 @@ impl TradingCore {
             "native cancel requires exchange system ID; wait for acknowledgement"
         );
         let request = PreparedCancel {
-            key: key.clone(),
-            symbol: order.request.symbol.clone(),
+            key: *key,
+            symbol: order.request.symbol,
             venue: order.request.venue,
-            system_id: order.system_id.clone(),
+            system_id: *order.system_id,
             execution_route: order.request.execution_route,
         };
         self.rate_check(now)?;
@@ -1092,11 +1077,13 @@ impl<T: Trader> SingleLoop<T> {
     pub fn submit(&mut self, intent: Intent, now: Instant) -> Result<OrderKey> {
         self.submit_with(intent, now, |_| Ok(()))
     }
+    /// `after_native` records the attempted request right after the SDK call,
+    /// so evidence publishing never delays the order. Its failure latches a block.
     pub fn submit_with(
         &mut self,
         intent: Intent,
         now: Instant,
-        before_native: impl FnOnce(&PreparedOrder) -> Result<()>,
+        after_native: impl FnOnce(&PreparedOrder) -> Result<()>,
     ) -> Result<OrderKey> {
         ensure!(self.execute, "read-only runtime: submissions disabled");
         let reference = self.trader.allocate_reference(self.core.next_ref)?;
@@ -1106,12 +1093,12 @@ impl<T: Trader> SingleLoop<T> {
         );
         self.core.next_ref = reference;
         let request = self.core.prepare(intent, now)?;
-        if let Err(error) = before_native(&request) {
-            self.core.reject(&request.key)?;
-            self.core.block("submission audit failed before SDK call");
-            return Err(error.context("order was not submitted"));
+        let sent = self.trader.insert(&request);
+        if after_native(&request).is_err() {
+            self.core
+                .block("submission evidence unavailable after SDK call");
         }
-        match self.trader.insert(&request) {
+        match sent {
             Ok(0) => Ok(request.key),
             Ok(code) => {
                 self.core.reject(&request.key)?;
@@ -1131,16 +1118,16 @@ impl<T: Trader> SingleLoop<T> {
         &mut self,
         key: &OrderKey,
         now: Instant,
-        before_native: impl FnOnce(&PreparedCancel) -> Result<()>,
+        after_native: impl FnOnce(&PreparedCancel) -> Result<()>,
     ) -> Result<()> {
-        self.cancel_with_route(key, None, now, before_native)
+        self.cancel_with_route(key, None, now, after_native)
     }
     pub fn cancel_with_route(
         &mut self,
         key: &OrderKey,
         route: Option<ExecutionRoute>,
         now: Instant,
-        before_native: impl FnOnce(&PreparedCancel) -> Result<()>,
+        after_native: impl FnOnce(&PreparedCancel) -> Result<()>,
     ) -> Result<()> {
         ensure!(self.execute, "read-only runtime: cancellations disabled");
         if let Some(route) = route {
@@ -1150,12 +1137,12 @@ impl<T: Trader> SingleLoop<T> {
         if route.is_some() {
             request.execution_route = route;
         }
-        if let Err(error) = before_native(&request) {
-            self.core.cancel_failed(key);
-            self.core.block("cancellation audit failed before SDK call");
-            return Err(error.context("cancellation was not submitted"));
+        let sent = self.trader.cancel(&request);
+        if after_native(&request).is_err() {
+            self.core
+                .block("cancellation evidence unavailable after SDK call");
         }
-        match self.trader.cancel(&request) {
+        match sent {
             Ok(0) => Ok(()),
             Ok(code) => {
                 self.core.cancel_failed(key);
@@ -1169,7 +1156,7 @@ impl<T: Trader> SingleLoop<T> {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChildOutcome {
     SubmittedLocally,
@@ -1177,7 +1164,7 @@ pub enum ChildOutcome {
     Uncertain,
     NotSent,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct ChildReceipt {
     pub parent_index: usize,
     pub key: OrderKey,
@@ -1186,7 +1173,7 @@ pub struct ChildReceipt {
     pub outcome: ChildOutcome,
     pub error: Option<String>,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct SubmitReceipt {
     pub children: SmallVec<[ChildReceipt; 2]>,
     pub all_submitted_locally: bool,
@@ -1233,7 +1220,7 @@ impl TradingCore {
                 children.push(Intent {
                     offset,
                     lots,
-                    ..intent.clone()
+                    ..intent
                 });
             }
         }
@@ -1247,7 +1234,7 @@ impl<T: Trader> SingleLoop<T> {
         &mut self,
         intent: Intent,
         now: Instant,
-        mut audit: impl FnMut(&PreparedOrder) -> Result<()>,
+        mut after_native: impl FnMut(&PreparedOrder) -> Result<()>,
     ) -> Result<SubmitReceipt> {
         ensure!(self.execute, "read-only runtime: submissions disabled");
         let children = self.core.plan(intent)?;
@@ -1281,13 +1268,13 @@ impl<T: Trader> SingleLoop<T> {
             let (outcome, error) = if stop {
                 self.core.reject(&p.key)?;
                 (ChildOutcome::NotSent, None)
-            } else if let Err(e) = audit(&p) {
-                self.core.reject(&p.key)?;
-                self.core.block("submission audit failed before SDK call");
-                stop = true;
-                (ChildOutcome::NotSent, Some(e.to_string()))
             } else {
-                match self.trader.insert(&p) {
+                let sent = self.trader.insert(&p);
+                if after_native(&p).is_err() {
+                    self.core
+                        .block("submission evidence unavailable after SDK call");
+                }
+                match sent {
                     Ok(0) => (ChildOutcome::SubmittedLocally, None),
                     Ok(code) => {
                         self.core.reject(&p.key)?;

@@ -1,68 +1,20 @@
 //! SDK-free native account position snapshots. One complete replaceable state
-//! per publication, using Exec's length-prefixed bincode over iceoryx2.
+//! per publication, exact-length bincode over iceoryx2, published inline.
 pub mod checkpoint;
 pub mod publisher;
 pub mod transport;
 
 use anyhow::{ensure, Result};
 pub use persist_common::cn_futures::{Position, Side, Venue};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 pub const MAX_POSITIONS: usize = 8192;
-pub const PAYLOAD: usize = 4 * 1024 * 1024;
+pub const MAX_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
 pub const BUFFER: usize = 2;
 pub const CHANNEL: &str = "cn_futures_positions";
 
 /// Fixed text keeps snapshot capture free of per-row heap allocations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Text<const N: usize> {
-    bytes: [u8; N],
-    len: usize,
-}
-impl<const N: usize> Default for Text<N> {
-    fn default() -> Self {
-        Self {
-            bytes: [0; N],
-            len: 0,
-        }
-    }
-}
-impl<const N: usize> Text<N> {
-    pub fn new(value: &str) -> Result<Self> {
-        ensure!(value.len() <= N, "native state text exceeds {N} bytes");
-        let mut text = Self::default();
-        text.bytes[..value.len()].copy_from_slice(value.as_bytes());
-        text.len = value.len();
-        Ok(text)
-    }
-    pub fn as_str(&self) -> &str {
-        // Only complete UTF-8 strings can construct Text, including decoding.
-        std::str::from_utf8(&self.bytes[..self.len]).expect("validated native text")
-    }
-}
-impl<const N: usize> Serialize for Text<N> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-impl<'de, const N: usize> Deserialize<'de> for Text<N> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        struct Visitor<const N: usize>;
-        impl<'de, const N: usize> serde::de::Visitor<'de> for Visitor<N> {
-            type Value = Text<N>;
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "UTF-8 text up to {N} bytes")
-            }
-            fn visit_str<E: serde::de::Error>(
-                self,
-                v: &str,
-            ) -> std::result::Result<Self::Value, E> {
-                Text::new(v).map_err(E::custom)
-            }
-        }
-        deserializer.deserialize_str(Visitor::<N>)
-    }
-}
+pub use persist_common::cn_futures::Text;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -212,6 +164,9 @@ pub struct Snapshot {
     pub account_hash: Text<64>,
     pub runtime_status: RuntimeStatus,
     pub position_ready: bool,
+    /// No order is open, cancelling, or waiting for its factual fills; the
+    /// positions are a valid Manager anchor.
+    pub orders_settled: bool,
     pub connected: bool,
     pub ready: bool,
     pub can_trade: bool,
@@ -220,7 +175,6 @@ pub struct Snapshot {
     pub reason: Text<512>,
     pub available_local_budget: f64,
     pub account: Option<AccountFunds>,
-    pub replaced_snapshots: u64,
     pub positions: Vec<PositionRow>,
     pub marks: Vec<InstrumentMark>,
     pub l1_connected: bool,
@@ -237,6 +191,7 @@ impl Snapshot {
             account_hash: Text::new(account_hash)?,
             runtime_status: RuntimeStatus::Running,
             position_ready: false,
+            orders_settled: false,
             connected: false,
             ready: false,
             can_trade: false,
@@ -245,7 +200,6 @@ impl Snapshot {
             reason: Text::default(),
             available_local_budget: 0.0,
             account: None,
-            replaced_snapshots: 0,
             positions: Vec::with_capacity(MAX_POSITIONS),
             marks: Vec::with_capacity(MAX_POSITIONS),
             l1_connected: false,

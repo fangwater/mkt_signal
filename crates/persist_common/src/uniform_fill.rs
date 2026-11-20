@@ -107,6 +107,7 @@ pub fn decode(payload: &[u8]) -> Result<StoredUniformOrder> {
     } else {
         FillLiquidity::Unknown
     };
+    let extension = crate::record_extension::RecordExtension::read(&mut input)?;
     let provenance = if input.is_empty() {
         None
     } else {
@@ -149,6 +150,7 @@ pub fn decode(payload: &[u8]) -> Result<StoredUniformOrder> {
         from_key,
         signal_bbo,
         fill_liquidity,
+        extension,
     };
     record.refresh_lengths();
     let role_present = role_present && !provenance.as_ref().is_some_and(|p| p.legacy_role_absent);
@@ -162,15 +164,14 @@ pub fn decode(payload: &[u8]) -> Result<StoredUniformOrder> {
 }
 
 pub fn encode(value: &StoredUniformOrder) -> Result<Bytes> {
-    let symbol = std::str::from_utf8(&value.record.symbol)?;
-    let payload = native_codec::serialize_uniform_order(
-        &value.record,
+    let mut payload = BytesMut::with_capacity(512);
+    native_codec::write_stored_uniform_order(
+        &mut payload,
         value.received_at_us,
-        symbol,
-        value.record.amount_init,
-        value.record.amount_update,
+        &value.bbo_spread,
+        &value.record.as_ref(),
     );
-    let payload = native_codec::append_bbo_spread(payload, &value.bbo_spread);
+    let payload = payload.freeze();
     let Some(provenance) = &value.provenance else {
         return Ok(payload);
     };

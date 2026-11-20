@@ -401,8 +401,8 @@ fn relative_margin_adds_the_exchange_base_and_preserves_full_account_fields() {
         }
     }
     assert!(session.ready());
-    session.request_rates(Venue::Cffex, "IF2612", now);
-    session.request_rates(Venue::Cffex, "IF2612", now);
+    session.request_rates(Venue::Cffex, "IF2612", now).unwrap();
+    session.request_rates(Venue::Cffex, "IF2612", now).unwrap();
     for (id, expected) in [(91, COMMISSION), (92, MARGIN), (93, EXCHANGE_MARGIN)] {
         let (kind, mut e) = dispatch(&mut session, &mut now, id);
         assert_eq!(kind, expected);
@@ -474,7 +474,7 @@ fn missing_fee_rows_do_not_release_trading_and_late_rates_cannot_match() {
             break;
         }
     }
-    session.request_rates(Venue::Cffex, "IF2612", now);
+    session.request_rates(Venue::Cffex, "IF2612", now).unwrap();
     let (kind, mut e) = dispatch(&mut session, &mut now, 100);
     assert_eq!(kind, COMMISSION);
     let mut late = e;
@@ -484,7 +484,7 @@ fn missing_fee_rows_do_not_release_trading_and_late_rates_cannot_match() {
     session.on_raw_event(&e, now).unwrap();
     assert!(session.take_rule_update().unwrap().is_empty());
     assert!(session.ready());
-    session.request_rates(Venue::Cffex, "IF2612", now);
+    session.request_rates(Venue::Cffex, "IF2612", now).unwrap();
     assert!(session.query_target().is_none());
 }
 
