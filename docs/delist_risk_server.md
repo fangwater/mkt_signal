@@ -1,6 +1,19 @@
 # Delist Risk Server
 
-最后更新：2026-11-18 10:30 UTC（下架名单与 12 小时脚本收口上线）
+最后更新：2026-11-21 08:27 UTC（单腿下架平仓后自动移出名单）
+
+2026-11-21 08:26 UTC，JP 发布 `arbmm 1b47ee26` 的 Delist。原自动移出要求账户所有 venue 的
+目录都已下架，FR／intra 账户只下架一条腿时（gate BGSC 合约下架、现货仍交易；bybit BILL
+杠杆下架、现货目录仍列出）币留在平仓名单里，平仓后页面仍显示“需处理”。现在候选分两类：
+各腿目录均已下架仍移出全部名单；单腿由目录或已生效的 `delist` 事件确认时只移出平仓类名单
+（dump、delist_dump、pos_dump、unimmr_close），任一 `*_trade_symbols` 仍含该币则不动并记日志。
+目录未知不确认，移出前的仓位清空校验不变。启动后自动移出 4 条（审计 38–41）：
+bybit_fr_arb01 BILLUSDT，gate_fr_arb01／02／04 BGSCUSDT，各自 dump 与 unimmr_close 名单。
+新进程全部线程 CPU28。退役的 binance_fr_arb01 不在 NAV 目录、页面不显示，退役时保留资产，
+其 Redis 残留名单未改。BILL 的下架事件来自“Bybit Alpha to Delist 1 Token(s)”公告，
+现货仍交易，可能是抽取误判。回退：`~/delist_risk_server/run/delist_prune_scope_20261121T082602Z/before/`
+（原二进制、34 个 Redis 名单原值、重启前日志）。
+
 
 2026-11-18 10:16 UTC，JP 发布 `arbmm fc2150f1` 的 Delist、启动脚本和页面。
 本机 release 构建并校验上传哈希。新进程 PID 1260373，全部线程使用 CPU28。
