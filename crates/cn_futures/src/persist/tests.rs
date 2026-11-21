@@ -496,6 +496,39 @@ fn a_failed_publish_latches_and_blocks_later_records() {
 }
 
 #[test]
+fn restart_required_stops_trading_logs_the_reason_and_returns_the_cold_restart() {
+    use crate::restart::ColdRestartRequired;
+    let (channel, records) = channel(vec![]);
+    let mut core = core();
+    assert!(core.is_ready());
+    let error = channel.restart_required(
+        &mut core,
+        ColdRestartRequired::ServerRestarted,
+        serde_json::json!({"native_event":4}),
+    );
+    assert!(!core.is_ready());
+    assert!(matches!(
+        error.downcast_ref::<ColdRestartRequired>(),
+        Some(ColdRestartRequired::ServerRestarted)
+    ));
+    assert_eq!(crate::restart::exit_status(&error), 75);
+    let line = displayed(&records).pop().unwrap();
+    assert_eq!(line["type"], "restart_required");
+    assert_eq!(line["reason"], "server_restarted");
+    assert_eq!(line["detail"]["native_event"], 4);
+    assert_eq!(line["venue_orders_cancelled"], false);
+
+    // A journal that cannot record the reason exits for an operator instead.
+    let broken = broken_channel();
+    let error = broken.restart_required(
+        &mut core,
+        ColdRestartRequired::TransportOrControlTimeout,
+        serde_json::json!({}),
+    );
+    assert_eq!(crate::restart::exit_status(&error), 1);
+}
+
+#[test]
 fn records_from_another_layout_are_refused() {
     let (channel, records) = channel(vec![]);
     channel

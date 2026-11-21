@@ -25,8 +25,10 @@ constexpr int local_invalid = 9904; // Certain pre-send argument/permission reje
 constexpr int market_price_unavailable = 9903; // Missing native daily price-limit data; nothing sent.
 // Event IDs are bridge-owned, vendor integer constants remain unchanged in the fields.
 enum { Connected=1, Disconnected, ReadyLogin, Login, Init, Begin, Instrument, Account,
-       Position, Order, Trade, End, FailedCancel, Invalidated, Segment, Fatal, Transport, Connection };
+       Position, Order, Trade, End, FailedCancel, Invalidated, Segment, Fatal, Transport, Connection,
+       ServerRestarted };
 static_assert(std::is_standard_layout_v<CnYidaEvent>);
+static_assert(ServerRestarted==19, "event kinds are shared with Rust yida::SERVER_RESTARTED");
 static_assert(std::is_standard_layout_v<CnYidaAccount>);
 // Pin the production headers as well as the loaded library. In 1.502.55 the
 // long instrument ID moved and account/position fields shifted in place.
@@ -310,7 +312,13 @@ public:
         if (event==YD_AE_TCPMarketDataConnected || event==YD_AE_TCPMarketDataDisconnected) {
             l1_status(event==YD_AE_TCPMarketDataConnected); return;
         }
-        if (event==YD_AE_ServerRestarted) { l1_status(false); logged_in=false; caught_up=false; fatal(); start_destroy(); return; }
+        if (event==YD_AE_ServerRestarted) {
+            // Every datum of this instance may be invalid. startDestroy inside the callback
+            // keeps the SDK from exiting the process; the runtime cold-restarts instead.
+            l1_status(false); tcp_connected=false; logged_in=false; caught_up=false;
+            CnYidaEvent e{}; e.kind=ServerRestarted; e.status=event; send(e);
+            start_destroy(); transport_event(); return;
+        }
         CnYidaEvent e{};
         if (event==YD_AE_XTCPTradeConnected || event==YD_AE_XTCPTradeDisconnected) {
             xtcp_connected=event==YD_AE_XTCPTradeConnected; transport_event(); return;

@@ -16,7 +16,7 @@
 | `yida_paper01-persist.service` | `bin/persist_manager --core 3` | 写 `data/persist_manager`，stdout 即 trader 日志 |
 | `yida_paper01-viz.service` | `config/viz.toml` | 按用户要求监听 `0.0.0.0:8811`，浏览器直接访问 VPS 公网地址的 8811 端口，无需 SSH 转发 |
 
-服务由 Ubuntu 用户的 systemd 管理，已开启 user linger，退出 SSH 后继续运行。交易端不自动重启，避免登录／认证错误后重复提交；persist_manager 与 Viz 失败时自动重启。所有启停都通过环境内脚本，不直接操作监管器。
+服务由 Ubuntu 用户的 systemd 管理，已开启 user linger，退出 SSH 后继续运行。交易端只在冷启动状态码 75（柜台重启、登录／恢复超时）时由 drop-in `10-cold-restart.conf` 在 60 秒后重启，与创元 CTP 相同；登录／认证错误等其他退出不自动重启，避免重复提交。persist_manager 与 Viz 失败时自动重启。所有启停都通过环境内脚本，不直接操作监管器。
 
 当前执行范围为 `SHFE:rb2701`，单笔和绝对目标上限均为 1 手。Manager 组
 `yida-paper01-rb` 按当前柜台对账快照初始化为零手，执行端通过同一条 SSH 反向隧道订阅 gRPC。
@@ -102,5 +102,6 @@ Viz 临时发布目录、旧 `data/viz-secondary`、历史部署／状态 JSON �
 Manager 以 rebase（revision 1，期初为空）在新库上重设锚点。
 
 09:00:12 官方仿真断开，随即收到原生 fatal 回调（`kind=16`、`-9901`，与 11-14 00:00:41 相同），交易端按设计锁定并退出，
-无柜台订单。09:03 通过环境脚本重启一次，登录、恢复、Manager 订阅均正常。
+无柜台订单。09:03 通过环境脚本重启一次，登录、恢复、Manager 订阅均正常。当时桥接把 `ServerRestarted` 与回调异常
+都报成同一个 fatal，进程空等 30 秒后以状态码 1 退出；随后改为独立事件加冷启动（见[易达冷启动](yida_trade.md#冷启动)）。
 

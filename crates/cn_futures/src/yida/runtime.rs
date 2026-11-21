@@ -5,6 +5,7 @@ use crate::{
         exec::Exec,
         strategy::{self, Actions, Strategy, StrategyContext},
     },
+    restart::ColdRestartRequired,
     runtime::{command_order_keys, input_commands, lock_flow, Command, PersistChannel},
 };
 use anyhow::Result;
@@ -157,6 +158,9 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
     let mut next_l1_warning = Instant::now();
     let mut transport_seen_ready = false;
     let mut recovery_since = Instant::now();
+    // A latched native inconsistency needs an operator; a later stall must not
+    // turn it into an automatic cold restart.
+    let mut operator_required = false;
     let outcome = (|| -> Result<()> {
         while !stopping {
             anyhow::ensure!(
@@ -190,6 +194,16 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     transport_seen_ready = false;
                     runtime.core.disconnect();
                     recovery_since = Instant::now();
+                }
+                if e.kind == SERVER_RESTARTED {
+                    if let Some(taker) = &mut exec {
+                        taker.on_market_state(false, 0)?;
+                    }
+                    return Err(journal.restart_required(
+                        &mut runtime.core,
+                        ColdRestartRequired::ServerRestarted,
+                        json!({"native_event":e.status}),
+                    ));
                 }
                 if e.kind == TRANSPORT {
                     if e.flag == 1 {
@@ -262,6 +276,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     recovery_since = Instant::now();
                 }
                 if let Err(e) = outcome {
+                    operator_required = true;
                     runtime.core.block(
                     "native event inconsistent; evidence retained; reconnect/reconcile required",
                 );
@@ -271,11 +286,20 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     )?;
                 }
             }
-            anyhow::ensure!(
-                session.ready
-                    || recovery_since.elapsed() < Duration::from_millis(config.response_timeout_ms),
-                "Yida login/recovery timed out; existing venue orders not cancelled"
-            );
+            if !session.ready
+                && runtime.trader.events.is_empty()
+                && recovery_since.elapsed() >= Duration::from_millis(config.response_timeout_ms)
+            {
+                anyhow::ensure!(
+                    !operator_required,
+                    "Yida login/recovery timed out after a native inconsistency; operator recovery required; venue orders not cancelled"
+                );
+                return Err(journal.restart_required(
+                    &mut runtime.core,
+                    ColdRestartRequired::TransportOrControlTimeout,
+                    json!({"stage":"login_recovery","transport_ready":runtime.trader.transport_ready(),"timeout_ms":config.response_timeout_ms}),
+                ));
+            }
             if let Some(request) = runtime
                 .trader
                 .next_response_deadline()
@@ -575,6 +599,13 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
         }
         Ok(())
     })();
+    if let Some(restart) = outcome
+        .as_ref()
+        .err()
+        .and_then(|error| error.downcast_ref::<ColdRestartRequired>())
+    {
+        runtime.core.block(restart.observation_reason());
+    }
     // Stop callback producers first, then retain every already-delivered tail event.
     let tail = runtime.trader.events.clone();
     let fault = runtime.trader.fault.clone();

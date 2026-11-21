@@ -11,5 +11,6 @@ pub mod placement;
 pub mod poll;
 #[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
 mod position_ipc;
+pub mod restart;
 pub mod runtime;
 pub mod yida;

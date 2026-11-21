@@ -4,6 +4,8 @@
 //! persist_manager; fills recovered by query stay unallocated.
 use crate::model::{Intent, OrderKey};
 pub use crate::persist::PersistChannel;
+#[cfg(feature = "ctp-sdk")]
+use crate::restart::ColdRestartRequired;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::fs::{File, OpenOptions};
@@ -591,22 +593,16 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     && now.saturating_duration_since(transport_progress)
                         >= Duration::from_millis(config.response_timeout_ms);
                 if control_timeout || front_timeout {
-                    let account_timeout = control_timeout && session.account_query_in_flight();
-                    runtime.core.disconnect();
-                    journal.state(&runtime.core)?;
-                    let (reason, restart) = if account_timeout {
-                        (
-                            "account query timeout",
-                            ctp::ColdRestartRequired::AccountQuery("CTP account query timed out"),
-                        )
+                    let restart = if control_timeout && session.account_query_in_flight() {
+                        ColdRestartRequired::AccountQuery("CTP account query timed out")
                     } else {
-                        (
-                            "transport or control response timeout",
-                            ctp::ColdRestartRequired::TransportOrControlTimeout,
-                        )
+                        ColdRestartRequired::TransportOrControlTimeout
                     };
-                    journal.record(json!({"type":"restart_required","reason":reason,"transport_online":transport_online,"front_timeout":front_timeout,"control_timeout":control_timeout,"venue_orders_cancelled":false}), true)?;
-                    return Err(restart.into());
+                    return Err(journal.restart_required(
+                        &mut runtime.core,
+                        restart,
+                        json!({"transport_online":transport_online,"front_timeout":front_timeout,"control_timeout":control_timeout}),
+                    ));
                 }
                 if let Some(kind) = session.request_due(now)? {
                     let id = runtime.trader.next_id()?;
@@ -624,7 +620,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     let queued = md.has_backlog();
                     let event = match md.poll(Instant::now()) {
                         Ok(event) => event,
-                        Err(error) if !execute && !error.is::<ctp::ColdRestartRequired>() => {
+                        Err(error) if !execute && !error.is::<ColdRestartRequired>() => {
                             // Keep the SDK owner until cold shutdown. Release/Init must not
                             // run on this business loop, and an MD failure must not hide funds.
                             feed_failed = true;
@@ -974,7 +970,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     let restart = outcome
         .as_ref()
         .err()
-        .and_then(|error| error.downcast_ref::<ctp::ColdRestartRequired>());
+        .and_then(|error| error.downcast_ref::<ColdRestartRequired>());
     if let Some(restart) = restart {
         runtime.core.disconnect();
         runtime.core.block(restart.observation_reason());

@@ -456,6 +456,29 @@ impl PersistChannel {
     }
 
     /// Lifecycle of every changed order; used on rejection, recovery and shutdown.
+    /// Leaves the business loop for a cold restart (CTP and Yida alike): the core
+    /// stops trading, open order state and the reason are recorded, venue orders
+    /// are left untouched. Returns the error the runtime propagates; a journal
+    /// failure wins, so it exits for an operator instead of restarting.
+    pub fn restart_required(
+        &self,
+        core: &mut crate::core::TradingCore,
+        restart: crate::restart::ColdRestartRequired,
+        detail: Value,
+    ) -> anyhow::Error {
+        core.disconnect();
+        let recorded = self.state(core).and_then(|()| {
+            self.record(
+                serde_json::json!({"type":"restart_required","reason":restart.reason(),"detail":detail,"venue_orders_cancelled":false}),
+                true,
+            )
+        });
+        match recorded {
+            Ok(()) => restart.into(),
+            Err(error) => error,
+        }
+    }
+
     pub fn state(&self, core: &crate::core::TradingCore) -> Result<()> {
         for order in core.view().orders {
             self.lifecycle(core.trading_day(), order, None)?;

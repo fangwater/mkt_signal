@@ -29,6 +29,8 @@ pub const SEGMENT: i32 = 15;
 pub const FATAL: i32 = 16;
 pub const TRANSPORT: i32 = 17;
 pub const CONNECTION: i32 = 18;
+/// `YD_AE_ServerRestarted`: the SDK instance is being destroyed; cold restart.
+pub const SERVER_RESTARTED: i32 = 19;
 pub const SDK_REFERENCE: &str = "1.502.55.35";
 
 pub fn scope() -> ExecutionScope {

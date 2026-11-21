@@ -109,14 +109,15 @@ UNIT
         else
             mv -- "$persist_candidate" "$systemd_dir/$persist_unit"
         fi
-        retry_config="$systemd_dir/$unit.d/10-account-query-recovery.conf"
+        # Shared with the Yida environment: only cn_futures::restart exit 75 restarts.
+        retry_config="$systemd_dir/$unit.d/10-cold-restart.conf"
         cat > "$retry_candidate" <<'EOF'
 [Service]
 RestartForceExitStatus=75
 RestartSec=60s
 EOF
         if [[ -e "$retry_config" ]]; then
-            cmp -s "$retry_candidate" "$retry_config" || fail 'existing CTP recovery policy differs; preserve operator configuration'
+            cmp -s "$retry_candidate" "$retry_config" || fail 'existing cold-restart policy differs; preserve operator configuration'
         else
             mkdir -p -- "$(dirname "$retry_config")"
             mv -- "$retry_candidate" "$retry_config"

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 fn main() {
     if let Err(error) = run() {
         eprintln!("yida-trader: {error:#}");
-        std::process::exit(1);
+        std::process::exit(cn_futures::restart::exit_status(&error));
     }
 }
 fn run() -> Result<()> {

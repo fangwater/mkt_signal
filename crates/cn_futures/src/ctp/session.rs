@@ -2,6 +2,7 @@
 //! are required; this is snapshot convergence, not a vendor-provided atomic barrier.
 use super::*;
 use crate::config::Config;
+use crate::restart::ColdRestartRequired;
 use anyhow::{ensure, Context, Result};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};

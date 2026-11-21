@@ -87,6 +87,17 @@ UDP / XTCP 发单仍由 SDK `insertOrder` / `cancelOrder` 在调用线程完成�
 
 要独立重建同交易日市值权益，期货今仓用先开先平后的开仓成本，昨仓用昨结算价，按每个方向的手数、合约乘数和同交易日完整行情计算持仓盈亏。期权用各原生合约的有符号市值，权利金保留在 `cash_in`。还需要与持仓及行情同一观测截面的成交费用、平仓盈亏及资金数据。2026-11-18 只读核对中，纸账户原生交易日是 `20261117`，对应的 30 个持仓合约均有同日易达 L1 最新价。旧 producer 的资金快照未采集上述账户字段，仍缺少核对全账户权益所需的其他数据。
 
+### 冷启动
+
+与 CTP 共用 `cn_futures::restart::ColdRestartRequired`：只有新建 SDK 实例才能恢复的情况，由运行时经 `PersistChannel::restart_required` 停止交易、记录当前委托状态和 `restart_required`（原因、细节、`venue_orders_cancelled=false`），再以状态码 75 退出。环境的 systemd drop-in `10-cold-restart.conf`（`RestartForceExitStatus=75`、`RestartSec=60s`）只对 75 重启，其他退出保持 `Restart=no`。重启走已有启动恢复：从两路流水重建账本和未决委托，取完整柜台快照核对，上一进程的未决委托必须全部出现，否则继续阻断，不会重复报单。业务循环内不重建 SDK 实例，热路径只多一次事件种类比较。
+
+| 原因 | CTP | 易达 |
+| --- | --- | --- |
+| `server_restarted` | — | `YD_AE_ServerRestarted` |
+| `transport_or_control_timeout` | 前置离线或控制请求超时 | 登录／恢复超时 |
+| `account_query` | 资金查询超时 | — |
+| `market_data_trading_day` | 行情登录无有效交易日 | — |
+
 `poll = { mode = "busy" }` 使用忙轮询（自旋后 `sched_yield`），`poll = { mode = "sleep", idle_us = … }` 空闲休眠，上限 100000 µs（与 CTP 相同）；休眠期间原生回报进入 `event_capacity` 有界队列，队列满即锁定故障（L1 队列满只丢行情），容量须覆盖一次休眠内的峰值回报数；旧的 `idle_sleep_us` 与 `journal` 字段已移除。统一的 `[placement]` 包含 `numa_node`、`business_cpu`、`sdk_cpus`、`background_cpus`，替代原来的 `business_core`。部署时按目标主机拓扑配置；省略 placement 时保留操作系统默认调度，不能声称已隔离或绑定 NUMA。配置后会在创建队列、核心与数据库前绑定线程和后续分配的内存页：业务、SDK、后台三域在同一 NUMA 节点，且不同域不共享 SMT 物理核。SDK 创建、启动、登录、重连和销毁在 SDK CPU 集合中进行，进程内不再有输入、写盘或 I/O 线程；同步报单回调保持业务核，原生工作线程回调强制进入 SDK 域。任一拓扑、亲和性或 `MPOL_BIND` 失败立即返回错误，没有降级。已有内存页不会自动迁移。配置 placement 后，`async-log` 线程和 Tokio 按需创建的解析线程同样移到后台 CPU，启动时 trader log 的 `placement_audit` 列出仍可能运行在业务核上的其他线程（正常为空），布局说明见 [CTP 单业务核](ctp_layout.md#单核心绑定)。
 
 原生配置必须明确给出 `TCPTradingCPUID`、`TimerCPUID`，XTCP 还需给出 `XTCPTradingCPUID`，这些 CPU 都必须属于 `placement.sdk_cpus`。配置检查只做字段与 CPUID 校验，不设置线程策略；真正连接时才验证系统拓扑并绑定。SDK 和后台集合可以包含多个同节点物理核，CTP 的固定布局仍单独要求每域一个核。`TradingServerTimeout=-1` 可使 SDK 回报线程忙轮询，会额外占用核。实际编号见 [配置示例](../config/yida_trade.example.toml)，尚无真实柜台延迟指标。
@@ -257,7 +268,8 @@ stdin 每行一个 JSON。CTP 和易达使用同一 `Intent` 与 `OrderKey` 结�
 - 快照中若插入独立实时回调、出现不支持的事实、遗漏尚未确定结果的本地订单或对账失败，就不解除阻断。`notifyCaughtUp` 不是每笔不确定出站请求最终处置的证明；`findOrders` 只包含交易所已接受的委托，不能用查不到来推断拒绝。重启前应保留和审查审计，不能用新进程抹掉发送不确定性。
 - `reconcile` 主动断开以触发新登录 / 追平，断线保留原有预占。跨交易日、柜台切换、持续成交中的重放顺序和 SDK 查询的线程保证仍需柜台仿真验证。按交易日重启并完成恢复；不按自然午夜重置仓位。
 - `notifyTradingSegment` 的参数没有被解释成“连续交易中”。首期不提供已验证的实时交易时段门控，使用原生权限、合约有效期和 `checkOrder` / 柜台验证；本地不能保证休市时提前拒绝。后续接入可靠交易状态源后再启用相应门控。
-- 权限 / 账户变化会阻断新增订单并要求恢复；可靠队列溢出通过队列外故障标记使进程停下，不静默继续。SDK `ServerRestarted` 回调会触发 `startDestroy`，避免厂商默认直接退出进程；之后需要新建实例并恢复。
+- 权限 / 账户变化会阻断新增订单并要求恢复；可靠队列溢出通过队列外故障标记使进程停下，不静默继续。SDK `ServerRestarted` 回调会触发 `startDestroy`，避免厂商默认直接退出进程；桥接上报独立事件 `SERVER_RESTARTED`（不再与回调异常共用 fatal），运行时记录 `restart_required`、排空尾部回报后以状态码 75 退出，按[冷启动](#冷启动)重新创建实例并恢复。
+- 登录／恢复在 `response_timeout_ms` 内未完成（含启动时柜台未开放、断线后 SDK 迟迟未重连）同样冷启动；若此前已锁定原生不一致（fatal、缺失订单、权限变化），超时改为普通退出，留给人工处理。
 - SDK 生命周期遵循异步 `startDestroy` → `notifyAfterApiDestroy`，不直接 `delete api`。若 5 秒未完成销毁，保留回调对象到进程退出，避免释放仍可能被调用的地址；已启动的动态库保持映射，避免 SDK 尾部线程返回到卸载代码。
 - 原生回报、归一化订单与事实成交异步推送到同目录的独立 `persist_manager` 进程写入 RocksDB，支持重启核对和原生导出，详见[持久化说明](cn_order_persistence.md)。发送前记录存在崩溃窗口；`sync_before_send` 已移除，旧配置带此字段会被拒绝。原加密市场 account_monitor、Parquet 与 gRPC 同步尚未接入此入口。没有自动做市、追单、实时保证金计算或端到端延迟承诺。
 

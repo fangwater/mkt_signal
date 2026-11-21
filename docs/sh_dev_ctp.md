@@ -89,7 +89,7 @@ Rust 运行时排空 SDK 回报并关闭持久化写入。
 Ubuntu 用户 systemd 服务为 `ctp_chuangyuan01-trader.service`，已启用开机启动和
 user linger。组合进程在前置离线时等待 SDK 重连。资金查询超时、连续三次重试仍未
 就绪，柜台连接或控制请求响应超时，或行情登录成功但前置尚未返回有效交易日时，进程排空审计后以状态码 75
-结束，systemd 在 60 秒后冷启动。等待行情交易日期间，Viz 显示「等待行情交易日」。其他退出
+结束，systemd 按 drop-in `10-cold-restart.conf` 在 60 秒后冷启动（与易达 paper 相同）。等待行情交易日期间，Viz 显示「等待行情交易日」。其他退出
 保持 `Restart=no`。环境脚本根据 `[exec]` 选择运行模式，实盘配置要求明确的
 合约范围和 Manager gRPC 订阅。
 

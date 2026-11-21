@@ -315,7 +315,7 @@ impl Session {
         if day.len() != 8 || day.starts_with('0') || !day.bytes().all(|b| b.is_ascii_digit()) {
             // A front can accept login before exposing the next trading day.
             // Keep the session unready and let the owner restart the SDK cold.
-            return Err(super::ColdRestartRequired::MarketDataTradingDay.into());
+            return Err(crate::restart::ColdRestartRequired::MarketDataTradingDay.into());
         }
         self.trading_day = Some(day.to_owned());
         self.logged_in = true;
@@ -566,7 +566,7 @@ mod tests {
             assert!(!s
                 .login(&response)
                 .unwrap_err()
-                .is::<super::super::ColdRestartRequired>());
+                .is::<crate::restart::ColdRestartRequired>());
             assert!(!s.ready());
         }
     }
@@ -579,7 +579,7 @@ mod tests {
             response.trading_day = day;
             assert!(matches!(
                 session.login(&response).unwrap_err().downcast_ref(),
-                Some(super::super::ColdRestartRequired::MarketDataTradingDay)
+                Some(crate::restart::ColdRestartRequired::MarketDataTradingDay)
             ));
             assert!(!session.logged_in && !session.ready());
         }

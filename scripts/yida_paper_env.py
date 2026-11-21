@@ -16,6 +16,9 @@ BASE = Path(__file__).resolve().parent.parent
 # Stop order. Start runs in reverse, so persist_manager is up before the trader
 # publishes and stops only after the trader has drained.
 COMPONENTS = ("trader", "persist", "viz")
+# Same drop-in as the CTP environment: only cn_futures::restart exit 75 (venue
+# server restart, login/recovery timeout) restarts the trader; Restart=no otherwise.
+COLD_RESTART = "[Service]\nRestartForceExitStatus=75\nRestartSec=60s\n"
 
 
 def config(name):
@@ -92,6 +95,11 @@ def install():
         if path.exists() and path.read_text() != content:
             raise RuntimeError(f"existing unit differs: {path}; preserve operator configuration")
         path.write_text(content)
+    drop_in = directory / f"{unit('trader')}.d" / "10-cold-restart.conf"
+    if drop_in.exists() and drop_in.read_text() != COLD_RESTART:
+        raise RuntimeError(f"existing cold-restart policy differs: {drop_in}; preserve operator configuration")
+    drop_in.parent.mkdir(exist_ok=True)
+    drop_in.write_text(COLD_RESTART)
     systemctl("daemon-reload")
     systemctl("enable", *(unit(c) for c in COMPONENTS))
 
