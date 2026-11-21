@@ -154,7 +154,7 @@ impl Config {
             "invalid event capacity"
         );
         ensure!(self.response_timeout_ms >= 5000, "invalid response timeout");
-        self.poll.validate(1000)?;
+        self.poll.validate(crate::poll::MAX_SLEEP_US)?;
         let mut seen = HashSet::new();
         ensure!(
             !self.symbols.is_empty(),

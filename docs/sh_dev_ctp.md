@@ -65,6 +65,11 @@ stdout 即 trader 日志），`start` 先起持久化再起交易，`IPC_NAMESPA
 `assign_position` 以原成本 3007 记入 `cn-futures-01-rb-1h`。Manager 以 rebase 在新流水上重设锚点
 （revision 34，分钟收盘 2997 估值）。云端导出器同步更新并重置导出状态，8811 Viz 同步更新。
 
+2026-11-21 两项调整：启动恢复只读打开 RocksDB 时会留下 flush/compaction 线程，原先在业务线程上创建，
+`placement_audit` 列出 `rocksdb:low` / `rocksdb:high` 两个入侵线程；现在恢复在后台 CPU 域内执行，线程落在 CPU 3，
+审计为空。云主机部署把 `poll` 改为 `{ mode = "sleep", idle_us = 100000 }`（100 ms，上限）。周六 08:52 换装重启，
+前置未开放时进程等待重连。
+
 ## 操作入口
 
 ```bash

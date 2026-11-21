@@ -33,7 +33,8 @@ flowchart LR
 - 业务线程在 `Placement::enter` 时绑定 B 并 `MPOL_BIND` 到配置的 NUMA 节点；SDK 在 `on_sdk` 内以 SDK 掩码创建，内部工作线程继承 T/M。
 - `async-log` 线程在读取配置前已启动，启动交易前按其 TID 移到后台 CPU。
 - Tokio `IoLoop` 是业务线程上的 current-thread 运行时；它按需创建的解析线程（最多 2 个）在线程启动钩子中移到后台 CPU。
-- 证据持久化、JSON、RocksDB 和 trader log 在独立 `persist_manager` 进程，按其自身部署绑定到其他核（例如后台核）。
+- 证据持久化、RocksDB 写入和 trader log 在独立 `persist_manager` 进程，按其自身部署绑定到其他核（例如后台核）。
+- 启动恢复在后台 CPU 域内只读打开 `persist_manager` 的库；RocksDB 在此创建的 flush/compaction 线程（`rocksdb:low` / `rocksdb:high`）随进程常驻，因而落在后台 CPU。
 - 持仓观察 IPC 由业务线程定时直接发布定长 bincode，没有发送线程。
 
 启动后 trader log 输出 `placement_audit`，列出除业务线程外仍可能被调度到 B 的线程（`tid:名称:CPU 列表`），正常应为空；非空时同时写 warn 日志。日志格式化和入队仍在调用线程上发生（异步写出，满队丢弃计数）；busy poll 部署如需完全静默可调高 `RUST_LOG` 级别。

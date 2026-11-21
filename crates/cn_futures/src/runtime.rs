@@ -316,11 +316,15 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
             )
         })
         .transpose()?;
-    let journal = PersistChannel::start(
-        &database,
-        redactions,
-        PersistChannel::persist_manager_sink()?,
-    )?;
+    // Startup recovery opens RocksDB, whose flush/compaction pools outlive the
+    // read; spawn them on the background CPUs, not the business CPU.
+    let journal = placement.on_background(|| {
+        PersistChannel::start(
+            &database,
+            redactions,
+            PersistChannel::persist_manager_sink()?,
+        )
+    })?;
     let restored = journal.take_previous_ledger();
     let restored_markets = restored.len();
     strategy.restore_ledger(restored)?;

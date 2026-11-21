@@ -62,11 +62,15 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
             )
         })
         .transpose()?;
-    let journal = PersistChannel::start(
-        &database,
-        redactions,
-        PersistChannel::persist_manager_sink()?,
-    )?;
+    // Startup recovery opens RocksDB, whose flush/compaction pools outlive the
+    // read; spawn them on the background CPUs, not the business CPU.
+    let journal = on_background(placement.as_ref(), || {
+        PersistChannel::start(
+            &database,
+            redactions,
+            PersistChannel::persist_manager_sink()?,
+        )
+    })?;
     let trader = on_sdk(placement.as_ref(), || {
         YidaTrader::new_placed(
             &config,
@@ -635,6 +639,16 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
         "Yida callback pipeline/destruction failed on shutdown; evidence retained"
     );
     outcome
+}
+
+fn on_background<T>(
+    placement: Option<&crate::placement::Placement>,
+    call: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    match placement {
+        Some(p) => p.on_background(call),
+        None => call(),
+    }
 }
 
 fn on_sdk<T>(
