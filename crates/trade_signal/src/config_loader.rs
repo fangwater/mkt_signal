@@ -22,13 +22,13 @@ use super::arb_decision::ArbDecision;
 use super::fr_threshold_loader::load_from_redis as load_fr_thresholds;
 use super::mm_decision::MmDecision;
 use super::rolling_threshold_sync::{
-    alias_single_side_payloads, apply_xarb_spread_thresholds, default_fr_spread_mapping,
-    default_single_side_rolling_key, default_xarb_spread_mapping, factor_chain_to_funding_mapping,
-    format_quantile_field_ref, funding_chain_config_key, intra_mt_factor_overrides,
-    merge_rolling_payloads, normalize_xarb_symbol, parse_funding_chain_config,
-    parse_plain_mapping_config, parse_xarb_mapping_config, parse_xarb_rolling_payloads,
-    resolve_funding_thresholds, resolve_symbol_quantile_thresholds,
-    resolve_symbol_single_quantile_thresholds, xarb_spread_mapping_key,
+    alias_single_side_payloads, apply_xarb_spread_thresholds, default_single_side_rolling_key,
+    default_xarb_spread_mapping, factor_chain_to_funding_mapping, format_quantile_field_ref,
+    funding_chain_config_key, intra_mt_factor_overrides, merge_rolling_payloads,
+    normalize_xarb_symbol, parse_funding_chain_config, parse_xarb_mapping_config,
+    parse_xarb_rolling_payloads, resolve_fr_spread_mapping, resolve_funding_thresholds,
+    resolve_symbol_quantile_thresholds, resolve_symbol_single_quantile_thresholds,
+    xarb_spread_mapping_key,
 };
 use super::strategy_loader::StrategyParams;
 use super::symbol_list::SymbolList;
@@ -694,6 +694,7 @@ async fn reload_fr_dynamic_thresholds_from_rolling(
     hedge_venue: TradingVenue,
 ) -> Result<()> {
     let spread_config_key = fr_spread_mapping_key(open_venue, hedge_venue);
+    let spread_override_key = format!("{}:{spread_config_key}", funding_env_dir_or_panic());
     let funding_chain_key = funding_chain_config_key("fr", open_venue, hedge_venue);
     let default_rolling_key = default_rolling_thresholds_key(open_venue, hedge_venue);
     let active_symbols: HashSet<String> = SymbolList::instance()
@@ -704,13 +705,15 @@ async fn reload_fr_dynamic_thresholds_from_rolling(
         .collect();
 
     let mut client = RedisClient::connect(redis.clone()).await?;
-    let spread_config = parse_plain_mapping_config(
-        client
-            .hgetall_map(&spread_config_key)
-            .await
-            .unwrap_or_default(),
-        default_fr_spread_mapping(),
-    );
+    let shared_spread_mapping = client
+        .hgetall_map(&spread_config_key)
+        .await
+        .with_context(|| format!("read FR spread mapping key={spread_config_key}"))?;
+    let spread_overrides = client
+        .hgetall_map(&spread_override_key)
+        .await
+        .with_context(|| format!("read FR spread overrides key={spread_override_key}"))?;
+    let spread_mapping = resolve_fr_spread_mapping(shared_spread_mapping, spread_overrides);
     let funding_config =
         parse_funding_chain_config(client.get_string(&funding_chain_key).await.unwrap_or(None));
     let funding_mapping = factor_chain_to_funding_mapping(&funding_config.factor_chain);
@@ -768,7 +771,7 @@ async fn reload_fr_dynamic_thresholds_from_rolling(
     let rolling_payloads =
         merge_rolling_payloads(vec![pair_payloads, open_payloads, hedge_payloads]);
     let (resolved_spread, spread_missing_refs, spread_skipped) =
-        resolve_symbol_quantile_thresholds(&rolling_payloads, &spread_config.mapping);
+        resolve_symbol_quantile_thresholds(&rolling_payloads, &spread_mapping);
     let (resolved_funding, funding_missing_refs, funding_skipped) =
         resolve_symbol_quantile_thresholds(&rolling_payloads, &funding_mapping);
 
@@ -791,11 +794,11 @@ async fn reload_fr_dynamic_thresholds_from_rolling(
     }
 
     info!(
-        "fr rolling thresholds 应用完成 rolling_key={} active_symbols={} rolling_symbols={} spread_cfg_fields={} spread_applied={} spread_skipped={} spread_missing_refs={} funding_chain_len={} funding_chain_enabled={} funding_symbols={} funding_skipped={} funding_missing_refs={}",
+        "fr rolling thresholds 应用完成 rolling_key={} active_symbols={} rolling_symbols={} spread_cfg_fields={} spread_applied={} spread_skipped={} spread_missing_refs={} funding_chain_len={} funding_chain_enabled={} funding_symbols={} funding_skipped={} funding_missing_refs={} spread_override_key={} forward_open_mm={} forward_cancel_mm={}",
         rolling_key,
         active_symbols.len(),
         rolling_payloads.len(),
-        spread_config.mapping.len(),
+        spread_mapping.len(),
         spread_applied,
         spread_skipped.len(),
         spread_missing_refs,
@@ -804,6 +807,9 @@ async fn reload_fr_dynamic_thresholds_from_rolling(
         funding_symbols,
         funding_skipped.len(),
         funding_missing_refs,
+        spread_override_key,
+        spread_mapping.get("forward_open_mm").map_or("-", String::as_str),
+        spread_mapping.get("forward_cancel_mm").map_or("-", String::as_str),
     );
 
     Ok(())

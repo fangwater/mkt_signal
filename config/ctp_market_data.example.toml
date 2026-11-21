@@ -11,6 +11,11 @@ event_capacity = 8192
 response_timeout_ms = 30000
 reconnect_backoff_ms = 5000
 
+# Combined ctp-trader can use the SHFE list or static symbols for baseline observation.
+# Omit both for target-driven subscriptions only. Standalone ctp-md requires symbols.
+# The process requests the SHFE list after MdApi reports its trading day.
+# shfe_dominant_url = "http://127.0.0.1:18313/api/v1/dominant"
+
 [[symbols]]
 venue = "CFFEX"
 symbol = "IF2612"

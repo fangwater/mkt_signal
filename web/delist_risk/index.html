@@ -554,25 +554,25 @@
       }
       function flattenControl(account, hit) {
         const positionStatus = positionStatusByKey.get(flattenKey(account.slug, hit.symbol));
-        if (positionStatus && positionStatus.closed) {
+        const item = flattenByKey.get(flattenKey(account.slug, hit.symbol));
+        if (positionStatus && positionStatus.closed && !item) {
           const open = Number(positionStatus.open_usdt || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
           const hedge = Number(positionStatus.hedge_usdt || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
           return `<span class="closed-state"><strong>声明要下架，但已平仓完毕</strong><span>现货 ${escapeHtml(open)}U · 合约 ${escapeHtml(hedge)}U</span></span>`;
         }
-        const item = flattenByKey.get(flattenKey(account.slug, hit.symbol));
         if (!item) return '';
         const audit = item.latest || {};
         const position = `${Number(item.position_usdt || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}U`;
         const timing = `距下架 ${formatHours(item.remaining_ms)}`;
         let state = item.disposition === 'manual' ? '需人工清仓' : '等待自动清仓';
+        if (item.disposition === 'arb_close') state = '下架策略平仓';
         let action = item.disposition === 'manual';
         if (audit.status === 'running' || audit.status === 'notifying') {
           state = audit.status === 'running' ? '清仓执行中' : '正在推送告警';
           action = false;
         } else if (audit.status === 'success') {
-          const residualPosition = Number(item.snapshot_ms || 0) > Number(audit.completed_ms || 0);
-          state = residualPosition ? '清仓后仍有持仓，需人工处理' : '清仓脚本已完成';
-          action = residualPosition;
+          state = '收口脚本已完成';
+          action = false;
         } else if (audit.status === 'failed') {
           state = '自动清仓失败，需人工处理';
           action = true;
@@ -601,7 +601,7 @@
         if (!account.hits || !account.hits.length) return row;
         const hits = account.hits.map((hit) => {
           const positionStatus = positionStatusByKey.get(flattenKey(account.slug, hit.symbol));
-          return `<div class="hit ${positionStatus && positionStatus.closed ? 'hit--closed' : ''}"><span class="symbol">${escapeHtml(hit.symbol)}</span><span class="hit__detail">${escapeHtml(conclusion(hit))}</span>${flattenControl(account, hit)}</div>`;
+          return `<div class="hit ${positionStatus && positionStatus.closed && !flattenByKey.has(flattenKey(account.slug, hit.symbol)) ? 'hit--closed' : ''}"><span class="symbol">${escapeHtml(hit.symbol)}</span><span class="hit__detail">${escapeHtml(conclusion(hit))}</span>${flattenControl(account, hit)}</div>`;
         }).join('');
         return `${row}<tr class="hit-row"><td colspan="7"><div class="hit-list">${hits}</div></td></tr>`;
       }

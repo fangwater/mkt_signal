@@ -204,42 +204,46 @@ SID_MARKETS = {
 - Factor frequency is 10s. Trade baseline is stored at 5s, 10s, and 1m (`60s` table name). Orderbook is stored as `{venue}_5s_depth` only.
 - Ylabel is its own ClickHouse table, not a column suffix on the market table. Benchmarks are `twap`, `vwap`, `midp`. Horizons are 5s, 10s, 30s, 1m, 5m. The 5s row `ts=t` stores the closed bucket `[t-5s, t)`.
 
-## Domestic Futures Baseline Replay
+## Domestic Futures Post-Market Pipeline (moved out)
 
-`crates/cn_futures_l2` is the only maintained Tonglian domestic-futures replay
-and export implementation. It writes the production RocksDB and derives 1s,
-1min, ylabel, and HFQ parquet outputs. The former root binary
-`tonglian_baseline_replay` and its ClickHouse staging configuration were removed
-when this crate replaced them; do not restore or run that path.
+The Tonglian domestic-futures replay and export pipeline (`cn_futures_l2`:
+RocksDB, 1s / 1min / ylabel / HFQ parquet) and the continuous-session trimmer
+(`cn_futures_trim`) moved to the post-market repository `market_replay`
+(GitHub `fangwater/market_replay`, local `/home/fanghaizhou/market_replay`) on
+2026-11-14. Do not restore them here; production runs and their rules
+(PostgreSQL multipliers only, no inline maps, panic on missing product) are
+documented there. The former root binary `tonglian_baseline_replay` stays
+retired.
 
-`cn_futures_l2` loads `volume_multiple` values and their `verified` state only
-from the read-only PostgreSQL table
-`market_metadata.public.domestic_future_product_multipliers` through Unix socket
-`/mnt/nvme-raid0-28t/postgresql/domestic_futures/16/run` on port `5433`. Do not
-restore inline product maps, DataGateway or exchange-API calls, turnover
-inference, or a default of `1`. A product missing from the loaded catalog must
-panic with identifying context. This explicit batch-tool rule is an exception
-to the long-running-service panic guidance below. Never write to this metadata
-instance and never use the read-only PostgreSQL standby on port `5432` for this
-workflow.
+Logic shared between live trading and the post-market pipeline lives in that
+repository's IO-free crate `cn_futures_core` (MDL frame parser, sessions,
+universe, snapshot-to-trade state machine, 1-minute aggregation).
+`cn_futures_pbs` depends on it by `git` + pinned `rev`; private-repo fetches use
+`[net] git-fetch-with-cli = true` in `.cargo/config.toml`. Never re-implement
+those rules locally. To take a core change: land and push it in
+`market_replay` (with its equivalence checks), bump `rev`, then run
+`cargo test -p cn_futures_pbs` here. For simultaneous local edits use a
+temporary `[patch."ssh://git@github.com/fangwater/market_replay.git"]` path
+override and remove it before committing.
 
 The current table is an undated 88-product snapshot. Replay configs must retain a separately validated bounded date range; do not infer full historical applicability from the table. Snapshot-construction provenance lives in `../preprocess/database/domestic_future_product_multipliers.sql` and is not a runtime source.
 
-## LSEG US Stock Replay
+## CME And US-Stock Post-Market Pipelines (moved out)
 
-US-stock production replay code is maintained in this repository. Keep the
-three source products separate because their source contracts and persisted
-codecs differ:
+The CME TAS / LL2 / Raw LL2 replay and export crate (`cme_tas_replay`), the six
+LSEG US-stock replay crates (`usstock_replay`, `usstock_lseg_mbp_replay`,
+`usstock_lseg_raw_replay`, `usstock_lseg_rawll2_replay`,
+`usstock_nasdaq_baseline`, `usstock_aggregate_baseline`) and their configs,
+scripts and docs moved to the post-market repository `market_replay`
+(GitHub `fangwater/market_replay`, local `/home/fanghaizhou/market_replay`) on
+2026-11-15. Run and maintain them there; their rules (keep the three LSEG
+source products separate, data contracts in `../preprocess/data_format/lseg/`)
+are documented there. `cme_roll_metadata` lives in that repository's shared
+`crates/core` and is pinned here by `git` + `rev`, like `cn_futures_core`.
 
-- `crates/usstock_replay`: TAS/normalised source-row replay and downstream tools.
-- `crates/usstock_lseg_mbp_replay`: Market By Price raw replay, template audit,
-  Python correctness baseline, and MBP/normalised comparison tools.
-- `crates/usstock_lseg_raw_replay`: general RAW zstd staging, typed event replay,
-  verifier, schema printer, Python correctness baselines, and audit fixtures.
-
-The data-contract and audit-result documentation remains in
-`../preprocess/data_format/lseg/`. Do not add replay implementations back under
-`preprocess`.
+The offline factor replays `cn_features_1min_hfq`, `cme_features_1min_hfq` and
+`usstock_features_1min_hfq` stay in this crate because they reuse the live
+factor formulas in `src/factor_pub`.
 
 ## IPC And Config
 
@@ -255,6 +259,54 @@ Key config files:
 - `config/viz.toml`: visualization server.
 
 Prefer existing config loaders and Redis sync/print scripts over ad hoc parsing.
+
+## CTA Hourly Factor Warm-Up
+
+### Domestic Futures CTA
+
+`cta-cn-futures` uses the domestic futures market gRPC service for startup
+history. Read the product's published `baseline_data_1min_hfq` generation and
+construct hourly bars using the strategy's domestic session aggregation.
+Use native contract minutes, trading sessions, and monthly size thresholds for
+the handoff to live ZMQ. Use the environment-local preflight to verify that all
+enabled rules are ready and the factual position ledger is preserved before
+replacing the worker. Live readiness requires matching the first complete ZMQ
+minute to the finalized gRPC minute, then consuming the subsequent buffered ZMQ
+minutes in order. See [Domestic futures CTA](docs/cta_cn_futures.md#数据接续).
+
+### Crypto CTA
+
+The Tardis archive and Kafka continuity requirements in this section apply to
+crypto CTA. Whenever a crypto CTA deployment, factor-list change, or replay
+includes `1h` factors, build and validate native hourly warm-up inputs locally
+from the matching venue's Tardis history before publishing the change. Kline is
+a valid input format. Construct historical hourly bars from Tardis trades and
+add Tardis `incremental_book_L2` when the factor, BBO-based NQ, or spread
+requires it. This applies to every crypto venue, including Binance and OKX, and
+covers each hourly formula, NQ dependency, and both legs of an hourly spread.
+The hourly inputs are synthesized locally from Tardis raw data.
+
+Do not substitute exchange REST Klines, Kafka retention plus future live
+accumulation, another venue's history, or precomputed factor scores for this
+warm-up. Preserve the live formula windows, normalization, rank windows, raw
+quantity units and factual previous-month size classification. Build enough
+history to validate the requested factors with the real engine; investigate
+unready or null-valued outputs rather than weakening readiness gates.
+
+Before stopping the current crypto worker, validate the archive's market/symbol
+coverage, SHA-256 hashes, closed-hour bounds and continuity through the first
+retained Kafka source hour. Missing files or an uncovered interval must block
+the replacement, with the current live generation and position ledgers retained.
+Preserve already-warm ordinary minute normalization/rank windows when
+restarting a shared worker. A minute checkpoint may continue only this
+worker's factual live state with matching definitions and size thresholds;
+it is never a substitute for Tardis hourly inputs.
+
+### All CTA Workers
+
+Historical warm-up must not publish past targets, reconstruct historical
+positions or enable a disabled strategy. Keep an explicit deployment receipt
+of per-market inputs, per-frequency readiness and preserved live state.
 
 ## Exchange-Specific Notes
 

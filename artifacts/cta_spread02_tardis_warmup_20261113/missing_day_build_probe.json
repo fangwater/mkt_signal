@@ -1,0 +1,5 @@
+{
+  "expected_failure": true,
+  "returncode": 1,
+  "error": "Error: no trades for ATOMUSDT"
+}

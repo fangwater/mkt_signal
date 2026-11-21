@@ -1,6 +1,6 @@
 # Exchange Public API Cache
 
-最后更新：2026-11-12 13:51 UTC（Delist 已移除敞口检查的额外交易规则轮询；既有下架来源保持）
+最后更新：2026-11-13 08:06 UTC（Spread Tardis 小时预热上线，移除其 REST NQ 兜底）
 
 2026-11-12，Gate FR `pre_trade` 增加持仓缺失标记价的异步 REST 兜底，
 已随 `293f6352` 于 10:13 UTC 发布至 JP `gate_fr_arb01–04`，四盘仍关闭 `trade_signal`。
@@ -42,6 +42,13 @@
 目录不可用时拒绝本次编辑，不据此清空配置。不新增 Nginx 监听、缓存或白名单，
 不向因子运行层增加行情完整性校验；未部署。本公共端点契约见
 [Exchange Information](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Exchange-Information)。
+
+2026-11-13，CTA 小时预热代码改为按市场加载本地 Tardis 合成输入，移除下述
+一次性 Binance REST Kline NQ 兜底。Kline 格式仍有效，历史源改为 Tardis。
+07:42 UTC 已在 JP `cta-factor-spread` 安装，PID1140614，CPU18；08:06 UTC已追平并恢复新bar决策。
+本地 OKX 缺日已补齐，两市场 Tardis 小时包截止 11/12 00:00 UTC。
+Prep worker 本次保持原运行版本，未随该 Spread 发布更新。
+没有新增公共 REST、Nginx 缓存、监听或白名单；其他 Kline 消费者保持各自用途。
 
 2026-11-09，CTA Prep/Spread 的 1h NQ 启动和新代次回放增加一次性历史价格预热，
 复用 Binance 官方公共 `GET /fapi/v1/klines`，固定 `interval=1h`，仅取第一条 Kafka

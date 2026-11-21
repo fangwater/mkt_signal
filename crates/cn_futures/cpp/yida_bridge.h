@@ -2,6 +2,15 @@
 #include <stddef.h>
 #include <stdint.h>
 // Owned POD copies only. No vendor pointer crosses this boundary.
+struct CnYidaAccount {
+    uint64_t present;
+    double balance, pre_balance, pre_cash_balance, pre_market_value, pre_position_market_value;
+    double deposit, withdraw, frozen_withdraw, max_money_usage, available;
+    double close_profit, other_close_profit, cash_in, commission, message_commission;
+    double margin, margin2, position_profit, position_market_value;
+    double exec_margin, exec_allocated_amount, exec_allocated_frozen_amount;
+    double sdk_cash_balance, sdk_market_value;
+};
 struct CnYidaEvent {
     int32_t kind, error, day, reference, direction, offset, hedge;
     int32_t status, lots, traded, date, position_direction, frozen, minimum, maximum;
@@ -16,6 +25,7 @@ struct CnYidaEvent {
     char symbol[64], exchange[12], original_order_id[64], original_trade_id[64];
     char connection_info[28], insert_flow[32], cancel_flow[32];
     char underlying[64], underlying_exchange[12];
+    CnYidaAccount account;
 };
 struct CnYidaOrderRequest {
     char exchange[12], symbol[64];
@@ -53,7 +63,7 @@ struct CnYidaL1 {
     uint64_t generation;
     int32_t initial, connected, product_class, contract_multiple, trading_day;
     int32_t native_timestamp, last_trade_timestamp, bid_lots, ask_lots, market_flags;
-    double last_price, bid_price, ask_price;
+    double last_price, bid_price, ask_price, lower_limit, upper_limit;
     char symbol[64], exchange[12], native_time[24], last_trade_time[24];
 };
 using CnYidaL1Callback = void (*)(void*, const CnYidaL1*);

@@ -5,15 +5,53 @@ fn long_instrument_identifiers_remain_complete_in_raw_audit() {
     let mut event = RawEvent::default();
     event.symbol[..63].fill(b'x');
     event.underlying[..63].fill(b'y');
-    assert_eq!(text(&event.symbol).unwrap(), "x".repeat(63));
-    assert_eq!(text(&event.underlying).unwrap(), "y".repeat(63));
+    assert_eq!(text::<81>(&event.symbol).unwrap(), "x".repeat(63));
+    assert_eq!(text::<81>(&event.underlying).unwrap(), "y".repeat(63));
     let value = serde_json::to_value(event).unwrap();
     assert_eq!(value["symbol"].as_array().unwrap().len(), 64);
     assert_eq!(value["symbol"][62], u64::from(b'x'));
     assert_eq!(value["symbol"][63], 0);
     assert_eq!(value["underlying"][62], u64::from(b'y'));
     event.symbol[63] = b'x';
-    assert!(text(&event.symbol).is_err());
+    assert!(text::<81>(&event.symbol).is_err());
+}
+
+#[test]
+fn passive_account_audit_keeps_sdk_equity_separate_from_the_risk_budget() {
+    let mut event = RawEvent {
+        kind: ACCOUNT,
+        day: 20261117,
+        replay: 1,
+        available: 12.0,
+        ..RawEvent::default()
+    };
+    assert!(serde_json::to_value(event)
+        .unwrap()
+        .get("account")
+        .is_none());
+    event.account.present = 1;
+    event.account.balance = 20.0;
+    event.account.pre_cash_balance = 25.0;
+    event.account.pre_market_value = 30.0;
+    event.account.frozen_withdraw = 7.0;
+    event.account.cash_in = -8.0;
+    event.account.position_market_value = -3.0;
+    event.account.sdk_market_value = f64::NAN;
+    event.account.margin2 = f64::MAX;
+    let value = serde_json::to_value(event).unwrap();
+    assert_eq!(value["day"], 20261117);
+    assert_eq!(value["available"], 12.0);
+    let account = &value["account"];
+    assert_eq!(account["valuation_basis"], "sdk_mark_time_unverified");
+    assert_eq!(account["currency"], "CNY");
+    assert_eq!(account["balance"], 20.0);
+    assert_eq!(account["pre_cash_balance"], 25.0);
+    assert_eq!(account["pre_market_value"], 30.0);
+    assert_eq!(account["frozen_withdraw"], 7.0);
+    assert_eq!(account["cash_in"], -8.0);
+    assert_eq!(account["position_market_value"], -3.0);
+    assert!(account["sdk_market_value"].is_null());
+    assert!(account["margin2"].is_null());
 }
 use session::Session;
 fn config() -> config::Config {
@@ -43,10 +81,10 @@ fn public_simulation_is_endpoint_pinned_and_has_one_lot_limits() {
             .validate_sdk_config_text(&(native.clone() + extra))
             .is_err());
     }
-    c.risk.max_order_lots = 2;
+    c.risk.max_order_lots = Some(2);
     assert!(c.validate().is_err());
-    c.risk.max_order_lots = 1;
-    c.risk.max_working_lots = 3;
+    c.risk.max_order_lots = Some(1);
+    c.risk.max_working_lots = Some(3);
     assert!(c.validate().is_err());
 }
 
@@ -412,10 +450,7 @@ fn malformed_order_reports_never_become_valid_oms_updates() {
         },
     ];
     for (i, event) in invalid.into_iter().enumerate() {
-        assert!(
-            event.to_order(key.clone()).is_err(),
-            "invalid order case {i}"
-        );
+        assert!(event.to_order(key).is_err(), "invalid order case {i}");
     }
     for (venue, symbol) in [
         ("CFFEX", "IF2612"),
@@ -427,7 +462,7 @@ fn malformed_order_reports_never_become_valid_oms_updates() {
         e.symbol.fill(0);
         put(&mut e.exchange, venue);
         put(&mut e.symbol, symbol);
-        assert!(e.to_order(key.clone()).is_err());
+        assert!(e.to_order(key).is_err());
     }
 }
 
@@ -449,10 +484,10 @@ fn native_market_reports_use_exchange_attribute_and_allow_zero_order_price_only(
                 put(&mut e.exchange, venue);
                 put(&mut e.symbol, symbol);
                 let key = e.recovered_key().unwrap();
-                let order = e.to_order(key.clone()).unwrap();
+                let order = e.to_order(key).unwrap();
                 assert_eq!(order.price_type, PriceType::Market);
                 e.price = -1.0;
-                assert!(e.to_order(key.clone()).is_err());
+                assert!(e.to_order(key).is_err());
                 e.price = f64::NAN;
                 assert!(e.to_order(key).is_err());
                 // A factual fill still requires a positive execution price.
@@ -480,7 +515,7 @@ fn historical_rejections_are_audit_only_before_the_snapshot_barrier() {
     assert!(s.is_pre_snapshot_rejection(&e));
     let key = OrderKey {
         session: session_key(e.day),
-        order_ref: e.reference.to_string(),
+        order_ref: Text::format(format_args!("{}", e.reference)).unwrap(),
     };
     e.to_order(key).unwrap();
     assert!(!s.is_pre_snapshot_rejection(&RawEvent { replay: 1, ..e }));
@@ -572,9 +607,9 @@ fn restored_core() -> crate::core::TradingCore {
         .unwrap()
         .unwrap();
     let mut risk = c.risk;
-    risk.max_order_lots = 3;
-    risk.max_position_lots_per_side = 3;
-    risk.max_working_lots = 3;
+    risk.max_order_lots = Some(3);
+    risk.max_position_lots_per_side = Some(3);
+    risk.max_working_lots = Some(3);
     let mut core = crate::core::TradingCore::new(risk, scope()).unwrap();
     core.restore(snapshot).unwrap();
     core
@@ -606,8 +641,7 @@ fn native_terminal_reports_before_fills_preserve_factual_positions_and_reservati
             reference: prepared.key.order_ref.parse().unwrap(),
             ..valid_order()
         };
-        core.on_order(&e.to_order(prepared.key.clone()).unwrap())
-            .unwrap();
+        core.on_order(&e.to_order(prepared.key).unwrap()).unwrap();
         assert_eq!(core.position(Venue::Shfe, "cu2612", Side::Buy).total(), 0);
         assert_eq!(core.order(&prepared.key).unwrap().filled, 0);
         assert!(core.order(&prepared.key).unwrap().local_cash_held > 0.0);
@@ -816,7 +850,7 @@ fn vendor_codes_are_integer_and_shfe_close_dates_are_explicit() {
     assert_eq!(o.offset, Offset::CloseToday);
     assert_eq!(o.key.order_ref, "0");
     e.direction = 48;
-    assert!(e.to_order(o.key.clone()).is_err());
+    assert!(e.to_order(o.key).is_err());
     e.direction = 0;
     e.offset = 1;
     assert!(e.to_order(o.key).is_err());
@@ -917,7 +951,7 @@ fn server_accept_without_system_id_keeps_known_local_order_pending() {
         session: session_key(e.day),
         order_ref: "101".into(),
     };
-    let o = e.to_order(key.clone()).unwrap();
+    let o = e.to_order(key).unwrap();
     assert_eq!(o.status, OrderStatus::Pending);
     assert!(o.system_id.is_empty());
     e.status = 1;

@@ -1,4 +1,7 @@
 pub mod config;
+mod cta;
+mod l1;
+mod manager;
 mod relay;
 mod server;
 
@@ -13,14 +16,50 @@ fn now_us() -> u64 {
     runtime_common::time_util::get_timestamp_us().max(0) as u64
 }
 
-fn spawn(source: Counter, hub: Hub) -> tokio::task::JoinHandle<()> {
+fn spawn(
+    source: Counter,
+    hub: Hub,
+    quotes: Option<l1::SharedQuotes>,
+) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_local(async move {
+        if let Some(path) = &source.account_snapshot_path {
+            let result = cn_futures_state::checkpoint::load(
+                path,
+                &source.position_namespace,
+                source.adapter,
+                &source.expected_account_hash,
+            )
+            .and_then(|snapshot| {
+                snapshot.map_or(Ok(()), |snapshot| hub.restore(&source, snapshot))
+            });
+            if let Err(error) = result {
+                log::warn!("load account snapshot for {}: {error:#}", source.id);
+            }
+        }
         let mut subscriber = None;
         let mut retry = tokio::time::Instant::now();
+        let mut next_saved_mark = retry;
         let mut interval = tokio::time::interval(Duration::from_millis(10));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
+            let now = tokio::time::Instant::now();
+            if source.account_snapshot_path.is_some() && now >= next_saved_mark {
+                next_saved_mark = now + Duration::from_secs(1);
+                if let (Some(quotes), Some(mut saved)) = (&quotes, hub.retained(&source)) {
+                    saved.marks.clear();
+                    quotes
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .attach(&mut saved);
+                    if let Err(error) = hub.restore(&source, saved) {
+                        log::warn!(
+                            "update saved account valuation for {}: {error:#}",
+                            source.id
+                        );
+                    }
+                }
+            }
             if subscriber.is_none() && tokio::time::Instant::now() >= retry {
                 match StateSubscriber::open(&source.position_namespace) {
                     Ok(s) => subscriber = Some(s),
@@ -30,7 +69,13 @@ fn spawn(source: Counter, hub: Hub) -> tokio::task::JoinHandle<()> {
             }
             if let Some(s) = &subscriber {
                 let result = s.latest().and_then(|snapshot| {
-                    if let Some(snapshot) = snapshot {
+                    if let Some(mut snapshot) = snapshot {
+                        if let Some(quotes) = &quotes {
+                            quotes
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .attach(&mut snapshot);
+                        }
                         hub.apply(&source, snapshot)?;
                     }
                     Ok(())
@@ -46,20 +91,34 @@ fn spawn(source: Counter, hub: Hub) -> tokio::task::JoinHandle<()> {
 }
 pub async fn run(cfg: Config) -> Result<()> {
     cfg.validate()?;
+    let positions = manager::Positions::new(&cfg)?;
     tokio::task::LocalSet::new()
         .run_until(async move {
             let hub = Hub::new(&cfg.counters, cfg.stale_after_ms);
+            let quotes = cfg.l1.map(|config| l1::spawn(config, cfg.stale_after_ms));
+            let positions = positions.with_quotes(quotes.as_ref().map(|(book, _)| book.clone()));
             let listeners: Vec<_> = cfg
                 .counters
                 .into_iter()
-                .map(|source| spawn(source, hub.clone()))
+                .map(|source| {
+                    let book = quotes
+                        .as_ref()
+                        .filter(|_| source.adapter == config::Adapter::Ctp)
+                        .map(|(book, _)| book.clone());
+                    spawn(source, hub.clone(), book)
+                })
                 .collect();
             let outcome = tokio::select! {
-                result = server::serve(cfg.http, hub) => result,
+                result = server::serve(cfg.http, hub, positions) => result,
                 _ = tokio::signal::ctrl_c() => Ok(()),
             };
             for listener in listeners {
                 listener.abort();
+            }
+            if let Some((_, jobs)) = quotes {
+                for job in jobs {
+                    job.abort();
+                }
             }
             outcome
         })

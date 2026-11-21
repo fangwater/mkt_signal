@@ -966,6 +966,11 @@ where
 {
     let fast_poll = crate::runtime_flags::enable_ipc_fast_poll();
     tokio::task::spawn_local(async move {
+        // Existing pre_trade workers may send queries while the signal
+        // process is still loading its initial configuration.
+        while !MktChannel::is_initialized() {
+            crate::runtime_flags::idle_poll_wait(false).await;
+        }
         log::info!("{source} backward listener started");
         loop {
             let has_message = drain_pending();
@@ -1077,7 +1082,6 @@ pub async fn attach_runtime_shell<FApply, FReceive, FReloadGet, FReloadSet>(
     refresh_min_qty_tables(source, venues, apply_tables).await;
     spawn_backward_listener_loop(source, drain_pending);
     spawn_tlen_threshold_reload_loop(source, reload_state, reload_set_local);
-    log::info!("{source} backward listener started");
 }
 
 pub async fn init_shell_runtime<T, FBuild, FApply, FReceive, FReloadGet, FReloadSet>(
@@ -1299,6 +1303,10 @@ fn drive_funding_decision(
     let hedge_symbol_key = hedge_symbol_key_storage
         .as_deref()
         .unwrap_or(open_symbol_key);
+    let delist_deadline = symbol_list.delist_close_deadline(open_symbol_key, now);
+    if delist_deadline.is_none() && symbol_list.is_in_delist_dump(open_symbol_key) {
+        return Ok(None);
+    }
     let membership = symbol_list.membership_canonical(open_symbol_key);
     // 心跳计数：活跃 symbol 每 tick 记一条 fr_seen，保证 summary 不会空表早退。
     if membership.is_online() {
@@ -1317,34 +1325,43 @@ fn drive_funding_decision(
     }
 
     let in_dump = membership.in_dump;
-    if in_dump {
-        if let Some(CloseGateOutcome::Pass(close_gate)) = ArbDecision::with_state_mut(|arb| {
-            arb.evaluate_close_gate(
+    if in_dump || delist_deadline.is_some() {
+        let gates = ArbDecision::with_state_mut(|arb| {
+            arb.funding_dump_close_gates(
                 spread_factor,
                 open_symbol_key,
                 hedge_symbol_key,
                 open_venue,
                 hedge_venue,
                 now,
+                delist_deadline.is_some(),
             )
-        }) {
-            let emit_allowed = emit_funding_open_close_signals(
+        });
+        let mut emitted = None;
+        for gate in gates.into_iter().flatten() {
+            let CloseGateOutcome::Pass(gate) = gate else {
+                continue;
+            };
+            if emit_funding_open_close_signals(
                 decision,
                 open_symbol_key,
                 hedge_symbol_key,
                 open_venue,
                 hedge_venue,
                 SignalType::ArbClose,
-                close_gate.side,
+                gate.side,
                 None,
-            )?;
-            if !emit_allowed {
-                return Ok(None);
+                delist_deadline,
+            )? {
+                let _ = ArbDecision::with_state_mut(|arb| arb.mark_close_triggered(gate.key, now));
+                emitted = Some(SignalType::ArbClose);
             }
-            let _ = ArbDecision::with_state_mut(|arb| {
-                arb.mark_close_triggered(close_gate.key, now);
-            });
-            return Ok(Some(SignalType::ArbClose));
+            if delist_deadline.is_none() {
+                return Ok(emitted);
+            }
+        }
+        if delist_deadline.is_some() {
+            return Ok(emitted);
         }
     }
 
@@ -1630,6 +1647,7 @@ fn drive_funding_decision(
             final_signal.clone(),
             control.side,
             control.gate.as_ref(),
+            None,
         )?;
         if !emit_allowed {
             continue;
@@ -3501,6 +3519,7 @@ fn emit_funding_open_close_signals(
     signal_type: SignalType,
     side: Side,
     gate: Option<&ArbOpenGatePassed>,
+    close_deadline: Option<i64>,
 ) -> Result<bool> {
     if matches!(signal_type, SignalType::ArbOpen)
         && !arb_open_legs_tradable(
@@ -3642,6 +3661,15 @@ fn emit_funding_open_close_signals(
         .expect("ArbDecisionState should be initialized");
     let open_order_ttl_us = ArbDecision::with_state_mut(|arb| arb.open_order_ttl_us)
         .expect("ArbDecisionState should be initialized");
+    let open_order_ttl_us = if let Some(deadline) = close_deadline {
+        let remaining = deadline.saturating_sub(batch_ts);
+        if remaining <= 0 {
+            return Ok(false);
+        }
+        open_order_ttl_us.min(remaining)
+    } else {
+        open_order_ttl_us
+    };
     let hedge_timeout_mm_us = ArbDecision::with_state_mut(|arb| arb.hedge_timeout_mm_us)
         .expect("ArbDecisionState should be initialized");
     let factor_mode = super::spread_factor::SpreadFactor::instance().get_mode();
@@ -4378,6 +4406,42 @@ impl ArbDecisionState {
             side,
             now,
         )
+    }
+
+    fn funding_dump_close_gates(
+        &self,
+        spread_factor: &super::spread_factor::SpreadFactor,
+        open_symbol_key: &str,
+        hedge_symbol_key: &str,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+        now: i64,
+        bypass_spread: bool,
+    ) -> [CloseGateOutcome; 2] {
+        if bypass_spread {
+            // The existing close handler uses the position to admit only the reducing side.
+            return [Side::Sell, Side::Buy].map(|side| {
+                self.evaluate_close_cooldown_for_side(
+                    open_symbol_key,
+                    hedge_symbol_key,
+                    open_venue,
+                    hedge_venue,
+                    side,
+                    now,
+                )
+            });
+        }
+        [
+            self.evaluate_close_gate(
+                spread_factor,
+                open_symbol_key,
+                hedge_symbol_key,
+                open_venue,
+                hedge_venue,
+                now,
+            ),
+            CloseGateOutcome::NoSide,
+        ]
     }
 
     pub fn evaluate_close_gate_for_side(
@@ -6117,6 +6181,46 @@ mod funding_mode_signal_tests {
         .expect("mode signal");
 
         assert_eq!(signal, None);
+    }
+
+    #[test]
+    fn delist_dump_bypasses_spread_and_keeps_close_cooldown_on_each_side() {
+        let symbol = "UNITDELISTDUMPNOSPREADUSDT";
+        let spread_factor = SpreadFactor::instance();
+        let open = TradingVenue::BitgetMargin;
+        let hedge = TradingVenue::BitgetFutures;
+        let mut state = ArbDecisionState::new(ArbMode::FundingArb, (open, hedge));
+        state.signal_cooldown_us = 100;
+
+        assert!(matches!(
+            state.funding_dump_close_gates(
+                spread_factor,
+                symbol,
+                symbol,
+                open,
+                hedge,
+                1_000,
+                false
+            ),
+            [CloseGateOutcome::NoSide, CloseGateOutcome::NoSide]
+        ));
+        let [CloseGateOutcome::Pass(sell), CloseGateOutcome::Pass(buy)] =
+            state.funding_dump_close_gates(spread_factor, symbol, symbol, open, hedge, 1_000, true)
+        else {
+            panic!("delist dump needs both reducing-side candidates even without a spread signal");
+        };
+        assert_eq!(sell.side, Side::Sell);
+        assert_eq!(buy.side, Side::Buy);
+        state.mark_close_triggered(sell.key, 1_000);
+
+        assert!(matches!(
+            state.funding_dump_close_gates(spread_factor, symbol, symbol, open, hedge, 1_099, true),
+            [CloseGateOutcome::Cooldown, CloseGateOutcome::Pass(_)]
+        ));
+        assert!(matches!(
+            state.funding_dump_close_gates(spread_factor, symbol, symbol, open, hedge, 1_100, true),
+            [CloseGateOutcome::Pass(_), CloseGateOutcome::Pass(_)]
+        ));
     }
 
     #[test]

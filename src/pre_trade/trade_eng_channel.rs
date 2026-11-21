@@ -561,6 +561,9 @@ impl TradeEngExchangeSlot {
             TradingVenue::GateMargin | TradingVenue::GateFutures => Self::Gate,
             TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => Self::Hyperliquid,
             TradingVenue::AsterMargin | TradingVenue::AsterFutures => Self::Aster,
+            order_common::domestic_venues!() => {
+                unreachable!("domestic futures orders go through the native Exec, not trade_engine")
+            }
         }
     }
 
@@ -976,6 +979,25 @@ fn sanitize_node_suffix(exchange: &str) -> String {
 fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
     if RebalanceUsdtService::handle_trade_engine_response(response) {
         return;
+    }
+
+    if TradeRequestType::try_from(response.req_type())
+        == Ok(TradeRequestType::BinanceNewMarginOrder)
+        && !response.is_action_result_unknown()
+    {
+        if response.is_request_success() {
+            if response.order_id().is_some_and(|id| id > 0) {
+                super::binance_pm_buy_capacity::resolve_borrow_submission(
+                    response.client_order_id(),
+                    None,
+                );
+            }
+        } else {
+            super::binance_pm_buy_capacity::resolve_borrow_submission(
+                response.client_order_id(),
+                Some(response.error_code()),
+            );
+        }
     }
 
     let Some(strategy_mgr) = MonitorChannel::try_strategy_mgr() else {

@@ -20,7 +20,7 @@ impl<T: Trader> SingleLoop<T> {
         &mut self,
         intents: Vec<Intent>,
         now: Instant,
-        mut audit: impl FnMut(&PreparedOrder) -> Result<()>,
+        mut after_native: impl FnMut(&PreparedOrder) -> Result<()>,
     ) -> Result<SubmitReceipt> {
         ensure!(self.execute, "read-only runtime: submissions disabled");
         ensure!(
@@ -53,33 +53,31 @@ impl<T: Trader> SingleLoop<T> {
             }
             return Err(error.context("no batch child was submitted"));
         }
-        let requests: Vec<_> = prepared.iter().map(|(_, order)| order.clone()).collect();
-        let mut audit_error = None;
+        let requests: Vec<_> = prepared.iter().map(|(_, order)| *order).collect();
+        // Evidence follows the SDK call so publishing never delays the batch.
+        let result = self.trader.insert_batch(&requests);
+        // Record every child even after one failure; any failure blocks trading.
+        let mut evidence_failed = false;
         for order in &requests {
-            if let Err(error) = audit(order) {
-                audit_error = Some(error.to_string());
-                break;
-            }
+            evidence_failed |= after_native(order).is_err();
         }
-        let result = if audit_error.is_none() {
-            Some(self.trader.insert_batch(&requests))
-        } else {
-            self.core.block("batch audit failed before SDK call");
-            None
-        };
-        let all_submitted_locally = matches!(result, Some(Ok(BatchSend::SubmittedLocally)));
-        if matches!(result, Some(Err(_))) {
+        if evidence_failed {
+            self.core
+                .block("batch submission evidence unavailable after SDK call");
+        }
+        let all_submitted_locally = matches!(result, Ok(BatchSend::SubmittedLocally));
+        if result.is_err() {
             self.core
                 .block("native batch submission uncertain; retain all reservations and reconcile");
         }
         let mut children = vec![];
         for (index, (parent_index, order)) in prepared.into_iter().enumerate() {
             let (outcome, error) = match &result {
-                Some(Ok(BatchSend::SubmittedLocally)) => (ChildOutcome::SubmittedLocally, None),
-                Some(Ok(BatchSend::RejectedBeforeSend {
+                Ok(BatchSend::SubmittedLocally) => (ChildOutcome::SubmittedLocally, None),
+                Ok(BatchSend::RejectedBeforeSend {
                     index: failed,
                     code,
-                })) => {
+                }) => {
                     self.core.reject(&order.key)?;
                     if index == *failed {
                         (
@@ -90,11 +88,7 @@ impl<T: Trader> SingleLoop<T> {
                         (ChildOutcome::NotSent, None)
                     }
                 }
-                Some(Err(error)) => (ChildOutcome::Uncertain, Some(error.to_string())),
-                None => {
-                    self.core.reject(&order.key)?;
-                    (ChildOutcome::NotSent, audit_error.clone())
-                }
+                Err(error) => (ChildOutcome::Uncertain, Some(error.to_string())),
             };
             children.push(ChildReceipt {
                 parent_index,
@@ -115,16 +109,16 @@ impl<T: Trader> SingleLoop<T> {
         &mut self,
         keys: Vec<OrderKey>,
         now: Instant,
-        audit: impl FnMut(&PreparedCancel) -> Result<()>,
+        after_native: impl FnMut(&PreparedCancel) -> Result<()>,
     ) -> Result<BatchCancelReceipt> {
-        self.cancel_batch_with_route(keys, None, now, audit)
+        self.cancel_batch_with_route(keys, None, now, after_native)
     }
     pub fn cancel_batch_with_route(
         &mut self,
         keys: Vec<OrderKey>,
         route: Option<ExecutionRoute>,
         now: Instant,
-        mut audit: impl FnMut(&PreparedCancel) -> Result<()>,
+        mut after_native: impl FnMut(&PreparedCancel) -> Result<()>,
     ) -> Result<BatchCancelReceipt> {
         ensure!(self.execute, "read-only runtime: cancellations disabled");
         if let Some(route) = route {
@@ -152,33 +146,29 @@ impl<T: Trader> SingleLoop<T> {
                 }
             }
         }
-        let mut audit_error = None;
+        let result = self.trader.cancel_batch(&requests);
+        // Record every child even after one failure; any failure blocks trading.
+        let mut evidence_failed = false;
         for order in &requests {
-            if let Err(error) = audit(order) {
-                audit_error = Some(error.to_string());
-                break;
-            }
+            evidence_failed |= after_native(order).is_err();
         }
-        let result = if audit_error.is_none() {
-            Some(self.trader.cancel_batch(&requests))
-        } else {
+        if evidence_failed {
             self.core
-                .block("batch cancellation audit failed before SDK call");
-            None
-        };
-        let all_submitted_locally = matches!(result, Some(Ok(BatchSend::SubmittedLocally)));
-        if matches!(result, Some(Err(_))) {
+                .block("batch cancellation evidence unavailable after SDK call");
+        }
+        let all_submitted_locally = matches!(result, Ok(BatchSend::SubmittedLocally));
+        if result.is_err() {
             self.core
                 .block("native batch cancellation uncertain; reconcile");
         }
         let mut children = vec![];
         for (index, key) in keys.into_iter().enumerate() {
             let (outcome, error) = match &result {
-                Some(Ok(BatchSend::SubmittedLocally)) => (ChildOutcome::SubmittedLocally, None),
-                Some(Ok(BatchSend::RejectedBeforeSend {
+                Ok(BatchSend::SubmittedLocally) => (ChildOutcome::SubmittedLocally, None),
+                Ok(BatchSend::RejectedBeforeSend {
                     index: failed,
                     code,
-                })) => {
+                }) => {
                     self.core.cancel_failed(&key);
                     if index == *failed {
                         (
@@ -189,11 +179,7 @@ impl<T: Trader> SingleLoop<T> {
                         (ChildOutcome::NotSent, None)
                     }
                 }
-                Some(Err(error)) => (ChildOutcome::Uncertain, Some(error.to_string())),
-                None => {
-                    self.core.cancel_failed(&key);
-                    (ChildOutcome::NotSent, audit_error.clone())
-                }
+                Err(error) => (ChildOutcome::Uncertain, Some(error.to_string())),
             };
             children.push(CancelReceipt {
                 key,

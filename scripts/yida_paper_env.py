@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Environment-local supervision for a read-only Yida paper account and Viz."""
+"""Environment-local supervision for an official Yida paper account, its persist_manager and Viz."""
 import argparse
 import json
 import os
@@ -13,7 +13,12 @@ import tomllib
 import urllib.request
 
 BASE = Path(__file__).resolve().parent.parent
-COMPONENTS = ("trader", "viz")
+# Stop order. Start runs in reverse, so persist_manager is up before the trader
+# publishes and stops only after the trader has drained.
+COMPONENTS = ("trader", "persist", "viz")
+# Same drop-in as the CTP environment: only cn_futures::restart exit 75 (venue
+# server restart, login/recovery timeout) restarts the trader; Restart=no otherwise.
+COLD_RESTART = "[Service]\nRestartForceExitStatus=75\nRestartSec=60s\n"
 
 
 def config(name):
@@ -35,6 +40,21 @@ def validate_trader():
     required = [cfg[key] for key in ("user_id_env", "password_env", "app_id_env", "auth_code_env")]
     if any(not os.environ.get(key) for key in required):
         raise RuntimeError("paper credentials are missing; source this environment's private env.sh")
+    execute = os.environ.get("YIDA_PAPER_EXECUTE") == "1"
+    if execute:
+        exec_cfg = cfg.get("exec", {})
+        ingress = cfg.get("position_target_ingress", {})
+        manager = ingress.get("manager_plan", {})
+        if not exec_cfg.get("source_id") or exec_cfg["source_id"] != ingress.get("source_id"):
+            raise RuntimeError("paper execution requires [exec] and matching target ingress")
+        if not os.environ.get(manager.get("token_env", "")):
+            raise RuntimeError("Manager paper target credential is missing")
+    elif "exec" in cfg:
+        raise RuntimeError("paper exec requires YIDA_PAPER_EXECUTE=1")
+    if os.environ.get("IPC_NAMESPACE") != cfg["position_ipc"]["namespace"]:
+        raise RuntimeError("IPC_NAMESPACE must match position_ipc.namespace so persist_manager receives the records")
+    if Path(cfg.get("persistence_directory", "")) != BASE / "data/persist_manager":
+        raise RuntimeError("persistence_directory must be the environment persist_manager store")
     return cfg
 
 
@@ -59,19 +79,27 @@ def install():
     directory.mkdir(parents=True, exist_ok=True)
     for component in COMPONENTS:
         extra = f"ExecStop=/usr/bin/python3 {BASE}/scripts/yida_paper_env.py drain\n" if component == "trader" else "CPUAffinity=3\n"
+        # persist_manager prints the trader log; its own diagnostics go to persist.log.
+        stdout = "trader" if component == "persist" else component
+        description = "domestic persist_manager (uniform orders, trade updates, trader log)" if component == "persist" else f"read-only paper {component}"
         content = (
-            f"[Unit]\nDescription={BASE.name} read-only paper {component}\n"
+            f"[Unit]\nDescription={BASE.name} {description}\n"
             "After=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\n"
             f"WorkingDirectory={BASE}\nExecStart=/usr/bin/bash {BASE}/scripts/yida_paper_env.sh run-{component}\n"
             f"{extra}Restart={'no' if component == 'trader' else 'on-failure'}\nRestartSec=3\n"
             "TimeoutStopSec=35\nKillMode=control-group\nUMask=0077\nLimitNOFILE=65536\n"
-            f"StandardOutput=append:{BASE}/logs/{component}.log\nStandardError=append:{BASE}/logs/{component}.log\n"
+            f"StandardOutput=append:{BASE}/logs/{stdout}.log\nStandardError=append:{BASE}/logs/{component}.log\n"
             "\n[Install]\nWantedBy=default.target\n"
         )
         path = directory / unit(component)
         if path.exists() and path.read_text() != content:
             raise RuntimeError(f"existing unit differs: {path}; preserve operator configuration")
         path.write_text(content)
+    drop_in = directory / f"{unit('trader')}.d" / "10-cold-restart.conf"
+    if drop_in.exists() and drop_in.read_text() != COLD_RESTART:
+        raise RuntimeError(f"existing cold-restart policy differs: {drop_in}; preserve operator configuration")
+    drop_in.parent.mkdir(exist_ok=True)
+    drop_in.write_text(COLD_RESTART)
     systemctl("daemon-reload")
     systemctl("enable", *(unit(c) for c in COMPONENTS))
 
@@ -91,8 +119,10 @@ def run_trader():
     if fd != 0:
         os.close(fd)
     (run / "trader.pid").write_text(str(os.getpid()))
-    # No --execute: the environment cannot place/cancel any orders.
-    os.execv(BASE / "bin/yida-trader", [str(BASE / "bin/yida-trader"), "--config", str(BASE / "config/yida.toml"), "--connect"])
+    command = [str(BASE / "bin/yida-trader"), "--config", str(BASE / "config/yida.toml"), "--connect"]
+    if os.environ.get("YIDA_PAPER_EXECUTE") == "1":
+        command.append("--execute")
+    os.execv(BASE / "bin/yida-trader", command)
 
 
 def drain():
@@ -117,7 +147,8 @@ def drain():
 
 
 def status():
-    result = {"environment": BASE.name, "mode": "paper_read_only", "services": {}}
+    mode = "paper_exec" if os.environ.get("YIDA_PAPER_EXECUTE") == "1" else "paper_read_only"
+    result = {"environment": BASE.name, "mode": mode, "services": {}}
     for component in COMPONENTS:
         proc = subprocess.run(["systemctl", "--user", "show", unit(component), "--property=ActiveState,SubState,MainPID,ExecMainStatus"], capture_output=True, text=True, check=True)
         result["services"][component] = dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
@@ -134,7 +165,7 @@ def main():
     os.umask(0o077)
     os.chdir(BASE)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["install", "start", "stop", "status", "state", "drain", "run-trader", "run-viz"])
+    parser.add_argument("action", choices=["install", "start", "stop", "status", "state", "drain", "run-trader", "run-persist", "run-viz"])
     parser.add_argument("component", choices=["all", *COMPONENTS], nargs="?", default="all")
     args = parser.parse_args()
     selected = COMPONENTS if args.component == "all" else (args.component,)
@@ -142,6 +173,11 @@ def main():
         install()
     elif args.action == "run-trader":
         run_trader()
+    elif args.action == "run-persist":
+        # Background CPU only; the business CPU belongs to the trader thread.
+        # Writes cwd/data/persist_manager and listens on IPC_NAMESPACE.
+        os.environ.setdefault("RUST_LOG", "info")
+        os.execv(BASE / "bin/persist_manager", [str(BASE / "bin/persist_manager"), "--core", "3"])
     elif args.action == "run-viz":
         cfg = config("yida")
         for key in ("user_id_env", "password_env", "app_id_env", "auth_code_env"):
@@ -160,6 +196,8 @@ def main():
             if log.is_file():
                 shutil.copy2(log, archive / log.name)
             systemctl("stop", unit(component))
+            if component == "trader" and "persist" in selected:
+                time.sleep(2)  # let persist_manager write the drained tail
     elif args.action == "state":
         send("state")
         print("read-only state request queued; response remains in private runtime logs")

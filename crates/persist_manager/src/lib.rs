@@ -1,6 +1,8 @@
 #[cfg(feature = "runtime")]
 mod bbo_spread;
 #[cfg(feature = "runtime")]
+mod cn_native_persist;
+#[cfg(feature = "runtime")]
 pub mod exporter;
 #[cfg(feature = "runtime")]
 mod hyperliquid_account_fact;
@@ -22,6 +24,8 @@ pub mod rapidx_execution;
 pub mod rapidx_reconcile;
 #[cfg(feature = "runtime")]
 pub mod rapidx_statement;
+#[cfg(feature = "runtime")]
+pub mod rapidx_uniform;
 #[cfg(feature = "runtime")]
 pub mod read_server;
 #[cfg(feature = "runtime")]

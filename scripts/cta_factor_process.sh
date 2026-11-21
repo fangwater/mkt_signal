@@ -30,6 +30,13 @@ if [[ "$config_service" == 1 ]]; then
   default_port=19220; [[ "$kind" != spread ]] || default_port=19221
   process_args+=(--bind 127.0.0.1 --port "${CTA_FACTOR_CONFIG_PORT:-$default_port}")
   [[ "$kind" != spread ]] || process_args+=(--spread)
+  if [[ -n "${CTA_EXEC_RISK_SOURCE_IDS:-}" || -n "${CTA_EXEC_ACCOUNT_CATALOG:-}" ]]; then
+    [[ -n "${CTA_EXEC_RISK_SOURCE_IDS:-}" && -n "${CTA_EXEC_ACCOUNT_CATALOG:-}" ]] || {
+      echo '[ERROR] account risk editing requires both CTA_EXEC_RISK_SOURCE_IDS and CTA_EXEC_ACCOUNT_CATALOG' >&2
+      exit 1
+    }
+    process_args+=(--exec-account-catalog "$CTA_EXEC_ACCOUNT_CATALOG" --exec-risk-source-ids "$CTA_EXEC_RISK_SOURCE_IDS")
+  fi
   if [[ "$kind" == perp ]]; then
     if [[ -n "${CTA_PREP_HOURLY_CONFIG:-}" ]]; then
       process_args+=(--hourly-config "$CTA_PREP_HOURLY_CONFIG")
@@ -46,7 +53,9 @@ PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 command -v "$PMDAEMON_BIN" >/dev/null
 if [[ "$action" == start ]]; then
   [[ -x "$BASE_DIR/$binary" ]] || { echo "[ERROR] missing published artifact $BASE_DIR/$binary" >&2; exit 1; }
-  "$BASE_DIR/$binary" "${process_args[@]}" --check >/dev/null
+  check_args=(--check)
+  [[ "$config_service" == 1 ]] || check_args+=(--validate-hourly-history --validate-kafka-continuity)
+  "$BASE_DIR/$binary" "${process_args[@]}" "${check_args[@]}" >/dev/null
 fi
 # This wrapper owns cwd, environment and matching real processes, in addition
 # to the supervisor entry. Do not replace it with operator pmdaemon commands.

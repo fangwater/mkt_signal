@@ -1,0 +1,368 @@
+{
+  "checked_utc": "2026-11-13T05:17:35.965812+00:00",
+  "symbols": [
+    "AAVEUSDT",
+    "ADAUSDT",
+    "ATOMUSDT",
+    "AVAXUSDT",
+    "BCHUSDT",
+    "CRVUSDT",
+    "DOGEUSDT",
+    "DOTUSDT",
+    "ETCUSDT",
+    "ETHUSDT",
+    "FILUSDT",
+    "LINKUSDT",
+    "LTCUSDT",
+    "NEARUSDT",
+    "TRBUSDT",
+    "UNIUSDT",
+    "XRPUSDT"
+  ],
+  "markets": {
+    "okex-futures": {
+      "AAVEUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_aaveusdt/trades/okex-swap_trades_2026-11-10_AAVEUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_aaveusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_AAVEUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "ADAUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_adausdt/trades/okex-swap_trades_2026-11-10_ADAUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_adausdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_ADAUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "ATOMUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_atomusdt/trades/okex-swap_trades_2026-11-10_ATOMUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_atomusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_ATOMUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "AVAXUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_avaxusdt/trades/okex-swap_trades_2026-11-10_AVAXUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_avaxusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_AVAXUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "BCHUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_bchusdt/trades/okex-swap_trades_2026-11-10_BCHUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_bchusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_BCHUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "CRVUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_crvusdt/trades/okex-swap_trades_2026-11-10_CRVUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_crvusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_CRVUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "DOGEUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_dogeusdt/trades/okex-swap_trades_2026-11-10_DOGEUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_dogeusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_DOGEUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "DOTUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_dotusdt/trades/okex-swap_trades_2026-11-10_DOTUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_dotusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_DOTUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "ETCUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_etcusdt/trades/okex-swap_trades_2026-11-10_ETCUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_etcusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_ETCUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "ETHUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_ethusdt/trades/okex-swap_trades_2026-11-10_ETHUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_ethusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_ETHUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "FILUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_filusdt/trades/okex-swap_trades_2026-11-10_FILUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_filusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_FILUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "LINKUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_linkusdt/trades/okex-swap_trades_2026-11-10_LINKUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_linkusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_LINKUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "LTCUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_ltcusdt/trades/okex-swap_trades_2026-11-10_LTCUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_ltcusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_LTCUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "NEARUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_nearusdt/trades/okex-swap_trades_2026-11-10_NEARUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_nearusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_NEARUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "TRBUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_trbusdt/trades/okex-swap_trades_2026-11-10_TRBUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_trbusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_TRBUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "UNIUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_uniusdt/trades/okex-swap_trades_2026-11-10_UNIUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_uniusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_UNIUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "XRPUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_xrpusdt/trades/okex-swap_trades_2026-11-10_XRPUSDT.csv.gz",
+          "required_day_exists": false
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_xrpusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_XRPUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      }
+    },
+    "binance-futures": {
+      "AAVEUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/trades/binance-futures_trades_2026-11-11_AAVEUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_AAVEUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "ADAUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/trades/binance-futures_trades_2026-11-11_ADAUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_ADAUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "ATOMUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/trades/binance-futures_trades_2026-11-11_ATOMUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_ATOMUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "AVAXUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_avaxusdt/trades/binance-futures_trades_2026-11-11_AVAXUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_avaxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_AVAXUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "BCHUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bchusdt/trades/binance-futures_trades_2026-11-11_BCHUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bchusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_BCHUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "CRVUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/trades/binance-futures_trades_2026-11-11_CRVUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_CRVUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "DOGEUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dogeusdt/trades/binance-futures_trades_2026-11-11_DOGEUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dogeusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_DOGEUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "DOTUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/trades/binance-futures_trades_2026-11-11_DOTUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_DOTUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "ETCUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/trades/binance-futures_trades_2026-11-11_ETCUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_ETCUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "ETHUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ethusdt/trades/binance-futures_trades_2026-11-11_ETHUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ethusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_ETHUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "FILUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/trades/binance-futures_trades_2026-11-11_FILUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_FILUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "LINKUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_linkusdt/trades/binance-futures_trades_2026-11-11_LINKUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_linkusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_LINKUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "LTCUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/trades/binance-futures_trades_2026-11-11_LTCUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_LTCUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "NEARUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/trades/binance-futures_trades_2026-11-11_NEARUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_NEARUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "TRBUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_trbusdt/trades/binance-futures_trades_2026-11-11_TRBUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_trbusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_TRBUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "UNIUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_uniusdt/trades/binance-futures_trades_2026-11-11_UNIUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_uniusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_UNIUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      },
+      "XRPUSDT": {
+        "trades": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/trades/binance-futures_trades_2026-11-11_XRPUSDT.csv.gz",
+          "required_day_exists": true
+        },
+        "incremental_book_L2": {
+          "latest": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_XRPUSDT.csv.gz",
+          "required_day_exists": true
+        }
+      }
+    }
+  }
+}

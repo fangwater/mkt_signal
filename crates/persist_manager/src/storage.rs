@@ -11,13 +11,21 @@ use rocksdb::{
 #[derive(Debug, Clone, Default)]
 pub struct RocksDbTuning {
     pub block_cache_bytes: Option<usize>,
+    pub max_open_files: Option<i32>,
     pub write_buffer_size_bytes: Option<usize>,
     pub db_write_buffer_size_bytes: Option<usize>,
     pub max_write_buffer_number: Option<i32>,
+    pub wal_ttl_seconds: Option<u64>,
 }
 
 impl RocksDbTuning {
     fn apply_db_options(&self, opts: &mut Options) {
+        if let Some(seconds) = self.wal_ttl_seconds {
+            opts.set_wal_ttl_seconds(seconds);
+        }
+        if let Some(limit) = self.max_open_files {
+            opts.set_max_open_files(limit);
+        }
         if let Some(size) = self.db_write_buffer_size_bytes {
             opts.set_db_write_buffer_size(size);
         }
@@ -423,6 +431,55 @@ impl RocksDbStore {
         Ok(keys.len())
     }
 
+    /// Owner-only atomic projection, including its durable pending/cursor state.
+    #[cfg(feature = "runtime")]
+    pub(crate) fn replace_many(
+        &self,
+        writes: &[(String, Vec<u8>, Vec<u8>)],
+        deletes: &[(String, Vec<u8>)],
+        force_sync: bool,
+    ) -> Result<()> {
+        if self.read_only {
+            return Err(anyhow!("rocksdb store is read-only"));
+        }
+        let mut batch = WriteBatch::default();
+        for (name, key, value) in writes {
+            let cf = self
+                .db
+                .cf_handle(name)
+                .ok_or_else(|| anyhow!("missing column family {name}"))?;
+            batch.put_cf(cf, key, value);
+        }
+        for (name, key) in deletes {
+            let cf = self
+                .db
+                .cf_handle(name)
+                .ok_or_else(|| anyhow!("missing column family {name}"))?;
+            batch.delete_cf(cf, key);
+        }
+        let mut options = WriteOptions::default();
+        options.set_sync(force_sync || self.sync_writes);
+        self.db
+            .write_opt(batch, &options)
+            .context("commit normalized uniform batch")
+    }
+
+    #[cfg(feature = "runtime")]
+    pub(crate) fn checkpoint(&self, path: &Path) -> Result<()> {
+        rocksdb::checkpoint::Checkpoint::new(&*self.db)?.create_checkpoint(path)?;
+        // RocksDB checkpoints omit IDENTITY. Maintenance resumes against the
+        // original source identity, so retain it alongside the closed files.
+        std::fs::copy(self.db.path().join("IDENTITY"), path.join("IDENTITY"))?;
+        std::fs::File::open(path.join("IDENTITY"))?.sync_all()?;
+        std::fs::File::open(path)?.sync_all()?;
+        Ok(())
+    }
+
+    #[cfg(feature = "runtime")]
+    pub(crate) fn path(&self) -> &Path {
+        self.db.path()
+    }
+
     pub fn get(&self, cf_name: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let cf = self
             .db
@@ -584,6 +641,55 @@ mod tests {
             std::process::id(),
             unique
         ))
+    }
+
+    #[test]
+    fn retained_wal_survives_flush_rotation_and_reopen() {
+        let path = temp_db_path("native_wal_retention");
+        let tuning = RocksDbTuning {
+            wal_ttl_seconds: Some(600),
+            ..Default::default()
+        };
+        {
+            let store = RocksDbStore::open_with_tuning(
+                path.to_str().unwrap(),
+                &["cn_trading_events"],
+                true,
+                &tuning,
+            )
+            .unwrap();
+            for sequence in 1u64..=4 {
+                store
+                    .put("cn_trading_events", &sequence.to_be_bytes(), &[42; 4096])
+                    .unwrap();
+                store
+                    .db
+                    .flush_cf(store.db.cf_handle("cn_trading_events").unwrap())
+                    .unwrap();
+            }
+            assert!(std::fs::read_dir(path.join("archive"))
+                .unwrap()
+                .next()
+                .is_some());
+        }
+        let store = RocksDbStore::open_with_tuning(
+            path.to_str().unwrap(),
+            &["cn_trading_events"],
+            true,
+            &tuning,
+        )
+        .unwrap();
+        let mut wal = store.db.get_updates_since(0).unwrap();
+        for expected in 1u64..=4 {
+            let (sequence, batch) = wal.next().unwrap().unwrap();
+            assert_eq!(sequence, expected);
+            assert_eq!(batch.len(), 1);
+        }
+        assert!(wal.next().is_none());
+        wal.status().unwrap();
+        drop(wal);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

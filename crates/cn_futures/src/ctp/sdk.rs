@@ -182,7 +182,7 @@ pub struct CtpTrader {
     pub placement_fault: Arc<AtomicBool>,
     credentials: Credentials,
     next_request: i32,
-    contracts: [HashMap<String, (u32, bool)>; 6],
+    contracts: [HashMap<String, u32>; 6],
     next_contract: u32,
     correlation: super::ResponseCorrelation,
     _single_owner: PhantomData<Rc<()>>,
@@ -254,12 +254,12 @@ impl CtpTrader {
             _single_owner: PhantomData,
         };
         trader.correlation.reserve(config.preallocated_requests)?;
-        for symbol in &config.symbols {
-            trader.prepare_contract(symbol.venue, &symbol.symbol, true)?;
-        }
         Ok(trader)
     }
-    fn prepare_contract(&mut self, venue: Venue, symbol: &str, can_insert: bool) -> Result<u32> {
+    pub(crate) fn prepare_contract(&mut self, venue: Venue, symbol: &str) -> Result<u32> {
+        if let Some(&slot) = self.contracts[venue as usize].get(symbol) {
+            return Ok(slot);
+        }
         let slot = self.next_contract;
         let exchange = CString::new(venue.as_str())?;
         let symbol_c = CString::new(symbol)?;
@@ -282,7 +282,7 @@ impl CtpTrader {
             .next_contract
             .checked_add(1)
             .context("CTP template slots exhausted")?;
-        self.contracts[venue as usize].insert(symbol.to_owned(), (slot, can_insert));
+        self.contracts[venue as usize].insert(symbol.to_owned(), slot);
         Ok(slot)
     }
     pub fn start(&mut self, front: &str) -> Result<()> {
@@ -352,11 +352,9 @@ impl Trader for CtpTrader {
             order.intent.price_type == PriceType::Limit && order.intent.execution_route.is_none(),
             "CTP native market orders are not enabled"
         );
-        let slot = self.contracts[order.intent.venue as usize]
+        let slot = *self.contracts[order.intent.venue as usize]
             .get(order.intent.symbol.as_str())
-            .filter(|(_, insert)| *insert)
-            .context("contract absent from configured CTP insertion templates")?
-            .0;
+            .context("contract rule has no CTP insertion template")?;
         let reference = order
             .key
             .order_ref
@@ -393,13 +391,7 @@ impl Trader for CtpTrader {
         })
     }
     fn cancel(&mut self, order: &PreparedCancel) -> Result<i32> {
-        let slot = if let Some((slot, _)) =
-            self.contracts[order.venue as usize].get(order.symbol.as_str())
-        {
-            *slot
-        } else {
-            self.prepare_contract(order.venue, &order.symbol, false)?
-        };
+        let slot = self.prepare_contract(order.venue, &order.symbol)?;
         let reference = order
             .key
             .order_ref

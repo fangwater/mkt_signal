@@ -97,12 +97,16 @@ fn print_exposure_table(
     let top_rule = rule(&widths);
     let mid_rule = rule(&widths);
 
-    println!("\nts_utc={} (ts_ms={})", ts_utc, ts_ms);
-    println!("{top_rule}");
-    println!("{}", fmt_row(headers, &widths));
-    println!("{mid_rule}");
+    // One record through the asynchronous logger; no direct stdout writes.
+    use std::fmt::Write as _;
+    let mut table = String::new();
+    let _ = writeln!(table, "ts_utc={} (ts_ms={})", ts_utc, ts_ms);
+    let _ = writeln!(table, "{top_rule}");
+    let _ = writeln!(table, "{}", fmt_row(headers, &widths));
+    let _ = writeln!(table, "{mid_rule}");
     for (asset, open, hedge, net, net_usdt) in &rows {
-        println!(
+        let _ = writeln!(
+            table,
             "{}",
             fmt_row(
                 [
@@ -117,15 +121,17 @@ fn print_exposure_table(
             )
         );
     }
-    println!("{mid_rule}");
-    println!(
+    let _ = writeln!(table, "{mid_rule}");
+    let _ = writeln!(
+        table,
         "{}",
         fmt_row(
             [FOOTER_LABEL, "", "", "", "", fmt_u(abs_sum_usdt).as_str()],
             &widths
         )
     );
-    println!("{top_rule}");
+    let _ = write!(table, "{top_rule}");
+    log::info!("exposure table\n{table}");
 }
 
 fn sum_position_usd(

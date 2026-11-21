@@ -2,8 +2,8 @@
 # Supply real front/BrokerID locally. Never commit credentials or copy env.sh values here.
 sdk_library = "/opt/ctp/6.7.11/libthosttraderapi_se.so"
 flow_directory = "/tmp/mkt_ctp_sim/flow"
-journal = "/tmp/mkt_ctp_sim/events.jsonl"
 position_ipc = { namespace = "cn_ctp_sim", interval_ms = 1000 }
+# Add account_snapshot_path = "/absolute/env/data/account-observation.bin" inside position_ipc to retain the last confirmed observation on exit.
 # persistence_directory defaults to flow_directory/persist_manager; one account/adapter/front per store.
 front = "tcp://127.0.0.1:1"
 fallback_fronts = []
@@ -24,19 +24,10 @@ preallocated_requests = 16384
 preallocated_orders = 4096 # cold-path capacity hint, grows automatically; not a history limit
 query_interval_ms = 1100
 response_timeout_ms = 30000
-
-[[symbols]]
-venue = "CFFEX"
-# Replace with a currently listed, authorized domestic future before connecting.
-symbol = "IF2612"
-# Explicit conservative local budget, not an exchange-quoted margin requirement.
-# Choose from the actual broker requirements plus fees/buffer; do not treat this sample as current metadata.
-cash_budget_per_open_lot = 250000.0
+# Fixed sleep after an empty business-loop iteration, 64 ms in this example. Zero spins.
+poll = { mode = "sleep", idle_us = 64000 }
 
 [risk]
-max_order_lots = 1
-max_position_lots_per_side = 2
-max_working_lots = 2
 max_actions_per_second = 2
 minimum_cash_remaining = 10000.0
 enable_fak_fok = false

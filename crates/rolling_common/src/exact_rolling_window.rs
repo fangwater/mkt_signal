@@ -33,6 +33,11 @@ impl ExactRollingWindow {
         self.fifo.back().copied().flatten()
     }
 
+    /// Chronological slots, including missing observations, for state checkpoints.
+    pub fn slots(&self) -> impl Iterator<Item = Option<f64>> + '_ {
+        self.fifo.iter().copied()
+    }
+
     pub fn observe(&mut self, value: f64) -> bool {
         if !value.is_finite() {
             return false;

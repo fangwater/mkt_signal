@@ -202,6 +202,16 @@ pub struct RawKafkaConsumer {
 
 impl RawKafkaConsumer {
     pub fn new(config: &KafkaConsumerConfig) -> Result<Self> {
+        Self::create(config, true)
+    }
+
+    /// Isolated replay/probes assign explicit offsets after reading metadata.
+    /// Never subscribe first: an in-flight group join can stall that assignment.
+    pub fn new_unassigned(config: &KafkaConsumerConfig) -> Result<Self> {
+        Self::create(config, false)
+    }
+
+    fn create(config: &KafkaConsumerConfig, subscribe: bool) -> Result<Self> {
         config.validate()?;
         let mut resolve_state = Box::new(ResolveRewriteState {
             rewrites: config.broker_addr_rewrites.clone(),
@@ -331,10 +341,11 @@ impl RawKafkaConsumer {
             anyhow::bail!("rd_kafka_poll_set_consumer failed: {}", err);
         }
 
-        let subscribe_result = subscribe_topics(rk, &config.topics);
-        if let Err(err) = subscribe_result {
-            unsafe { rdsys::rd_kafka_destroy(rk) };
-            return Err(err);
+        if subscribe {
+            if let Err(err) = subscribe_topics(rk, &config.topics) {
+                unsafe { rdsys::rd_kafka_destroy(rk) };
+                return Err(err);
+            }
         }
 
         Ok(Self {

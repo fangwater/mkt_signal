@@ -306,7 +306,7 @@ mod tests {
         let candidates = confirmed_removal_candidates(&[account.clone()], &listings, &universes);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].redis_site, "sg");
-        assert_eq!(candidates[0].redis_keys.len(), 5);
+        assert_eq!(candidates[0].redis_keys.len(), 6);
         assert!(candidates[0]
             .redis_keys
             .iter()

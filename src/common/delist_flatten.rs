@@ -30,6 +30,25 @@ pub struct FlattenCandidate {
     pub disposition: String,
 }
 
+impl FlattenCandidate {
+    pub fn within_automatic_window(&self) -> bool {
+        self.disposition == "auto"
+            && self.remaining_ms <= signal_common::delist_close::FLATTEN_WINDOW_MS
+    }
+}
+
+pub fn delist_deadline_in_window(
+    delist_utc: &str,
+    now_ms: i64,
+    window_ms: i64,
+) -> Option<(i64, i64)> {
+    let deadline_ms = DateTime::parse_from_rfc3339(delist_utc)
+        .ok()?
+        .timestamp_millis();
+    let remaining_ms = deadline_ms.saturating_sub(now_ms);
+    (remaining_ms > 0 && remaining_ms <= window_ms).then_some((deadline_ms, remaining_ms))
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FlattenRunOutput {
     pub command: Vec<String>,
@@ -70,6 +89,10 @@ impl FlattenExecutor {
         Ok(self)
     }
 
+    pub fn maximum_wait(&self) -> Duration {
+        self.timeout + Duration::from_secs(20)
+    }
+
     pub async fn run(
         &self,
         candidate: &FlattenCandidate,
@@ -104,12 +127,11 @@ impl FlattenExecutor {
 
         // The remote timeout also terminates the Python process if SSH disconnects.
         // Allow SSH connection setup and timeout's TERM/KILL grace locally.
-        let wait = self.timeout
-            + if account.site == RedisSite::Sg {
-                Duration::from_secs(20)
-            } else {
-                Duration::ZERO
-            };
+        let wait = if account.site == RedisSite::Sg {
+            self.maximum_wait()
+        } else {
+            self.timeout
+        };
         let output = time::timeout(wait, command.output())
             .await
             .with_context(|| {
@@ -227,14 +249,11 @@ pub fn flatten_candidates(
         let Some(delist_utc) = candidate.delist_utc.as_deref() else {
             continue;
         };
-        let Ok(deadline) = DateTime::parse_from_rfc3339(delist_utc) else {
+        let Some((deadline_ms, remaining_ms)) =
+            delist_deadline_in_window(delist_utc, now_ms, window_ms)
+        else {
             continue;
         };
-        let deadline_ms = deadline.timestamp_millis();
-        let remaining_ms = deadline_ms.saturating_sub(now_ms);
-        if remaining_ms <= 0 || remaining_ms > window_ms.max(0) {
-            continue;
-        }
         let position_usdt = candidate.open_usdt.abs().max(candidate.hedge_usdt.abs());
         if !position_usdt.is_finite() || position_usdt < POSITION_REMOVAL_THRESHOLD_USDT {
             continue;
@@ -348,6 +367,31 @@ mod tests {
         assert_eq!(candidates[0].disposition, "auto");
         assert_eq!(candidates[1].disposition, "manual");
         assert_eq!(candidates[2].disposition, "auto");
+    }
+
+    #[test]
+    fn selects_automatic_flatten_only_at_twelve_hours_and_within_notional_limit() {
+        use signal_common::delist_close::{DELIST_DUMP_WINDOW_MS, FLATTEN_WINDOW_MS};
+        let now = DateTime::parse_from_rfc3339("2026-09-08T08:00:00Z")
+            .unwrap()
+            .timestamp_millis();
+        for (amount, interval_ms, expected) in [
+            (1_000.0, FLATTEN_WINDOW_MS + 1, false),
+            (1_000.0, FLATTEN_WINDOW_MS, true),
+            (1_000.01, FLATTEN_WINDOW_MS, false),
+            (1.0, 1, true),
+        ] {
+            let deadline = DateTime::from_timestamp_millis(now + interval_ms)
+                .unwrap()
+                .to_rfc3339();
+            let candidates = flatten_candidates(
+                &[positioned(amount, &deadline)],
+                now,
+                DELIST_DUMP_WINDOW_MS,
+                1_000.0,
+            );
+            assert_eq!(candidates[0].within_automatic_window(), expected);
+        }
     }
 
     #[test]

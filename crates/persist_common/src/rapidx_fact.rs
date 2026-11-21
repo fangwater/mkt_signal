@@ -74,6 +74,22 @@ impl RapidXFact for crate::rapidx_execution::ExecutionRecord {
     const RECORD_CHANNEL: &'static str = crate::rapidx_execution::RECORD_CHANNEL;
     const ACK_CHANNEL: &'static str = crate::rapidx_execution::ACK_CHANNEL;
     const COLUMN_FAMILY: &'static str = "rapidx_executions";
+    const OBSERVATIONS_CF: Option<&'static str> = Some("rapidx_execution_observations");
+    fn accepts_existing(&self, existing: &[u8]) -> Result<bool> {
+        let mut old: Self = serde_json::from_slice(existing)?;
+        let mut new = self.clone();
+        if old
+            .execution
+            .liquidity
+            .zip(new.execution.liquidity)
+            .is_some_and(|(a, b)| a != b)
+        {
+            return Ok(false);
+        }
+        old.execution.liquidity = None;
+        new.execution.liquidity = None;
+        Ok(old == new)
+    }
     fn validate(&self) -> Result<()> {
         self.validate()
     }

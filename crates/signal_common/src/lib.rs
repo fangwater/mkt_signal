@@ -2,6 +2,7 @@ pub mod arb_signal;
 pub mod bbo;
 pub mod cancel_signal;
 pub mod common;
+pub mod delist_close;
 pub mod hedge_signal;
 pub mod hyperliquid;
 pub mod lazy_taker_action;

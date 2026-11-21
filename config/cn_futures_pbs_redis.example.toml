@@ -1,0 +1,4 @@
+service_root = "cn_futures_pbs/company_redis"
+
+[redis]
+endpoint = "10.61.20.11:9380"

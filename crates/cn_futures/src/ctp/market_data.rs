@@ -20,9 +20,12 @@ pub struct Config {
     pub event_capacity: usize,
     pub response_timeout_ms: u64,
     pub reconnect_backoff_ms: u64,
+    /// Optional Market Replay HTTP endpoint for baseline SHFE dominant subscriptions.
+    pub shfe_dominant_url: Option<String>,
+    #[serde(default)]
     pub symbols: Vec<Subscription>,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Subscription {
     pub venue: Venue,
@@ -72,11 +75,25 @@ impl Config {
                 "invalid MD credential variable name"
             );
         }
-        let mut symbols = HashSet::new();
+        if let Some(url) = &self.shfe_dominant_url {
+            ensure!(
+                self.symbols.is_empty(),
+                "choose explicit MD symbols or shfe_dominant_url"
+            );
+            #[cfg(feature = "ctp-sdk")]
+            dominant::endpoint(url)?;
+            #[cfg(not(feature = "ctp-sdk"))]
+            ensure!(
+                url.starts_with("http://") || url.starts_with("https://"),
+                "shfe_dominant_url must be an HTTP(S) endpoint"
+            );
+            return Ok(());
+        }
         ensure!(
-            !self.symbols.is_empty() && self.symbols.len() <= 1000,
-            "require 1..1000 MD subscriptions"
+            self.symbols.len() <= 1000,
+            "at most 1000 baseline MD subscriptions"
         );
+        let mut symbols = HashSet::new();
         for s in &self.symbols {
             ensure!(
                 is_future_symbol(s.venue, &s.symbol) && symbols.insert(&s.symbol),
@@ -84,6 +101,14 @@ impl Config {
                 s.symbol
             );
         }
+        Ok(())
+    }
+    pub fn validate_standalone(&self) -> Result<()> {
+        self.validate()?;
+        ensure!(
+            self.shfe_dominant_url.is_none() && !self.symbols.is_empty(),
+            "standalone MD requires explicit subscriptions"
+        );
         Ok(())
     }
 }
@@ -197,11 +222,11 @@ impl TickRecord {
             received_us: self.received_us,
             connection_generation: self.connection_generation,
             venue: self.venue,
-            symbol: super::text(&self.symbol)?,
-            exchange_reported: super::text(&self.exchange)?,
-            trading_day: super::text(&self.trading_day)?,
-            action_day: super::text(&self.action_day)?,
-            update_time: super::text(&self.update_time)?,
+            symbol: super::text_ref(&self.symbol)?.to_owned(),
+            exchange_reported: super::text_ref(&self.exchange)?.to_owned(),
+            trading_day: super::text_ref(&self.trading_day)?.to_owned(),
+            action_day: super::text_ref(&self.action_day)?.to_owned(),
+            update_time: super::text_ref(&self.update_time)?.to_owned(),
             update_millisec: self.millisec,
             last_price: value(self.last_price),
             turnover: value(self.turnover),
@@ -222,26 +247,33 @@ fn value(price: f64) -> Option<f64> {
 }
 
 pub struct Session {
+    baseline: HashMap<String, Venue>,
     allowed: HashMap<String, Venue>,
     subscribed: HashSet<String>,
     pub connected: bool,
     pub logged_in: bool,
     pub generation: u64,
     login_request: Option<i32>,
+    trading_day: Option<String>,
+    dynamic: bool,
 }
 impl Session {
     pub fn new(config: &Config) -> Self {
+        let baseline: HashMap<_, _> = config
+            .symbols
+            .iter()
+            .map(|s| (s.symbol.clone(), s.venue))
+            .collect();
         Self {
-            allowed: config
-                .symbols
-                .iter()
-                .map(|s| (s.symbol.clone(), s.venue))
-                .collect(),
+            allowed: baseline.clone(),
+            baseline,
             subscribed: HashSet::new(),
             connected: false,
             logged_in: false,
             generation: 0,
             login_request: None,
+            trading_day: None,
+            dynamic: config.shfe_dominant_url.is_some(),
         }
     }
     pub fn connected(&mut self, request: i32) -> Result<()> {
@@ -249,9 +281,8 @@ impl Session {
             .generation
             .checked_add(1)
             .context("MD generation exhausted")?;
+        self.disconnect();
         self.connected = true;
-        self.logged_in = false;
-        self.subscribed.clear();
         self.login_request = Some(request);
         Ok(())
     }
@@ -260,9 +291,16 @@ impl Session {
         self.logged_in = false;
         self.subscribed.clear();
         self.login_request = None;
+        self.trading_day = None;
+        self.allowed.clone_from(&self.baseline);
     }
     pub fn login(&mut self, event: &RawEvent) -> Result<bool> {
-        if self.login_request != Some(event.request) {
+        let Some(request) = self.login_request else {
+            return Ok(false);
+        };
+        // Production Md fronts can return zero instead of echoing the login ID.
+        // Accept that response only for this connection's single pending login.
+        if event.request != request && event.request != 0 {
             return Ok(false);
         }
         ensure!(
@@ -273,14 +311,56 @@ impl Session {
         if event.last == 0 {
             return Ok(false);
         }
-        let day = super::text(&event.trading_day)?;
-        ensure!(
-            day.len() == 8 && day.bytes().all(|b| b.is_ascii_digit()),
-            "invalid MD trading day"
-        );
+        let day = super::text_ref(&event.trading_day)?;
+        if day.len() != 8 || day.starts_with('0') || !day.bytes().all(|b| b.is_ascii_digit()) {
+            // A front can accept login before exposing the next trading day.
+            // Keep the session unready and let the owner restart the SDK cold.
+            return Err(crate::restart::ColdRestartRequired::MarketDataTradingDay.into());
+        }
+        self.trading_day = Some(day.to_owned());
         self.logged_in = true;
         self.login_request = None;
         Ok(true)
+    }
+    #[cfg(feature = "ctp-sdk")]
+    pub(super) fn trading_day(&self) -> Option<&str> {
+        self.trading_day.as_deref()
+    }
+    #[cfg(any(feature = "ctp-sdk", test))]
+    pub(super) fn install_dominant(&mut self, day: &str, symbols: &[Subscription]) -> Result<()> {
+        ensure!(
+            self.dynamic
+                && self.logged_in
+                && self.trading_day.as_deref() == Some(day)
+                && self.allowed.is_empty()
+                && !symbols.is_empty(),
+            "dominant subscriptions do not match the pending MD session"
+        );
+        self.allowed = symbols
+            .iter()
+            .map(|s| (s.symbol.clone(), s.venue))
+            .collect();
+        Ok(())
+    }
+    #[cfg(any(feature = "ctp-sdk", test))]
+    pub(super) fn add_contracts(
+        &mut self,
+        contracts: &[(Venue, &str)],
+    ) -> Result<Vec<Subscription>> {
+        ensure!(self.ready(), "MD subscription acknowledgement pending");
+        let mut missing = HashMap::new();
+        for &(venue, symbol) in contracts {
+            if let Some(existing) = self.allowed.get(symbol).or_else(|| missing.get(symbol)) {
+                ensure!(*existing == venue, "ambiguous MD subscription for {symbol}");
+            } else {
+                missing.insert(symbol.to_owned(), venue);
+            }
+        }
+        self.allowed.extend(missing.clone());
+        Ok(missing
+            .into_iter()
+            .map(|(symbol, venue)| Subscription { venue, symbol })
+            .collect())
     }
     pub fn subscribed(&mut self, event: &RawEvent) -> Result<()> {
         ensure!(
@@ -288,7 +368,7 @@ impl Session {
             "MD subscription rejected: {}",
             event.error
         );
-        let symbol = super::text(&event.symbol)?;
+        let symbol = super::text_ref(&event.symbol)?.to_owned();
         ensure!(
             self.allowed.contains_key(&symbol),
             "unexpected MD subscription response"
@@ -297,7 +377,10 @@ impl Session {
         Ok(())
     }
     pub fn ready(&self) -> bool {
-        self.connected && self.logged_in && self.subscribed.len() == self.allowed.len()
+        self.connected
+            && self.logged_in
+            && (!self.dynamic || !self.allowed.is_empty())
+            && self.subscribed.len() == self.allowed.len()
     }
     pub fn tick_venue(&self, e: &RawEvent) -> Result<Venue> {
         ensure!(
@@ -331,7 +414,10 @@ impl Session {
 }
 
 #[cfg(feature = "ctp-sdk")]
+mod dominant;
+#[cfg(feature = "ctp-sdk")]
 mod feed;
+pub mod latency;
 #[cfg(feature = "ctp-sdk")]
 mod native;
 #[cfg(feature = "ctp-sdk")]
@@ -407,6 +493,118 @@ mod tests {
         s.subscribed(&sub).unwrap();
         assert!(s.ready());
         assert_eq!(s.generation, 2);
+    }
+    #[test]
+    fn combined_md_adds_exact_contracts_and_requires_new_ack_after_reconnect() {
+        let mut c = config();
+        c.symbols.clear();
+        let mut s = Session::new(&c);
+        s.connected(1).unwrap();
+        s.login(&login(1)).unwrap();
+        assert!(s.ready());
+        let contracts = [(Venue::Shfe, "sn2612")];
+        assert_eq!(s.add_contracts(&contracts).unwrap()[0].symbol, "sn2612");
+        assert!(!s.ready());
+        let mut ack = RawEvent {
+            present: 1,
+            ..RawEvent::default()
+        };
+        ack.symbol[..6].copy_from_slice(b"sn2612");
+        s.subscribed(&ack).unwrap();
+        assert!(s.ready());
+        assert!(s.add_contracts(&contracts).unwrap().is_empty());
+
+        s.connected(2).unwrap();
+        s.login(&login(2)).unwrap();
+        assert!(s.ready());
+        assert_eq!(s.add_contracts(&contracts).unwrap().len(), 1);
+        assert!(!s.ready());
+        s.subscribed(&ack).unwrap();
+        assert!(s.ready());
+    }
+    #[test]
+    fn zero_id_login_requires_pending_connection_and_fresh_subscriptions() {
+        let mut c = config();
+        c.symbols.truncate(1);
+        let mut s = Session::new(&c);
+        assert!(!s.login(&login(0)).unwrap());
+        s.connected(7).unwrap();
+        let mut response = login(0);
+        response.last = 0;
+        assert!(!s.login(&response).unwrap());
+        assert!(!s.ready());
+        assert!(s.login(&login(0)).unwrap());
+        assert!(!s.login(&login(0)).unwrap());
+        assert!(!s.ready());
+        let mut sub = RawEvent {
+            present: 1,
+            ..RawEvent::default()
+        };
+        sub.symbol[..6].copy_from_slice(b"IF2612");
+        s.subscribed(&sub).unwrap();
+        assert!(s.ready());
+        s.disconnect();
+        assert!(!s.login(&login(0)).unwrap());
+        s.connected(8).unwrap();
+        assert!(!s.login(&login(7)).unwrap());
+        assert!(s.login(&login(0)).unwrap());
+        assert!(!s.ready());
+        s.subscribed(&sub).unwrap();
+        assert!(s.ready());
+    }
+    #[test]
+    fn zero_id_login_still_rejects_errors_and_missing_response() {
+        for missing in [false, true] {
+            let mut s = Session::new(&config());
+            s.connected(1).unwrap();
+            let mut response = login(0);
+            if missing {
+                response.present = 0;
+            } else {
+                response.error = 3;
+            }
+            assert!(!s
+                .login(&response)
+                .unwrap_err()
+                .is::<crate::restart::ColdRestartRequired>());
+            assert!(!s.ready());
+        }
+    }
+    #[test]
+    fn login_without_trading_day_requires_cold_restart_and_never_becomes_ready() {
+        for day in [[0; 9], *b"00000000\0"] {
+            let mut session = Session::new(&config());
+            session.connected(1).unwrap();
+            let mut response = login(0);
+            response.trading_day = day;
+            assert!(matches!(
+                session.login(&response).unwrap_err().downcast_ref(),
+                Some(crate::restart::ColdRestartRequired::MarketDataTradingDay)
+            ));
+            assert!(!session.logged_in && !session.ready());
+        }
+    }
+    #[test]
+    fn dominant_list_must_be_installed_for_each_broker_login() {
+        let mut config = config();
+        let symbols = std::mem::take(&mut config.symbols);
+        config.shfe_dominant_url = Some("http://localhost/api/v1/dominant".into());
+        config.validate().unwrap();
+        let mut session = Session::new(&config);
+        session.connected(1).unwrap();
+        assert!(session.login(&login(0)).unwrap());
+        assert!(!session.ready());
+        assert!(session.install_dominant("20261112", &symbols).is_err());
+        session.install_dominant("20261111", &symbols).unwrap();
+        session.disconnect();
+        assert!(session.allowed.is_empty());
+        session.connected(2).unwrap();
+        let mut next_day = login(0);
+        next_day.trading_day[..8].copy_from_slice(b"20261112");
+        assert!(session.login(&next_day).unwrap());
+        assert!(!session.ready());
+        assert!(session.install_dominant("20261111", &symbols).is_err());
+        session.install_dominant("20261112", &symbols).unwrap();
     }
     #[test]
     fn no_invented_prices_and_wrong_venue_is_rejected() {

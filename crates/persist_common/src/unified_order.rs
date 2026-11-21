@@ -1,3 +1,4 @@
+use crate::record_extension::{ExtensionRef, RecordExtension};
 pub const SIGNAL_BBO_LEG_BINARY_LEN: usize = 1 + 8 + 8 * 4;
 pub const SIGNAL_BBO_BINARY_LEN: usize = 1 + SIGNAL_BBO_LEG_BINARY_LEN * 2;
 pub const UNIFORM_ORDER_TAIL_BINARY_LEN: usize = SIGNAL_BBO_BINARY_LEN + 1;
@@ -250,9 +251,65 @@ pub struct UnifiedOrderRecord {
     pub signal_bbo: Option<SignalBbo>,
     /// Factual role for this fill; order/query-only and non-fill records are Unknown.
     pub fill_liquidity: FillLiquidity,
+    /// Optional cross-market facts (domestic futures); crypto records carry None.
+    pub extension: Option<RecordExtension>,
+}
+
+/// Borrowed uniform order for writers that must not allocate.
+#[derive(Debug, Clone, Copy)]
+pub struct UniformOrderRef<'a> {
+    pub symbol: &'a [u8],
+    pub create_ts: i64,
+    pub update_ts: i64,
+    pub signal_ts: i64,
+    pub submit_ts: i64,
+    pub local_ts: i64,
+    pub mkt_ts: i64,
+    pub client_order_id: i64,
+    pub venue: u8,
+    pub ttype: u8,
+    pub side: u8,
+    pub price: f64,
+    pub price_offset: f64,
+    pub amount_init: f64,
+    pub amount_update: f64,
+    pub status: u8,
+    pub from_key: &'a [u8],
+    pub signal_bbo: Option<SignalBbo>,
+    pub fill_liquidity: FillLiquidity,
+    pub extension: ExtensionRef<'a>,
 }
 
 impl UnifiedOrderRecord {
+    pub fn as_ref(&self) -> UniformOrderRef<'_> {
+        UniformOrderRef {
+            symbol: &self.symbol,
+            create_ts: self.create_ts,
+            update_ts: self.update_ts,
+            signal_ts: self.signal_ts,
+            submit_ts: self.submit_ts,
+            local_ts: self.local_ts,
+            mkt_ts: self.mkt_ts,
+            client_order_id: self.client_order_id,
+            venue: self.venue,
+            ttype: self.ttype,
+            side: self.side,
+            price: self.price,
+            price_offset: self.price_offset,
+            amount_init: self.amount_init,
+            amount_update: self.amount_update,
+            status: self.status,
+            from_key: &self.from_key,
+            signal_bbo: self.signal_bbo,
+            fill_liquidity: self.fill_liquidity,
+            extension: self
+                .extension
+                .as_ref()
+                .map(RecordExtension::as_ref)
+                .unwrap_or_default(),
+        }
+    }
+
     /// 根据 `symbol` 与 `from_key` 自动回填长度字段。
     pub fn refresh_lengths(&mut self) {
         self.symbol_len = self.symbol.len() as u16;

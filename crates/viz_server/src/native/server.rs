@@ -1,11 +1,11 @@
-use super::{relay::Hub, DASHBOARD};
+use super::{manager, relay::Hub, DASHBOARD};
 use anyhow::Result;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        Path, State,
     },
-    http::header,
+    http::{header, HeaderMap},
     response::{Html, IntoResponse},
     routing::get,
     Json, Router,
@@ -14,11 +14,16 @@ use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
 use tokio::sync::broadcast;
 
-pub fn router(cfg: &crate::config::HttpCfg, hub: Hub) -> Router {
-    let html = DASHBOARD.replace(
-        "__CN_FUTURES_WS_PATH__",
-        &serde_json::to_string(&cfg.ws_path).expect("string JSON"),
-    );
+pub fn router(cfg: &crate::config::HttpCfg, hub: Hub, positions: manager::Positions) -> Router {
+    let html = DASHBOARD
+        .replace(
+            "__CN_FUTURES_WS_PATH__",
+            &serde_json::to_string(&cfg.ws_path).expect("string JSON"),
+        )
+        .replace(
+            "__CN_FUTURES_STRATEGY_SOURCES__",
+            &serde_json::to_string(&positions.source_ids()).expect("source IDs JSON"),
+        );
     Router::new()
         .route(
             "/",
@@ -31,17 +36,34 @@ pub fn router(cfg: &crate::config::HttpCfg, hub: Hub) -> Router {
             "/healthz",
             get(|State(hub): State<Hub>| async move { Json(hub.health()) }),
         )
+        .route(
+            "/strategy-positions/:source",
+            get({
+                let positions = positions.clone();
+                move |Path(source): Path<String>, headers: HeaderMap| {
+                    let positions = positions.clone();
+                    async move {
+                        let result = positions.read(&source, &headers).await;
+                        ([(header::CACHE_CONTROL, "no-store")], result.map(Json))
+                    }
+                }
+            }),
+        )
         .route(&cfg.ws_path, get(ws_route))
         .with_state(hub)
 }
-pub async fn serve(cfg: crate::config::HttpCfg, hub: Hub) -> Result<()> {
+pub async fn serve(
+    cfg: crate::config::HttpCfg,
+    hub: Hub,
+    positions: manager::Positions,
+) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", cfg.bind, cfg.port)).await?;
     log::info!(
         "native Viz listening at {}{}",
         listener.local_addr()?,
         cfg.ws_path
     );
-    axum::serve(listener, router(&cfg, hub)).await?;
+    axum::serve(listener, router(&cfg, hub, positions)).await?;
     Ok(())
 }
 async fn ws_route(ws: WebSocketUpgrade, State(hub): State<Hub>) -> impl IntoResponse {

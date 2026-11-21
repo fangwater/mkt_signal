@@ -3,9 +3,9 @@ use super::*;
 
 fn core() -> TradingCore {
     let limits = RiskLimits {
-        max_order_lots: 20,
-        max_position_lots_per_side: 100,
-        max_working_lots: 100,
+        max_order_lots: Some(20),
+        max_position_lots_per_side: Some(100),
+        max_working_lots: Some(100),
         max_actions_per_second: 100_000,
         minimum_cash_remaining: 0.0,
         enable_fak_fok: true,
@@ -57,10 +57,10 @@ fn intent(side: Side, offset: Offset, lots: i32) -> Intent {
 }
 fn update(p: &PreparedOrder, traded: i32, status: OrderStatus) -> OrderUpdate {
     OrderUpdate {
-        key: p.key.clone(),
+        key: p.key,
         venue: p.intent.venue,
-        symbol: p.intent.symbol.clone(),
-        system_id: format!("system-{}", p.key.order_ref),
+        symbol: p.intent.symbol,
+        system_id: Text::format(format_args!("system-{}", p.key.order_ref)).unwrap(),
         trading_day: "20261112".into(),
         side: p.intent.side,
         offset: p.intent.offset,
@@ -77,14 +77,14 @@ fn fill(p: &PreparedOrder, trade: &str, lots: i32) -> Fill {
     Fill {
         identity: TradeIdentity {
             venue: p.intent.venue,
-            symbol: p.intent.symbol.clone(),
+            symbol: p.intent.symbol,
             trading_day: "20261112".into(),
-            trade_id: trade.into(),
+            trade_id: Text::new(trade).unwrap(),
             side: p.intent.side,
         },
-        order_ref: p.key.order_ref.clone(),
-        order_key: Some(p.key.clone()),
-        system_id: format!("system-{}", p.key.order_ref),
+        order_ref: p.key.order_ref,
+        order_key: Some(p.key),
+        system_id: Text::format(format_args!("system-{}", p.key.order_ref)).unwrap(),
         offset: p.intent.offset,
         lots,
         price: p.limit_price,
@@ -95,11 +95,6 @@ fn assert_projection(core: &TradingCore, key: &OrderKey) {
     let canonical = view.to_order();
     assert_eq!(
         serde_json::to_value(view).unwrap(),
-        serde_json::to_value(&canonical).unwrap()
-    );
-    let mutation = crate::persistence::projection_for(core, std::slice::from_ref(key), &[]);
-    assert_eq!(
-        serde_json::to_value(&mutation.orders[0].order).unwrap(),
         serde_json::to_value(canonical).unwrap()
     );
     let id = core.orders.id(key).unwrap();
@@ -228,11 +223,11 @@ fn growth_prefault_and_restore_keep_hot_cold_indexes_and_complete_identities() {
         .prepare(intent(Side::Buy, Offset::Open, 2), Instant::now())
         .unwrap();
     let mut report = update(&p, 0, OrderStatus::Working);
-    report.system_id = "s".repeat(63);
+    report.system_id = Text::new(&"s".repeat(63)).unwrap();
     c.on_order(&report).unwrap();
     c.restore(Snapshot {
         trading_day: "20261112".into(),
-        session: p.key.session.clone(),
+        session: p.key.session,
         max_order_ref: p.key.order_ref.parse().unwrap(),
         available_cash: 998000.0,
         instruments: c.view().instruments.into_iter().cloned().collect(),
@@ -262,7 +257,7 @@ fn self_trade_checks_use_hot_side_price_and_market_flag() {
     let mut market = intent(Side::Buy, Offset::Open, 1);
     market.price_type = PriceType::Market;
     market.price_ticks = 0;
-    assert!(c.prepare(market.clone(), Instant::now()).is_err());
+    assert!(c.prepare(market, Instant::now()).is_err());
     c.reject(&passive.key).unwrap();
     let p = c.prepare(market, Instant::now()).unwrap();
     assert_projection(&c, &p.key);
@@ -299,12 +294,12 @@ fn arena_preserves_noncanonical_identities_and_replaces_both_halves_together() {
         .unwrap();
     let original = c.order(&p.key).unwrap().to_order();
     let mut arena = OrderArena::default();
-    for reference in ["1", "01", "external", "18446744073709551616"] {
-        let mut order = original.clone();
+    for reference in ["1", "01", "external", "+1"] {
+        let mut order = original;
         order.key.order_ref = reference.into();
-        order.system_id = format!("{}-{reference}", "s".repeat(40));
-        let key = order.key.clone();
-        arena.insert(order.clone(), SymbolId(0));
+        order.system_id = Text::format(format_args!("{}-{reference}", "s".repeat(40))).unwrap();
+        let key = order.key;
+        arena.insert(order, SymbolId(0));
         assert_eq!(
             serde_json::to_value(arena.get(&key).unwrap()).unwrap(),
             serde_json::to_value(order).unwrap()
@@ -316,9 +311,9 @@ fn arena_preserves_noncanonical_identities_and_replaces_both_halves_together() {
     replacement.filled = 1;
     replacement.status = OrderStatus::Filled;
     replacement.system_id = "replacement".into();
-    let key = replacement.key.clone();
+    let key = replacement.key;
     let id = arena.id(&key).unwrap();
-    assert_eq!(arena.insert(replacement.clone(), SymbolId(0)), (id, 1));
+    assert_eq!(arena.insert(replacement, SymbolId(0)), (id, 1));
     assert_eq!(arena.slots.len(), 4);
     assert_eq!(arena.slots[id.0].remaining(), 0);
     assert_eq!(

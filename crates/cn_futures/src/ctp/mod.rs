@@ -1,4 +1,6 @@
 //! Official CTP 6.7.11 Trader API mapping; no CTP-compatible replacement libraries.
+pub mod algo;
+pub mod exec;
 pub mod ingress;
 pub mod market_data;
 #[cfg(feature = "ctp-sdk")]
@@ -44,7 +46,8 @@ impl Correlation {
     fn key(self) -> OrderKey {
         OrderKey {
             session: session_key(self.front, self.session),
-            order_ref: self.reference.to_string(),
+            order_ref: Reference::decimal(self.reference)
+                .expect("CTP request references stay below the scope limit"),
         }
     }
 }
@@ -147,7 +150,7 @@ impl ResponseCorrelation {
             ensure!(c.kind == e.kind, "CTP business response kind mismatch");
             return Ok(c.key());
         }
-        let reference = text(&e.order_ref)?.parse::<u64>()?;
+        let reference = text_ref(&e.order_ref)?.parse::<u64>()?;
         let c = self
             .by_reference
             .get(&(e.kind, reference))
@@ -158,7 +161,7 @@ impl ResponseCorrelation {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct HotEvent {
     pub kind: i32,
     pub request: i32,
@@ -177,6 +180,8 @@ pub struct HotEvent {
     pub hedge: i32,
     pub time_condition: i32,
     pub volume_condition: i32,
+    /// Explicit C alignment padding before `price`; never read.
+    pub reserved: [u8; 4],
     pub price: f64,
     pub symbol: [u8; 81],
     pub exchange: [u8; 9],
@@ -193,7 +198,7 @@ impl Default for HotEvent {
     }
 }
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RawEvent {
     pub hot: HotEvent,
     pub today: i32,
@@ -217,6 +222,8 @@ pub struct RawEvent {
     pub account_values: [f64; 44],
     pub product: [u8; 81],
     pub max_order_ref: [u8; 13],
+    /// Explicit C tail padding; never read.
+    pub reserved: [u8; 2],
 }
 impl std::ops::Deref for RawEvent {
     type Target = HotEvent;
@@ -250,8 +257,9 @@ pub fn text_ref(bytes: &[u8]) -> Result<&str> {
     ensure!(bytes[..n].is_ascii(), "non-ASCII CTP identifier");
     Ok(std::str::from_utf8(&bytes[..n])?)
 }
-pub fn text(bytes: &[u8]) -> Result<String> {
-    text_ref(bytes).map(str::to_owned)
+/// A fixed native identity copied out of an SDK field without allocating.
+pub fn text<const N: usize>(bytes: &[u8]) -> Result<Text<N>> {
+    Text::new(text_ref(bytes)?)
 }
 pub fn error_text(bytes: &[u8]) -> String {
     let n = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
@@ -307,10 +315,10 @@ impl HotEvent {
         Ok(OrderUpdate {
             key: self.key()?,
             symbol: text(&self.symbol)?,
-            venue: Venue::parse(&text(&self.exchange)?)?,
+            venue: Venue::parse(text_ref(&self.exchange)?)?,
             system_id: text(&self.system_id)?,
             side: side(self.direction)?,
-            offset: offset(self.offset, Venue::parse(&text(&self.exchange)?)?)?,
+            offset: offset(self.offset, Venue::parse(text_ref(&self.exchange)?)?)?,
             lots: self.volume,
             traded: self.traded,
             price_type: PriceType::Limit,
@@ -333,7 +341,7 @@ impl HotEvent {
         );
         Ok(Fill {
             identity: TradeIdentity {
-                venue: Venue::parse(&text(&self.exchange)?)?,
+                venue: Venue::parse(text_ref(&self.exchange)?)?,
                 symbol: text(&self.symbol)?,
                 trading_day: text(&self.trading_day)?,
                 trade_id: text(&self.trade_id)?,
@@ -342,7 +350,7 @@ impl HotEvent {
             order_ref: text(&self.order_ref)?,
             order_key: None,
             system_id: text(&self.system_id)?,
-            offset: offset(self.offset, Venue::parse(&text(&self.exchange)?)?)?,
+            offset: offset(self.offset, Venue::parse(text_ref(&self.exchange)?)?)?,
             lots: self.volume,
             price: self.price,
         })
@@ -384,13 +392,15 @@ pub fn scope() -> ExecutionScope {
         venues: Venue::ALL.into_iter().collect(),
         reference_limit: 999_999_999_999,
         require_market_status: true,
+        require_bootstrap_instruments: false,
         cancel_requires_system_id: false,
         allow_implicit_fill_reference: true,
         allow_options: false,
     }
 }
-pub fn session_key(front: i32, session: i32) -> String {
-    format!("ctp:{front}:{session}")
+pub fn session_key(front: i32, session: i32) -> Session {
+    Session::format(format_args!("ctp:{front}:{session}"))
+        .expect("two i32 values fit the CTP session capacity")
 }
 pub fn parse_session(value: &str) -> Result<(i32, i32)> {
     let mut parts = value.split(':');
@@ -491,9 +501,10 @@ mod tests {
     }
     #[test]
     fn identifiers_must_be_terminated_and_ascii() {
-        assert!(text(&[b'x'; 13]).is_err());
-        assert!(text(&[255, 0]).is_err());
-        assert_eq!(text(b"123\0").unwrap(), "123");
+        assert!(text_ref(&[b'x'; 13]).is_err());
+        assert!(text_ref(&[255, 0]).is_err());
+        assert_eq!(text::<16>(b"123\0").unwrap(), "123");
+        assert!(text::<2>(b"123\0").is_err());
     }
     #[test]
     fn gbk_error_is_decoded() {
@@ -517,9 +528,7 @@ mod tests {
             order_ref: "17".into(),
         };
         let mut correlation = ResponseCorrelation::default();
-        correlation
-            .register(100, INSERT_RESPONSE, old.clone())
-            .unwrap();
+        correlation.register(100, INSERT_RESPONSE, old).unwrap();
         correlation.register(101, INSERT_RESPONSE, new).unwrap();
         let mut event = RawEvent {
             hot: HotEvent {
@@ -545,7 +554,7 @@ mod tests {
                     INSERT_RESPONSE,
                     OrderKey {
                         session: session_key(7, 11),
-                        order_ref: id.to_string(),
+                        order_ref: Text::format(format_args!("{id}")).unwrap(),
                     },
                 )
                 .unwrap();
@@ -630,14 +639,32 @@ pub struct AccountSnapshot {
     pub option_value: f64,
 }
 impl AccountSnapshot {
+    pub fn funds(&self, observed_us: u64) -> Result<cn_futures_state::AccountFunds> {
+        let funds = cn_futures_state::AccountFunds {
+            observed_us,
+            currency: cn_futures_state::Text::new(&self.currency)?,
+            balance: self.balance,
+            available: self.available,
+            withdraw_quota: self.withdraw_quota,
+            curr_margin: self.curr_margin,
+            frozen_margin: self.frozen_margin,
+            frozen_cash: self.frozen_cash,
+            frozen_commission: self.frozen_commission,
+            position_profit: self.position_profit,
+            close_profit: self.close_profit,
+            commission: self.commission,
+        };
+        funds.validate()?;
+        Ok(funds)
+    }
     pub fn from_event(e: &RawEvent) -> Result<Self> {
         ensure!(
             e.account_values.iter().all(|v| v.is_finite()),
             "nonfinite CTP account fields"
         );
         Ok(Self {
-            trading_day: text(&e.trading_day)?,
-            currency: text(&e.exchange)?,
+            trading_day: text_ref(&e.trading_day)?.to_owned(),
+            currency: text_ref(&e.exchange)?.to_owned(),
             pre_mortgage: e.account_values[0],
             pre_credit: e.account_values[1],
             pre_deposit: e.account_values[2],

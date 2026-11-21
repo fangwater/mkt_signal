@@ -11,6 +11,8 @@ fn source(id: &str) -> Counter {
         adapter: Adapter::Yida,
         position_namespace: format!("test_native_{}_{}", id, now_us()),
         expected_account_hash: "a".repeat(64),
+        manager_source_id: None,
+        account_snapshot_path: None,
     }
 }
 fn snapshot(source: &Counter, epoch: u64, sequence: u64) -> Snapshot {
@@ -42,6 +44,77 @@ fn frame(hub: &Hub) -> Value {
 }
 
 #[test]
+fn saved_account_never_makes_a_restarted_counter_live() {
+    let mut source = source("saved");
+    source.account_snapshot_path = Some("/unused/native-account.bin".into());
+    let hub = Hub::new(std::slice::from_ref(&source), 15000);
+    let settled = snapshot(&source, 100, 1);
+    hub.restore(&source, settled.clone()).unwrap();
+    assert_eq!(
+        frame(&hub)["saved_entry"]["positions"][0]["symbol"],
+        "cu2612"
+    );
+    assert_eq!(frame(&hub)["saved_entry"]["can_trade"], false);
+    assert!(!hub.latest()[0].contains(&source.expected_account_hash));
+    assert!(hub.health()["sources"][0]["position_ready"].is_null());
+
+    let mut waiting = snapshot(&source, 200, 1);
+    waiting.position_ready = false;
+    waiting.positions.clear();
+    waiting.ready = false;
+    hub.apply(&source, waiting).unwrap();
+    assert_eq!(frame(&hub)["entry"]["position_ready"], false);
+    assert_eq!(
+        frame(&hub)["saved_entry"]["observed_us"],
+        settled.observed_us
+    );
+
+    let mut flat = snapshot(&source, 200, 2);
+    flat.positions.clear();
+    hub.apply(&source, flat).unwrap();
+    assert!(frame(&hub).get("saved_entry").is_none());
+    assert_eq!(hub.health()["sources"][0]["position_rows"], 0);
+}
+
+#[test]
+fn account_query_freshness_is_independent_of_snapshot_heartbeat_and_trade_permission() {
+    let mut source = source("ctp");
+    source.adapter = Adapter::Ctp;
+    let hub = Hub::new(std::slice::from_ref(&source), 15000);
+    let mut s = snapshot(&source, 100, 1);
+    s.ready = false;
+    s.reason = Text::new("settlement not confirmed; read-only queries remain available").unwrap();
+    s.account = Some(cn_futures_state::AccountFunds {
+        observed_us: s.observed_us - 1,
+        currency: Text::new("CNY").unwrap(),
+        balance: 499999.72,
+        available: 499999.72,
+        withdraw_quota: 499899.72,
+        curr_margin: 0.0,
+        frozen_margin: 0.0,
+        frozen_cash: 0.0,
+        frozen_commission: 0.0,
+        position_profit: 0.0,
+        close_profit: 0.0,
+        commission: 0.0,
+    });
+    hub.apply(&source, s.clone()).unwrap();
+    assert_eq!(frame(&hub)["entry"]["account"]["balance"], 499999.72);
+    assert_eq!(hub.health()["sources"][0]["account_fresh"], true);
+    s.sequence += 1;
+    s.observed_us = now_us();
+    s.account.as_mut().unwrap().observed_us = s.observed_us - 60_000_000;
+    hub.apply(&source, s.clone()).unwrap();
+    assert_eq!(hub.health()["sources"][0]["fresh"], true);
+    assert_eq!(hub.health()["sources"][0]["account_fresh"], false);
+    s.sequence += 1;
+    s.account = None;
+    hub.apply(&source, s).unwrap();
+    assert_eq!(hub.health()["sources"][0]["account_available"], false);
+    assert!(frame(&hub)["entry"]["account"].is_null());
+}
+
+#[test]
 fn relay_preserves_producer_fields_replaces_full_state_and_pins_identity() {
     let source = source("paper");
     let hub = Hub::new(std::slice::from_ref(&source), 1000);
@@ -51,7 +124,6 @@ fn relay_preserves_producer_fields_replaces_full_state_and_pins_identity() {
     expected.as_object_mut().unwrap().remove("account_hash");
     expected["publisher_epoch"] = json!(u64::MAX.to_string());
     expected["sequence"] = json!("1");
-    expected["replaced_snapshots"] = json!("0");
     expected["l1_dropped"] = json!("0");
     hub.apply(&source, s).unwrap();
     assert_eq!(frame(&hub)["entry"], expected);
@@ -90,6 +162,9 @@ fn native_config_has_one_ipc_contract_and_safe_ws_path() {
             ws_path: "/observe/live".into(),
         },
         stale_after_ms: 1000,
+        manager_port: 18211,
+        cta_signal_port: None,
+        l1: None,
         counters: vec![source],
     };
     cfg.validate().unwrap();
@@ -129,7 +204,16 @@ async fn direct_ws_replays_each_source_and_forwards_without_flush_timer_or_rest_
         port: addr.port(),
         ws_path: "/observe/live".into(),
     };
-    let app = server::router(&cfg, hub.clone());
+    let positions = manager::Positions::new(&Config {
+        http: cfg.clone(),
+        stale_after_ms: 1000,
+        manager_port: 18211,
+        cta_signal_port: None,
+        l1: None,
+        counters: sources.clone(),
+    })
+    .unwrap();
+    let app = server::router(&cfg, hub.clone(), positions);
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/observe/live"))
         .await
@@ -159,7 +243,7 @@ async fn direct_ws_replays_each_source_and_forwards_without_flush_timer_or_rest_
     assert_eq!(response.headers()["cache-control"], "no-store");
     let html = response.text().await.unwrap();
     assert!(html.contains("const WS_PATH = \"/observe/live\""));
-    assert!(!html.contains("fetch("));
+    assert!(html.contains("const STRATEGY_SOURCES = new Set([])"));
     assert!(!html.contains("data-activity"));
     assert!(html.contains("人民币元") && html.contains("沪铜"));
     for path in ["/snapshot", "/orders", "/cancel", "/config/"] {
@@ -190,12 +274,12 @@ async fn ipc_listener_relays_common_state_without_sdk_or_database() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let source = source("ipc");
-            let publisher =
+            let mut publisher =
                 cn_futures_state::transport::StatePublisher::new(&source.position_namespace)
                     .unwrap();
             let hub = Hub::new(std::slice::from_ref(&source), 1000);
             let mut rx = hub.tx.subscribe();
-            let handle = spawn(source.clone(), hub.clone());
+            let handle = spawn(source.clone(), hub.clone(), None);
             tokio::time::timeout(Duration::from_secs(3), async {
                 let mut seq = 0;
                 loop {
@@ -217,4 +301,116 @@ async fn ipc_listener_relays_common_state_without_sdk_or_database() {
             handle.abort();
         })
         .await;
+}
+
+#[tokio::test]
+async fn strategy_positions_forward_only_the_session_to_the_pinned_manager_source() {
+    use axum::{
+        http::{header, HeaderMap, StatusCode},
+        routing::get,
+        Json, Router,
+    };
+    let ledger = Router::new().route(
+        "/manager/api/native/sources/manager-ctp/netting",
+        get(|headers: HeaderMap| async move {
+            if headers.get(header::COOKIE).and_then(|v| v.to_str().ok())
+                != Some("cn_cta_session=allowed")
+            {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            Ok(Json(json!({
+                "portfolio": {
+                    "source_id": "manager-ctp",
+                    "strategy_groups": {"active":{"members":["active-1h","active-retired-1h","beta"]}},
+                    "targets": {"active-1h":{"SHFE:rb2701":3},"active-retired-1h":{"SHFE:rb2701":0},"beta":{"SHFE:rb2701":-2}}
+                },
+                "net_targets":{"SHFE:rb2701":1},
+                "exec_ledger":{"SHFE:rb2701":{"active-1h":2,"beta":-2}}
+            })))
+        }),
+    )
+    .route("/state", get(|headers: HeaderMap| async move {
+        assert!(headers.get(header::COOKIE).is_none());
+        Json(json!({
+            "strategy_group":"held",
+            "manager_publication":{"source_id":"another-account"},
+            "factor_signals":{"market":"SHFE:rb2701","decision_ms":999,"rules":[{"factor":"other-account","target_lots":0}]},
+            "products":{"RB":{"strategy_group":"active","manager_publication":{"source_id":"manager-ctp"},
+                "factor_signals":{"market":"SHFE:rb2701","decision_ms":123,"rules":[
+                    {"factor":"alpha","target_lots":3},{"factor":"beta","id":"flat","target_lots":0}
+                ]}}}
+        }))
+    }));
+    let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let manager_port = upstream.local_addr().unwrap().port();
+    let upstream_task = tokio::spawn(async move { axum::serve(upstream, ledger).await.unwrap() });
+    let mut ctp = source("ctp");
+    ctp.manager_source_id = Some("manager-ctp".into());
+    let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = local.local_addr().unwrap();
+    let cfg = Config {
+        http: crate::config::HttpCfg {
+            bind: "127.0.0.1".into(),
+            port: addr.port(),
+            ws_path: "/ws".into(),
+        },
+        stale_after_ms: 1000,
+        manager_port,
+        cta_signal_port: Some(manager_port),
+        l1: None,
+        counters: vec![ctp, source("paper")],
+    };
+    let app = server::router(
+        &cfg.http,
+        Hub::new(&cfg.counters, 1000),
+        manager::Positions::new(&cfg).unwrap(),
+    );
+    let local_task = tokio::spawn(async move { axum::serve(local, app).await.unwrap() });
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let ctp_url = format!("http://{addr}/strategy-positions/ctp");
+    for (cookie, expected) in [
+        ("theme=dark", StatusCode::UNAUTHORIZED),
+        ("cn_cta_session=denied", StatusCode::FORBIDDEN),
+    ] {
+        let response = client
+            .get(&ctp_url)
+            .header(header::COOKIE, cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+    let result = client
+        .get(&ctp_url)
+        .header(header::COOKIE, "theme=dark; cn_cta_session=allowed")
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    assert_eq!(result.headers()[header::CACHE_CONTROL], "no-store");
+    let value: Value = serde_json::from_slice(&result.bytes().await.unwrap()).unwrap();
+    assert_eq!(
+        value,
+        json!({"SHFE:rb2701": {
+            "target_lots":1,"attributed_lots":0, "strategies":[
+                {"name":"active-1h","signal_target_lots":3,"target_lots":3,"attributed_lots":2},
+                {"name":"beta","signal_target_lots":-2,"target_lots":-2,"attributed_lots":-2}
+            ], "factor_signals":{"market":"SHFE:rb2701","decision_ms":123,"rules":[
+                {"factor":"alpha","id":null,"target_lots":3},{"factor":"beta","id":"flat","target_lots":0}
+            ]}
+        }})
+    );
+    assert_eq!(
+        client
+            .get(format!("http://{addr}/strategy-positions/paper"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    local_task.abort();
+    upstream_task.abort();
 }

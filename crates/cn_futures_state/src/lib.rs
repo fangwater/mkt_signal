@@ -1,67 +1,20 @@
 //! SDK-free native account position snapshots. One complete replaceable state
-//! per publication, using Exec's length-prefixed bincode over iceoryx2.
+//! per publication, exact-length bincode over iceoryx2, published inline.
+pub mod checkpoint;
 pub mod publisher;
 pub mod transport;
 
 use anyhow::{ensure, Result};
 pub use persist_common::cn_futures::{Position, Side, Venue};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 pub const MAX_POSITIONS: usize = 8192;
-pub const PAYLOAD: usize = 4 * 1024 * 1024;
+pub const MAX_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
 pub const BUFFER: usize = 2;
 pub const CHANNEL: &str = "cn_futures_positions";
 
 /// Fixed text keeps snapshot capture free of per-row heap allocations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Text<const N: usize> {
-    bytes: [u8; N],
-    len: usize,
-}
-impl<const N: usize> Default for Text<N> {
-    fn default() -> Self {
-        Self {
-            bytes: [0; N],
-            len: 0,
-        }
-    }
-}
-impl<const N: usize> Text<N> {
-    pub fn new(value: &str) -> Result<Self> {
-        ensure!(value.len() <= N, "native state text exceeds {N} bytes");
-        let mut text = Self::default();
-        text.bytes[..value.len()].copy_from_slice(value.as_bytes());
-        text.len = value.len();
-        Ok(text)
-    }
-    pub fn as_str(&self) -> &str {
-        // Only complete UTF-8 strings can construct Text, including decoding.
-        std::str::from_utf8(&self.bytes[..self.len]).expect("validated native text")
-    }
-}
-impl<const N: usize> Serialize for Text<N> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-impl<'de, const N: usize> Deserialize<'de> for Text<N> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        struct Visitor<const N: usize>;
-        impl<'de, const N: usize> serde::de::Visitor<'de> for Visitor<N> {
-            type Value = Text<N>;
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "UTF-8 text up to {N} bytes")
-            }
-            fn visit_str<E: serde::de::Error>(
-                self,
-                v: &str,
-            ) -> std::result::Result<Self::Value, E> {
-                Text::new(v).map_err(E::custom)
-            }
-        }
-        deserializer.deserialize_str(Visitor::<N>)
-    }
-}
+pub use persist_common::cn_futures::Text;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -157,6 +110,50 @@ impl InstrumentMark {
     }
 }
 
+/// Factual broker account values. The query time is independent of IPC heartbeats.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub struct AccountFunds {
+    pub observed_us: u64,
+    pub currency: Text<8>,
+    pub balance: f64,
+    pub available: f64,
+    pub withdraw_quota: f64,
+    pub curr_margin: f64,
+    pub frozen_margin: f64,
+    pub frozen_cash: f64,
+    pub frozen_commission: f64,
+    pub position_profit: f64,
+    pub close_profit: f64,
+    pub commission: f64,
+}
+impl AccountFunds {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(self.observed_us > 0, "account query time is missing");
+        ensure!(
+            self.currency.as_str() == "CNY",
+            "unsupported account currency"
+        );
+        ensure!(
+            [
+                self.balance,
+                self.available,
+                self.withdraw_quota,
+                self.curr_margin,
+                self.frozen_margin,
+                self.frozen_cash,
+                self.frozen_commission,
+                self.position_profit,
+                self.close_profit,
+                self.commission
+            ]
+            .iter()
+            .all(|value| value.is_finite()),
+            "nonfinite account funds"
+        );
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Snapshot {
     pub publisher_epoch: u64,
@@ -167,6 +164,9 @@ pub struct Snapshot {
     pub account_hash: Text<64>,
     pub runtime_status: RuntimeStatus,
     pub position_ready: bool,
+    /// No order is open, cancelling, or waiting for its factual fills; the
+    /// positions are a valid Manager anchor.
+    pub orders_settled: bool,
     pub connected: bool,
     pub ready: bool,
     pub can_trade: bool,
@@ -174,7 +174,7 @@ pub struct Snapshot {
     pub trading_day: Text<16>,
     pub reason: Text<512>,
     pub available_local_budget: f64,
-    pub replaced_snapshots: u64,
+    pub account: Option<AccountFunds>,
     pub positions: Vec<PositionRow>,
     pub marks: Vec<InstrumentMark>,
     pub l1_connected: bool,
@@ -191,6 +191,7 @@ impl Snapshot {
             account_hash: Text::new(account_hash)?,
             runtime_status: RuntimeStatus::Running,
             position_ready: false,
+            orders_settled: false,
             connected: false,
             ready: false,
             can_trade: false,
@@ -198,7 +199,7 @@ impl Snapshot {
             trading_day: Text::default(),
             reason: Text::default(),
             available_local_budget: 0.0,
-            replaced_snapshots: 0,
+            account: None,
             positions: Vec::with_capacity(MAX_POSITIONS),
             marks: Vec::with_capacity(MAX_POSITIONS),
             l1_connected: false,
@@ -207,6 +208,13 @@ impl Snapshot {
     }
     pub fn validate(&self) -> Result<()> {
         validate_hash(self.account_hash.as_str())?;
+        if let Some(account) = &self.account {
+            account.validate()?;
+            ensure!(
+                account.observed_us <= self.observed_us,
+                "account query is newer than capture"
+            );
+        }
         ensure!(
             self.publisher_epoch > 0 && self.sequence > 0 && self.observed_us > 0,
             "invalid native position envelope"
@@ -278,6 +286,7 @@ pub struct Config {
     pub namespace: String,
     #[serde(default = "default_interval")]
     pub interval_ms: u64,
+    pub account_snapshot_path: Option<std::path::PathBuf>,
 }
 fn default_interval() -> u64 {
     1000
@@ -285,6 +294,9 @@ fn default_interval() -> u64 {
 impl Config {
     pub fn validate(&self) -> Result<()> {
         service_name(&self.namespace)?;
+        if let Some(path) = &self.account_snapshot_path {
+            checkpoint::validate_path(path)?;
+        }
         ensure!(
             (100..=60_000).contains(&self.interval_ms),
             "position IPC interval_ms must be 100..60000"

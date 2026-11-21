@@ -1,0 +1,38 @@
+# Private deployment config belongs in the tunnel environment, outside Git.
+# Host addresses and SSH keys are kept in this private OpenSSH config.
+ssh_config = "/home/USER/.config/mkt_signal/dev_tunnel/ssh_config"
+peer_alias = "mkt-sh-dev-tunnel"
+
+[[forwards]]
+# Cloud requests to 127.0.0.1:18313 reach this machine's local HTTP service.
+name = "dominant"
+local_host = "127.0.0.1"
+remote_port = 18313
+local_port = 18313
+
+[[forwards]]
+# Optional MCP HTTP entry point; the remote account must permit this port too.
+name = "mcp"
+local_host = "127.0.0.1"
+remote_port = 8780
+local_port = 8780
+
+[[forwards]]
+name = "history-grpc"
+local_host = "127.0.0.1"
+remote_port = 18312
+local_port = 18312
+
+[[forwards]]
+# Example only: replace with the authorized LAN publisher in the private env.
+name = "market-redis"
+local_host = "10.0.0.2"
+remote_port = 13005
+local_port = 9380
+
+[[forwards]]
+# CTA configuration panel; its API requires a private panel access credential.
+name = "cta-config"
+local_host = "127.0.0.1"
+remote_port = 19401
+local_port = 19401

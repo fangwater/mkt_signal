@@ -290,9 +290,22 @@ pub fn message(history: &History) -> String {
         link
     )
 }
-fn validate(event: &Event, accounts: &[AccountSpec]) -> Result<()> {
+fn validate(event: &Event, accounts: &[AccountSpec], exec_keys: &BTreeSet<String>) -> Result<()> {
     ensure!(event.objects.len() <= 256, "parameter event too large");
     match event.storage.as_str() {
+        "redis" if event.metadata.family == "exec" => {
+            ensure!(
+                exec_keys
+                    .iter()
+                    .any(|key| key.split(':').next() == Some(event.metadata.environment.as_str())),
+                "unrecognized Exec parameter environment"
+            );
+            ensure!(
+                event.objects.keys().all(|key| exec_keys.contains(key)
+                    && key.split(':').next() == Some(event.metadata.environment.as_str())),
+                "invalid Exec parameter account scope"
+            );
+        }
         "redis" => {
             let account = accounts
                 .iter()
@@ -395,6 +408,7 @@ async fn snapshot(
     state: &super::AppState,
     site: &str,
     accounts: &[AccountSpec],
+    exec_keys: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, Watched>> {
     let mut current = BTreeMap::new();
     let url = if site == "jp" {
@@ -402,8 +416,18 @@ async fn snapshot(
     } else {
         state.sg_redis.as_deref().context("SG Redis unavailable")?
     };
+    let mut conn = if accounts.is_empty() && exec_keys.is_empty() {
+        None
+    } else {
+        Some(
+            redis::Client::open(url)?
+                .get_multiplexed_async_connection()
+                .await?,
+        )
+    };
     for account in accounts {
-        for (key, value) in super::backup::parameter_values(url, account).await? {
+        let conn = conn.as_mut().context("Redis connection unavailable")?;
+        for (key, value) in super::backup::parameter_values(conn, account).await? {
             // Shared Redis keys produce one observation for all affected envs.
             let id = identity("redis", &key);
             let item = current.entry(id).or_insert_with(|| Watched {
@@ -422,6 +446,31 @@ async fn snapshot(
                 item.metadata.environment.push_str(&account.slug);
             }
         }
+    }
+    for key in exec_keys {
+        let values: BTreeMap<String, String> = redis::cmd("HGETALL")
+            .arg(key)
+            .query_async(
+                conn.as_mut()
+                    .context("Exec risk Redis connection unavailable")?,
+            )
+            .await?;
+        let value = if values.is_empty() {
+            audit::normalise_redis("none", Value::Null)
+        } else {
+            audit::normalise_redis("hash", serde_json::json!(values))
+        };
+        current.insert(
+            identity("redis", key),
+            Watched {
+                metadata: metadata(
+                    "exec",
+                    key.split(':').next().context("invalid Exec risk key")?,
+                ),
+                storage: "redis".into(),
+                value,
+            },
+        );
     }
     if site == "jp" {
         for (worker, env, family) in [
@@ -455,6 +504,47 @@ async fn snapshot(
     }
     Ok(current)
 }
+fn exec_risk_keys(root: &std::path::Path) -> Result<BTreeSet<String>> {
+    #[derive(Deserialize)]
+    struct Source {
+        id: String,
+        venue: Option<String>,
+        #[serde(default = "enabled")]
+        enabled: bool,
+    }
+    fn enabled() -> bool {
+        true
+    }
+    #[derive(Deserialize)]
+    struct Catalog {
+        sources: Vec<Source>,
+    }
+    let path = root.join("crypto_cta_manager/config/cta-manager.toml");
+    if !path.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let catalog: Catalog = toml::from_str(&std::fs::read_to_string(path)?)
+        .map_err(|_| anyhow::anyhow!("Exec parameter account catalog is invalid"))?;
+    Ok(catalog
+        .sources
+        .into_iter()
+        .filter(|s| s.enabled)
+        .filter_map(|source| {
+            let venue = source.venue?;
+            if source.id.is_empty()
+                || source.id.len() > 128
+                || !source
+                    .id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+                || runtime_common::exec_market::parse_venue(&venue).is_err()
+            {
+                return None;
+            }
+            Some(format!("{}:{venue}:pre_trade_risk_params", source.id))
+        })
+        .collect())
+}
 async fn collect(state: &super::AppState, site: &str) -> Result<bool> {
     let notifier = state
         .fr_notifications
@@ -479,15 +569,20 @@ async fn collect(state: &super::AppState, site: &str) -> Result<bool> {
         return Ok(false);
     }
     let cursor = notifier.parameter_cursor(site).await;
+    let exec_keys = if site == "jp" {
+        exec_risk_keys(&state.backups.env_root)?
+    } else {
+        BTreeSet::new()
+    };
     let mut batch = journal(site, &state.backups.sg_ssh_host, cursor).await?;
     for record in &mut batch.records {
-        validate(&record.event, &accounts)?;
+        validate(&record.event, &accounts, &exec_keys)?;
         for change in record.event.objects.values_mut() {
             change.before = audit::redact(&change.before);
             change.after = audit::redact(&change.after);
         }
     }
-    let current = match snapshot(state, site, &accounts).await {
+    let current = match snapshot(state, site, &accounts, &exec_keys).await {
         Ok(current) => current,
         Err(error) => {
             notifier.parameters(site, batch, None).await?;
@@ -642,6 +737,27 @@ mod tests {
         );
     }
     #[test]
+    fn exec_parameter_events_use_current_account_and_venue_scope() {
+        let key = "rx01:binance-futures:pre_trade_risk_params".to_string();
+        let allowed = BTreeSet::from([key.clone()]);
+        let mut e = event(1, 1, 2);
+        e.storage = "redis".into();
+        e.metadata = metadata("exec", "rx01");
+        let change = e.objects.values().next().unwrap().clone();
+        e.objects = BTreeMap::from([(key, change.clone())]);
+        validate(&e, &[], &allowed).unwrap();
+        e.objects = BTreeMap::from([(
+            "rx01:okex-futures:pre_trade_risk_params".into(),
+            change.clone(),
+        )]);
+        assert!(validate(&e, &[], &allowed).is_err());
+        e.objects = BTreeMap::from([("rx03:binance-futures:pre_trade_risk_params".into(), change)]);
+        assert!(validate(&e, &[], &allowed).is_err());
+        e.objects.clear();
+        e.metadata.environment = "unselected".into();
+        assert!(validate(&e, &[], &allowed).is_err());
+    }
+    #[test]
     fn orphan_pending_observes_actual_value_and_never_restores_parameters() {
         let mut state = State::default();
         state.ingest("jp", batch(vec![]), Some(values(1))).unwrap();
@@ -680,11 +796,11 @@ mod tests {
     #[test]
     fn scope_validation_rejects_paths_and_messages_retain_history_link() {
         let mut e = event(1, 1, 2);
-        assert!(validate(&e, &[]).is_ok());
+        assert!(validate(&e, &[], &BTreeSet::new()).is_ok());
         let value = e.objects.values().next().unwrap().clone();
         e.objects
             .insert("cta-prep-binance-futures/../../env.sh".into(), value);
-        assert!(validate(&e, &[]).is_err());
+        assert!(validate(&e, &[], &BTreeSet::new()).is_err());
         let msg = message(&History {
             site: "jp".into(),
             event: event(1, 1, 2),

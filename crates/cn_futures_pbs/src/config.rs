@@ -10,6 +10,7 @@ use std::{
 pub struct Config {
     pub service_root: String,
     pub zmq: Option<Zmq>,
+    pub redis: Option<Redis>,
     pub ctp_config: Option<PathBuf>,
 }
 #[derive(Debug, Deserialize)]
@@ -18,6 +19,23 @@ pub struct Zmq {
     pub access_scope: String,
     pub endpoint: String,
     pub receive_hwm: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Redis {
+    pub endpoint: SocketAddrV4,
+}
+
+impl Redis {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            (self.endpoint.ip().is_private() || self.endpoint.ip().is_loopback())
+                && self.endpoint.port() > 0,
+            "company Redis feeder requires private IPv4 and a positive port"
+        );
+        Ok(())
+    }
 }
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {

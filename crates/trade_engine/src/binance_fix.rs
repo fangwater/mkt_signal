@@ -668,7 +668,7 @@ impl BinanceSpotFixClient {
                 msg.req_type
             )
         })?;
-        if params.margin_buy {
+        if params.margin_borrow.auto_borrows() {
             return Err(anyhow!(
                 "Binance Spot FIX is spot-only and does not support margin_buy/sideEffectType"
             ));

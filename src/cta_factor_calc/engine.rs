@@ -37,6 +37,10 @@ mod tests;
 #[path = "hourly_tests.rs"]
 mod hourly_tests;
 
+#[cfg(test)]
+#[path = "minute_state_tests.rs"]
+mod minute_state_tests;
+
 /// One unversioned factor output. Vector factors (NQ) and scalar factors use
 /// exactly the same field representation; no account or entry-rule context.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,14 +74,29 @@ fn finite(value: f64) -> Option<f64> {
 
 pub use super::catalog::requires_amount_thresholds;
 
-struct Transform {
+pub(crate) struct Transform {
     normalize: NormalizeState,
     ranks: ExactRollingWindow,
     min_periods: usize,
     inclusive_ranks: bool,
 }
+
+/// An ordinary minute formula's own live calculation state, never an hourly seed.
+#[derive(Serialize, Deserialize)]
+pub struct MinuteFormulaState {
+    pub amount_thresholds: BTreeMap<String, [f64; 2]>,
+    factors: BTreeMap<String, MinuteTransformState>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct MinuteTransformState {
+    parameters: Parameters,
+    normalize: NormalizeState,
+    rank_slots: Vec<Option<f64>>,
+    latest: FactorPoint,
+}
 impl Transform {
-    fn new(params: &Parameters, interval: Interval) -> Self {
+    pub(crate) fn new(params: &Parameters, interval: Interval) -> Self {
         Self {
             normalize: NormalizeState::new(
                 params.normalize_window,
@@ -89,15 +108,26 @@ impl Transform {
             inclusive_ranks: interval == Interval::Hour,
         }
     }
-    fn observe(&mut self, raw: Option<f64>, standardize: bool) -> Field {
+    pub(crate) fn observe(&mut self, raw: Option<f64>, standardize: bool) -> Field {
+        self.observe_inner(raw, standardize, false)
+    }
+    pub(crate) fn observe_with_forward_fill(&mut self, raw: Option<f64>) -> Field {
+        self.observe_inner(raw, true, true)
+    }
+    fn observe_inner(&mut self, raw: Option<f64>, standardize: bool, forward_fill: bool) -> Field {
         let normalized = if standardize {
             self.normalize.observe(raw.unwrap_or(f64::NAN))
         } else {
             raw
         };
-        // An invalid current raw observation cannot become a tradable carried
-        // z-score, even though causal normalization retains its previous value.
-        let value = raw.and(normalized).and_then(finite);
+        // Crypto and minute-frequency rules reject carried scores. Domestic
+        // futures hourly rules explicitly opt into causal forward filling.
+        let value = if forward_fill {
+            normalized
+        } else {
+            raw.and(normalized)
+        }
+        .and_then(finite);
         self.ranks.observe_slot(value.unwrap_or(f64::NAN));
         let quantile = if self.inclusive_ranks {
             (self.ranks.len() >= self.min_periods)
@@ -116,14 +146,14 @@ impl Transform {
     }
 }
 
-struct Nq {
+pub(crate) struct Nq {
     params: Parameters,
     closes: VecDeque<Option<f64>>,
     long: ExactRollingWindow,
     short: ExactRollingWindow,
 }
 impl Nq {
-    fn new(params: &Parameters) -> Self {
+    pub(crate) fn new(params: &Parameters) -> Self {
         Self {
             params: params.clone(),
             closes: VecDeque::new(),
@@ -131,7 +161,7 @@ impl Nq {
             short: ExactRollingWindow::new(params.rank_window),
         }
     }
-    fn observe(&mut self, mid: Option<f64>) -> BTreeMap<String, Field> {
+    pub(crate) fn observe(&mut self, mid: Option<f64>) -> BTreeMap<String, Field> {
         // Include the latest closed bar's mid in both the extrema and change
         // distributions. The output belongs to this same closed decision bar.
         let valid = mid.filter(|p| p.is_finite() && *p > 0.0);
@@ -473,6 +503,7 @@ struct FormulaGroup {
     plan: SymbolFactorPlan,
     names: Vec<String>,
     transforms: Vec<Transform>,
+    resume_until: Vec<i64>,
     needs_threshold: Vec<bool>,
     last_ts: i64,
 }
@@ -497,6 +528,12 @@ impl FormulaGroup {
             .map(|(_, v)| v)
             .collect();
         self.transforms = std::mem::take(&mut self.transforms)
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| keep[*i])
+            .map(|(_, v)| v)
+            .collect();
+        self.resume_until = std::mem::take(&mut self.resume_until)
             .into_iter()
             .enumerate()
             .filter(|(i, _)| keep[*i])
@@ -529,6 +566,7 @@ impl FormulaGroup {
                 .iter()
                 .map(|c| Transform::new(&c.parameters, interval))
                 .collect(),
+            resume_until: vec![0; calculations.len()],
             needs_threshold: calculations
                 .iter()
                 .map(|c| requires_amount_thresholds(&c.id.factor))
@@ -576,6 +614,11 @@ impl FormulaGroup {
                 vec![f64::NAN; self.names.len()]
             };
             for (i, name) in self.plan.factor_names().enumerate() {
+                // Rebuild raw formula inputs from Kafka, without advancing a
+                // restored live normalization/rank window over the overlap.
+                if end <= self.resume_until[i] {
+                    continue;
+                }
                 let value = if let Some(depth) = DepthFactorId::from_name(name) {
                     bar.full_depth.as_ref().map(|book| book.factor(depth))
                 } else {
@@ -607,6 +650,173 @@ pub struct Engine {
     pub previous_spreads: BTreeMap<String, FactorPoint>,
 }
 impl Engine {
+    pub fn minute_formula_state(
+        &self,
+        thresholds: &BTreeMap<String, [f64; 2]>,
+    ) -> MinuteFormulaState {
+        let mut factors = BTreeMap::new();
+        for group in self
+            .formula
+            .values()
+            .filter(|g| g.interval != Interval::Hour)
+        {
+            for (i, id) in group.names.iter().enumerate() {
+                if let Some(latest) = self.latest.get(id) {
+                    let transform = &group.transforms[i];
+                    factors.insert(
+                        id.clone(),
+                        MinuteTransformState {
+                            parameters: self.plan.calculations[id].parameters.clone(),
+                            normalize: transform.normalize.clone(),
+                            rank_slots: transform.ranks.slots().collect(),
+                            latest: latest.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        MinuteFormulaState {
+            amount_thresholds: thresholds.clone(),
+            factors,
+        }
+    }
+
+    pub fn restore_minute_formula_state(
+        &mut self,
+        state: &MinuteFormulaState,
+        config: &Config,
+    ) -> Result<usize> {
+        let mut restored = 0;
+        for (name, saved) in &state.factors {
+            let id = super::config::FactorId::parse(name)?;
+            anyhow::ensure!(
+                id.is_formula() && id.interval != Interval::Hour,
+                "minute checkpoint cannot contain hourly or special factors: {name}"
+            );
+            let Some(calculation) = self.plan.calculations.get(name) else {
+                continue;
+            };
+            if calculation.parameters != saved.parameters {
+                continue;
+            }
+            let key = format!("{}:{}", id.market.name(), id.symbol);
+            if requires_amount_thresholds(&id.factor)
+                && state.amount_thresholds.get(&key) != config.amount_thresholds.get(&key)
+            {
+                continue;
+            }
+            let p = &calculation.parameters;
+            anyhow::ensure!(
+                saved.normalize.valid_for(
+                    p.normalize_window,
+                    p.normalize_min_periods,
+                    p.clip_zscore
+                ) && saved.rank_slots.len() <= p.rank_window
+                    && saved.rank_slots.iter().flatten().all(|v| v.is_finite())
+                    && saved.latest.factor_id == *name
+                    && saved.latest.ts_ms > 0
+                    && saved.latest.ts_ms <= chrono::Utc::now().timestamp_millis()
+                    && saved.latest.ts_ms % id.interval.millis() == 0
+                    && saved.latest.fields.len() == 1
+                    && saved.latest.fields.get("value").is_some_and(|field| [
+                        field.raw,
+                        field.value,
+                        field.quantile,
+                        field.median
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .all(|v| v.is_finite())
+                        && saved.rank_slots.last().copied().flatten() == field.value),
+                "invalid minute checkpoint: {name}"
+            );
+            let group = self
+                .formula
+                .get_mut(&(id.market, id.symbol, id.interval))
+                .context("missing minute formula group")?;
+            let i = group
+                .names
+                .iter()
+                .position(|v| v == name)
+                .context("missing minute formula")?;
+            let transform = &mut group.transforms[i];
+            transform.normalize = saved.normalize.clone();
+            transform.ranks = ExactRollingWindow::new(p.rank_window);
+            for value in &saved.rank_slots {
+                transform.ranks.observe_slot(value.unwrap_or(f64::NAN));
+            }
+            group.resume_until[i] = saved.latest.ts_ms;
+            self.latest.insert(name.clone(), saved.latest.clone());
+            restored += 1;
+        }
+        Ok(restored)
+    }
+
+    pub fn validate_minute_state_start(&self, market: Market, first_period_ms: i64) -> Result<()> {
+        for ((source, _, interval), group) in &self.formula {
+            if *source == market && *interval != Interval::Hour {
+                for (i, cutoff) in group
+                    .resume_until
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, ts)| **ts > 0)
+                {
+                    anyhow::ensure!(*cutoff >= first_period_ms - interval.millis(),
+                        "minute checkpoint ends before retained Kafka for {}; refill the missing input interval", group.names[i]);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// One-time checkpoint extraction from this worker's factual raw journal.
+    /// Recompute the transforms and verify their recorded outputs before saving.
+    pub fn replay_minute_journal_point(&mut self, mut point: FactorPoint) -> Result<bool> {
+        let Some(calculation) = self.plan.calculations.get(&point.factor_id) else {
+            return Ok(false);
+        };
+        let id = &calculation.id;
+        if !id.is_formula() || id.interval == Interval::Hour {
+            return Ok(false);
+        }
+        if let Some(previous) = self.latest.get(&point.factor_id) {
+            anyhow::ensure!(
+                point.ts_ms > previous.ts_ms,
+                "duplicate or regressing minute journal point"
+            );
+        }
+        let group = self
+            .formula
+            .get_mut(&(id.market, id.symbol.clone(), id.interval))
+            .context("missing journal formula group")?;
+        let i = group
+            .names
+            .iter()
+            .position(|v| v == &point.factor_id)
+            .context("missing journal formula")?;
+        let field = point
+            .fields
+            .get("value")
+            .context("missing journal scalar field")?;
+        let rebuilt = group.transforms[i].observe(field.raw, true);
+        let same = |a: Option<f64>, b: Option<f64>| match (a, b) {
+            (Some(a), Some(b)) => (a - b).abs() <= 1e-10 * a.abs().max(b.abs()).max(1.0),
+            (None, None) => true,
+            _ => false,
+        };
+        anyhow::ensure!(
+            rebuilt.ready == field.ready
+                && same(rebuilt.value, field.value)
+                && same(rebuilt.quantile, field.quantile)
+                && same(rebuilt.median, field.median),
+            "minute journal transform differs from the recorded live calculation: {} at {}",
+            point.factor_id,
+            point.ts_ms
+        );
+        point.fields.insert("value".into(), rebuilt);
+        self.latest.insert(point.factor_id.clone(), point);
+        Ok(true)
+    }
     /// Replay native historical inputs into formula/normalization/rank state.
     /// This never publishes observations or reconstructs position ledgers.
     pub fn seed_hourly_history(
@@ -624,7 +834,7 @@ impl Engine {
             ..Default::default()
         };
         for ((market, symbol, interval), group) in &mut self.formula {
-            if *market != Market::BinanceFutures || *interval != Interval::Hour {
+            if *market != history.manifest.market || *interval != Interval::Hour {
                 continue;
             }
             let Some(inputs) = history.rows.get(symbol) else {
@@ -654,7 +864,7 @@ impl Engine {
             .calculations
             .iter()
             .filter(|(_, c)| {
-                c.id.market == Market::BinanceFutures
+                c.id.market == history.manifest.market
                     && c.id.interval == Interval::Hour
                     && c.id.factor == "nq"
             })
@@ -670,22 +880,29 @@ impl Engine {
                 .filter_map(|row| {
                     let close = row.nq_price?;
                     (close.is_finite() && close > 0.0).then_some(
-                        super::hourly_nq_seed::HourlyClose {
+                        super::hourly_history::HourlyPrice {
                             end_ms: row.bar.start_ms + HOUR_MS,
-                            close,
+                            mid: close,
                         },
                     )
                 })
                 .collect::<Vec<_>>();
             if !prices.is_empty() {
                 self.seed_hourly_nq(&id, &prices, cutoff_ms)?;
+                if let Some(Special::Nq(nq)) = self.special.get(&id) {
+                    summary.ready_nq.insert(
+                        id.clone(),
+                        nq.long.len() >= nq.params.rank_min_periods
+                            && nq.short.len() >= nq.params.rank_min_periods,
+                    );
+                }
                 summary.nq_rows.insert(id, prices.len());
             }
         }
         // Retained Kafka can overlap a prepared archive. Rebuild its book from
         // those records, but do not aggregate seeded hours or advance NQ twice.
         for ((market, symbol), series) in &mut self.series {
-            if *market != Market::BinanceFutures || !history.rows.contains_key(symbol) {
+            if *market != history.manifest.market || !history.rows.contains_key(symbol) {
                 continue;
             }
             if let Some(hourly) = &mut series.hourly {
@@ -701,12 +918,12 @@ impl Engine {
         Ok(summary)
     }
 
-    /// Seed only NQ state before this generation consumes its first Binance
-    /// hourly source bar. Seed rows never become published factor observations.
+    /// Seed only NQ state from native Tardis BBO prices. Historical observations
+    /// never enter the current factor output or the position ledger.
     pub(crate) fn seed_hourly_nq(
         &mut self,
         factor_id: &str,
-        rows: &[super::hourly_nq_seed::HourlyClose],
+        rows: &[super::hourly_history::HourlyPrice],
         cutoff_ms: i64,
     ) -> Result<()> {
         let calculation = self
@@ -715,10 +932,8 @@ impl Engine {
             .get(factor_id)
             .context("unknown hourly NQ seed factor")?;
         anyhow::ensure!(
-            calculation.id.factor == "nq"
-                && calculation.id.interval == Interval::Hour
-                && calculation.id.market == Market::BinanceFutures,
-            "candle seeds are only for Binance hourly NQ"
+            calculation.id.factor == "nq" && calculation.id.interval == Interval::Hour,
+            "native price seeds are only for hourly NQ"
         );
         anyhow::ensure!(
             !self.latest.contains_key(factor_id),
@@ -730,8 +945,8 @@ impl Engine {
                 row.end_ms > previous
                     && row.end_ms <= cutoff_ms
                     && row.end_ms % Interval::Hour.millis() == 0
-                    && row.close.is_finite()
-                    && row.close > 0.0,
+                    && row.mid.is_finite()
+                    && row.mid > 0.0,
                 "invalid, overlapping or unfinished hourly NQ seed row"
             );
             previous = row.end_ms;
@@ -744,9 +959,79 @@ impl Engine {
             "hourly NQ is already seeded"
         );
         for row in rows {
-            state.observe(Some(row.close));
+            state.observe(Some(row.mid));
         }
         Ok(())
+    }
+    pub fn seed_hourly_histories(
+        &mut self,
+        histories: &BTreeMap<Market, super::hourly_history::HourlyHistory>,
+    ) -> Result<BTreeMap<Market, super::hourly_history::SeedSummary>> {
+        let mut summaries = BTreeMap::new();
+        for (market, history) in histories {
+            let summary = self.seed_hourly_history(history, history.manifest.end_ms)?;
+            anyhow::ensure!(
+                summary.missing_symbols.is_empty(),
+                "missing native hourly formula symbols for {}: {:?}",
+                market.name(),
+                summary.missing_symbols
+            );
+            summaries.insert(*market, summary);
+        }
+        for calculation in self
+            .plan
+            .calculations
+            .values()
+            .filter(|c| c.id.interval == Interval::Hour && c.id.factor == "spread")
+        {
+            let id = &calculation.id;
+            let reference = id
+                .reference_market
+                .context("spread has no reference market")?;
+            let first = histories
+                .get(&id.market)
+                .context("missing spread direction hourly history")?;
+            let second = histories
+                .get(&reference)
+                .context("missing spread reference hourly history")?;
+            anyhow::ensure!(
+                first.manifest.end_ms == second.manifest.end_ms,
+                "spread history cutoffs differ"
+            );
+            let a = first
+                .rows
+                .get(&id.symbol)
+                .context("missing spread direction symbol")?;
+            let b = second
+                .rows
+                .get(&id.symbol)
+                .context("missing spread reference symbol")?;
+            let mut times = BTreeMap::<i64, [Option<f64>; 2]>::new();
+            for (side, rows) in [a, b].into_iter().enumerate() {
+                for row in rows {
+                    times
+                        .entry(row.bar.start_ms + Interval::Hour.millis())
+                        .or_default()[side] = row.nq_price;
+                }
+            }
+            let Some(Special::Spread(state)) = self.special.get_mut(&id.name()) else {
+                anyhow::bail!("missing hourly spread seed state");
+            };
+            anyhow::ensure!(state.watermarks == [0; 2], "hourly spread already observed");
+            let mut ready = false;
+            for (ts, pair) in times {
+                state.observe(0, ts, pair[0]);
+                for (_, field) in state.observe(1, ts, pair[1]) {
+                    ready = field.ready;
+                }
+            }
+            summaries
+                .get_mut(&id.market)
+                .context("missing direction seed summary")?
+                .ready_spreads
+                .insert(id.name(), ready);
+        }
+        Ok(summaries)
     }
     pub fn new(plan: Plan, config: &Config) -> Result<Self> {
         let mut engine = Self {

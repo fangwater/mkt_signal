@@ -45,6 +45,7 @@ async fn preview_and_save_filter_settling_contracts_before_persisting() {
         Config::load(std::path::Path::new("config/cta_prep_binance_futures.toml")).unwrap();
     config.combinations_dir = root.clone();
     let app = Arc::new(App {
+        account_risk: None,
         config,
         worker: Worker::Perp,
         spread_config: None,
@@ -123,6 +124,7 @@ async fn symbol_groups_api_preserves_membership_ownership_and_catalog_revisions(
         axum::serve(
             listener,
             router(App {
+                account_risk: None,
                 config,
                 worker: Worker::Perp,
                 audit_dir: Some(root_for_server.join("audit")),
@@ -270,6 +272,7 @@ async fn shared_catalog_round_trips_rows_and_signal_with_conflict_protection() {
         axum::serve(
             listener,
             router(App {
+                account_risk: None,
                 config,
                 worker: Worker::Perp,
                 spread_config: None,
@@ -449,6 +452,7 @@ async fn independent_hourly_runtime_shares_catalog_and_routes_edits_without_touc
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let app = App {
+        account_risk: None,
         config: config.clone(),
         worker: Worker::Perp,
         spread_config: None,

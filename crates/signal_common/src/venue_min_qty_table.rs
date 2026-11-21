@@ -108,6 +108,9 @@ fn provider_for_venue(venue: TradingVenue) -> ExchangeVenueProvider {
         TradingVenue::HyperliquidFutures => (Exchange::Hyperliquid, MarketType::Futures),
         TradingVenue::AsterMargin => (Exchange::Aster, MarketType::Margin),
         TradingVenue::AsterFutures => (Exchange::Aster, MarketType::Futures),
+        order_common::domestic_venues!() => {
+            unreachable!("domestic futures rules come from the native counter, not crypto filters")
+        }
     };
     ExchangeVenueProvider::new(venue, exchange, market_type)
 }

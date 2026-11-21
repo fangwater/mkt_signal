@@ -41,11 +41,13 @@ use mkt_signal::common::delist_accounts::{
     FrSymbolListState, NAV_UNAUTHORIZED,
 };
 use mkt_signal::common::delist_dump::{
-    apply_redis_dump, position_close_statuses, position_dump_candidates, prepare_redis_dump,
-    snapshot_symbol_is_flat, PositionDumpCandidate, POSITION_REMOVAL_THRESHOLD_USDT,
+    apply_redis_dump, delist_script_requested, position_close_statuses, position_dump_candidates,
+    prepare_redis_dump, snapshot_symbol_is_flat, PositionDumpCandidate,
+    POSITION_REMOVAL_THRESHOLD_USDT,
 };
 use mkt_signal::common::delist_flatten::{
-    audit_dedup_key, flatten_candidates, FlattenCandidate, FlattenExecutor, FlattenRunOutput,
+    audit_dedup_key, delist_deadline_in_window, flatten_candidates, FlattenCandidate,
+    FlattenExecutor, FlattenRunOutput,
 };
 use mkt_signal::common::delist_prune::{
     apply_redis_removal, confirmed_removal_candidates, prepare_redis_removal,
@@ -68,6 +70,7 @@ use parking_lot::Mutex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use signal_common::delist_close::{DelistDumpEntry, DELIST_DUMP_WINDOW_MS, FLATTEN_WINDOW_MS};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -209,11 +212,7 @@ struct Args {
     #[arg(long)]
     auto_flatten_position_risk: bool,
 
-    /// Final window before the actual delist deadline.
-    #[arg(long, default_value_t = 24)]
-    flatten_window_hours: u64,
-
-    /// Positions above this value require a manual flatten action.
+    /// Maximum larger-leg notional for automatic script flattening.
     #[arg(long, default_value_t = 1_000.0)]
     flatten_manual_threshold_usdt: f64,
 
@@ -355,12 +354,13 @@ struct AppState {
     auto_remove_redis: bool,
     auto_dump_position_risk: bool,
     auto_flatten_position_risk: bool,
+    delist_dump_lease_secs: u64,
     position_risk_threshold_usdt: f64,
     position_snapshot_max_age_ms: i64,
-    flatten_window_ms: i64,
     flatten_manual_threshold_usdt: f64,
     flatten_executor: FlattenExecutor,
     flatten_inflight: Arc<AsyncMutex<BTreeSet<String>>>,
+    auto_flatten_worker: Arc<AsyncMutex<()>>,
     notification_client: Option<LocalNotificationClient>,
     flatten_api_token: Option<String>,
     snapshots: SnapshotClient,
@@ -527,9 +527,6 @@ async fn main() -> Result<()> {
     {
         anyhow::bail!("--flatten-manual-threshold-usdt must be finite and positive");
     }
-    if args.flatten_window_hours == 0 {
-        anyhow::bail!("--flatten-window-hours must be positive");
-    }
     let notification_client = match LocalNotificationClient::from_env() {
         Ok(client) => Some(client),
         Err(err) => {
@@ -542,7 +539,7 @@ async fn main() -> Result<()> {
         }
     };
     if args.auto_flatten_position_risk && store.is_none() {
-        anyhow::bail!("automatic delist flatten requires PostgreSQL");
+        anyhow::bail!("automatic delist close requires PostgreSQL");
     }
     let flatten_api_token = std::env::var("DELIST_FLATTEN_API_TOKEN")
         .ok()
@@ -597,10 +594,10 @@ async fn main() -> Result<()> {
         auto_remove_redis: args.auto_remove_redis,
         auto_dump_position_risk: args.auto_dump_position_risk,
         auto_flatten_position_risk: args.auto_flatten_position_risk,
+        delist_dump_lease_secs: args.position_risk_interval_secs.max(60).saturating_mul(3),
         position_risk_threshold_usdt: args.position_risk_threshold_usdt,
         position_snapshot_max_age_ms: (args.position_snapshot_max_age_secs as i64)
             .saturating_mul(1_000),
-        flatten_window_ms: (args.flatten_window_hours as i64).saturating_mul(60 * 60 * 1_000),
         flatten_manual_threshold_usdt: args.flatten_manual_threshold_usdt,
         flatten_executor: FlattenExecutor::new(
             args.flatten_env_root.clone(),
@@ -608,6 +605,7 @@ async fn main() -> Result<()> {
         )
         .with_sg_ssh_host(args.sg_flatten_ssh_host.clone())?,
         flatten_inflight: Arc::new(AsyncMutex::new(BTreeSet::new())),
+        auto_flatten_worker: Arc::new(AsyncMutex::new(())),
         notification_client,
         flatten_api_token,
         snapshots,
@@ -1066,6 +1064,19 @@ async fn main() -> Result<()> {
         tokio::spawn(parameter_changes::run(state.clone(), "jp"));
         tokio::spawn(parameter_changes::run(state.clone(), "sg"));
     }
+    if state.store.is_some() && state.notification_client.is_some() {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(60));
+            interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                if let Err(err) = run_flatten_monitor(&state).await {
+                    warn!("FR delist flatten monitor failed: {err:#}");
+                }
+            }
+        });
+    }
     let exposure_state = state.clone();
     tokio::spawn(async move {
         let mut interval = time::interval(Duration::from_secs(
@@ -1186,7 +1197,7 @@ async fn main() -> Result<()> {
         args.auto_flatten_position_risk,
         args.position_risk_interval_secs,
         args.position_risk_threshold_usdt,
-        args.flatten_window_hours,
+        FLATTEN_WINDOW_MS / 3_600_000,
         args.flatten_manual_threshold_usdt,
         args.data_persistence_secs,
     );
@@ -1637,7 +1648,14 @@ async fn query_removals(
 
 async fn query_dump_candidates(State(state): State<AppState>) -> Response {
     let accounts = state.accounts.read().await.clone();
-    match collect_position_candidates(&state, &accounts, state.position_risk_threshold_usdt).await {
+    match collect_position_candidates(
+        &state,
+        &accounts,
+        state.position_risk_threshold_usdt,
+        &BTreeMap::new(),
+    )
+    .await
+    {
         Ok((items, snapshot_errors)) => Json(json!({
             "ok": true,
             "auto_dump_position_risk": state.auto_dump_position_risk,
@@ -1738,22 +1756,27 @@ async fn query_flatten_candidates(State(state): State<AppState>) -> Response {
     }
     let views = items
         .into_iter()
-        .map(|candidate| {
+        .map(|mut candidate| {
             let key = (
                 candidate.account_slug.clone(),
                 candidate.symbol.clone(),
                 candidate.deadline_ms,
             );
-            FlattenCandidateView {
-                candidate,
-                latest: latest.remove(&key),
+            let latest = latest.remove(&key);
+            candidate.disposition = if auto_flatten_due(&state, &candidate) {
+                "auto"
+            } else {
+                "arb_close"
             }
+            .into();
+            FlattenCandidateView { candidate, latest }
         })
         .collect::<Vec<_>>();
     Json(json!({
         "ok": true,
         "auto_flatten_position_risk": state.auto_flatten_position_risk,
-        "window_ms": state.flatten_window_ms,
+        "window_ms": DELIST_DUMP_WINDOW_MS,
+        "flatten_window_ms": FLATTEN_WINDOW_MS,
         "manual_threshold_usdt": state.flatten_manual_threshold_usdt,
         "position_closed_threshold_usdt": POSITION_CLOSED_THRESHOLD_USDT,
         "snapshot_errors": snapshot_errors,
@@ -1874,6 +1897,23 @@ async fn manual_flatten(
         )
             .into_response();
     };
+    match script_flatten_requested(&state, &candidate, &positioned).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"ok": false, "error": "symbol has no current script flatten request"})),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"ok": false, "error": format!("{err:#}")})),
+            )
+                .into_response()
+        }
+    }
     match store
         .flatten_success_covers_snapshot(
             &candidate.account_slug,
@@ -2289,7 +2329,7 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
             persist(&backfill_state).await;
         });
     }
-    if state.auto_dump_position_risk || state.auto_flatten_position_risk {
+    if state.store.is_some() {
         run_position_risk_scan(&state).await;
     }
     let mut unimmr_watch = UnimmrListWatch::default();
@@ -2331,7 +2371,7 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
                 }
                 persist(&state).await;
             }
-            _ = position_risk.tick(), if state.auto_dump_position_risk || state.auto_flatten_position_risk => {
+            _ = position_risk.tick(), if state.store.is_some() => {
                 run_position_risk_scan(&state).await;
             }
             _ = unimmr_list.tick() => {
@@ -2342,7 +2382,7 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
                     if state.auto_remove_redis {
                         run_confirmed_delist_prune(&state).await;
                     }
-                    if state.auto_dump_position_risk || state.auto_flatten_position_risk {
+                    if state.store.is_some() {
                         run_position_risk_scan(&state).await;
                     }
                 }
@@ -2619,6 +2659,7 @@ async fn collect_position_candidates(
     state: &AppState,
     accounts: &[AccountSpec],
     threshold_usdt: f64,
+    ordinary_dump: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<(Vec<PositionDumpCandidate>, Vec<String>)> {
     let book = state.book.read().await;
     let mut risk = book.query(&RiskQuery {
@@ -2636,6 +2677,7 @@ async fn collect_position_candidates(
         &risk,
         threshold_usdt,
         state.position_snapshot_max_age_ms,
+        ordinary_dump,
     )
     .await)
 }
@@ -2648,153 +2690,209 @@ async fn collect_flatten_candidates(
     Vec<String>,
     Vec<PositionDumpCandidate>,
 )> {
-    let (positioned, snapshot_errors) = collect_position_candidates(state, accounts, 0.0).await?;
+    let (positioned, snapshot_errors) =
+        collect_position_candidates(state, accounts, 0.0, &BTreeMap::new()).await?;
     let candidates = flatten_candidates(
         &positioned,
         Utc::now().timestamp_millis(),
-        state.flatten_window_ms,
+        DELIST_DUMP_WINDOW_MS,
         state.flatten_manual_threshold_usdt,
     );
     Ok((candidates, snapshot_errors, positioned))
 }
 
+async fn mark_position_scan_error(state: &AppState, message: &str) {
+    mark_err(state, "redis_delist_dump", "mutation", message).await;
+}
+
 async fn run_position_risk_scan(state: &AppState) {
     let Some(store) = state.store.as_ref() else {
-        let message = "postgres is required before automatic FR position handling";
-        if state.auto_dump_position_risk {
-            mark_err(state, "redis_delist_dump", "mutation", message).await;
-        }
-        if state.auto_flatten_position_risk {
-            mark_err(state, "delist_flatten", "execution", message).await;
-        }
         return;
     };
     if !nav_accounts_ready(state).await {
-        let message = "NAV strategy catalog is not current; automatic position handling paused";
-        if state.auto_dump_position_risk {
-            mark_err(state, "redis_delist_dump", "mutation", message).await;
-        }
-        if state.auto_flatten_position_risk {
-            mark_err(state, "delist_flatten", "execution", message).await;
-        }
+        mark_position_scan_error(
+            state,
+            "NAV strategy catalog is not current; automatic position handling paused",
+        )
+        .await;
         return;
     }
     let accounts = state.accounts.read().await.clone();
+    let lists = load_fr_symbol_list(
+        &accounts,
+        "dump_symbols",
+        &state.jp_redis,
+        state.sg_redis.as_deref(),
+    )
+    .await;
+    let mut errors = Vec::new();
+    let ordinary_dump = lists
+        .into_iter()
+        .filter_map(|(account, result)| match result {
+            Ok(list) => Some((account, list.symbols)),
+            Err(err) => {
+                errors.push(format!("{account}: {err}"));
+                None
+            }
+        })
+        .collect();
     let (positioned, snapshot_errors) =
-        match collect_position_candidates(state, &accounts, 0.0).await {
+        match collect_position_candidates(state, &accounts, 0.0, &ordinary_dump).await {
             Ok(result) => result,
             Err(err) => {
-                let message = format!("{err:#}");
-                if state.auto_dump_position_risk {
-                    mark_err(state, "redis_delist_dump", "mutation", &message).await;
-                }
-                if state.auto_flatten_position_risk {
-                    mark_err(state, "delist_flatten", "execution", &message).await;
-                }
+                mark_err(state, "redis_delist_dump", "mutation", &format!("{err:#}")).await;
                 return;
             }
         };
+    errors.extend(snapshot_errors);
+    let now = Utc::now();
+    let now_us = now.timestamp_micros();
     let flatten = flatten_candidates(
         &positioned,
-        Utc::now().timestamp_millis(),
-        state.flatten_window_ms,
+        now.timestamp_millis(),
+        DELIST_DUMP_WINDOW_MS,
         state.flatten_manual_threshold_usdt,
     );
-
-    let mut errors = snapshot_errors.clone();
-    let mut changed = 0usize;
-    let mut dump_keys = BTreeSet::new();
-    let flatten_keys = flatten
+    let final_window: BTreeMap<_, _> = flatten
         .iter()
-        .map(|candidate| (candidate.account_slug.as_str(), candidate.symbol.as_str()))
-        .collect::<BTreeSet<_>>();
+        .map(|candidate| {
+            (
+                (candidate.account_slug.as_str(), candidate.symbol.as_str()),
+                candidate,
+            )
+        })
+        .collect();
+    let mut changed = 0usize;
+    let mut ready_to_flatten = Vec::new();
     for candidate in &positioned {
+        let final_candidate =
+            final_window.get(&(candidate.account_slug.as_str(), candidate.symbol.as_str()));
         let normal_dump = state.auto_dump_position_risk
             && candidate.impacted_position_usdt > state.position_risk_threshold_usdt;
-        let final_window_dump = state.auto_flatten_position_risk
-            && flatten_keys.contains(&(candidate.account_slug.as_str(), candidate.symbol.as_str()));
-        if !normal_dump && !final_window_dump {
-            continue;
-        }
-        if !dump_keys.insert((candidate.account_slug.clone(), candidate.symbol.clone())) {
+        let listed_for_close = ordinary_dump
+            .get(&candidate.account_slug)
+            .is_some_and(|symbols| symbols.contains(&candidate.symbol));
+        let deadline_ms = final_candidate
+            .map(|candidate| candidate.deadline_ms)
+            .or_else(|| {
+                if !listed_for_close {
+                    return None;
+                }
+                delist_deadline_in_window(
+                    candidate.delist_utc.as_deref()?,
+                    now.timestamp_millis(),
+                    DELIST_DUMP_WINDOW_MS,
+                )
+                .map(|(deadline, _)| deadline)
+            });
+        if deadline_ms.is_none() && !normal_dump {
             continue;
         }
         let mut candidate = candidate.clone();
-        candidate.threshold_usdt = if normal_dump {
+        let delist_entry = deadline_ms.map(|deadline_ms| DelistDumpEntry {
+            deadline_us: deadline_ms.saturating_mul(1_000),
+            valid_until_us: if final_candidate.is_some() {
+                now_us.saturating_add(
+                    i64::try_from(state.delist_dump_lease_secs)
+                        .unwrap_or(i64::MAX)
+                        .saturating_mul(1_000_000),
+                )
+            } else {
+                now_us
+            },
+            flatten_requested_us: final_candidate
+                .filter(|candidate| auto_flatten_due(state, candidate))
+                .map(|_| now_us),
+        });
+        candidate.threshold_usdt = if normal_dump && delist_entry.is_none() {
             state.position_risk_threshold_usdt
         } else {
             0.0
         };
-        match dump_position_candidate(state, store, &candidate).await {
+        match dump_position_candidate(state, store, &candidate, delist_entry).await {
             Ok(did_change) => changed += usize::from(did_change),
-            Err(err) => errors.push(format!(
-                "account={} symbol={}: {err:#}",
-                candidate.account_slug, candidate.symbol
-            )),
-        }
-    }
-    if state.auto_dump_position_risk || state.auto_flatten_position_risk {
-        if errors.is_empty() {
-            mark_ok(state, "redis_delist_dump", "mutation").await;
-        } else {
-            let message = errors.join("; ");
-            warn!("FR positioned-delist scan degraded: {message}");
-            mark_err(state, "redis_delist_dump", "mutation", &message).await;
-        }
-        info!(
-            "FR positioned-delist scan candidates={} flatten_candidates={} changes={changed}",
-            positioned
-                .iter()
-                .filter(|candidate| candidate.impacted_position_usdt
-                    > state.position_risk_threshold_usdt)
-                .count(),
-            flatten.len(),
-        );
-    }
-
-    if state.auto_flatten_position_risk {
-        let mut flatten_errors = snapshot_errors;
-        for candidate in &flatten {
-            let result = if candidate.disposition == "manual" {
-                record_manual_flatten_required(state, store, candidate).await
-            } else {
-                match positioned.iter().find(|positioned| {
-                    positioned.account_slug == candidate.account_slug
-                        && positioned.symbol == candidate.symbol
-                        && positioned.delist_utc.as_deref() == Some(candidate.delist_utc.as_str())
-                }) {
-                    Some(positioned) => {
-                        auto_flatten_candidate(state, store, candidate, positioned).await
-                    }
-                    None => Err(anyhow::anyhow!("position candidate changed during scan")),
-                }
-            };
-            if let Err(err) = result {
-                flatten_errors.push(format!(
+            Err(err) => {
+                errors.push(format!(
                     "account={} symbol={}: {err:#}",
                     candidate.account_slug, candidate.symbol
                 ));
+                continue;
             }
         }
-        if flatten_errors.is_empty() {
-            mark_ok(state, "delist_flatten", "execution").await;
-        } else {
-            let message = flatten_errors.join("; ");
-            warn!("FR delist flatten scan degraded: {message}");
-            mark_err(state, "delist_flatten", "execution", &message).await;
+        if let Some(final_candidate) =
+            final_candidate.filter(|candidate| auto_flatten_due(state, candidate))
+        {
+            ready_to_flatten.push(((*final_candidate).clone(), candidate));
         }
+    }
+    if !ready_to_flatten.is_empty() {
+        let state = state.clone();
+        let store = store.clone();
+        tokio::spawn(async move {
+            let Ok(_guard) = state.auto_flatten_worker.try_lock() else {
+                return;
+            };
+            for (candidate, positioned) in ready_to_flatten {
+                if let Err(err) =
+                    auto_flatten_candidate(&state, &store, &candidate, &positioned).await
+                {
+                    warn!(
+                        "FR delist flatten account={} symbol={}: {err:#}",
+                        candidate.account_slug, candidate.symbol
+                    );
+                }
+            }
+        });
+    }
+    if errors.is_empty() {
+        mark_ok(state, "redis_delist_dump", "mutation").await;
+    } else {
+        let message = errors.join("; ");
+        warn!("FR positioned-delist scan degraded: {message}");
+        mark_position_scan_error(state, &message).await;
+    }
+    info!(
+        "FR positioned-delist scan final_window={} changes={changed}",
+        flatten.len()
+    );
+}
+
+fn auto_flatten_due(state: &AppState, candidate: &FlattenCandidate) -> bool {
+    state.auto_flatten_position_risk && candidate.within_automatic_window()
+}
+
+fn position_redis_url<'a>(
+    state: &'a AppState,
+    candidate: &PositionDumpCandidate,
+) -> Result<&'a str> {
+    match candidate.redis_site.as_str() {
+        "jp" => Ok(&state.jp_redis),
+        "sg" => state
+            .sg_redis
+            .as_deref()
+            .context("SG Redis is not configured"),
+        site => anyhow::bail!("unsupported Redis site {site}"),
     }
 }
 
-async fn ensure_positioned_symbol_dumped(
+async fn script_flatten_requested(
     state: &AppState,
-    store: &DelistStore,
+    candidate: &FlattenCandidate,
     positioned: &PositionDumpCandidate,
-) -> Result<()> {
-    let mut positioned = positioned.clone();
-    positioned.threshold_usdt = 0.0;
-    dump_position_candidate(state, store, &positioned).await?;
-    Ok(())
+) -> Result<bool> {
+    let now_ms = Utc::now().timestamp_millis();
+    let age_ms = now_ms.saturating_sub(positioned.snapshot_ms);
+    if !(1..=FLATTEN_WINDOW_MS).contains(&candidate.deadline_ms.saturating_sub(now_ms))
+        || age_ms.unsigned_abs() > state.position_snapshot_max_age_ms.max(0) as u64
+    {
+        return Ok(false);
+    }
+    delist_script_requested(
+        position_redis_url(state, positioned)?,
+        positioned,
+        candidate.deadline_ms.saturating_mul(1_000),
+    )
+    .await
 }
 
 async fn current_flatten_account(
@@ -2812,89 +2910,6 @@ async fn current_flatten_account(
         .find(|account| account.slug == candidate.account_slug)
         .cloned()
         .context("flatten account is not in the current NAV strategy catalog")
-}
-
-async fn record_manual_flatten_required(
-    state: &AppState,
-    store: &DelistStore,
-    candidate: &FlattenCandidate,
-) -> Result<()> {
-    if store
-        .flatten_success_covers_snapshot(
-            &candidate.account_slug,
-            &candidate.symbol,
-            candidate.deadline_ms,
-            candidate.snapshot_ms,
-        )
-        .await?
-    {
-        return Ok(());
-    }
-    let dedup_key = audit_dedup_key(candidate, "manual-required");
-    let account = current_flatten_account(state, candidate).await?;
-    let command = serde_json::to_value(state.flatten_executor.command(candidate, &account)?)?;
-    let claimed = store
-        .claim_flatten_execution(
-            &dedup_key,
-            "manual_required",
-            &candidate.account_slug,
-            &candidate.exchange,
-            &candidate.symbol,
-            &candidate.delist_utc,
-            candidate.deadline_ms,
-            candidate.snapshot_ms,
-            candidate.open_usdt,
-            candidate.hedge_usdt,
-            candidate.position_usdt,
-            candidate.manual_threshold_usdt,
-            command,
-            "notifying",
-        )
-        .await?;
-    let audit_id = match claimed {
-        Some(audit_id) => audit_id,
-        None => {
-            let Some((audit_id, status, notification_status)) =
-                store.flatten_execution_state(&dedup_key).await?
-            else {
-                anyhow::bail!("manual-required audit disappeared after claim");
-            };
-            if status == "manual_required" && notification_status.as_deref() == Some("accepted") {
-                return Ok(());
-            }
-            audit_id
-        }
-    };
-    let notify = send_flatten_notification(
-        state,
-        candidate,
-        NotificationSeverity::Critical,
-        "下架前24小时大仓位需人工清仓",
-        &format!(
-            "{} | {}\n持仓 {:.2}U，大于自动清仓阈值 {:.2}U\n下架时间 {}\n请在下架风险页面确认后人工执行 flatten --symbol {} --mode clear",
-            candidate.account_slug,
-            candidate.symbol,
-            candidate.position_usdt,
-            candidate.manual_threshold_usdt,
-            candidate.delist_utc,
-            candidate.symbol,
-        ),
-    )
-    .await;
-    let notification_status = if notify.is_ok() { "accepted" } else { "failed" };
-    let notify_error = notify.as_ref().err().map(|err| format!("{err:#}"));
-    store
-        .finish_flatten_execution(
-            audit_id,
-            "manual_required",
-            None,
-            None,
-            None,
-            notify_error.as_deref(),
-            Some(notification_status),
-        )
-        .await?;
-    notify
 }
 
 async fn auto_flatten_candidate(
@@ -2919,29 +2934,7 @@ async fn auto_flatten_candidate(
                 anyhow::bail!("automatic flatten script failed")
             }
             Some(_) => Ok(()),
-            None => match store.flatten_execution_state(&dedup_key).await? {
-                Some((_id, status, _)) if status == "success" => {
-                    if store
-                        .flatten_success_covers_snapshot(
-                            &candidate.account_slug,
-                            &candidate.symbol,
-                            candidate.deadline_ms,
-                            candidate.snapshot_ms,
-                        )
-                        .await?
-                    {
-                        Ok(())
-                    } else {
-                        anyhow::bail!(
-                            "position remains in a snapshot captured after automatic flatten"
-                        )
-                    }
-                }
-                Some((_id, status, _)) => anyhow::bail!(
-                    "automatic flatten already attempted with unresolved status={status}"
-                ),
-                None => anyhow::bail!("automatic flatten audit disappeared after claim"),
-            },
+            None => Ok(()),
         }
     }
     .await;
@@ -2957,6 +2950,9 @@ async fn execute_flatten_with_audit(
     trigger: &str,
     dedup_key: &str,
 ) -> Result<Option<(i64, FlattenRunOutput)>> {
+    if !script_flatten_requested(state, candidate, positioned).await? {
+        anyhow::bail!("delist script flatten request is no longer current");
+    }
     let account = current_flatten_account(state, candidate).await?;
     let command = serde_json::to_value(state.flatten_executor.command(candidate, &account)?)?;
     let claimed = store
@@ -2974,110 +2970,40 @@ async fn execute_flatten_with_audit(
             candidate.position_usdt,
             candidate.manual_threshold_usdt,
             command,
-            "running",
         )
         .await;
-    let Some(audit_id) = (match claimed {
-        Ok(claimed) => claimed,
-        Err(err) => {
-            let _ = send_flatten_notification(
-                state,
-                candidate,
-                NotificationSeverity::Critical,
-                "下架清仓审计异常",
-                &format!(
-                    "{} | {}\n持仓 {:.2}U\n{err:#}",
-                    candidate.account_slug, candidate.symbol, candidate.position_usdt
-                ),
-            )
-            .await;
-            return Err(err);
-        }
-    }) else {
+    let Some(audit_id) = claimed? else {
         return Ok(None);
     };
+    if Utc::now().timestamp_millis() >= candidate.deadline_ms {
+        let message = "delist deadline elapsed before script start";
+        store
+            .finish_flatten_execution(audit_id, "failed", None, None, None, Some(message))
+            .await?;
+        anyhow::bail!("{message}");
+    }
     info!(
         "delist flatten started audit_id={} trigger={} account={} symbol={} position={}U",
         audit_id, trigger, candidate.account_slug, candidate.symbol, candidate.position_usdt
     );
-    if let Err(err) = ensure_positioned_symbol_dumped(state, store, positioned).await {
-        let message = format!("prepare dump before flatten failed: {err:#}");
-        let notify = send_flatten_notification(
-            state,
-            candidate,
-            NotificationSeverity::Critical,
-            "下架清仓准备失败",
-            &format!(
-                "{} | {}\n持仓 {:.2}U\n{}",
-                candidate.account_slug, candidate.symbol, candidate.position_usdt, message
-            ),
-        )
-        .await;
-        store
-            .finish_flatten_execution(
-                audit_id,
-                "failed",
-                None,
-                None,
-                None,
-                Some(&message),
-                Some(if notify.is_ok() { "accepted" } else { "failed" }),
-            )
-            .await?;
-        return Err(err);
-    }
     let output = match state.flatten_executor.run(candidate, &account).await {
         Ok(output) => output,
         Err(err) => {
             let message = format!("{err:#}");
-            let notify = send_flatten_notification(
-                state,
-                candidate,
-                NotificationSeverity::Critical,
-                "下架自动清仓执行异常",
-                &format!(
-                    "{} | {}\n持仓 {:.2}U\n{}",
-                    candidate.account_slug, candidate.symbol, candidate.position_usdt, message
-                ),
-            )
-            .await;
             store
-                .finish_flatten_execution(
-                    audit_id,
-                    "failed",
-                    None,
-                    None,
-                    None,
-                    Some(&message),
-                    Some(if notify.is_ok() { "accepted" } else { "failed" }),
-                )
+                .finish_flatten_execution(audit_id, "failed", None, None, None, Some(&message))
                 .await?;
             return Err(err);
         }
     };
     let status = if output.success { "success" } else { "failed" };
-    let mut notification_status = None;
-    let mut error = None;
-    if !output.success {
-        let message = format!(
+    let error = (!output.success).then(|| {
+        format!(
             "flatten script exited with code {:?}: {}",
             output.exit_code,
             output.stderr.lines().next().unwrap_or("no stderr")
-        );
-        let notify = send_flatten_notification(
-            state,
-            candidate,
-            NotificationSeverity::Critical,
-            "下架清仓脚本失败",
-            &format!(
-                "{} | {}\n持仓 {:.2}U\n{}",
-                candidate.account_slug, candidate.symbol, candidate.position_usdt, message
-            ),
         )
-        .await;
-        notification_status = Some(if notify.is_ok() { "accepted" } else { "failed" });
-        error = Some(message);
-    }
+    });
     store
         .finish_flatten_execution(
             audit_id,
@@ -3086,7 +3012,6 @@ async fn execute_flatten_with_audit(
             Some(&output.stdout),
             Some(&output.stderr),
             error.as_deref(),
-            notification_status,
         )
         .await?;
     info!(
@@ -3105,36 +3030,54 @@ async fn execute_flatten_with_audit(
     Ok(Some((audit_id, output)))
 }
 
-async fn send_flatten_notification(
-    state: &AppState,
-    candidate: &FlattenCandidate,
-    severity: NotificationSeverity,
-    title: &str,
-    message: &str,
-) -> Result<()> {
+async fn run_flatten_monitor(state: &AppState) -> Result<()> {
+    let store = state
+        .store
+        .as_ref()
+        .context("flatten monitor requires PostgreSQL")?;
     let client = state
         .notification_client
-        .clone()
-        .context("local notification client is unavailable")?;
-    let mut fields = BTreeMap::new();
-    fields.insert("账户".to_string(), candidate.account_slug.clone());
-    fields.insert("币对".to_string(), candidate.symbol.clone());
-    fields.insert(
-        "持仓".to_string(),
-        format!("{:.2}U", candidate.position_usdt),
-    );
-    fields.insert("下架时间".to_string(), candidate.delist_utc.clone());
-    let request = NotificationRequest {
-        source: "delist_risk_server".to_string(),
-        title: title.to_string(),
-        message: message.to_string(),
-        severity,
-        fields,
-        dedup_key: Some(audit_dedup_key(candidate, title)),
-    };
-    tokio::task::spawn_blocking(move || client.send(&request))
-        .await
-        .context("join notification task")?
+        .as_ref()
+        .context("notification client unavailable")?;
+    let now_ms = Utc::now().timestamp_millis();
+    let running_grace = state.flatten_executor.maximum_wait() + Duration::from_secs(30);
+    let running_before_ms = now_ms.saturating_sub(running_grace.as_millis() as i64);
+    let items = store.flatten_monitor_items(running_before_ms).await?;
+    let results = futures_util::stream::iter(items.into_iter().map(|item| async move {
+        let detail = if item.status == "running" {
+            "收口脚本超时或执行结果未写入"
+        } else {
+            "收口脚本执行失败"
+        };
+        let request = NotificationRequest {
+            source: "delist_risk_server".to_string(),
+            title: "下架收口未完成".to_string(),
+            message: format!(
+                "{} {}\n{}\n审计 ID {}",
+                item.account_slug, item.symbol, detail, item.id
+            ),
+            severity: NotificationSeverity::Critical,
+            fields: BTreeMap::from([
+                ("账户".to_string(), item.account_slug),
+                ("币对".to_string(), item.symbol),
+                ("下架时间".to_string(), item.delist_utc),
+            ]),
+            dedup_key: Some(format!("delist_flatten:{}:{}", item.id, now_ms / 60_000)),
+        };
+        let client = client.clone();
+        tokio::task::spawn_blocking(move || client.send(&request))
+            .await
+            .context("join flatten monitor notification")?
+    }))
+    .buffer_unordered(8)
+    .collect::<Vec<_>>()
+    .await;
+    for result in results {
+        if let Err(err) = result {
+            warn!("FR delist flatten monitor notification failed: {err:#}");
+        }
+    }
+    Ok(())
 }
 
 /// Marks FR accounts whose `fr_unimmr_close_symbols` list is confirmed empty.
@@ -3329,17 +3272,20 @@ async fn dump_position_candidate(
     state: &AppState,
     store: &DelistStore,
     candidate: &PositionDumpCandidate,
+    delist_entry: Option<DelistDumpEntry>,
 ) -> Result<bool> {
-    let redis_url = match candidate.redis_site.as_str() {
-        "jp" => state.jp_redis.as_str(),
-        "sg" => state
-            .sg_redis
-            .as_deref()
-            .context("SG Redis is not configured")?,
-        site => anyhow::bail!("unsupported Redis site {site}"),
-    };
-    let Some(plan) = prepare_redis_dump(redis_url, candidate).await? else {
+    let redis_url = position_redis_url(state, candidate)?;
+    let Some(plan) = prepare_redis_dump(redis_url, candidate, delist_entry).await? else {
         return Ok(false);
+    };
+    if plan.changes.is_empty() {
+        apply_redis_dump(redis_url, &plan).await?;
+        return Ok(false);
+    }
+    let list_name = if delist_entry.is_some() {
+        "delist dump"
+    } else {
+        "dump"
     };
     let audit_id = store
         .begin_redis_dump(
@@ -3363,7 +3309,18 @@ async fn dump_position_candidate(
     match apply_redis_dump(redis_url, &plan).await {
         Ok(()) => {
             store.finish_redis_dump(audit_id, "success", None).await?;
-            fr_event(state, "operation", format!("[操作日志] 下架仓位转入 dump\n{} {} | 影响持仓 {:.2}U | 审计 {}\n已更新该币对的开仓/dump名单，未在此步骤下单。", candidate.account_slug, candidate.symbol, candidate.impacted_position_usdt, audit_id)).await;
+            fr_event(
+                state,
+                "operation",
+                format!(
+                    "[操作日志] 下架仓位名单更新为 {list_name}\n{} {} | 影响持仓 {:.2}U | 审计 {}",
+                    candidate.account_slug,
+                    candidate.symbol,
+                    candidate.impacted_position_usdt,
+                    audit_id
+                ),
+            )
+            .await;
             info!(
                 "Redis delist dump success audit_id={} account={} symbol={} changes={}",
                 audit_id,
@@ -4176,12 +4133,13 @@ mod tests {
             auto_remove_redis: false,
             auto_dump_position_risk: false,
             auto_flatten_position_risk: false,
+            delist_dump_lease_secs: 180,
             position_risk_threshold_usdt: 50.0,
             position_snapshot_max_age_ms: 120_000,
-            flatten_window_ms: 86_400_000,
             flatten_manual_threshold_usdt: 1000.0,
             flatten_executor: FlattenExecutor::new(dir.clone(), Duration::from_secs(1)),
             flatten_inflight: Arc::new(AsyncMutex::new(BTreeSet::new())),
+            auto_flatten_worker: Arc::new(AsyncMutex::new(())),
             notification_client: None,
             flatten_api_token: None,
             snapshots: SnapshotClient::from_urls(BTreeMap::new()).unwrap(),

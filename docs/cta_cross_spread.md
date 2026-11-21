@@ -1,6 +1,31 @@
 # OKX / Binance CTA Spread
 
-最后更新：2026-11-12 06:51 UTC
+最后更新于 2026-11-18 09:25 UTC。
+
+2026-11-18 09:20 UTC，`okex_binace_cross` 恢复 Spread01，并首次启用 Spread02。
+`LTOKEx656` 的资金账户已向同一账号的交易账户划入 19,999.40 USDT，划转单号
+`3358815295`。两组均启用 1min/5min/15min/1h，每个周期在 OKX 和 Binance 各绑定
+1 份，沿用 `lgq_grid_spread` 的 `ctaker`。两侧 Exec 确认收到 8 张策略表。
+交易所于 09:24 UTC 回读 Spread01 的实际持仓标的数为 OKX 12 个、Binance 11 个，
+普通挂单各 0 笔。09:25 UTC，Spread02 的首个非零目标来自 5min，在 OKX 成交
+TRBUSDT 和 TRXUSDT。唯一未就绪的计算项为 OKX FILUSDT 15min `factor_114`。
+操作回执位于 JP Manager 的
+`maintenance-backups/cta_cross_resume_20261118/`。
+
+2026-11-17，cross 的 OKX Exec `okex_exec_trade01` 切换到 LTOKEx656
+（交易所 UID `577437828112804477`）。原 env 和监控日志备份在环境目录的
+`backups/okx-account-switch-20261117T075920Z/`；账户监控已重启并通过双连接认证，
+下单进程保持停止。切换前新旧账户均无非零合约仓位及普通、conditional/trigger
+算法挂单；新账户无资产余额，旧账户约有 35104.8 USDT，未转账。持久化 source、
+订单历史及仓位账本保留，因此该 source 的切换前历史属于原账户。
+
+2026-11-16，按用户要求仅下线交易，Spread01/02计算保持。两腿
+`okex_exec_trade01` / `binance_exec_spread01`的8条Manager绑定保存为零份，
+原`ctaker`执行零目标；停止两侧下单进程后，剩余6个小额尾仓以只减仓市价单逐笔成交。
+签名交易所查询确认两侧持仓、普通挂单和算法挂单均0。Spread共享进程PID1140614、
+计算代次、全部计算配置与仓位账本保留，Spread01信号继续原有发布，Spread02发布仍关闭；
+监控、持久化、Viz/Config与Manager继续运行。恢复实盘需要另行授权。
+私有回执：`~/crypto_cta_manager/maintenance-backups/cta_cross_stop_20261116/`。
 
 Spread02配置入口现已加入Delist CTA页：登录Delist后点击“Spread02配置”，
 四个频段直接使用当前Delist会话。入口为`/delist/cta/config/?worker=cta-factor-spread`，

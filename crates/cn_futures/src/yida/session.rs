@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 #[derive(Default)]
 pub struct Session {
     snapshot: Option<Snapshot>,
-    frozen: HashMap<(Venue, String, Side), (i32, i32)>,
-    seen_positions: HashSet<(Venue, String, Side, i32)>,
+    frozen: HashMap<(Venue, Symbol, Side), (i32, i32)>,
+    seen_positions: HashSet<(Venue, Symbol, Side, i32)>,
     poisoned: bool,
     logged_in: bool,
     initialized: bool,
@@ -91,9 +91,9 @@ impl Session {
                         connected: e.connection_status == 1,
                         public: e.public_connection == 1,
                         dedicated: e.dedicated_connection == 1,
-                        info: text(&e.connection_info)?,
-                        insert_flow: text(&e.insert_flow)?,
-                        cancel_flow: text(&e.cancel_flow)?,
+                        info: crate::ctp::text_ref(&e.connection_info)?.to_owned(),
+                        insert_flow: crate::ctp::text_ref(&e.insert_flow)?.to_owned(),
+                        cancel_flow: crate::ctp::text_ref(&e.cancel_flow)?.to_owned(),
                     },
                 );
             }
@@ -121,7 +121,7 @@ impl Session {
                 self.frozen.clear();
                 self.seen_positions.clear();
                 self.snapshot = Some(Snapshot {
-                    trading_day: e.day.to_string(),
+                    trading_day: int(e.day),
                     session: group_session_key(e.day, i32::from(config.order_group)),
                     max_order_ref: e
                         .reference
@@ -151,7 +151,7 @@ impl Session {
                 for p in check.view().positions {
                     let expected = self
                         .frozen
-                        .remove(&(p.venue, p.symbol.to_owned(), p.side))
+                        .remove(&(p.venue, p.symbol, p.side))
                         .unwrap_or_default();
                     ensure!(
                         (p.position.frozen_today, p.position.frozen_yesterday) == expected,
@@ -264,8 +264,7 @@ impl Session {
                     _ => anyhow::bail!("invalid native position direction"),
                 };
                 ensure!(
-                    self.seen_positions
-                        .insert((venue, symbol.clone(), side, e.date)),
+                    self.seen_positions.insert((venue, symbol, side, e.date)),
                     "duplicate native position date row"
                 );
                 let index = s
@@ -277,7 +276,7 @@ impl Session {
                     None => {
                         s.positions.push(PositionSnapshot {
                             venue,
-                            symbol: symbol.clone(),
+                            symbol,
                             side,
                             today: 0,
                             yesterday: 0,
@@ -305,22 +304,14 @@ impl Session {
             }
             ORDER => {
                 if let Some(s) = &mut self.snapshot {
-                    s.orders.push(
-                        decoded
-                            .order()
-                            .context("missing decoded native order")?
-                            .clone(),
-                    );
+                    s.orders
+                        .push(*decoded.order().context("missing decoded native order")?);
                 }
             }
             TRADE => {
                 if let Some(s) = &mut self.snapshot {
-                    s.trades.push(
-                        decoded
-                            .fill()
-                            .context("missing decoded native fill")?
-                            .clone(),
-                    );
+                    s.trades
+                        .push(*decoded.fill().context("missing decoded native fill")?);
                 }
             }
             FATAL => anyhow::bail!("native SDK fatal/missing-order event; stop and recover"),

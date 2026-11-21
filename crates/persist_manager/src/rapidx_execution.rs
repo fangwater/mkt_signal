@@ -30,6 +30,8 @@ pub fn required_column_families() -> &'static [&'static str] {
         CF_RAPIDX_STATEMENT,
         CF_RAPIDX_ROLE,
         CF_RAPIDX_STATEMENT_OBSERVATIONS,
+        crate::rapidx_uniform::STATE_CF,
+        crate::rapidx_uniform::EXECUTION_OBSERVATIONS_CF,
     ]
 }
 
@@ -61,6 +63,7 @@ mod tests {
                 reported_rebate: rest.then(|| "0".into()),
                 rebate_currency: rest.then(|| "".into()),
                 rest,
+                liquidity: None,
             },
         }
     }
@@ -110,6 +113,8 @@ mod tests {
                 CF_RAPIDX_STATEMENT,
                 CF_RAPIDX_ROLE,
                 CF_RAPIDX_STATEMENT_OBSERVATIONS,
+                crate::rapidx_uniform::STATE_CF,
+                crate::rapidx_uniform::EXECUTION_OBSERVATIONS_CF,
                 CF_SYNC_OUTBOX,
                 CF_SYNC_META,
             ],
@@ -216,6 +221,8 @@ mod tests {
                 CF_RAPIDX_STATEMENT,
                 CF_RAPIDX_ROLE,
                 CF_RAPIDX_STATEMENT_OBSERVATIONS,
+                crate::rapidx_uniform::STATE_CF,
+                crate::rapidx_uniform::EXECUTION_OBSERVATIONS_CF,
                 CF_SYNC_OUTBOX,
                 CF_SYNC_META,
             ],
@@ -343,7 +350,11 @@ impl<R: RapidXFact> RapidXFactPersistor<R> {
 
     fn persist_and_ack(&self, payload: &[u8]) -> Result<()> {
         let record = R::from_ipc_payload(payload).context("decode RapidX fact record")?;
+        crate::rapidx_uniform::validate_fact(&self.store, &record)?;
         let ack = persist_record(&self.store, &record, self.sync_enabled)?;
+        // Exact ACK requires the durable normalization work item too. A crash
+        // after raw persistence is retried idempotently before acknowledging.
+        crate::rapidx_uniform::enqueue_fact(&self.store, &record, self.sync_enabled)?;
         self.send_ack(ack)
     }
 }

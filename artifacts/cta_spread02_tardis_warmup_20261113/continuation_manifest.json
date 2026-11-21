@@ -1,0 +1,8 @@
+{
+  "history_end_utc": "2026-11-12 00:00:00 UTC",
+  "expected_symbols_per_market": 17,
+  "spread02_enabled": false,
+  "max_pos_u": 100,
+  "worker_sha256": "4954fa523917ca7d247d04b552e9790f51050da521aa3e2bc6c99e281ed0e418",
+  "wrapper_sha256": "d654faeb5954d415afcbb14bef8570b208ef56eab92084b0fb6801e05c962deb"
+}

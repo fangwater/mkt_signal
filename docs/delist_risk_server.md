@@ -1,6 +1,43 @@
 # Delist Risk Server
 
-最后更新：2026-11-12 15:36 UTC（Bybit FR重发完成，启动缺价已恢复）
+最后更新：2026-11-18 10:30 UTC（下架名单与 12 小时脚本收口上线）
+
+2026-11-18 10:16 UTC，JP 发布 `arbmm fc2150f1` 的 Delist、启动脚本和页面。
+本机 release 构建并校验上传哈希。新进程 PID 1260373，全部线程使用 CPU28。
+确认 12 小时收口窗口和 1,000 USDT 门槛已生效，PostgreSQL 告警字段已迁移。
+NAV 目录、Redis 下架扫描和通知服务均通过核验，扫描没有发现收口候选，
+下架名单变更和清仓审计均新增 0 条。停用的 `bitget_fr_arb03` 仍有静态
+快照配置，已核实不在 NAV 授权目录。配置文件哈希保持一致。回退与核验在
+`~/delist_risk_server/run/delist_direct_gate_20261118T101004Z/`。
+
+2026-11-16，`/delist/cta/config/` 新增“账户风控”，在原有 Delist 登录下分别读取和
+保存 LGQ RX01 / RX03 的最大杠杆。数据直接来自各自 `<env>:<venue>:pre_trade_risk_params`
+的 `max_leverage`，支持小数、0关闭；运行中的 Exec 沿既有250ms刷新自动加载。
+账户阈值跨频段共用，双所分别配置、独立占用权益。保存只 HSET 该字段，原值比较
+不一致返回409，避免覆盖其他操作者的更新；其他账户与风险字段不变。
+
+配置服务通过 `CTA_EXEC_ACCOUNT_CATALOG` 读取既有 Manager source 的名称与 venue，
+`CTA_EXEC_RISK_SOURCE_IDS` 显式限定可编辑账户。环境本地脚本传入
+`--exec-account-catalog` / `--exec-risk-source-ids`；未配置账户不自动启用限值。
+GET/POST共用`api/account-risk`，继承已有登录、同源写入与可信actor边界。页面写入
+按`family=exec`记录旧值/新值；Delist仅接受当前Manager目录中的对应账户/venue风险Hash，
+并只读比较这些Hash以识别页面外的持久修改。新增比较基线保持静默。
+
+本地`arbmm fb54c643`加本次补丁release构建，SHA-256校验后仅发布Config和Delist服务。
+Config PID2094016仍housekeeping，Delist PID2088322仍CPU28；现有Nginx网关保留。
+24份风险Hash及26份配置文件指纹保持，两账户仍1倍；193个其他常驻进程身份/CPU保持，
+另1个既有有限期`sync_history`退出，未将其计作常驻保持。6项Config、96项Delist、
+2项公共审计及2项生命周期测试通过；独立Redis实测页面保存、并发冲突、双所隔离、
+禁用限值、修改记录及桌面/手机布局。线上只提交原值1验证，无实际阈值变更或通知。
+回执`data/ops/exec_leverage_config_20261116T051036Z/`；主机回执与私有备份使用
+`exec-leverage-config-20261116T051036Z`目录。启动参数预检拦下的引用错误已修正，
+没有在预检失败时停止旧Config服务。
+
+2026-11-16，`bitget_fr_arb03` 全部服务已停止。按用户要求，仅移除 NAV 中
+`delist` 用户对该账户的读取授权，其他授权和 NAV 账户记录保留；Delist 从 NAV
+刷新账户目录，无需重启共享服务。被移除的授权备份在 JP
+`~/crypto_nav_manager/maintenance-backups/stop_bitget_fr_arb03_20261116/delist_grant.csv`。
+快照映射作为保留的传输配置，未删除。
 
 2026-11-12 15:34 UTC，Bybit FR arb01整套重发和3币合约小额对齐完成，8服务含signal恢复。
 启动后的HMSTR/HNT/HOLO/QTUM缺价随行情更新消失，Delist回读complete=true/risk_status=ok。
@@ -1527,45 +1564,31 @@ Returns the latest automatic open-to-dump audit rows from PostgreSQL table
 `redis_symbol_dump_audit`, including the triggering event, snapshot timestamp,
 both leg notionals, applied threshold, Redis key changes, and result.
 
-### Final-24-hour flatten
+### 下架前策略平仓
 
-`GET /flatten-candidates` returns positioned FR symbols whose actual `delist`
-deadline is within the next 24 hours. The decision value is the larger absolute
-USDT notional of the margin and futures legs. The response includes the latest
-audit state for each account/symbol/deadline.
+距明确的下架时间还有 24 小时以内时，Delist 将普通 dump 中的币对迁入独立的
+`{account}:fr_delist_dump_symbols:{venue_pair}`，并移出两个开仓名单。具有至少
+1 USDT 持仓的下架币对也可直接进入该名单。名单按账户保存下架时间与行情平仓的
+有效期。普通 dump 和下架 dump 的名单更新通过一次 Redis 比较并交换完成，并记录审计。
 
-Both legs strictly below 1 USDT are excluded from flatten candidates, using
-the same dust threshold as confirmed symbol removal. Final-window handling
-therefore does not re-add these residuals to dump or report a completed
-automatic flatten as unresolved solely because of dust. A position of exactly
-1 USDT on either leg remains a candidate; offsetting legs are checked
-individually rather than by their net exposure.
+`trade_signal` 发出普通 `ArbClose` 信号时跳过价差因子门槛。报价、订单数量、
+撤单和成交后的对冲均沿用普通 close。发信号仍受原有冷却时间和下架名单截止时间约束。
 
-The response also includes `position_statuses` for every dated upcoming/due FR
-delist risk found in a fresh account snapshot. `closed=true` requires the symbol
-to be present in that account's `fr_dump_symbols` and requires both
-`abs(open_usdt) < 100` and `abs(hedge_usdt) < 100`. The board keeps the delist
-declaration visible and marks such a row as `声明要下架，但已平仓完毕`.
+### 下架前 12 小时脚本收口
 
-With `DELIST_AUTO_FLATTEN_POSITION_RISK=1`, candidate positions from 1 through
-1000 USDT are first moved to `dump` and removed from both open lists, then the
-service runs the
-fixed account-local exchange script with `--symbols SYMBOL --mode clear
---execute`. Positions above 1000 USDT are never run automatically: one
-`manual_required` audit is created and the existing local notification service
-pushes a Telegram alert. Script, Redis, PostgreSQL, timeout, and notification
-errors remain visible in `delist_flatten_audit`; a failed automatic execution is
-not retried automatically. If a newer position snapshot still shows exposure
-after a successful script run, the service marks the source degraded and the
-page exposes the manual action instead of repeating live orders automatically.
+`DELIST_AUTO_FLATTEN_POSITION_RISK=1` 时，距下架 12 小时以内且两腿绝对
+名义金额的较大值在 1 至 1,000 USDT 之间（含边界），Delist 在名单中标记该币对
+进入脚本收口，并直接执行账户原有的 `--mode clear --execute` 脚本做 taker-taker。
+`trade_signal` 读到标记后停止发该币对的新平仓信号，已发订单沿用原来的生命周期。
+超过 1,000 USDT 的仓位继续走策略平仓，达到门槛后由脚本收口。
 
-The page displays final-window position and execution state. `POST /flatten`
-backs its manual button. It accepts only `account_slug` and `symbol`, requires a
-Bearer token matching `DELIST_FLATTEN_API_TOKEN`, reloads a fresh snapshot,
-rechecks the deadline and position, and verifies the account against the current
-NAV catalog before resolving the fixed exchange-specific executable. It cannot
-accept a command or filesystem path. A successful execution cannot run again
-against a snapshot captured before that execution.
+脚本的执行结果写入 PostgreSQL。脚本执行失败、超时或结果未写入时，monitor
+每分钟告警一次。同一账户和标的后续收口成功后结束告警，余额尾量仍在看板上显示。
+收口是否成功以交易所对应脚本的执行结果为准。失败的脚本不会自动重跑。
+`POST /flatten` 允许对已标记脚本收口的币对人工补做，仍须通过账户、标的、快照和操作口令校验。
+
+`GET /flatten-candidates` 显示 24 小时窗口内有仓位的标的和最近执行审计。
+`position_statuses` 同时读取普通 dump 和下架 dump 名单。
 
 `GET /flatten-executions` returns the latest PostgreSQL execution rows. The
 `trigger` is `auto`, `manual`, or `manual_required`; `status` is `running`,
@@ -2204,9 +2227,8 @@ Environment (see `config/delist_risk_server.env.example`):
 | `DELIST_NAV_STRATEGY_INTERVAL_SECS` | NAV account refresh interval, default `60` |
 | `DELIST_UNIMMR_LIST_INTERVAL_SECS` | FR `unimmr_close_symbols` empty-list watch, default `60` |
 | `DELIST_AUTO_REMOVE_REDIS` | `1` enables audited confirmed-delisting removal; default `0` |
-| `DELIST_AUTO_FLATTEN_POSITION_RISK` | `1` enables real final-window automatic clear; default `0` |
-| `DELIST_FLATTEN_WINDOW_HOURS` | actual delist window, default `24` |
-| `DELIST_FLATTEN_MANUAL_THRESHOLD_USDT` | larger leg above this value is manual-only, default `1000` |
+| `DELIST_AUTO_FLATTEN_POSITION_RISK` | `1` enables script flattening in the final 12 hours; default `0` |
+| `DELIST_FLATTEN_MANUAL_THRESHOLD_USDT` | maximum larger-leg notional for automatic script flattening, default `1000` |
 | `DELIST_FLATTEN_ENV_ROOT` | account deployment parent, default `/home/ubuntu` |
 | `DELIST_FLATTEN_TIMEOUT_SECS` | one script timeout, default `300` |
 | `DELIST_FLATTEN_API_TOKEN` | required Bearer token for the manual page action |

@@ -1,14 +1,15 @@
 # 国内期货统一行情：cn-futures-pbs
 
-最后更新：2026-11-13 UTC。
+最后更新：2026-11-20 UTC。
 
 CTP／易达持仓 IPC 与 WebSocket 观察接口见 [国内期货 Viz](cn_futures_viz.md)。该页面只转发交易进程持仓，行情发布器独立运行。
 
-`crates/cn_futures_pbs` 提供一个 `cn-futures-pbs` 入口。`--zmq`、`--ctp`、`--colo` 互斥选择来源；连接和裸解析留在适配器内，输出共用一个 `MarketDataMsg` 和 Iceoryx2 IPC 发布层。行情是完整五档快照，不拆 Crypto 的 ticker、spread、trade 等消息种类。
+`crates/cn_futures_pbs` 提供一个 `cn-futures-pbs` 入口。`--zmq`、`--redis`、`--ctp`、`--colo` 互斥选择来源，五档快照共用 `MarketDataMsg` 和 Iceoryx2 IPC 发布层。使用 `--redis --all-topics` 可独立接收 Redis feeder 的全部原始频道。
 
 | 来源／环境 | 当前状态 |
 | --- | --- |
 | `--zmq`：**公司内网通联转发** | 已接入并实测六个期货主行情频道到 IPC |
+| `--redis`：**公司内网二级 feeder** | 六所五档可输出 IPC，全部 49 个频道可独立计数和保存原始报文 |
 | `--ctp`：官方 CTP MdApi | 复用现有 Feed 与严格 CPU／NUMA 放置，已编译；未在本机执行或实测 |
 | `--colo`：托管机房 | 参数保留，待提供实际协议、授权与端点；当前明确报未实现 |
 | 公网接入 | 后续环境，当前没有可用的公网适配器或默认地址 |
@@ -36,6 +37,27 @@ CTP／易达持仓 IPC 与 WebSocket 观察接口见 [国内期货 Viz](cn_futur
 | `mdl.26.1.*` | GFEX | 59 |
 
 上游有 16 个频道，其余组合、成交量统计、十笔委托和额度频道不进入此主行情 IPC；不能把累计量差、统计或组合行情充作逐笔成交。解析器按固定位置借用字节切片，使用栈上字段槽位；没有 JSON、CSV 对象、HashMap、消息堆分配或中间存储。当前所需字段之后的新增尾部字段被跳过；原 frame 的所有权始终在调用方，IPC 不承诺保留完整原始正文。
+
+## Redis 二级 feeder
+
+按[二级 feeder 的 Redis 订阅说明](http://10.61.20.11/users/el01/public/tonglian/doc/01-redis-sub-guide.txt)，`10.61.20.11:9380` 的 `data` 路包括陆港通、沪深股票分钟线、期权分钟线、期货 L2 和期货分钟线，共 49 个频道。Redis 使用原样 `SUBSCRIBE`，频道 `mdl.22.1.*` 对应上期所五档，`mdl.13.5.*` 对应上期所期货 1 分钟线。`mdl.24.7.*` 是大商所最优价订单队列。`19380` 是数据目录中单列的沪深股票 L2 路。
+
+六所五档复用通联 MDL 字段位置。Redis 正文含 CSV 行尾，适配器去掉行尾后再按固定字段位置解析。全量采集保留原始字段，包括多周期分钟线的 `Unit`，写入 `<archive-directory>/<上海接收日期>/<小时>.mdl`，每行形如 `<topic> || <payload>`。断线和重连写入 `resets.log`。Redis Pub/Sub 只推实时消息，所需历史可查询[二级 feeder 公布的 CSV 目录](http://10.61.20.11/users/el01/public/tonglian/data/)；CTA 的策略分钟仍由 Market Replay 提供回补。
+
+`--redis` 的六所期货 L2 和 CTA 入口各自维持两条 Redis 订阅。一路发实时快照，另一路在内存保留按交易所划分的接收窗口。相同快照用交易日、自然日、SeqNo 和合约定位，并核对行情字段。单路断开时，从两路最后共同快照后的备用缓存接续，保持原行情代次。一路停止收快照、另一路继续前进时，也按相同证据接续。750 毫秒内无法确认接续边界或两路字段冲突时，发送 `SOURCE_RESET`。两条订阅当前接同一 feeder，服务端或共用网络失效时仍需 Market Replay 回补。
+
+```bash
+# 对全部频道做限时收包统计
+target/release/cn-futures-pbs --redis --all-topics \
+  --config config/cn_futures_pbs_redis.example.toml --seconds 60
+
+# 保存全部原始报文到独立目录
+target/release/cn-futures-pbs --redis --all-topics \
+  --config config/cn_futures_pbs_redis.example.toml --archive-directory /absolute/feeder-archive
+
+# 将六所期货五档发布到配置指定的 Iceoryx2 service_root
+target/release/cn-futures-pbs --redis --config config/cn_futures_pbs_redis.example.toml
+```
 
 ## 通用消息与 IPC
 

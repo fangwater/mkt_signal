@@ -21,6 +21,7 @@
     .hint,.badge{color:var(--muted);font-size:12px;line-height:1.5}.badge{font-weight:400;margin-left:8px}.status{font-size:12px;color:var(--muted);min-height:18px;margin:10px 0;white-space:pre-wrap;line-height:1.6}.status.ok{color:var(--ok)}.status.err{color:var(--danger)}
     textarea{display:block;width:100%;min-height:420px;resize:vertical;font:13px/1.65 Menlo,Consolas,monospace;tab-size:2;margin-top:12px}
     #dirty{align-self:center;color:var(--muted);font-size:12px}
+    body[data-native-futures] #account-risk,body[data-native-futures] main>nav,body[data-native-futures] details.panel{display:none}
     @media(max-width:960px){.kv-table{grid-template-columns:1fr}.kv-desc{padding:0 4px 10px}header,main{padding-left:12px;padding-right:12px}}
     @media(max-width:480px){.field{min-width:0;flex:1 1 130px}.toolbar>.actions{width:100%}.section-header{align-items:flex-start;flex-wrap:wrap}textarea{min-height:420px;font-size:12px}}
   </style>
@@ -39,12 +40,20 @@
   <nav class="subnav" aria-label="页面导航"><a href="/delist/">返回 Delist</a><a href="/manager/">CTA Manager ↗</a></nav>
   <div id="frequency-tabs" class="subnav" role="tablist" aria-label="配置频段"></div>
   <div id="message" class="status" role="status" aria-live="polite"></div>
+  <section id="account-risk" class="panel">
+    <div class="section-header"><h2>账户风控</h2><button id="reload-account-risk" class="ghost" type="button">读取账户阈值</button></div>
+    <p class="hint">最大杠杆按账户净权益的倍数设置，所有频段共用。现货、永续及在途订单共同占用额度；双所账户分别计算。保存后自动生效，超限仍允许减仓。</p>
+    <div id="account-risk-fields"></div>
+    <div id="account-risk-message" class="status" role="status" aria-live="polite">正在读取账户阈值…</div>
+  </section>
   <section id="strategy-settings" class="panel">
     <div class="section-header"><h2>策略参数 <span id="current-frequency" class="badge"></span></h2></div>
     <p class="hint">开关、金额和开平仓阈值分别保存到当前策略组、券池和频段。各因子沿用独立开平仓规则。</p>
+    <p id="native-window-params" class="hint" hidden></p>
     <div class="kv-table">
       <label for="enabled" class="kv-key">策略开关</label><div class="kv-input"><select id="enabled"><option value="false">关闭</option><option value="true">启用</option></select></div><div class="kv-desc">只控制当前策略组、券池和频段。</div>
       <label for="max-pos" class="kv-key">单份金额（USDT）</label><div class="kv-input"><input id="max-pos" type="number" min="0" step="any"></div><div class="kv-desc">每条因子规则的单份金额，修改后用于后续新开仓。</div>
+      <label for="native-position-algorithm" class="kv-key" hidden>仓位算法</label><div class="kv-input" hidden><select id="native-position-algorithm"><option value="v0">v0 · 逐因子判断</option><option value="v1">v1 · 等权均值</option></select></div><div class="kv-desc" hidden>同一品种的每个频段最多一手。</div>
       <label for="entry-long" class="kv-key">多头开仓阈值</label><div class="kv-input"><input id="entry-long" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">因子值高于此阈值时开多。</div>
       <label for="entry-short" class="kv-key">空头开仓阈值</label><div class="kv-input"><input id="entry-short" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">因子值低于此阈值时开空。</div>
       <label for="exit-long" class="kv-key">多头平仓阈值</label><div class="kv-input"><input id="exit-long" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">多头因子值低于此阈值时退出。</div>
@@ -71,18 +80,61 @@
 <script>
 'use strict';
 const $=id=>document.getElementById(id),clone=value=>JSON.parse(JSON.stringify(value));
+const nativeMode=document.body.dataset.nativeFutures==='true';
+if(nativeMode){const access=new URLSearchParams(location.hash.slice(1)).get('access');if(access&&/^[a-f0-9]{64}$/.test(access)){localStorage.setItem('cta-cn-futures-panel-access',access);history.replaceState(null,'',location.pathname+location.search);}prepareNative();}
 const prepIntervals=['1min','5min','15min','1h'];
-let catalog=null,draft=null,dirty=false,groupsDirty=false,busy=true,selectedWorker=new URL(location.href).searchParams.get('worker')||'cta-prep-binance-futures';
+let catalog=null,draft=null,dirty=false,groupsDirty=false,busy=true,selectedWorker=nativeMode?'cta-cn-futures':new URL(location.href).searchParams.get('worker')||'cta-prep-binance-futures';
+let nativeFrequency='1h';
+let accountRisk=[],riskDirty=false,riskBusy=false;
 function message(text,error=false){$('message').textContent=text;$('message').className='status '+(error?'err':'ok');}
 function changed(){dirty=true;$('dirty').textContent='有未保存修改';}
-function hasChanges(){return dirty||groupsDirty;}
-function setBusy(value){busy=value;document.querySelector('main').setAttribute('aria-busy',String(value));for(const el of document.querySelectorAll('input,select,button,textarea'))el.disabled=value;if(!value){for(const button of $('frequency-tabs').children)button.disabled=!button.dataset.name;$('save').disabled=!draft;}}
+function hasChanges(){return dirty||groupsDirty||riskDirty;}
+function setBusy(value){busy=value;document.querySelector('main').setAttribute('aria-busy',String(value));for(const el of document.querySelectorAll('input,select,button,textarea'))el.disabled=value;if(!value){for(const button of $('frequency-tabs').children)button.disabled=!button.dataset.name;$('save').disabled=!draft;}for(const el of $('account-risk').querySelectorAll('input,button'))el.disabled=value||riskBusy;if(nativeMode)for(const id of ['strategy-type','strategy-group','symbol-group'])$(id).disabled=true;}
 async function api(path,options={}){
   const url=new URL('api/'+path,location.href.split('#')[0]);url.searchParams.set('worker',selectedWorker);
-  const response=await fetch(url,{...options,headers:{'Content-Type':'application/json',...(options.headers||{})},credentials:'same-origin',cache:'no-store'});
+  const access=nativeMode?localStorage.getItem('cta-cn-futures-panel-access'):null;
+  const response=await fetch(url,{...options,headers:{'Content-Type':'application/json',...(access?{'Authorization':'Bearer '+access}:{}),...(options.headers||{})},credentials:'same-origin',cache:'no-store'});
   const raw=await response.text();let result;try{result=JSON.parse(raw);}catch{throw Error('读取失败，请检查登录状态');}if(!response.ok)throw Error(result.error||result.message||raw);return result;
 }
+function riskMessage(text,error=false){$('account-risk-message').textContent=text;$('account-risk-message').className='status '+(error?'err':'ok');}
+function renderAccountRisk(){
+  $('account-risk-fields').replaceChildren();
+  for(const account of accountRisk){
+    const row=document.createElement('div');row.className='kv-table';row.style.marginBottom='12px';row.dataset.sourceId=account.source_id;
+    const label=document.createElement('label');label.className='kv-key';label.htmlFor='leverage-'+account.source_id;label.textContent=account.alias+' · '+account.venue;
+    const controls=document.createElement('div');controls.className='actions';
+    const input=document.createElement('input');input.id=label.htmlFor;input.type='number';input.min='0';input.step='any';input.value=account.max_leverage??'';input.setAttribute('aria-label',account.alias+' 最大杠杆（倍）');
+    input.oninput=()=>{riskDirty=true;riskMessage('账户阈值有未保存修改');};
+    const save=document.createElement('button');save.type='button';save.textContent='保存账户阈值';save.onclick=()=>saveAccountRisk(account,input);
+    const description=document.createElement('div');description.className='kv-desc';description.textContent=account.error||'最大杠杆（倍），0 表示关闭；当前 '+(account.max_leverage===null?'无效':account.max_leverage===0?'未启用':account.max_leverage+' 倍');
+    controls.append(input,save);row.append(label,controls,description);$('account-risk-fields').append(row);
+  }
+}
+async function loadAccountRisk(confirmed=false){
+  if(riskBusy)return;
+  if(riskDirty&&!confirmed&&!confirm('放弃未保存的账户阈值修改，重新读取？'))return;
+  riskMessage('正在读取账户阈值…');
+  riskBusy=true;for(const el of $('account-risk').querySelectorAll('input,button'))el.disabled=true;
+  try{const result=await api('account-risk');accountRisk=result.accounts;riskDirty=false;renderAccountRisk();riskMessage(accountRisk.length?'已读取当前账户阈值':'当前没有可配置的执行账户');}
+  catch(error){riskMessage(error.message,true);}
+  finally{riskBusy=false;for(const el of $('account-risk').querySelectorAll('input,button'))el.disabled=busy;}
+}
+async function saveAccountRisk(account,input){
+  if(riskBusy||busy)return;
+  const value=Number(input.value);if(input.value.trim()===''||!Number.isFinite(value)||value<0){riskMessage('最大杠杆必须是大于等于 0 的数值，0 表示关闭',true);return;}
+  riskMessage('正在保存账户阈值…');
+  riskBusy=true;for(const el of $('account-risk').querySelectorAll('input,button'))el.disabled=true;
+  try{const result=await api('account-risk',{method:'POST',body:JSON.stringify({source_id:account.source_id,max_leverage:value,expected_value:account.expected_value})});
+    const current=result.account;Object.assign(account,current);
+    const row=input.closest('[data-source-id]');row.querySelector('.kv-desc').textContent=current.max_leverage===0?'当前未启用':'当前 '+current.max_leverage+' 倍';
+    riskDirty=accountRisk.some(item=>{const field=$('leverage-'+item.source_id);return field.value.trim()===''||Number(field.value)!==item.max_leverage;});
+    riskMessage(account.alias+' 已保存'+(value===0?'，限制已关闭':'，最大 '+value+' 倍')+'；执行进程自动加载');
+  }catch(error){riskMessage(error.message,true);}
+  finally{riskBusy=false;for(const el of $('account-risk').querySelectorAll('input,button'))el.disabled=busy;}
+}
+$('reload-account-risk').onclick=()=>loadAccountRisk();
 function factorRows(doc){
+  if(nativeMode)return doc.rules.map(row=>({'标的':row.symbol,nq:row.NQ,'符号':row.sign,'因子':row.factor,...(row.id?{id:row.id}:{})}));
   return doc.factor_rules.map(row=>({'标的':row['标的'].replace(/USDT$/i,''),nq:row.nq,'符号':row['符号'],'因子':row['因子']}));
 }
 function factorSourceMarket(doc){
@@ -126,7 +178,7 @@ function collect(){
   }
   return doc;
 }
-function updateCount(rows){$('factor-count').textContent=new Set(rows.map(row=>row['标的'])).size+' 个标的 · '+rows.length+' 条规则';}
+function updateCount(rows){$('factor-count').textContent=new Set(rows.map(row=>nativeMode?row.symbol:row['标的'])).size+' 个标的 · '+rows.length+' 条规则';}
 function show(doc){
   draft=clone(doc);dirty=false;$('dirty').textContent=groupsDirty?'券池定义有未保存修改':'';$('strategy-group').value=doc.strategy_group;$('symbol-group').value=doc.symbol_group||'';$('current-frequency').textContent=(doc.symbol_group?doc.symbol_group+' · ':'')+doc.interval;
   const signal=doc.signal;$('strategy-settings').hidden=!signal;
@@ -160,6 +212,7 @@ function renderTabs(){
   }
 }
 function renderCatalog(preferred){
+  if(nativeMode){showNative(catalog.frequency_configurations?.[nativeFrequency]||catalog.configuration);return;}
   selectedWorker=catalog.worker;$('strategy-type').replaceChildren();for(const worker of catalog.workers||[catalog.worker])$('strategy-type').append(new Option(worker==='cta-factor-spread'?'Spread':'Prep',worker));$('strategy-type').value=selectedWorker;
   const groups=[...new Set(Object.values(catalog.plan.combinations).map(doc=>doc.strategy_group))].sort();$('strategy-group').replaceChildren();for(const group of groups)$('strategy-group').append(new Option(group,group));
   $('symbol-group').replaceChildren(new Option('all（未限定券池）',''));for(const group of Object.keys(catalog.plan.symbol_groups||{}))$('symbol-group').append(new Option(group,group));
@@ -170,13 +223,88 @@ function renderCatalog(preferred){
 async function load(){
   if(busy&&catalog)return;if(hasChanges()&&!confirm('放弃未保存修改，重新读取？'))return;
   setBusy(true);try{catalog=await api('config');renderCatalog(decodeURIComponent(location.hash.slice(1)));message('读取完成');}catch(error){if(catalog){selectedWorker=catalog.worker;$('strategy-type').value=selectedWorker;}message(error.message,true);}finally{setBusy(false);}
+  if(!nativeMode)await loadAccountRisk(true);
 }
 async function action(save){
+  if(nativeMode){await nativeAction(save);return;}
   if(busy||!draft)return;if(groupsDirty){message('请先保存券池定义，再保存或校验当前规则',true);return;}setBusy(true);
   try{const combination=collect(),result=await api(save?'combinations':'preview',{method:'POST',body:JSON.stringify({worker:selectedWorker,combination,expected_revision:catalog.revision})});
     const filtered=result.plan.combinations[combination.name],excluded=result.excluded_symbols||[],notice=excluded.length?'\n已过滤非交易标的：'+excluded.map(row=>row.symbol+'（'+row.status+'，'+row.removed_rules+' 条）').join('、'):'';
     if(save){catalog=result;renderCatalog(combination.name);message('已保存 '+combination.strategy_group+' · '+(combination.symbol_group||'all')+' · '+combination.interval+notice);}
     else{if(excluded.length){$('factor-json').value=JSON.stringify(factorRows(filtered),null,2);changed();}updateCount(filtered.factor_rules);message('JSON 校验通过：'+filtered.factor_rules.length+' 条规则'+notice);}
+  }catch(error){message(error.message,true);}finally{setBusy(false);}
+}
+function nativeRules(){
+  const symbol=draft.symbol;
+  let rows;try{rows=JSON.parse($('factor-json').value);}catch(error){throw Error('JSON 格式错误：'+error.message);}
+  if(!Array.isArray(rows)||(!rows.length&&$('enabled').value==='true'))throw Error('启用的频段必须填写非空因子数组');
+  const fields=['标的','nq','符号','因子'];
+  return rows.map((row,index)=>{
+    if(!row||typeof row!=='object'||Array.isArray(row)||Object.keys(row).some(key=>key!=='id'&&!fields.includes(key))||fields.some(key=>!Object.hasOwn(row,key)))throw Error('第 '+(index+1)+' 项需填写「标的、nq、符号、因子」，可选 id');
+    if(typeof row['标的']!=='string'||row['标的'].trim().toUpperCase()!==symbol)throw Error('本策略仅配置 '+symbol);
+    if(![-1,1].includes(row['符号']))throw Error('符号只接受 -1 或 1');
+    if(typeof row.nq!=='string'||typeof row['因子']!=='string'||!row['因子'].trim())throw Error('nq 和因子须为字符串');
+    if(Object.hasOwn(row,'id')&&(typeof row.id!=='string'||!row.id.trim()))throw Error('规则 id 须为非空字符串');
+    return {symbol,factor:row['因子'].trim(),sign:row['符号'],NQ:row.nq.trim(),...(row.id?{id:row.id.trim()}:{})};
+  });
+}
+function nativeCollect(){
+  const doc=clone(draft);doc.enabled=$('enabled').value==='true';doc.position_algorithm=$('native-position-algorithm').value;
+  doc.entry.factor_long_quantile=number('entry-long');doc.entry.factor_short_quantile=number('entry-short');
+  doc.exits.factor_exit_quantile_long=number('exit-long');doc.exits.factor_exit_quantile_short=number('exit-short');
+  doc.rules=nativeRules();return doc;
+}
+function nativeThresholds(mode,values){
+  const fields=['entry-long','entry-short','exit-long','exit-short'];
+  for(const [i,id] of fields.entries()){$(id).min=mode==='v1'?'-1':'0';$(id).value=values[i];}
+}
+function prepareNative(){
+  $('strategy-type').replaceChildren(new Option('国内期货 Prep','cta-cn-futures'));$('strategy-group').replaceChildren(new Option('读取配置中…',''));
+  $('symbol-group').previousElementSibling.textContent='品种';
+  $('strategy-settings').hidden=false;
+  $('strategy-settings').querySelector('.hint').textContent='v0 汇总逐因子方向，v1 根据因子等权均值判断方向并使用本频段统一 NQ。关闭策略会保留已发布目标。';
+  const size=$('max-pos').parentElement,mode=$('native-position-algorithm').parentElement;
+  for(const cell of [size.previousElementSibling,size,size.nextElementSibling])cell.hidden=true;
+  for(const cell of [mode.previousElementSibling,mode,mode.nextElementSibling])cell.hidden=false;
+  $('native-position-algorithm').onchange=event=>{
+    const algorithm=event.target.value;
+    nativeThresholds(algorithm,algorithm===(draft.position_algorithm||'v0')
+      ?[draft.entry.factor_long_quantile,draft.entry.factor_short_quantile,draft.exits.factor_exit_quantile_long,draft.exits.factor_exit_quantile_short]
+      :algorithm==='v1'?[.5,-.5,-.2,.2]:[.75,.25,.4,.6]);
+    changed();
+  };
+  $('enabled').parentElement.nextElementSibling.textContent='只控制本策略生成目标仓位。';
+  $('spread-settings').hidden=true;
+  $('factor-hint').textContent='每项填写「标的、nq、符号、因子」。同一公式配置多条规则时填写独立 id。符号为 -1 / 1，nq 填「0.50」「0.20/0.80」或「关闭」。';
+}
+function showNative(doc){
+  selectedWorker='cta-cn-futures';draft=clone(doc);dirty=false;groupsDirty=false;$('dirty').textContent='';
+  const market=doc.exchange+' · '+doc.symbol;
+  nativeFrequency=doc.interval;$('current-frequency').textContent=market+' · '+doc.interval;
+  $('symbol-group').replaceChildren(new Option(market,doc.symbol));
+  $('symbol-members').textContent='实际交割合约由主力 REST 选择。';
+  $('strategy-group').replaceChildren(new Option(doc.name,doc.name));
+  $('enabled').value=String(doc.enabled);$('native-position-algorithm').value=doc.position_algorithm||'v0';
+  nativeThresholds($('native-position-algorithm').value,[doc.entry.factor_long_quantile,doc.entry.factor_short_quantile,doc.exits.factor_exit_quantile_long,doc.exits.factor_exit_quantile_short]);
+  $('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.rules);
+  const windows=catalog.window_parameters?.[doc.interval],hint=$('native-window-params');
+  hint.hidden=!windows;
+  if(windows){const f=windows.factor,n=windows.nq;hint.textContent=`固定窗口（单位：根 ${doc.interval} bar）：因子公式窗口由各因子定义；z-score ${f.normalize_window} 根、至少 ${f.normalize_min_periods} 个有效值，先按均值 ±${f.clip_zscore}σ 截断并以样本标准差重算${doc.interval==='1h'?'，缺失 z-score 向前填充':''}；因子分位 ${f.rank_window} 根、至少 ${f.rank_min_periods} 个有效值，${windows.factor_rank_ties==='inclusive'?'等值全部计入':'等值取中点排名'}。NQ 以行情提供的 mid 为输入${doc.interval==='1h'?'，缺失时用 close':''}，仅限制新开仓；多侧变化为 (mid−${n.lookback} 根最低 mid) / 最低 mid，空侧变化为 (mid−${n.lookback} 根最高 mid) / 最高 mid；两侧各用最近 ${n.rank_window} 个有效变化值求分位，至少 ${n.rank_min_periods} 个，0.50 门限比较线性中位数；NQ 不做 z-score。`;}
+  $('frequency-tabs').replaceChildren();
+  for(const interval of prepIntervals){
+    const item=catalog.frequency_configurations?.[interval];if(!item)continue;
+    const button=document.createElement('button');button.type='button';button.dataset.name=item.name;
+    button.setAttribute('role','tab');button.setAttribute('aria-selected',String(interval===nativeFrequency));
+    button.textContent=interval+' · '+(item.rules.length?(item.enabled?'已启用':'已关闭'):'未配置');
+    button.onclick=()=>{if(dirty&&!confirm('放弃未保存修改，切换频段？'))return;showNative(item);};
+    $('frequency-tabs').append(button);
+  }
+}
+async function nativeAction(save){
+  if(busy||!draft)return;setBusy(true);
+  try{const configuration=nativeCollect(),result=await api(save?'config':'preview',{method:'POST',body:JSON.stringify({configuration,expected_revision:catalog.revision})});
+    if(save){catalog=result;renderCatalog();message('已保存，后续实时决策使用新配置；已发布目标保留。');}
+    else{updateCount(configuration.rules);message('校验通过：'+configuration.rules.length+' 条规则；尚未保存。');}
   }catch(error){message(error.message,true);}finally{setBusy(false);}
 }
 async function groupsAction(save){
@@ -192,9 +320,9 @@ $('symbol-group').onchange=()=>{if(dirty&&!confirm('放弃未保存修改，切�
 $('symbol-groups-json').addEventListener('input',()=>{groupsDirty=true;$('dirty').textContent='券池定义有未保存修改';});
 $('save-groups').onclick=()=>groupsAction(true);$('validate-groups').onclick=()=>groupsAction(false);
 $('reload').onclick=load;$('save').onclick=()=>action(true);$('validate').onclick=()=>action(false);
-$('format').onclick=()=>{if(!draft||busy)return;try{const doc=clone(draft);doc.factor_rules=parseRules();$('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.factor_rules);changed();message('JSON 已格式化，尚未保存');}catch(error){message(error.message,true);}};
+$('format').onclick=()=>{if(!draft||busy)return;try{const doc=clone(draft);if(nativeMode){doc.rules=nativeRules();$('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.rules);}else{doc.factor_rules=parseRules();$('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.factor_rules);}changed();message('JSON 已格式化，尚未保存');}catch(error){message(error.message,true);}};
 for(const id of ['factor-json','enabled','max-pos','entry-long','entry-short','exit-long','exit-short','spread-long','spread-short'])$(id).addEventListener('input',changed);
-window.addEventListener('hashchange',()=>{if(!catalog||busy)return;const requested=decodeURIComponent(location.hash.slice(1)),next=catalog.plan.combinations[requested];if(!next||next.name===draft?.name)return;if(dirty&&!confirm('放弃未保存修改，切换频段？')){const url=new URL(location.href);url.hash=draft.name;history.replaceState(null,'',url);return;}show(next);message('');});
+window.addEventListener('hashchange',()=>{if(nativeMode||!catalog||busy)return;const requested=decodeURIComponent(location.hash.slice(1)),next=catalog.plan.combinations[requested];if(!next||next.name===draft?.name)return;if(dirty&&!confirm('放弃未保存修改，切换频段？')){const url=new URL(location.href);url.hash=draft.name;history.replaceState(null,'',url);return;}show(next);message('');});
 window.addEventListener('beforeunload',event=>{if(hasChanges()){event.preventDefault();event.returnValue='';}});
 load();
 </script>

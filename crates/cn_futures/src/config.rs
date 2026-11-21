@@ -1,7 +1,6 @@
-use crate::model::{is_future_symbol, RiskLimits, Venue};
+use crate::model::RiskLimits;
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
-use std::collections::HashSet;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
@@ -13,7 +12,6 @@ pub struct Config {
     #[serde(default = "default_preallocated_requests")]
     pub preallocated_requests: usize,
     pub flow_directory: PathBuf,
-    pub journal: PathBuf,
     /// Defaults to flow_directory/persist_manager. Never shared across accounts.
     pub persistence_directory: Option<PathBuf>,
     pub position_ipc: Option<cn_futures_state::Config>,
@@ -35,8 +33,12 @@ pub struct Config {
     pub event_capacity: usize,
     pub query_interval_ms: u64,
     pub response_timeout_ms: u64,
-    pub symbols: Vec<SymbolConfig>,
+    /// `busy` on an isolated core, `sleep` on a shared host.
+    #[serde(default)]
+    pub poll: crate::poll::PollMode,
     pub risk: RiskLimits,
+    pub exec: Option<crate::ctp::exec::Settings>,
+    pub position_target_ingress: Option<cn_futures_target::Config>,
 }
 
 #[cfg(test)]
@@ -55,30 +57,33 @@ mod tests {
             sdk_cpus: vec![2],
             ..trade.placement.clone()
         };
-        md.symbols.retain(|s| s.symbol != "IF2612");
-        assert!(trade.validate_market_data(&md).is_err());
+        md.symbols.clear();
+        trade.validate_market_data(&md).unwrap();
     }
     #[test]
     fn blocking_ctp_configuration_knobs_are_rejected() {
         let trade = include_str!("../../../config/ctp_trade.example.toml");
-        for knob in [
-            "sync_before_send = true\n",
-            "sync_before_send = false\n",
-            "idle_sleep_us = 0\n",
-            "idle_sleep_us = 100\n",
-        ] {
+        for knob in ["sync_before_send = true\n", "sync_before_send = false\n"] {
             assert!(toml::from_str::<Config>(&format!("{knob}{trade}")).is_err());
         }
     }
+    #[test]
+    fn poll_mode_defaults_to_busy_and_rejects_the_removed_idle_knob() {
+        let trade = include_str!("../../../config/ctp_trade.example.toml");
+        let example: Config = toml::from_str(trade).unwrap();
+        assert_eq!(
+            example.poll,
+            crate::poll::PollMode::Sleep { idle_us: 64_000 }
+        );
+        example.validate().unwrap();
+        let mut table: toml::Table = toml::from_str(trade).unwrap();
+        table.remove("poll");
+        let default: Config = toml::Value::Table(table.clone()).try_into().unwrap();
+        assert_eq!(default.poll, crate::poll::PollMode::default());
+        table.insert("idle_sleep_us".into(), toml::Value::Integer(0));
+        assert!(toml::Value::Table(table).try_into::<Config>().is_err());
+    }
 }
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SymbolConfig {
-    pub venue: Venue,
-    pub symbol: String,
-    pub cash_budget_per_open_lot: f64,
-}
-
 /// Intentionally not Debug / Serialize. Secrets are only passed to the official SDK.
 pub struct Credentials {
     pub broker: CString,
@@ -108,13 +113,6 @@ impl Config {
             self.flow_directory != md.flow_directory,
             "Md and Trader require separate flow directories"
         );
-        ensure!(
-            self.symbols.iter().all(|symbol| md
-                .symbols
-                .iter()
-                .any(|s| s.venue == symbol.venue && s.symbol == symbol.symbol)),
-            "every trading symbol must have an explicit MD subscription"
-        );
         Ok(())
     }
     pub fn load(path: &Path) -> Result<Self> {
@@ -125,6 +123,26 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
+        if let Some(exec) = &self.exec {
+            exec.validate(&self.risk)?;
+            ensure!(
+                self.risk.max_order_lots.is_none()
+                    && self.risk.max_position_lots_per_side.is_none()
+                    && self.risk.max_working_lots.is_none(),
+                "CTP exec sizes from the Manager target and exchange rules; remove local lot limits"
+            );
+        }
+        if let Some(ingress) = &self.position_target_ingress {
+            if let Some(exec) = &self.exec {
+                ingress.validate()?;
+                ensure!(
+                    exec.source_id == ingress.source_id,
+                    "position_target_ingress requires exec with the same source_id"
+                );
+            } else {
+                ingress.validate_observer()?;
+            }
+        }
         if let Some(ipc) = &self.position_ipc {
             ipc.validate()?;
         }
@@ -163,29 +181,11 @@ impl Config {
             "CTP query interval must be at least 1000 ms"
         );
         ensure!(self.response_timeout_ms >= 5000, "invalid response timeout");
+        self.poll.validate(crate::poll::MAX_SLEEP_US)?;
         ensure!(
-            self.flow_directory.is_absolute()
-                && self.journal.is_absolute()
-                && self.sdk_library.is_absolute(),
-            "SDK, flow and journal paths must be absolute"
+            self.flow_directory.is_absolute() && self.sdk_library.is_absolute(),
+            "SDK and flow paths must be absolute"
         );
-        ensure!(
-            !self.symbols.is_empty(),
-            "explicit domestic futures contract allowlist required"
-        );
-        let mut symbols = HashSet::new();
-        for s in &self.symbols {
-            ensure!(
-                is_future_symbol(s.venue, &s.symbol) && symbols.insert((s.venue, &s.symbol)),
-                "invalid or duplicate domestic future {}",
-                s.symbol
-            );
-            ensure!(
-                s.cash_budget_per_open_lot.is_finite() && s.cash_budget_per_open_lot > 0.0,
-                "positive local cash budget required for {}",
-                s.symbol
-            );
-        }
         for name in [
             &self.user_id_env,
             &self.password_env,

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 pub struct OrderView<'a> {
     pub request: &'a Intent,
     pub key: &'a OrderKey,
-    pub system_id: &'a String,
+    pub system_id: &'a NativeId,
     pub limit_price: f64,
     pub status: OrderStatus,
     pub filled: i32,
@@ -28,9 +28,9 @@ impl OrderView<'_> {
     }
     pub fn to_order(self) -> Order {
         Order {
-            request: self.request.clone(),
-            key: self.key.clone(),
-            system_id: self.system_id.clone(),
+            request: *self.request,
+            key: *self.key,
+            system_id: *self.system_id,
             limit_price: self.limit_price,
             status: self.status,
             filled: self.filled,
@@ -72,6 +72,7 @@ pub struct ExecutionScope {
     pub venues: HashSet<Venue>,
     pub reference_limit: u64,
     pub require_market_status: bool,
+    pub require_bootstrap_instruments: bool,
     pub cancel_requires_system_id: bool,
     pub allow_implicit_fill_reference: bool,
     pub allow_options: bool,
@@ -94,9 +95,9 @@ impl ExecutionScope {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RiskLimits {
-    pub max_order_lots: i32,
-    pub max_position_lots_per_side: i32,
-    pub max_working_lots: i32,
+    pub max_order_lots: Option<i32>,
+    pub max_position_lots_per_side: Option<i32>,
+    pub max_working_lots: Option<i32>,
     pub max_actions_per_second: usize,
     pub minimum_cash_remaining: f64,
     pub enable_fak_fok: bool,
@@ -106,9 +107,14 @@ pub struct RiskLimits {
 impl RiskLimits {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.max_order_lots > 0
-                && self.max_position_lots_per_side > 0
-                && self.max_working_lots > 0
+            [
+                self.max_order_lots,
+                self.max_position_lots_per_side,
+                self.max_working_lots,
+            ]
+            .into_iter()
+            .flatten()
+            .all(|lots| lots > 0)
                 && self.max_actions_per_second > 0,
             "risk limits must be positive"
         );
@@ -120,19 +126,19 @@ impl RiskLimits {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PreparedOrder {
     pub key: OrderKey,
     pub intent: Intent,
     pub limit_price: f64,
     pub option_market_buy_ceiling: f64,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PreparedCancel {
     pub key: OrderKey,
-    pub symbol: String,
+    pub symbol: Symbol,
     pub venue: Venue,
-    pub system_id: String,
+    pub system_id: NativeId,
     pub execution_route: Option<ExecutionRoute>,
 }
 
@@ -180,7 +186,10 @@ pub(crate) fn validate_snapshot(s: &Snapshot, scope: &ExecutionScope) -> Result<
             rule.symbol
         );
     }
-    ensure!(!symbols.is_empty(), "empty instrument snapshot");
+    ensure!(
+        !scope.require_bootstrap_instruments || !symbols.is_empty(),
+        "empty instrument snapshot"
+    );
     let mut positions = HashSet::new();
     for p in &s.positions {
         ensure!(

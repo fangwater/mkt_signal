@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use symbol_utils::symbol_util::normalize_symbol_for_internal;
 use symbol_utils::time_util::get_timestamp_us;
 
-pub use symbol_utils::TradingVenue;
+pub use symbol_utils::{domestic_venues, TradingVenue};
 
 pub mod binance_basic_impl;
 pub mod bitget_basic_impl;
@@ -24,6 +24,36 @@ pub mod trade_update;
 pub mod trade_update_lite;
 
 pub use order_update::OrderUpdate;
+
+/// Open/close direction of a fill or order, for venues that track it
+/// (domestic futures split close into today and yesterday inventory).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum PositionEffect {
+    Open = 1,
+    Close = 2,
+    CloseToday = 3,
+    CloseYesterday = 4,
+}
+impl PositionEffect {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::Open),
+            2 => Some(Self::Close),
+            3 => Some(Self::CloseToday),
+            4 => Some(Self::CloseYesterday),
+            _ => None,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Close => "close",
+            Self::CloseToday => "close_today",
+            Self::CloseYesterday => "close_yesterday",
+        }
+    }
+}
 pub use query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage};
 pub use query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 pub use trade_engine_response::{

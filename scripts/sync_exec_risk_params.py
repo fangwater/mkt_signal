@@ -7,8 +7,9 @@
 写入 Redis Hash:
   `<env>:<venue>:pre_trade_risk_params`
 
-只写入 BatchExec 当前实际使用的挂单数量与下单频率限制。账户级
-`max_pos_u`、`max_leverage` 和截面失衡参数不属于当前 BatchExec 风控。
+写入挂单数量与下单频率限制；保留单独设置的账户级 `max_leverage`。
+该字段缺失或为 0 时不启用账户杠杆限制，正数表示最大倍数并由 Exec 热加载。
+`max_pos_u` 和截面失衡参数不属于当前 BatchExec 风控。
 
 示例：
   cd ~/binance_exec_trade
@@ -98,6 +99,7 @@ RISK_PARAMS = {
 
 
 PARAM_COMMENTS: Dict[str, str] = {
+    "max_leverage": "账户最大杠杆倍数（缺失或0=关闭，250ms热加载）",
     "max_pending_limit_orders": "最大 live exec 限价挂单数",
     "exec_max_pending_limit_buy_orders": "Exec 买侧最大限价挂单数（0=关闭）",
     "exec_max_pending_limit_sell_orders": "Exec 卖侧最大限价挂单数（0=关闭）",
@@ -106,7 +108,7 @@ PARAM_COMMENTS: Dict[str, str] = {
 }
 
 
-PARAM_ORDER = list(RISK_PARAMS.keys())
+PARAM_ORDER = ["max_leverage", *RISK_PARAMS]
 
 
 def build_risk_params_key(env_name: str, exec_venue: str) -> str:
@@ -116,7 +118,7 @@ def build_risk_params_key(env_name: str, exec_venue: str) -> str:
 def sync_risk_params(rds, env_name: str, exec_venue: str) -> int:
     key = build_risk_params_key(env_name, exec_venue)
     with rds.pipeline(transaction=True) as pipe:
-        pipe.delete(key)
+        pipe.hdel(key, "max_pos_u", "exec_max_position_imbalance_ratio")
         pipe.hset(key, mapping=RISK_PARAMS)
         pipe.execute()
     print(f"✅ 已写入 {len(RISK_PARAMS)} 个参数到 HASH '{key}'")

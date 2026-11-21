@@ -1,0 +1,2 @@
+76a86403f5ad51979f2beec8cb0c7cbbe6030d8e6167014e51c529b43cdbdf09  target/release/cta-factor-spread
+9bdd8f5e55b9160e63ac7feafd1cba919c60d53a116f33d8e911605c21d0d6df  target/release/cta-hourly-history

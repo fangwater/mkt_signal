@@ -11,15 +11,18 @@ extern "C" fn stop(_: i32) {
 fn main() {
     if let Err(error) = run() {
         eprintln!("ctp-trader: {error:#}");
-        std::process::exit(1);
+        std::process::exit(cn_futures::restart::exit_status(&error));
     }
 }
 fn run() -> Result<()> {
+    // Drained when `run` returns, before the final error is printed.
+    let _log = async_log::init_default("info")?;
     let mut args = std::env::args().skip(1);
     let mut config = None;
     let mut market_data_config: Option<PathBuf> = None;
     let mut connect = false;
     let mut execute = false;
+    let mut read_only = false;
     let mut confirm_settlement = false;
     let mut check_config = false;
     let mut sdk_version: Option<PathBuf> = None;
@@ -43,11 +46,12 @@ fn run() -> Result<()> {
                 ))
             }
             "--connect" => connect = true,
+            "--read-only" => read_only = true,
             "--execute" => execute = true,
             "--confirm-settlement" => confirm_settlement = true,
             "--check-config" => check_config = true,
             "--help" | "-h" => {
-                println!("ctp-trader --config PATH [--market-data-config MD_PATH] [--check-config] [--connect [--execute] [--confirm-settlement]]\nctp-trader --sdk-version /absolute/path/libthosttraderapi_se.so\n\nDefault: validate configuration only; no network or credentials required.\n--market-data-config consumes MdApi on the trading business thread; built-in strategy is NoStrategy and never produces orders.\n--connect logs in and queries account state without confirming settlement.\n--confirm-settlement explicitly permits confirming the broker settlement.\n--execute additionally permits explicit JSON-line submit/cancel commands.\nWithout --execute, no order placement or cancellation is permitted.\nCommands: state, reconcile, submit, cancel, shutdown. EOF stops trade-only mode; combined MD mode continues. SIGINT/SIGTERM request shutdown.\nExisting venue orders are never automatically cancelled on startup or exit.");
+                println!("ctp-trader --config PATH [--market-data-config MD_PATH] [--read-only] [--check-config] [--connect [--execute] [--confirm-settlement]]\nctp-trader --sdk-version /absolute/path/libthosttraderapi_se.so\n\nDefault: validate configuration only; no network or credentials required.\n--market-data-config consumes MdApi on the trading business thread; strategy defaults to NoStrategy; an explicit [exec] section enables bounded limit/FAK target execution.\n--read-only rejects execution, exec and settlement confirmation.\n--connect logs in and queries account state.\n--confirm-settlement explicitly permits confirming the broker settlement.\n--execute additionally permits explicit JSON-line submit/cancel commands.\nWithout --execute, no order placement or cancellation is permitted.\nCommands: state, reconcile, exec_target, submit, cancel, shutdown. EOF stops trade-only mode; combined MD mode continues. SIGINT/SIGTERM request shutdown.\nExisting venue orders are never automatically cancelled on startup or exit.");
                 return Ok(());
             }
             _ => bail!("unknown argument; use --help"),
@@ -74,22 +78,31 @@ fn run() -> Result<()> {
         }
     }
     let mut config = Config::load(&config.context("--config is required; use --help")?)?;
+    anyhow::ensure!(
+        !read_only
+            || !(execute
+                || confirm_settlement
+                || config.confirm_settlement
+                || config.exec.is_some()),
+        "--read-only requires execution, exec and settlement confirmation to be disabled"
+    );
     let market_data = market_data_config
         .map(|path| cn_futures::ctp::market_data::Config::load(&path))
         .transpose()?;
     if let Some(md) = &market_data {
         config.validate_market_data(md)?;
     }
+    anyhow::ensure!(
+        config.exec.is_none() || market_data.is_some(),
+        "exec requires --market-data-config"
+    );
     if confirm_settlement {
         anyhow::ensure!(connect, "settlement confirmation requires --connect");
         config.confirm_settlement = true;
     }
     if !connect {
         anyhow::ensure!(!execute, "--execute also requires --connect");
-        println!(
-            "CTP configuration valid; {} domestic futures contracts; no connection started",
-            config.symbols.len()
-        );
+        println!("CTP configuration valid; no connection started");
         return Ok(());
     }
     #[cfg(feature = "ctp-sdk")]
@@ -99,13 +112,14 @@ fn run() -> Result<()> {
             libc::signal(libc::SIGINT, stop as *const () as libc::sighandler_t);
             libc::signal(libc::SIGTERM, stop as *const () as libc::sighandler_t);
         }
-        cn_futures::runtime::run_with_strategy(
-            config,
-            market_data,
-            execute,
-            cn_futures::ctp::strategy::NoStrategy,
-            &STOP,
-        )
+        let strategy = cn_futures::ctp::strategy::ConfiguredStrategy(
+            config
+                .exec
+                .as_ref()
+                .map(|_| cn_futures::ctp::exec::Exec::new(&config))
+                .transpose()?,
+        );
+        cn_futures::runtime::run_with_strategy(config, market_data, execute, strategy, &STOP)
     }
     #[cfg(not(feature = "ctp-sdk"))]
     {

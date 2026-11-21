@@ -1,0 +1,24 @@
+{
+  "market": "okex-futures",
+  "interval": "1h",
+  "start_ms": 1793491200000,
+  "end_ms": 1794355200000,
+  "source": "Tardis trades + incremental_book_L2; current Redis thresholds and historical previous-month hourly KLL",
+  "symbols": {
+    "ETHUSDT": {
+      "file": "ETHUSDT.bin.gz",
+      "rows": 240,
+      "sha256": "baca67563cd22701c2186ce835ce94eed0043754f83916f6c77f0d87af3632da",
+      "first_end_ms": 1793494800000,
+      "last_end_ms": 1794355200000,
+      "source_book_events": 8575159,
+      "source_trades": 39039113,
+      "thresholds": {
+        "2026-11": [
+          48.455600000000004,
+          23118.48
+        ]
+      }
+    }
+  }
+}

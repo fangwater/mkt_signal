@@ -24,24 +24,26 @@ pub struct Config {
     /// Optional for offline fixtures. Configured placement is strict: no fallback.
     pub placement: Option<crate::placement::PlacementConfig>,
     pub flow_directory: PathBuf,
-    pub journal: PathBuf,
-    /// Defaults to flow_directory/persist_manager. Never shared across accounts.
+    /// Defaults to flow_directory/persist_manager: persist_manager's store, read
+    /// once at startup. Never shared across accounts.
     pub persistence_directory: Option<PathBuf>,
     pub position_ipc: Option<cn_futures_state::Config>,
+    pub exec: Option<crate::ctp::exec::YidaSettings>,
+    pub position_target_ingress: Option<cn_futures_target::Config>,
     /// Read-only L1 for held/configured contracts, independent of trading permissions.
     #[serde(default)]
     pub observation_l1: bool,
     #[serde(default)]
     pub preallocated_orders: usize,
-    #[serde(default)]
-    pub sync_before_send: bool,
     pub user_id_env: String,
     pub password_env: String,
     pub app_id_env: String,
     pub auth_code_env: String,
     pub event_capacity: usize,
     pub response_timeout_ms: u64,
-    pub idle_sleep_us: u64,
+    /// `busy` on an isolated core, `sleep` (at most 1 ms) on a shared host.
+    #[serde(default)]
+    pub poll: crate::poll::PollMode,
     pub symbols: Vec<SymbolConfig>,
     pub risk: RiskLimits,
 }
@@ -96,6 +98,33 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.risk.max_order_lots.is_some()
+                && self.risk.max_position_lots_per_side.is_some()
+                && self.risk.max_working_lots.is_some(),
+            "Yida requires explicit account lot limits"
+        );
+        if let Some(exec) = &self.exec {
+            exec.validate(&self.risk)?;
+            ensure!(
+                self.observation_l1
+                    && self.symbols.len() <= cn_futures_target::MAX_CONTRACTS
+                    && self
+                        .symbols
+                        .iter()
+                        .all(|s| is_future_symbol(s.venue, &s.symbol)),
+                "Yida exec requires live L1 and explicit futures-only contract scope"
+            );
+        }
+        if let Some(ingress) = &self.position_target_ingress {
+            ingress.validate()?;
+            ensure!(
+                self.exec
+                    .as_ref()
+                    .is_some_and(|exec| exec.source_id == ingress.source_id),
+                "position_target_ingress requires exec with the same source_id"
+            );
+        }
         if let Some(ipc) = &self.position_ipc {
             ipc.validate()?;
         }
@@ -106,32 +135,26 @@ impl Config {
         self.execution_route.validate()?;
         if self.public_simulation {
             ensure!(
-                self.risk.max_order_lots == 1 && self.risk.max_working_lots <= 2,
+                self.risk.max_order_lots == Some(1)
+                    && self.risk.max_working_lots.is_some_and(|limit| limit <= 2),
                 "public_simulation requires max_order_lots=1 and max_working_lots<=2"
             );
         }
         if let Some(placement) = &self.placement {
             placement.validate()?;
         }
-        for p in [
-            &self.sdk_library,
-            &self.sdk_config,
-            &self.flow_directory,
-            &self.journal,
-        ] {
+        for p in [&self.sdk_library, &self.sdk_config, &self.flow_directory] {
             ensure!(
                 p.is_absolute(),
-                "Yida SDK/config/flow/journal paths must be absolute"
+                "Yida SDK/config/flow paths must be absolute"
             );
         }
         ensure!(
             (64..=1_048_576).contains(&self.event_capacity),
             "invalid event capacity"
         );
-        ensure!(
-            self.response_timeout_ms >= 5000 && self.idle_sleep_us <= 1000,
-            "invalid timeout/idle sleep"
-        );
+        ensure!(self.response_timeout_ms >= 5000, "invalid response timeout");
+        self.poll.validate(crate::poll::MAX_SLEEP_US)?;
         let mut seen = HashSet::new();
         ensure!(
             !self.symbols.is_empty(),

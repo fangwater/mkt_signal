@@ -1,0 +1,1 @@
+[2026-11-13T04:46:26Z ERROR period_kafka_consumer] Kafka poll error: Kafka message error: Broker: Unknown topic or partition

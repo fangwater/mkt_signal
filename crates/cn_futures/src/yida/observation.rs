@@ -20,6 +20,8 @@ pub struct NativeL1 {
     pub last_price: f64,
     pub bid_price: f64,
     pub ask_price: f64,
+    pub lower_limit: f64,
+    pub upper_limit: f64,
     pub symbol: [u8; 64],
     pub exchange: [u8; 12],
     pub native_time: [u8; 24],
@@ -44,6 +46,37 @@ fn nonnegative(value: i32) -> Option<i32> {
     (value >= 0).then_some(value)
 }
 impl ReceivedL1 {
+    #[cfg(feature = "yida-sdk")]
+    pub(crate) fn execution_quote<'a>(
+        &'a self,
+        trading_day: &'a str,
+    ) -> Option<crate::ctp::exec::Quote<'a>> {
+        let e = &self.event;
+        if e.generation == 0
+            || e.connected != 1
+            || e.initial != 0
+            || e.market_flags & 1 != 0
+            || e.product_class != 1
+            || e.native_timestamp < 0
+            || trading_day.parse::<i32>().ok() != Some(e.trading_day)
+        {
+            return None;
+        }
+        Some(crate::ctp::exec::Quote {
+            venue: Venue::parse(text(&e.exchange).ok()?).ok()?,
+            symbol: text(&e.symbol).ok()?,
+            trading_day,
+            generation: e.generation,
+            received_us: self.received_us,
+            bid: e.bid_price,
+            ask: e.ask_price,
+            bid_lots: e.bid_lots,
+            ask_lots: e.ask_lots,
+            lower_limit: e.lower_limit,
+            upper_limit: e.upper_limit,
+        })
+    }
+
     pub fn mark(&self) -> Result<InstrumentMark> {
         let e = &self.event;
         let venue = Venue::parse(text(&e.exchange)?)?;
@@ -147,6 +180,8 @@ mod tests {
                 last_price: 80000.0,
                 bid_price: f64::MAX,
                 ask_price: f64::NAN,
+                lower_limit: f64::NAN,
+                upper_limit: f64::NAN,
                 symbol,
                 exchange,
                 native_time,

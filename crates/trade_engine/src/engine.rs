@@ -46,10 +46,10 @@ use crate::query_response_handle::QueryExecOutcome;
 use crate::query_type_mapping::QueryTypeMapping;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
 use crate::trade_request::{
-    BinanceBatchModifyOrdersParams, BinanceCancelOrderParams, BinanceModifyOrderParams,
-    BinanceModifyOrderParamsRef, BinanceNewOrderParams, BinanceNewOrderParamsRef,
-    BitgetNewOrderParams, GateNewOrderParams, HyperliquidNewOrderParams, TradeRequestIpcPayload,
-    TradeRequestMsg, TradeRequestType,
+    BinanceBatchModifyOrdersParams, BinanceCancelOrderParams, BinanceMarginBorrow,
+    BinanceModifyOrderParams, BinanceModifyOrderParamsRef, BinanceNewOrderParams,
+    BinanceNewOrderParamsRef, BitgetNewOrderParams, GateNewOrderParams, HyperliquidNewOrderParams,
+    TradeRequestIpcPayload, TradeRequestMsg, TradeRequestType,
 };
 use crate::trade_response_handle::TradeExecOutcome;
 use crate::trade_type_mapping::TradeTypeMapping;
@@ -857,8 +857,11 @@ fn binance_new_order_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs>
         pairs.push(("reduceOnly".to_string(), params.reduce_only.to_string()));
     }
     pairs.push(("side".to_string(), params.side.as_str().to_string()));
-    if is_margin && params.margin_buy {
+    if is_margin && params.margin_borrow.auto_borrows() {
         pairs.push(("sideEffectType".to_string(), "MARGIN_BUY".to_string()));
+        if params.margin_borrow == BinanceMarginBorrow::KeepOnCancel {
+            pairs.push(("autoRepayAtCancel".to_string(), "false".to_string()));
+        }
     }
     pairs.push(("symbol".to_string(), params.symbol.to_string()));
     if params.order_type.is_limit() {
@@ -984,7 +987,7 @@ fn binance_order_status_u8(value: Option<&Value>) -> u8 {
     }
 }
 
-fn batch_modify_protocol_error_body(message: &str) -> String {
+fn binance_unknown_trade_result_body(message: &str) -> String {
     serde_json::json!({
         "code": order_common::trade_error_code::ACTION_RESULT_UNKNOWN,
         "msg": message,
@@ -1014,7 +1017,7 @@ fn binance_batch_modify_outcomes(
             let (item_status, item_body) = if status == 0 {
                 (
                     0,
-                    batch_modify_protocol_error_body(&format!(
+                    binance_unknown_trade_result_body(&format!(
                         "Binance batch modify transport error: {body}"
                     )),
                 )
@@ -1025,7 +1028,7 @@ fn binance_batch_modify_outcomes(
             } else {
                 (
                     502,
-                    batch_modify_protocol_error_body(
+                    binance_unknown_trade_result_body(
                         "Binance batch modify response is not an array matching the request count",
                     ),
                 )
@@ -1050,16 +1053,20 @@ fn binance_batch_modify_outcomes(
         .collect()
 }
 
-fn binance_modify_transport_error_body(req_type: TradeRequestType, message: &str) -> String {
+fn binance_trade_transport_error_body(msg: &TradeRequestMsg, message: &str) -> String {
+    let fr_borrow_order = msg.req_type == TradeRequestType::BinanceNewMarginOrder
+        && BinanceNewOrderParamsRef::from_bytes(&msg.params)
+            .is_some_and(|params| params.margin_borrow == BinanceMarginBorrow::KeepOnCancel);
     if matches!(
-        req_type,
+        msg.req_type,
         TradeRequestType::BinanceModifyUMOrder
             | TradeRequestType::BinanceStdModifyUMOrder
             | TradeRequestType::BinanceStdBatchModifyUMOrders
             | TradeRequestType::BinanceModifyCmOrder
             | TradeRequestType::BinancePmModifyCmOrder
-    ) {
-        batch_modify_protocol_error_body(message)
+    ) || fr_borrow_order
+    {
+        binance_unknown_trade_result_body(message)
     } else {
         message.to_string()
     }
@@ -3158,13 +3165,22 @@ impl TradeEngine {
                                         let _ = trade_resp_sink_for_req_worker.send(item_outcome);
                                     }
                                 } else {
+                                    let order_id = if msg.req_type
+                                        == TradeRequestType::BinanceNewMarginOrder
+                                        && (200..300).contains(&outcome.status)
+                                    {
+                                        serde_json::from_str::<Value>(&outcome.body)
+                                            .map_or(0, |body| json_i64(body.get("orderId")))
+                                    } else {
+                                        0
+                                    };
                                     let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
                                         req_type: msg.req_type,
                                         client_order_id: msg.client_order_id,
                                         status: outcome.status,
                                         body: outcome.body,
                                         exchange: exchange_for_req_worker,
-                                        order_id: 0,
+                                        order_id,
                                         order_status_u8: 0,
                                         order_update_time: 0,
                                         executed_qty: 0.0,
@@ -3188,8 +3204,8 @@ impl TradeEngine {
                                         req_type: msg.req_type,
                                         client_order_id: msg.client_order_id,
                                         status: 0,
-                                        body: binance_modify_transport_error_body(
-                                            msg.req_type,
+                                        body: binance_trade_transport_error_body(
+                                            &msg,
                                             &e.to_string(),
                                         ),
                                         exchange: exchange_for_req_worker,
@@ -4796,14 +4812,15 @@ mod tests {
     use super::{
         binance_batch_modify_order_rest_pairs, binance_batch_modify_outcomes,
         binance_modify_order_rest_pairs, binance_std_usdt_transfer_rest_pairs,
-        configured_binance_ws_markets, enable_ipc_fast_poll, exec_query_request_allowed,
-        exec_trade_request_allowed, parse_bool_env, read_only_trade_rejection,
-        router_idle_spin_iters, trade_request_rest_pairs, DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
+        binance_trade_transport_error_body, configured_binance_ws_markets, enable_ipc_fast_poll,
+        exec_query_request_allowed, exec_trade_request_allowed, parse_bool_env,
+        read_only_trade_rejection, router_idle_spin_iters, trade_request_rest_pairs,
+        DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
     };
     use crate::query_request::QueryRequestType;
     use crate::trade_request::{
-        BinanceBatchModifyOrdersParams, BinanceModifyOrderParams, BinancePriceMatch,
-        TradeRequestMsg, TradeRequestType,
+        BinanceBatchModifyOrdersParams, BinanceMarginBorrow, BinanceModifyOrderParams,
+        BinanceNewOrderParams, BinancePriceMatch, TradeRequestMsg, TradeRequestType,
     };
     use order_common::Side;
     use runtime_common::exchange::Exchange;
@@ -4814,6 +4831,53 @@ mod tests {
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn binance_pm_rest_order_keeps_borrow_only_when_requested() {
+        for (borrow, margin_buy, keep_on_cancel) in [
+            (BinanceMarginBorrow::None, false, false),
+            (BinanceMarginBorrow::AutoBorrow, true, false),
+            (BinanceMarginBorrow::KeepOnCancel, true, true),
+        ] {
+            let request = BinanceNewOrderParams::request_bytes_from_parts(
+                TradeRequestType::BinanceNewMarginOrder,
+                123,
+                456,
+                "BTCUSDT",
+                Side::Buy,
+                order_common::OrderType::Limit,
+                QuantizedValue::from_decimal(0.01).unwrap(),
+                QuantizedValue::from_decimal(60_000.0).unwrap(),
+                false,
+                borrow,
+                false,
+                false,
+                false,
+            )
+            .unwrap();
+            let msg = TradeRequestMsg::parse(&request).unwrap();
+            let params = BinanceNewOrderParams::from_bytes(&msg.params).unwrap();
+            assert_eq!(params.margin_borrow, borrow);
+            let fields: std::collections::BTreeMap<_, _> = trade_request_rest_pairs(&msg)
+                .unwrap()
+                .into_iter()
+                .collect();
+            assert_eq!(fields.contains_key("sideEffectType"), margin_buy);
+            assert_eq!(
+                fields.get("autoRepayAtCancel").map(String::as_str),
+                keep_on_cancel.then_some("false")
+            );
+            let error = binance_trade_transport_error_body(&msg, "timeout");
+            assert_eq!(
+                serde_json::from_str::<Value>(&error)
+                    .ok()
+                    .and_then(|body| body["code"].as_i64()),
+                keep_on_cancel.then_some(i64::from(
+                    order_common::trade_error_code::ACTION_RESULT_UNKNOWN
+                ))
+            );
+        }
     }
 
     #[test]

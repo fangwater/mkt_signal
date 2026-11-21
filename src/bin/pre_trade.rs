@@ -625,8 +625,8 @@ async fn cancel_all_orders_on_startup(
 }
 
 fn main() -> Result<()> {
-    let log_env = env_logger::Env::default().default_filter_or("info");
-    env_logger::Builder::from_env(log_env).init();
+    // Formatting stays on the caller; stderr writes run on the async-log thread.
+    let _log = async_log::init_default("info")?;
 
     let startup_context = fr_startup_context_from_cwd();
     let startup_stable = Arc::new(AtomicBool::new(false));
@@ -971,6 +971,9 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     )
                 });
             info!("Risk parameters loaded successfully");
+            if exec_pre_trade {
+                mkt_signal::pre_trade::exec_leverage_guard::start(redis_settings.clone()).await?;
+            }
 
             // 打印风控参数三线表
             loader.print_params_table();
@@ -1185,11 +1188,20 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                             Ok(url) if !url.trim().is_empty() => url,
                             _ => RestConstants::BINANCE_BASE_URL.to_string(),
                         };
+                        let usdt_reserve = if mkt_signal::pre_trade::binance_pm_buy_capacity::is_binance_fr_pair(
+                            open_venue, hedge_venue, arb_mode,
+                        ) {
+                            2_000.0
+                        } else {
+                            0.0
+                        };
+                        info!("binance auto-repay: usdt_reserve={usdt_reserve}");
                         repay_svc.register(Box::new(BinanceRepayer::new(
                             rest_base,
                             binance_api_key,
                             binance_api_secret,
                             RestConstants::RECV_WINDOW_MS,
+                            usdt_reserve,
                         )));
                     }
                 } else if binance_in_play && rapidx_binance {
@@ -1481,9 +1493,14 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             }
 
             // 8. 运行主循环
-            let mut pre_trade = PreTrade::new()
-                .with_param_refresh(param_refresh)
-                .with_snapshot_query(snapshot_query);
+            let mut pre_trade = PreTrade::new().with_snapshot_query(snapshot_query);
+            // HFT keeps the fixed synchronous refresh window (open signals may be
+            // dropped); exec CTA refreshes asynchronously and never drops targets.
+            if exec_pre_trade {
+                param_refresh.spawn_async();
+            } else {
+                pre_trade = pre_trade.with_param_refresh(param_refresh);
+            }
             if let Some(channel) = order_queue_position {
                 pre_trade = pre_trade.with_order_queue_position(channel);
             }

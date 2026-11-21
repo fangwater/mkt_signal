@@ -1,0 +1,10 @@
+brokers = "156.231.137.189:1501"
+topics = ["binance-futures", "okex-futures"]
+group_id = "spread02-tardis-continuity-122010bff5204933868edcbf0445eb02"
+client_id = "spread02-tardis-continuity-122010bff5204933868edcbf0445eb02"
+offset_reset = "earliest"
+payload_compression = "zlib"
+enable_auto_commit = false
+security_protocol = "none"
+max_messages = 1
+broker_addr_rewrites = [{from_host="10.140.140.55",to_host="156.231.137.189"}]

@@ -1,0 +1,47 @@
+{
+  "market": "binance-futures",
+  "interval": "1h",
+  "start_ms": 1791417600000,
+  "end_ms": 1794355200000,
+  "source": "Tardis trades + incremental_book_L2; current Redis thresholds and historical previous-month hourly KLL",
+  "symbols": {
+    "BCHUSDT": {
+      "file": "BCHUSDT.bin.gz",
+      "rows": 816,
+      "sha256": "d0bfdac1a7a45243636f372a935930dda00762d52f59a7607a935d9fcb637270",
+      "first_end_ms": 1791421200000,
+      "last_end_ms": 1794355200000,
+      "source_book_events": 69800077,
+      "source_trades": 17284956,
+      "thresholds": {
+        "2026-10": [
+          24.26886,
+          308.06048
+        ],
+        "2026-11": [
+          30.114050000000002,
+          400.8759999999999
+        ]
+      }
+    },
+    "FILUSDT": {
+      "file": "FILUSDT.bin.gz",
+      "rows": 816,
+      "sha256": "f6a50d66665455aa2f75f6537d213be05996a31d3451d2d2ce4b967a607e1401",
+      "first_end_ms": 1791421200000,
+      "last_end_ms": 1794355200000,
+      "source_book_events": 61752136,
+      "source_trades": 25773976,
+      "thresholds": {
+        "2026-10": [
+          16.556639999999998,
+          315.19936000000007
+        ],
+        "2026-11": [
+          16.59735,
+          363.71999999999997
+        ]
+      }
+    }
+  }
+}

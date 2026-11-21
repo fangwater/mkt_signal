@@ -1,0 +1,152 @@
+{
+  "checked_ms": 1794547355235,
+  "updated_ms": 1794547353871,
+  "generation": "67181a32-7d5a-4ed9-9daf-156517a13136",
+  "warming": false,
+  "error": null,
+  "positions_error": null,
+  "publication_error": null,
+  "manager_pending": 0,
+  "config_differences_from_start": [],
+  "tables": [
+    {
+      "group": "spread01",
+      "interval": "15min",
+      "enabled": true,
+      "rules": 18,
+      "calculations": 22,
+      "ready": 22
+    },
+    {
+      "group": "spread01",
+      "interval": "1h",
+      "enabled": true,
+      "rules": 107,
+      "calculations": 109,
+      "ready": 109
+    },
+    {
+      "group": "spread01",
+      "interval": "1min",
+      "enabled": true,
+      "rules": 28,
+      "calculations": 35,
+      "ready": 35
+    },
+    {
+      "group": "spread01",
+      "interval": "5min",
+      "enabled": true,
+      "rules": 56,
+      "calculations": 49,
+      "ready": 48
+    },
+    {
+      "group": "spread02",
+      "interval": "15min",
+      "enabled": false,
+      "rules": 64,
+      "calculations": 78,
+      "ready": 70
+    },
+    {
+      "group": "spread02",
+      "interval": "1h",
+      "enabled": false,
+      "rules": 128,
+      "calculations": 130,
+      "ready": 103
+    },
+    {
+      "group": "spread02",
+      "interval": "1min",
+      "enabled": false,
+      "rules": 48,
+      "calculations": 50,
+      "ready": 50
+    },
+    {
+      "group": "spread02",
+      "interval": "5min",
+      "enabled": false,
+      "rules": 79,
+      "calculations": 83,
+      "ready": 76
+    }
+  ],
+  "processes": {
+    "cta-factor-spread": [
+      {
+        "pid": 1965122,
+        "binary": "cta-factor-spread",
+        "cpus": "18"
+      }
+    ],
+    "okex_exec_trade01": [
+      {
+        "pid": 1358662,
+        "binary": "python3.12",
+        "cpus": "0-5,48-95"
+      },
+      {
+        "pid": 3894077,
+        "binary": "persist_manager",
+        "cpus": "15"
+      },
+      {
+        "pid": 3911954,
+        "binary": "account_monitor",
+        "cpus": "21"
+      },
+      {
+        "pid": 3912050,
+        "binary": "viz_server",
+        "cpus": "0-5,48-95"
+      },
+      {
+        "pid": 3918956,
+        "binary": "trade_engine",
+        "cpus": "23"
+      },
+      {
+        "pid": 3919273,
+        "binary": "exec-pre-trade",
+        "cpus": "22"
+      }
+    ],
+    "binance_exec_spread01": [
+      {
+        "pid": 1361135,
+        "binary": "python3.12",
+        "cpus": "0-5,48-95"
+      },
+      {
+        "pid": 3894220,
+        "binary": "persist_manager",
+        "cpus": "15"
+      },
+      {
+        "pid": 3912185,
+        "binary": "account_monitor",
+        "cpus": "25"
+      },
+      {
+        "pid": 3912313,
+        "binary": "viz_server",
+        "cpus": "0-5,48-95"
+      },
+      {
+        "pid": 3919575,
+        "binary": "trade_engine",
+        "cpus": "27"
+      },
+      {
+        "pid": 3920104,
+        "binary": "exec-pre-trade",
+        "cpus": "26"
+      }
+    ]
+  },
+  "live_worker_sha256": "962bd27894f72c98fddff673debf3d838d7552ddb68bd464b939f59a3bb57523",
+  "spread02_disabled": true
+}

@@ -24,12 +24,49 @@ fn sample() -> Snapshot {
     });
     s
 }
+
+fn sample_funds(observed_us: u64) -> AccountFunds {
+    AccountFunds {
+        observed_us,
+        currency: Text::new("CNY").unwrap(),
+        balance: 499999.72,
+        available: -10.25,
+        withdraw_quota: 499899.72,
+        curr_margin: 20.0,
+        frozen_margin: 1.0,
+        frozen_cash: 2.0,
+        frozen_commission: 0.5,
+        position_profit: -3.0,
+        close_profit: 4.0,
+        commission: 5.0,
+    }
+}
+#[test]
+fn account_funds_codec_preserves_actual_values_and_query_time() {
+    let mut s = sample();
+    let account = sample_funds(s.observed_us - 1);
+    s.account = Some(account);
+    s.validate().unwrap();
+    let frame = bincode::serialize(&s).unwrap();
+    let decoded = transport::decode(&frame).unwrap().account.unwrap();
+    assert_eq!(decoded.available, -10.25);
+    assert_eq!(decoded.observed_us, account.observed_us);
+    assert_eq!(decoded.frozen_commission, 0.5);
+    s.account.as_mut().unwrap().balance = f64::NAN;
+    assert!(s.validate().is_err());
+    s.account = Some(AccountFunds {
+        observed_us: s.observed_us + 1,
+        ..account
+    });
+    assert!(s.validate().is_err());
+    s.account = None;
+    s.validate().unwrap();
+    assert!(serde_json::to_value(s).unwrap()["account"].is_null());
+}
 #[test]
 fn fixed_text_and_framed_codec_reject_truncation_and_invalid_positions() {
     let s = sample();
-    let encoded = bincode::serialize(&s).unwrap();
-    let mut frame = Vec::from((encoded.len() as u32).to_le_bytes());
-    frame.extend(encoded);
+    let frame = bincode::serialize(&s).unwrap();
     let decoded = transport::decode(&frame).unwrap();
     assert_eq!(decoded.positions[0].position.today, 2);
     assert_eq!(decoded.positions[0].symbol.as_str(), "cu2612");
@@ -47,7 +84,7 @@ fn fixed_text_and_framed_codec_reject_truncation_and_invalid_positions() {
 #[test]
 fn ipc_full_replacement_carries_freezing_flat_state_and_terminal_status() {
     let namespace = format!("native_positions_{}", publisher::now_us());
-    let publisher = transport::StatePublisher::new(&namespace).unwrap();
+    let mut publisher = transport::StatePublisher::new(&namespace).unwrap();
     let subscriber = transport::StateSubscriber::open(&namespace).unwrap();
     let mut s = sample();
     publisher.publish(&s).unwrap();
@@ -75,11 +112,12 @@ fn ipc_full_replacement_carries_freezing_flat_state_and_terminal_status() {
     );
 }
 #[test]
-fn bounded_background_publisher_replaces_pending_complete_snapshots() {
+fn inline_publisher_delivers_the_latest_complete_snapshot() {
     let namespace = format!("native_mailbox_{}", publisher::now_us());
     let cfg = Config {
         namespace: namespace.clone(),
         interval_ms: 1000,
+        account_snapshot_path: None,
     };
     let mut producer = publisher::Producer::start(&cfg, Adapter::Yida, &"a".repeat(64)).unwrap();
     let subscriber = transport::StateSubscriber::open(&namespace).unwrap();
@@ -118,8 +156,92 @@ fn bounded_background_publisher_replaces_pending_complete_snapshots() {
     assert_eq!(last.sequence, 100);
     assert_eq!(last.positions.len(), 1);
     assert_eq!(last.positions[0].position.today, 100);
-    assert!(last.replaced_snapshots > 0);
     producer.finish().unwrap();
+}
+
+#[test]
+fn orderly_exit_saves_the_last_confirmed_observation_and_preserves_it_on_a_failed_restart() {
+    let namespace = format!("native_saved_{}", publisher::now_us());
+    let dir = std::env::temp_dir().join(&namespace);
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("account.bin");
+    let cfg = Config {
+        namespace: namespace.clone(),
+        interval_ms: 1000,
+        account_snapshot_path: Some(path.clone()),
+    };
+    let hash = "a".repeat(64);
+    let mut producer = publisher::Producer::start(&cfg, Adapter::Ctp, &hash).unwrap();
+    let subscriber = transport::StateSubscriber::open(&namespace).unwrap();
+    producer
+        .capture(true, |s| {
+            s.position_ready = true;
+            s.connected = true;
+            s.transport_ready = true;
+            s.ready = true;
+            s.can_trade = true;
+            s.trading_day = Text::new("20261119")?;
+            s.account = Some(sample_funds(s.observed_us - 1));
+            s.positions.push(PositionRow {
+                venue: Venue::Shfe,
+                symbol: Text::new("rb2701")?,
+                side: Side::Sell,
+                position: Position {
+                    yesterday: 2,
+                    ..Default::default()
+                },
+            });
+            Ok(())
+        })
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let capture = loop {
+        if let Some(s) = subscriber.latest().unwrap() {
+            break s;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert!(!path.exists());
+    producer
+        .capture(true, |s| {
+            s.position_ready = false;
+            s.ready = false;
+            s.connected = false;
+            s.transport_ready = false;
+            s.can_trade = false;
+            s.runtime_status = RuntimeStatus::Stopped;
+            Ok(())
+        })
+        .unwrap();
+    producer.finish().unwrap();
+    let saved = checkpoint::load(&path, &namespace, Adapter::Ctp, &hash)
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.observed_us, capture.observed_us);
+    assert_eq!(saved.positions[0].position.yesterday, 2);
+    assert_eq!(
+        saved.account.unwrap().observed_us,
+        capture.account.unwrap().observed_us
+    );
+    assert_eq!(saved.account.unwrap().balance, 499999.72);
+    assert!(!saved.can_trade && !saved.ready && !saved.connected && !saved.transport_ready);
+    assert!(checkpoint::load(&path, &namespace, Adapter::Ctp, &"b".repeat(64)).is_err());
+    assert!(checkpoint::load(&path, "other-source", Adapter::Ctp, &hash).is_err());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let bytes = std::fs::read(&path).unwrap();
+    let mut restarted = publisher::Producer::start(&cfg, Adapter::Ctp, &hash).unwrap();
+    restarted.capture(true, |_| Ok(())).unwrap();
+    restarted.finish().unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 thread_local! {
@@ -151,10 +273,11 @@ unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
     }
 }
 #[test]
-fn snapshot_capture_does_not_allocate_or_wait_for_encoding() {
+fn inline_snapshot_publication_does_not_allocate() {
     let cfg = Config {
         namespace: format!("native_capture_{}", publisher::now_us()),
         interval_ms: 1000,
+        account_snapshot_path: None,
     };
     let mut producer = publisher::Producer::start(&cfg, Adapter::Yida, &"a".repeat(64)).unwrap();
     ALLOCATIONS.with(|n| n.set(0));
@@ -208,6 +331,7 @@ fn failed_capture_invalidates_the_entire_position_snapshot() {
     let cfg = Config {
         namespace: format!("native_failed_capture_{}", publisher::now_us()),
         interval_ms: 1000,
+        account_snapshot_path: None,
     };
     let mut producer = publisher::Producer::start(&cfg, Adapter::Yida, &"a".repeat(64)).unwrap();
     let subscriber = transport::StateSubscriber::open(&cfg.namespace).unwrap();
@@ -267,7 +391,7 @@ fn maximum_full_snapshot_fits_one_complete_ipc_message() {
         });
     }
     s.validate().unwrap();
-    assert!(bincode::serialized_size(&s).unwrap() < (PAYLOAD - 4) as u64);
+    assert!(bincode::serialized_size(&s).unwrap() < MAX_SNAPSHOT_BYTES as u64);
 }
 
 #[test]

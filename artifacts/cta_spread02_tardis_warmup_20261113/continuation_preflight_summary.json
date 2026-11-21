@@ -1,0 +1,1 @@
+{"returncode": 0, "retained_kafka_start": {"binance-futures:0": 1794376338000, "okex-swap:0": 1794370149000}, "history_cutoff_ms": 1794441600000, "hourly_markets": ["binance-futures", "okex-futures"]}

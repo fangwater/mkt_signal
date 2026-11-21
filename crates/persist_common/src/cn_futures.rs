@@ -1,6 +1,20 @@
 //! Shared domestic trading records. Native identities and lot/offset semantics stay intact.
-use anyhow::{bail, ensure, Result};
+//! Identities are fixed-capacity `Copy` text, so the trading path never allocates
+//! for them; serde keeps the original string representation.
+use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
+
+pub use crate::text::Text;
+/// Native contract code (CTP InstrumentID capacity).
+pub type Symbol = Text<81>;
+/// Native trading day, e.g. `20261120`.
+pub type Day = Text<16>;
+/// Opaque adapter session scope, e.g. `ctp:<front>:<session>`.
+pub type Session = Text<48>;
+/// Native order reference.
+pub type Reference = Text<16>;
+/// Venue-assigned system or trade identifier.
+pub type NativeId = Text<64>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Venue {
@@ -129,19 +143,19 @@ impl ExecutionRoute {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrderKey {
     /// Opaque native session scope. Only the adapter interprets its contents.
-    pub session: String,
-    pub order_ref: String,
+    pub session: Session,
+    pub order_ref: Reference,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Intent {
     pub venue: Venue,
-    pub symbol: String,
+    pub symbol: Symbol,
     pub side: Side,
     pub offset: Offset,
     pub lots: i32,
@@ -157,7 +171,7 @@ pub struct Intent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Instrument {
     pub venue: Venue,
-    pub symbol: String,
+    pub symbol: Symbol,
     pub price_tick: f64,
     pub contract_multiple: i32,
     pub expiry_date: i32,
@@ -168,7 +182,7 @@ pub struct Instrument {
     /// None means unavailable/unsupported, never fall back to limit-order quantity rules.
     pub market_lots: Option<LotLimits>,
     pub active: bool,
-    /// Local cash-budget requirement, explicitly configured; not an exchange margin quote.
+    /// Optional configured floor when complete venue margin and commission rates are available.
     pub cash_budget_per_open_lot: f64,
     pub option: Option<OptionContract>,
 }
@@ -274,7 +288,7 @@ pub enum OptionRight {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OptionContract {
     pub right: OptionRight,
-    pub underlying: String,
+    pub underlying: Symbol,
     pub strike_price: f64,
     pub contract_multiple: i32,
     pub expiry_date: i32,
@@ -407,7 +421,12 @@ impl Instrument {
             );
         }
         ensure!(
-            self.cash_budget_per_open_lot.is_finite() && self.cash_budget_per_open_lot > 0.0,
+            self.cash_budget_per_open_lot.is_finite()
+                && (self.cash_budget_per_open_lot > 0.0
+                    || (self.cash_budget_per_open_lot == 0.0
+                        && self.option.is_none()
+                        && self.margin.is_some()
+                        && self.commission.is_some())),
             "missing positive cash budget for {}",
             self.symbol
         );
@@ -497,12 +516,12 @@ impl OrderStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct OrderUpdate {
     pub key: OrderKey,
-    pub symbol: String,
+    pub symbol: Symbol,
     pub venue: Venue,
-    pub system_id: String,
+    pub system_id: NativeId,
     pub side: Side,
     pub offset: Offset,
     pub lots: i32,
@@ -512,24 +531,24 @@ pub struct OrderUpdate {
     pub limit_price: f64,
     pub status: OrderStatus,
     pub cancel_rejected: bool,
-    pub trading_day: String,
+    pub trading_day: Day,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TradeIdentity {
     pub venue: Venue,
-    pub symbol: String,
-    pub trading_day: String,
-    pub trade_id: String,
+    pub symbol: Symbol,
+    pub trading_day: Day,
+    pub trade_id: NativeId,
     pub side: Side,
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Fill {
     pub identity: TradeIdentity,
-    pub order_ref: String,
+    pub order_ref: Reference,
     /// Native logical identity when the adapter can determine it without a system ID.
     pub order_key: Option<OrderKey>,
-    pub system_id: String,
+    pub system_id: NativeId,
     pub offset: Offset,
     pub lots: i32,
     pub price: f64,
@@ -538,7 +557,7 @@ pub struct Fill {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PositionSnapshot {
     pub venue: Venue,
-    pub symbol: String,
+    pub symbol: Symbol,
     pub side: Side,
     pub today: i32,
     pub yesterday: i32,
@@ -546,8 +565,8 @@ pub struct PositionSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
-    pub trading_day: String,
-    pub session: String,
+    pub trading_day: Day,
+    pub session: Session,
     pub max_order_ref: u64,
     pub available_cash: f64,
     pub instruments: Vec<Instrument>,
@@ -556,11 +575,11 @@ pub struct Snapshot {
     pub trades: Vec<Fill>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Order {
     pub request: Intent,
     pub key: OrderKey,
-    pub system_id: String,
+    pub system_id: NativeId,
     pub limit_price: f64,
     pub status: OrderStatus,
     pub filled: i32,
@@ -580,65 +599,126 @@ impl Order {
     }
 }
 
-/// Account identity is bound once to a database. Hash inputs include adapter and endpoint/broker.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StoreIdentity {
-    pub adapter: String,
-    pub account_hash: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PersistedOrderKey {
-    pub trading_day: String,
+    pub trading_day: Day,
     pub venue: Venue,
     pub native: OrderKey,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SendState {
-    Prepared,
-    SubmittedLocally,
-    RejectedLocally,
-    Uncertain,
-    Observed,
+/// `session/order_ref`, the native order identity carried in the record
+/// extension (`client_order_text`) of domestic uniform orders and trade updates.
+pub type ClientOrderText = Text<80>;
+
+impl PersistedOrderKey {
+    /// Stable 63-bit `client_order_id` of a native order, shared by its uniform
+    /// orders and trade updates; the exact identity travels as `client_order_text`.
+    pub fn client_order_id(&self) -> i64 {
+        // FNV-1a over length-delimited parts.
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for part in [
+            self.trading_day.as_bytes(),
+            &[self.venue as u8],
+            self.native.session.as_bytes(),
+            self.native.order_ref.as_bytes(),
+        ] {
+            for byte in (part.len() as u16).to_le_bytes().iter().chain(part) {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        (hash & i64::MAX as u64) as i64
+    }
+    pub fn client_order_text(&self) -> ClientOrderText {
+        Text::format(format_args!(
+            "{}/{}",
+            self.native.session, self.native.order_ref
+        ))
+        .expect("session and reference capacities fit the client order text")
+    }
+    pub fn from_client_order_text(trading_day: Day, venue: Venue, text: &str) -> Result<Self> {
+        let (session, order_ref) = text
+            .rsplit_once('/')
+            .with_context(|| format!("invalid native client order text {text}"))?;
+        Ok(Self {
+            trading_day,
+            venue,
+            native: OrderKey {
+                session: Text::new(session)?,
+                order_ref: Text::new(order_ref)?,
+            },
+        })
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NativeOrderRecord {
-    pub identity: PersistedOrderKey,
-    pub order: Order,
-    /// Exact local request, retained when SDK recovery reconstructs a less complete request.
-    pub submitted_intent: Option<Intent>,
-    /// Local origin is historical provenance, never strategy ownership in a new process.
-    pub locally_submitted: bool,
-    pub send_state: SendState,
-    pub instrument: Option<Instrument>,
-    pub first_received_us: u64,
-    pub updated_us: u64,
-    pub evidence_seq: u64,
+impl Venue {
+    pub fn trading_venue(self) -> order_common::TradingVenue {
+        use order_common::TradingVenue as T;
+        match self {
+            Self::Cffex => T::CffexFutures,
+            Self::Shfe => T::ShfeFutures,
+            Self::Ine => T::IneFutures,
+            Self::Dce => T::DceFutures,
+            Self::Czce => T::CzceFutures,
+            Self::Gfex => T::GfexFutures,
+        }
+    }
+    pub fn from_trading_venue(venue: order_common::TradingVenue) -> Option<Self> {
+        use order_common::TradingVenue as T;
+        Some(match venue {
+            T::CffexFutures => Self::Cffex,
+            T::ShfeFutures => Self::Shfe,
+            T::IneFutures => Self::Ine,
+            T::DceFutures => Self::Dce,
+            T::CzceFutures => Self::Czce,
+            T::GfexFutures => Self::Gfex,
+            _ => return None,
+        })
+    }
+    pub fn from_code(code: u8) -> Option<Self> {
+        order_common::TradingVenue::from_u8(code).and_then(Self::from_trading_venue)
+    }
+    /// `EXCHANGE:symbol`, the contract key of targets and strategy attribution.
+    pub fn market(self, symbol: &str) -> String {
+        format!("{}:{symbol}", self.as_str())
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NativeTradeRecord {
-    pub fill: Fill,
-    /// None means the SDK did not report a fee. Currency is CNY for Yida, unknown for CTP.
-    pub commission: Option<f64>,
-    pub commission_currency: Option<String>,
-    /// SDK native time is retained verbatim; it is not a Unix timestamp.
-    pub native_time: Option<i32>,
-    pub received_us: u64,
-    pub evidence_seq: u64,
+impl OrderStatus {
+    /// Cross-market order status. A rejection is terminal without fills, which
+    /// the crypto vocabulary calls expired; `filled` distinguishes partial fills.
+    pub fn uniform(self, filled: i32) -> order_common::OrderStatus {
+        use order_common::OrderStatus as U;
+        match self {
+            Self::Pending => U::New,
+            Self::Working if filled > 0 => U::PartiallyFilled,
+            Self::Working => U::New,
+            Self::Filled => U::Filled,
+            Self::Cancelled => U::Canceled,
+            Self::Rejected => U::Expired,
+        }
+    }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct NativeMutation {
-    pub orders: Vec<NativeOrderRecord>,
-    pub trades: Vec<NativeTradeRecord>,
-    /// Set only for a complete, validated SDK recovery. Missing unresolved requests block trading.
-    pub reconciliation_day: Option<String>,
-    /// Keys in `orders` backed by an actual venue order report.
-    pub observed: Vec<PersistedOrderKey>,
+impl Offset {
+    pub fn position_effect(self) -> order_common::PositionEffect {
+        use order_common::PositionEffect as P;
+        match self {
+            Self::Open => P::Open,
+            Self::Close => P::Close,
+            Self::CloseToday => P::CloseToday,
+            Self::CloseYesterday => P::CloseYesterday,
+        }
+    }
+}
+
+/// The domestic store: crypto-format records only, keyed by a 20-digit
+/// microsecond timestamp like crypto `uniform_orders` / `trade_updates`.
+/// persist_manager is the only writer; Exec and Manager open it read-only.
+pub mod store_cf {
+    pub const ORDERS: &str = "cn_uniform_orders";
+    pub const TRADES: &str = "cn_trade_updates";
+    pub const ALL: &[&str] = &[ORDERS, TRADES];
 }
 
 #[cfg(test)]

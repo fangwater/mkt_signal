@@ -10,6 +10,23 @@ pub enum ExecutionRole {
     Taker,
 }
 
+impl ExecutionRole {
+    pub fn from_wire(value: Option<&serde_json::Value>) -> Option<Self> {
+        match value.and_then(serde_json::Value::as_str) {
+            Some("MAKER") => Some(Self::Maker),
+            Some("TAKER") => Some(Self::Taker),
+            _ => None,
+        }
+    }
+
+    pub fn uniform(self) -> crate::FillLiquidity {
+        match self {
+            Self::Maker => crate::FillLiquidity::Maker,
+            Self::Taker => crate::FillLiquidity::Taker,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionRoleRecord {
     pub record: ExecutionRecord,
@@ -17,13 +34,16 @@ pub struct ExecutionRoleRecord {
 }
 
 impl ExecutionRoleRecord {
-    pub fn from_row(record: ExecutionRecord, row: &serde_json::Value) -> Result<Option<Self>> {
+    pub fn from_row(mut record: ExecutionRecord, row: &serde_json::Value) -> Result<Option<Self>> {
         let role = match row.get("execType").and_then(serde_json::Value::as_str) {
             None | Some("") => return Ok(None),
             Some("MAKER") => ExecutionRole::Maker,
             Some("TAKER") => ExecutionRole::Taker,
             Some(_) => return Ok(None),
         };
+        // This audit record already has its role at the outer level. Preserve
+        // the exact established role-record representation for historical ACKs.
+        record.execution.liquidity = None;
         let role = Self { record, role };
         role.validate()?;
         Ok(Some(role))
@@ -36,6 +56,13 @@ impl RapidXFact for ExecutionRoleRecord {
     const COLUMN_FAMILY: &'static str = "rapidx_execution_roles";
     fn validate(&self) -> Result<()> {
         self.record.validate()?;
+        ensure!(
+            self.record
+                .execution
+                .liquidity
+                .is_none_or(|role| role == self.role),
+            "execution and role evidence conflict"
+        );
         ensure!(
             !self.record.execution.transaction_id.is_empty(),
             "missing role identity"

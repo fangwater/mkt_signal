@@ -2,9 +2,16 @@
 //! are required; this is snapshot convergence, not a vendor-provided atomic barrier.
 use super::*;
 use crate::config::Config;
+use crate::restart::ColdRestartRequired;
 use anyhow::{ensure, Context, Result};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
+
+/// A full catalogue pass returns ~29k rows and re-queries every known rate.
+/// Login/reconciliation always performs a complete pass; intraday contract
+/// rules and rates change rarely, so the background refresh is infrequent to
+/// avoid flooding the callback queue that gates order dispatch.
+pub(crate) const RULE_REFRESH_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
 pub struct Session {
     config: Config,
@@ -12,18 +19,23 @@ pub struct Session {
     next_kind: Option<i32>,
     waiting: Option<(i32, i32, Instant)>,
     next_send: Instant,
-    login: Option<(String, i32, i32, u64)>,
-    instruments: HashMap<(Venue, String), Instrument>,
-    products: HashMap<(Venue, String), String>,
-    rate_targets: VecDeque<(Venue, String)>,
+    login: Option<(Day, i32, i32, u64)>,
+    catalogue: HashMap<(Venue, Symbol), Instrument>,
+    instruments: HashMap<(Venue, Symbol), Instrument>,
+    rate_rule: Option<Instrument>,
+    rate_retry_after: HashMap<(Venue, Symbol), Instant>,
+    products: HashMap<(Venue, Symbol), Symbol>,
+    rate_targets: VecDeque<(Venue, Symbol)>,
     rate_seen: bool,
     relative_margin: bool,
     account: Option<AccountSnapshot>,
+    account_funds: Option<cn_futures_state::AccountFunds>,
+    account_not_ready_retries: u8,
     settlement_confirmed: bool,
     available: Option<f64>,
     orders: Vec<OrderUpdate>,
     trades: Vec<Fill>,
-    positions: HashMap<(Venue, String, Side, i32), PositionSnapshot>,
+    positions: HashMap<(Venue, Symbol, Side, i32), PositionSnapshot>,
     revision: u64,
     pass_revision: u64,
     previous: Option<(String, f64)>,
@@ -44,12 +56,17 @@ impl Session {
             waiting: None,
             next_send: now,
             login: None,
+            catalogue: HashMap::new(),
             instruments: HashMap::new(),
+            rate_rule: None,
+            rate_retry_after: HashMap::new(),
             products: HashMap::new(),
             rate_targets: VecDeque::new(),
             rate_seen: false,
             relative_margin: false,
             account: None,
+            account_funds: None,
+            account_not_ready_retries: 0,
             settlement_confirmed: false,
             available: None,
             orders: Vec::new(),
@@ -70,8 +87,43 @@ impl Session {
     pub fn account(&self) -> Option<&AccountSnapshot> {
         self.account.as_ref()
     }
+    pub fn account_funds(&self) -> Option<&cn_futures_state::AccountFunds> {
+        self.account_funds.as_ref()
+    }
+    pub fn retries_account_query(&self, request: i32, error: i32) -> bool {
+        error == 90
+            && self.available.is_none()
+            && self
+                .waiting
+                .is_some_and(|(kind, id, _)| kind == ACCOUNT && id == request)
+    }
     pub fn settlement_confirmed(&self) -> bool {
         self.settlement_confirmed
+    }
+    pub fn require_active_future(&self, venue: Venue, symbol: &str) -> Result<()> {
+        ensure!(
+            self.next_kind != Some(INSTRUMENT),
+            "CTP instrument catalogue refresh pending"
+        );
+        ensure!(
+            self.catalogue.contains_key(&(venue, Symbol::new(symbol)?)),
+            "CTP catalogue has no active future {}:{symbol}",
+            venue.as_str()
+        );
+        Ok(())
+    }
+    pub fn request_rates(&mut self, venue: Venue, symbol: &str, now: Instant) -> Result<()> {
+        let key = (venue, Symbol::new(symbol)?);
+        if !self.instruments.contains_key(&key)
+            && !self.rate_targets.contains(&key)
+            && !self
+                .rate_retry_after
+                .get(&key)
+                .is_some_and(|retry| now < *retry)
+        {
+            self.rate_targets.push_back(key);
+        }
+        Ok(())
     }
     pub fn query_target(&self) -> Option<(Venue, &str)> {
         self.rate_targets
@@ -86,6 +138,10 @@ impl Session {
             now.saturating_duration_since(sent)
                 > Duration::from_millis(self.config.response_timeout_ms)
         })
+    }
+    #[cfg(feature = "ctp-sdk")]
+    pub(crate) fn account_query_in_flight(&self) -> bool {
+        self.waiting.is_some_and(|(kind, _, _)| kind == ACCOUNT)
     }
     pub fn login_identity(&self) -> Option<(i32, i32)> {
         self.login.as_ref().map(|(_, f, s, _)| (*f, *s))
@@ -106,15 +162,23 @@ impl Session {
             return Ok(None);
         }
         if self.ready && self.next_kind.is_none() {
-            if now.saturating_duration_since(self.last_rule_poll) >= Duration::from_secs(60) {
+            if now.saturating_duration_since(self.last_rule_poll) >= RULE_REFRESH_INTERVAL {
                 self.maintenance = true;
                 self.next_kind = Some(INSTRUMENT);
-                self.instruments.clear();
+                self.catalogue.clear();
                 self.products.clear();
             } else if now.saturating_duration_since(self.last_cash_poll) >= Duration::from_secs(5) {
                 self.maintenance = true;
                 self.next_kind = Some(ACCOUNT);
                 self.available = None;
+            } else if let Some(key) = self.rate_targets.front() {
+                self.rate_rule = Some(
+                    self.catalogue
+                        .get(key)
+                        .context("rate contract absent from catalogue")?
+                        .clone(),
+                );
+                self.next_kind = Some(COMMISSION);
             }
         }
         Ok(if now >= self.next_send {
@@ -152,10 +216,41 @@ impl Session {
         self.rule_update = None;
         self.previous = None;
         self.passes = 0;
-        self.instruments.clear();
+        self.reset_rules();
         self.clear_pass();
         self.next_kind = Some(INSTRUMENT);
         self.next_send = now;
+        Ok(())
+    }
+    fn reset_rules(&mut self) {
+        self.catalogue.clear();
+        self.instruments.clear();
+        self.products.clear();
+        self.rate_targets.clear();
+        self.rate_retry_after.clear();
+        self.rate_rule = None;
+        self.rate_seen = false;
+        self.relative_margin = false;
+    }
+    fn finish_rates(&mut self, now: Instant, complete: bool) -> Result<()> {
+        let key = self
+            .rate_targets
+            .pop_front()
+            .context("missing rate target")?;
+        let rule = self.rate_rule.take().context("missing pending rates")?;
+        if complete {
+            rule.validate()?;
+            self.instruments.insert(key, rule);
+            self.rate_retry_after.remove(&key);
+        } else {
+            self.instruments.remove(&key);
+            self.rate_retry_after
+                .insert(key, now + Duration::from_secs(60));
+        }
+        self.rule_update = Some(self.instruments.values().cloned().collect());
+        self.next_kind = None;
+        self.rate_seen = false;
+        self.relative_margin = false;
         Ok(())
     }
     fn clear_pass(&mut self) {
@@ -186,12 +281,13 @@ impl Session {
             self.rule_update = None;
             self.login = None;
             self.account = None;
+            self.account_funds = None;
+            self.account_not_ready_retries = 0;
             self.settlement_confirmed = false;
-            self.rate_targets.clear();
+            self.reset_rules();
             self.waiting = None;
             self.previous = None;
             self.passes = 0;
-            self.instruments.clear();
             self.clear_pass();
             self.next_kind = Some(if self.config.require_authentication {
                 AUTHENTICATED
@@ -207,8 +303,9 @@ impl Session {
             self.waiting = None;
             self.login = None;
             self.account = None;
+            self.account_funds = None;
             self.settlement_confirmed = false;
-            self.rate_targets.clear();
+            self.reset_rules();
             return Ok(None);
         }
         if matches!(e.kind, ORDER | TRADE) {
@@ -226,6 +323,20 @@ impl Session {
         if e.request != id {
             return Ok(None);
         } // Late response stays correlated to its original request.
+          // The broker explicitly asks to retry an account query that has delivered no rows.
+          // Retain the last factual funds timestamp; never turn a retry into a fresh balance.
+        if e.kind == ERROR && self.retries_account_query(e.request, e.error) {
+            if self.account_not_ready_retries >= 3 {
+                return Err(ColdRestartRequired::AccountQuery(
+                    "CTP account query remained unavailable after three retries",
+                )
+                .into());
+            }
+            self.account_not_ready_retries += 1;
+            self.waiting = None;
+            self.next_send = now + Duration::from_millis(self.config.query_interval_ms.max(2000));
+            return Ok(None);
+        }
         ensure!(
             e.error == 0,
             "CTP request {id} failed, kind={kind} error_code={}",
@@ -238,9 +349,9 @@ impl Session {
         match kind {
             LOGGED_IN => {
                 ensure!(e.present != 0, "login success without response fields");
-                let day = text(&e.trading_day)?;
+                let day: Day = text(&e.trading_day)?;
                 ensure!(day.len() == 8, "invalid login trading day");
-                let order_ref = text(&e.control()?.max_order_ref)?;
+                let order_ref = text_ref(&e.control()?.max_order_ref)?;
                 let max_ref = if order_ref.trim().is_empty() {
                     0
                 } else {
@@ -252,84 +363,90 @@ impl Session {
                 self.login = Some((day, e.front, e.session, max_ref));
             }
             INSTRUMENT if e.present != 0 => {
-                let symbol = text(&e.symbol)?;
-                let venue = Venue::parse(&text(&e.exchange)?)?;
-                if let Some(config) = self
-                    .config
-                    .symbols
-                    .iter()
-                    .find(|s| s.venue == venue && s.symbol == symbol)
-                {
-                    ensure!(
-                        e.control()?.product_class == i32::from(b'1'),
-                        "configured contract is not a native future"
-                    );
-                    let expiry = e.control()?.expiry;
-                    let instrument = Instrument {
-                        option: None,
-                        venue,
-                        symbol: symbol.clone(),
-                        price_tick: e.control()?.price_tick,
-                        contract_multiple: e.control()?.contract_multiple,
-                        expiry_date: e.control()?.expiry,
-                        commission: None,
-                        margin: None,
-                        min_lots: e.control()?.minimum,
-                        max_lots: e.control()?.maximum,
-                        market_lots: None,
-                        active: e.control()?.active != 0
+                let control = e.control()?;
+                if control.product_class == i32::from(b'1') && control.active != 0 {
+                    if let Ok(venue) = Venue::parse(text_ref(&e.exchange)?) {
+                        let symbol: Symbol = text(&e.symbol)?;
+                        let expiry = control.expiry;
+                        if is_future_symbol(venue, &symbol)
                             && self.login.as_ref().is_some_and(|login| {
                                 login.0.parse::<i32>().is_ok_and(|day| expiry >= day)
-                            }),
-                        cash_budget_per_open_lot: config.cash_budget_per_open_lot,
-                    };
-                    instrument.validate()?;
-                    let key = (venue, symbol);
-                    self.products
-                        .insert(key.clone(), text(&e.control()?.product)?);
-                    if let Some(old) = self.instruments.insert(key, instrument.clone()) {
-                        ensure!(old == instrument, "conflicting duplicate instrument row");
+                            })
+                            && control.price_tick.is_finite()
+                            && control.price_tick > 0.0
+                            && control.contract_multiple > 0
+                            && control.minimum > 0
+                            && control.maximum >= control.minimum
+                        {
+                            let instrument = Instrument {
+                                option: None,
+                                venue,
+                                symbol,
+                                price_tick: control.price_tick,
+                                contract_multiple: control.contract_multiple,
+                                expiry_date: expiry,
+                                commission: None,
+                                margin: None,
+                                min_lots: control.minimum,
+                                max_lots: control.maximum,
+                                market_lots: None,
+                                active: true,
+                                cash_budget_per_open_lot: 0.0,
+                            };
+                            let key = (venue, symbol);
+                            let product: Symbol = text(&control.product)?;
+                            if let Some(old) = self.products.insert(key, product) {
+                                ensure!(old == product, "conflicting duplicate instrument product");
+                            }
+                            if let Some(old) = self.catalogue.insert(key, instrument.clone()) {
+                                ensure!(old == instrument, "conflicting duplicate instrument row");
+                            }
+                        }
                     }
                 }
             }
             ACCOUNT if e.present != 0 => {
                 ensure!(
-                    text(&e.investor)? == self.investor && text(&e.exchange)? == "CNY",
+                    text_ref(&e.investor)? == self.investor && text_ref(&e.exchange)? == "CNY",
                     "unexpected CTP account/currency snapshot"
                 );
                 ensure!(
                     e.control()?.available.is_finite(),
                     "nonfinite CTP account available"
                 );
-                let day = text(&e.trading_day)?;
+                let day = text_ref(&e.trading_day)?;
                 ensure!(
                     day.is_empty() || self.login.as_ref().is_some_and(|login| login.0 == day),
                     "account trading day changed; reconnect and reconcile"
                 );
                 ensure!(self.available.is_none(), "duplicate CNY account row");
-                self.account = Some(AccountSnapshot::from_event(e.control()?)?);
+                let account = AccountSnapshot::from_event(e.control()?)?;
+                self.account_funds = Some(account.funds(crate::persistence::now_us())?);
+                self.account_not_ready_retries = 0;
+                self.account = Some(account);
                 self.available = Some(e.control()?.available);
             }
             SETTLEMENT_STATUS => {
                 if e.present != 0 {
                     ensure!(
-                        text(&e.investor)? == self.investor,
+                        text_ref(&e.investor)? == self.investor,
                         "settlement status for another investor"
                     );
-                    let day = text(&e.trading_day)?;
-                    self.settlement_confirmed =
-                        self.login.as_ref().is_some_and(|login| day >= login.0);
+                    let day = text_ref(&e.trading_day)?;
+                    self.settlement_confirmed = self
+                        .login
+                        .as_ref()
+                        .is_some_and(|login| day >= login.0.as_str());
                 }
             }
             SETTLED => self.settlement_confirmed = true,
             COMMISSION | MARGIN | EXCHANGE_MARGIN if e.present != 0 => {
-                let key = self
+                let key = *self
                     .rate_targets
                     .front()
-                    .context("rate response without target")?
-                    .clone();
-                let exchange = text(&e.exchange)?;
-                let symbol = text(&e.symbol)?;
+                    .context("rate response without target")?;
+                let exchange = text_ref(&e.exchange)?;
+                let symbol = text_ref(&e.symbol)?;
                 ensure!(
                     (exchange.is_empty() || exchange == key.0.as_str())
                         && (symbol == key.1
@@ -342,16 +459,13 @@ impl Session {
                 if kind != EXCHANGE_MARGIN {
                     ensure!(
                         e.control()?.investor_range != i32::from(b'3')
-                            || text(&e.investor)? == self.investor,
+                            || text_ref(&e.investor)? == self.investor,
                         "rate response belongs to another investor"
                     );
                 }
                 ensure!(!self.rate_seen, "ambiguous duplicate CTP rate row");
                 self.rate_seen = true;
-                let rule = self
-                    .instruments
-                    .get_mut(&key)
-                    .context("rate contract absent")?;
+                let rule = self.rate_rule.as_mut().context("rate contract absent")?;
                 if kind == COMMISSION {
                     let r = e.control()?.commission_rates;
                     let rate = CommissionRate {
@@ -396,22 +510,20 @@ impl Session {
             }
             QUERY_ORDER if e.present != 0 && self.owns(&e)? => {
                 self.orders.push(
-                    decoded
+                    *decoded
                         .as_ref()
                         .map_err(|error| anyhow::anyhow!(error.to_string()))?
                         .order()
-                        .context("missing decoded CTP order")?
-                        .clone(),
+                        .context("missing decoded CTP order")?,
                 );
             }
             QUERY_TRADE if e.present != 0 && self.owns(&e)? => {
                 self.trades.push(
-                    decoded
+                    *decoded
                         .as_ref()
                         .map_err(|error| anyhow::anyhow!(error.to_string()))?
                         .fill()
-                        .context("missing decoded CTP fill")?
-                        .clone(),
+                        .context("missing decoded CTP fill")?,
                 );
             }
             POSITION if e.present != 0 && self.owns(&e)? && e.volume != 0 => {
@@ -428,9 +540,9 @@ impl Session {
                     51 => Side::Sell,
                     _ => anyhow::bail!("unsupported CTP position direction"),
                 };
-                let symbol = text(&e.symbol)?;
+                let symbol: Symbol = text(&e.symbol)?;
                 // YdPosition is the opening historical inventory, not necessarily today's remaining yesterday position.
-                let venue = Venue::parse(&text(&e.exchange)?)?;
+                let venue = Venue::parse(text_ref(&e.exchange)?)?;
                 let today = if venue.separate_close_dates() {
                     ensure!(
                         matches!(e.control()?.position_date, 49 | 50),
@@ -446,7 +558,7 @@ impl Session {
                 };
                 let row = PositionSnapshot {
                     venue,
-                    symbol: symbol.clone(),
+                    symbol,
                     side,
                     today,
                     yesterday: e.volume - today,
@@ -468,53 +580,50 @@ impl Session {
             return Ok(None);
         }
         self.waiting = None;
-        if matches!(kind, INSTRUMENT | COMMISSION | MARGIN | EXCHANGE_MARGIN) {
-            if kind == INSTRUMENT {
-                if !self.maintenance {
-                    ensure!(
-                        self.instruments.len() == self.config.symbols.len(),
-                        "complete instrument response omitted an allowlisted contract"
-                    );
-                }
-                let mut targets: Vec<_> = self
-                    .instruments
-                    .iter()
-                    .filter(|(_, rule)| rule.active)
-                    .map(|(key, _)| key.clone())
-                    .collect();
-                targets.sort_by(|a, b| (a.0.as_str(), &a.1).cmp(&(b.0.as_str(), &b.1)));
-                self.rate_targets = targets.into();
-            } else {
-                ensure!(
-                    self.rate_seen,
-                    "empty CTP fee/margin query; trading stays blocked"
-                );
-                if kind == COMMISSION {
-                    self.rate_seen = false;
-                    self.next_kind = Some(MARGIN);
-                    return Ok(None);
-                }
-                if kind == MARGIN && self.relative_margin {
-                    self.rate_seen = false;
-                    self.next_kind = Some(EXCHANGE_MARGIN);
-                    return Ok(None);
-                }
-                self.rate_targets.pop_front();
-            }
-            self.rate_seen = false;
-            self.relative_margin = false;
-            if !self.rate_targets.is_empty() {
-                self.next_kind = Some(COMMISSION);
-                return Ok(None);
-            }
-            self.last_rule_poll = now;
+        if kind == INSTRUMENT {
+            // Preserve rates for unchanged instruments while refreshing them serially.
+            // Drop omitted/changed rules before another order can use them.
             if self.maintenance {
+                for key in self.instruments.keys() {
+                    if self.catalogue.contains_key(key) && !self.rate_targets.contains(key) {
+                        self.rate_targets.push_back(*key);
+                    }
+                }
+                self.rate_targets
+                    .retain(|key| self.catalogue.contains_key(key));
+                self.rate_retry_after
+                    .retain(|key, _| self.catalogue.contains_key(key));
+                self.instruments.retain(|key, rule| {
+                    self.catalogue.get(key).is_some_and(|new| {
+                        new.price_tick == rule.price_tick
+                            && new.contract_multiple == rule.contract_multiple
+                            && new.expiry_date == rule.expiry_date
+                            && new.min_lots == rule.min_lots
+                            && new.max_lots == rule.max_lots
+                    })
+                });
                 self.rule_update = Some(self.instruments.values().cloned().collect());
                 self.maintenance = false;
                 self.next_kind = None;
             } else {
                 self.clear_pass();
                 self.next_kind = Some(ACCOUNT);
+            }
+            self.last_rule_poll = now;
+            return Ok(None);
+        }
+        if matches!(kind, COMMISSION | MARGIN | EXCHANGE_MARGIN) {
+            if !self.rate_seen {
+                self.finish_rates(now, false)?;
+            } else if kind == COMMISSION || (kind == MARGIN && self.relative_margin) {
+                self.rate_seen = false;
+                self.next_kind = Some(if kind == COMMISSION {
+                    MARGIN
+                } else {
+                    EXCHANGE_MARGIN
+                });
+            } else {
+                self.finish_rates(now, true)?;
             }
             return Ok(None);
         }
@@ -523,10 +632,6 @@ impl Session {
                 ACCOUNT => {
                     self.cash_update = Some(self.available.context("empty CNY account poll")?);
                     self.last_cash_poll = now;
-                }
-                INSTRUMENT => {
-                    self.rule_update = Some(self.instruments.values().cloned().collect());
-                    self.last_rule_poll = now;
                 }
                 _ => anyhow::bail!("unexpected maintenance request"),
             }
@@ -545,14 +650,6 @@ impl Session {
                 }
             }
             SETTLED => INSTRUMENT,
-            INSTRUMENT => {
-                ensure!(
-                    self.instruments.len() == self.config.symbols.len(),
-                    "complete instrument response omitted an allowlisted contract"
-                );
-                self.clear_pass();
-                ACCOUNT
-            }
             ACCOUNT => {
                 ensure!(self.available.is_some(), "empty CNY account snapshot");
                 QUERY_ORDER
@@ -573,13 +670,13 @@ impl Session {
             self.passes <= 12,
             "account snapshot did not converge; keep new orders blocked"
         );
-        let mut positions = HashMap::<(Venue, String, Side), PositionSnapshot>::new();
+        let mut positions = HashMap::<(Venue, Symbol, Side), PositionSnapshot>::new();
         for row in self.positions.values() {
             let p = positions
-                .entry((row.venue, row.symbol.clone(), row.side))
+                .entry((row.venue, row.symbol, row.side))
                 .or_insert_with(|| PositionSnapshot {
                     venue: row.venue,
-                    symbol: row.symbol.clone(),
+                    symbol: row.symbol,
                     side: row.side,
                     today: 0,
                     yesterday: 0,
@@ -597,7 +694,7 @@ impl Session {
         positions.sort_by_key(|p| {
             (
                 p.venue.as_str(),
-                p.symbol.clone(),
+                p.symbol,
                 match p.side {
                     Side::Buy => 0,
                     Side::Sell => 1,
@@ -605,12 +702,12 @@ impl Session {
             )
         });
         self.orders
-            .sort_by_key(|o| (o.key.session.clone(), o.key.order_ref.clone()));
+            .sort_by_key(|o| (o.key.session, o.key.order_ref));
         self.trades.sort_by_key(|f| {
             (
                 f.identity.venue.as_str(),
-                f.identity.symbol.clone(),
-                f.identity.trade_id.clone(),
+                f.identity.symbol,
+                f.identity.trade_id,
                 match f.identity.side {
                     Side::Buy => 0,
                     Side::Sell => 1,
@@ -624,7 +721,7 @@ impl Session {
             if let Some((previous, previous_cash)) = &self.previous {
                 if previous == &signature {
                     let (day, front, session, max_ref) =
-                        self.login.clone().context("missing login state")?;
+                        self.login.context("missing login state")?;
                     self.ready = true;
                     self.next_kind = None;
                     self.last_cash_poll = now;

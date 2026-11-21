@@ -1,0 +1,148 @@
+{
+  "name": "cta-cn_futures-01",
+  "exchange": "SHFE",
+  "symbol": "SN",
+  "interval": "1h",
+  "enabled": true,
+  "position_algorithm": "v1",
+  "lots_per_rule": 1,
+  "dominant_url": "http://127.0.0.1:18313/api/v1/dominant",
+  "history_grpc": "http://127.0.0.1:18312",
+  "history_days": 120,
+  "redis_endpoint": "10.61.20.11:9380",
+  "data_directory": "data",
+  "bind": "127.0.0.1:19401",
+  "entry": {
+    "factor_long_quantile": 0.5,
+    "factor_short_quantile": -0.5,
+    "nq_change_enabled": true,
+    "nq_long_quantile": 0.5,
+    "nq_short_quantile": 0.5
+  },
+  "exits": {
+    "factor_exit_quantile_long": -0.2,
+    "factor_exit_quantile_short": 0.2
+  },
+  "rules": [
+    {
+      "symbol": "SN",
+      "factor": "baseline_035",
+      "sign": 1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "SN",
+      "factor": "baseline_068",
+      "sign": 1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "SN",
+      "factor": "baseline_094",
+      "sign": 1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "SN",
+      "factor": "baseline_095",
+      "sign": 1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "SN",
+      "factor": "baseline_110",
+      "sign": -1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "SN",
+      "factor": "factor_045",
+      "sign": -1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "SN",
+      "factor": "factor_093",
+      "sign": -1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "SN",
+      "factor": "factor_094",
+      "sign": -1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "SN",
+      "factor": "td_mt_032",
+      "sign": -1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "SN",
+      "factor": "td_pr_010",
+      "sign": 1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "SN",
+      "factor": "td_pr_011",
+      "sign": 1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "SN",
+      "factor": "td_pr_012",
+      "sign": -1,
+      "NQ": "0.20/0.80",
+      "id": "td_pr_012_negative"
+    },
+    {
+      "symbol": "SN",
+      "factor": "td_pr_012",
+      "sign": 1,
+      "NQ": "关",
+      "id": "td_pr_012_positive"
+    },
+    {
+      "symbol": "SN",
+      "factor": "td_ti_036",
+      "sign": 1,
+      "NQ": "0.20/0.80"
+    }
+  ],
+  "publication": {
+    "enabled": false,
+    "manager_url": "http://127.0.0.1:18202/api",
+    "source_id": "native-account",
+    "token_env": "CN_CTA_01_PUBLISH_TOKEN",
+    "per_factor_intervals": [],
+    "retire_hourly_factor_members": true,
+    "products": [
+      "RB",
+      "SA"
+    ]
+  },
+  "additional_products": [
+    "cta_cn_futures_01_ag.json",
+    "cta_cn_futures_01_ap.json",
+    "cta_cn_futures_01_bc.json",
+    "cta_cn_futures_01_eb.json",
+    "cta_cn_futures_01_fg.json",
+    "cta_cn_futures_01_hc.json",
+    "cta_cn_futures_01_j.json",
+    "cta_cn_futures_01_jm.json",
+    "cta_cn_futures_01_lc.json",
+    "cta_cn_futures_01_ni.json",
+    "cta_cn_futures_01_oi.json",
+    "cta_cn_futures_01_pf.json",
+    "cta_cn_futures_01_pg.json",
+    "cta_cn_futures_01_rb.json",
+    "cta_cn_futures_01_sa.json",
+    "cta_cn_futures_01_sm.json",
+    "cta_cn_futures_01_sp.json",
+    "cta_cn_futures_01_ss.json",
+    "cta_cn_futures_01_ta.json",
+    "cta_cn_futures_01_y.json"
+  ]
+}

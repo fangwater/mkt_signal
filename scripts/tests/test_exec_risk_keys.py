@@ -1,6 +1,7 @@
 import importlib.util
 import pathlib
 import unittest
+from unittest.mock import MagicMock
 
 
 SCRIPTS_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -41,7 +42,7 @@ class ExecRiskKeyTests(unittest.TestCase):
         }
 
         self.assertEqual(sync.RISK_PARAMS, expected)
-        self.assertEqual(sync.PARAM_ORDER, list(expected))
+        self.assertEqual(sync.PARAM_ORDER, ["max_leverage", *expected])
         for key, value in expected.items():
             self.assertEqual(sync.RISK_PARAMS[key], value)
             self.assertIn(key, sync.PARAM_ORDER)
@@ -51,6 +52,18 @@ class ExecRiskKeyTests(unittest.TestCase):
         sync = load_script("sync_exec_risk_params.py")
         for key in ("max_pos_u", "max_leverage", "exec_max_position_imbalance_ratio"):
             self.assertNotIn(key, sync.RISK_PARAMS)
+
+    def test_sync_preserves_the_account_opt_in_and_other_live_fields(self):
+        sync = load_script("sync_exec_risk_params.py")
+        rds = MagicMock()
+        pipe = rds.pipeline.return_value.__enter__.return_value
+        sync.sync_risk_params(rds, "rx01", "binance-futures")
+        pipe.delete.assert_not_called()
+        pipe.hdel.assert_called_once_with(
+            "rx01:binance-futures:pre_trade_risk_params",
+            "max_pos_u", "exec_max_position_imbalance_ratio",
+        )
+        self.assertNotIn("max_leverage", pipe.hset.call_args.kwargs["mapping"])
 
 
 if __name__ == "__main__":

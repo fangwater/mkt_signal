@@ -9,3 +9,8 @@ ORT_DYLIB_PATH = { value = "third_party/onnxruntime/linux-x86_64/lib/libonnxrunt
 # libstdc++ stopped providing with GCC 13+. cc-rs reads CXXFLAGS_<target> for C++
 # sources only, so this is a no-op on older toolchains and on C deps.
 CXXFLAGS_x86_64_unknown_linux_gnu = "-include cstdint"
+
+[net]
+# cn_futures_core comes from the private GitHub repo fangwater/market_replay;
+# use the system git so the local SSH key is used.
+git-fetch-with-cli = true

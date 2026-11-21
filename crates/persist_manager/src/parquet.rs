@@ -6,10 +6,7 @@ use polars::prelude::*;
 
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use order_common::{OrderType, Side};
-use persist_common::{
-    FillLiquidity, OrderQueuePositionRecord, SignalBbo, SIGNAL_BBO_BINARY_LEN,
-    UNIFORM_ORDER_TAIL_BINARY_LEN,
-};
+use persist_common::{FillLiquidity, OrderQueuePositionRecord, SignalBbo};
 
 /// Minimal factual order observation for read-only health checks. Uses the same
 /// persisted codecs as exports, including terminal unmatched exchange evidence.
@@ -837,134 +834,38 @@ pub(crate) fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
 }
 
 pub(crate) fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord> {
-    let mut cursor = Bytes::copy_from_slice(bytes);
-    let recv_ts_us = read_i64(&mut cursor, "uniform order recv_ts_us")?;
-
-    let symbol_len = read_u16(&mut cursor, "uniform order symbol_len")? as usize;
-    let symbol = read_bytes_as_string(&mut cursor, symbol_len, "uniform order symbol")?;
-
-    let create_ts = read_i64(&mut cursor, "uniform order create_ts")?;
-    let update_ts = read_i64(&mut cursor, "uniform order update_ts")?;
-    let signal_ts = read_i64(&mut cursor, "uniform order signal_ts")?;
-
-    // The current base layout includes submit_ts/local_ts/mkt_ts.
-    let submit_ts = read_i64(&mut cursor, "uniform order submit_ts")?;
-    let local_ts = read_i64(&mut cursor, "uniform order local_ts")?;
-    let mkt_ts = read_i64(&mut cursor, "uniform order mkt_ts")?;
-
-    let client_order_id = read_i64(&mut cursor, "uniform order client_order_id")?;
-
-    let venue_raw = read_u8(&mut cursor, "uniform order venue")?;
-    let order_type_raw = read_u8(&mut cursor, "uniform order order_type")?;
-    let side_raw = read_u8(&mut cursor, "uniform order side")?;
-
-    let price = read_f64(&mut cursor, "uniform order price")?;
-    let price_offset = read_f64(&mut cursor, "uniform order price_offset")?;
-    let amount_init = read_f64(&mut cursor, "uniform order amount_init")?;
-    let amount_update = read_f64(&mut cursor, "uniform order amount_update")?;
-
-    let status_raw = read_u8(&mut cursor, "uniform order status")?;
-
-    let from_key_len = read_u32(&mut cursor, "uniform order from_key_len")? as usize;
-    if cursor.remaining() < from_key_len {
-        return Err(anyhow!(
-            "payload too short to read uniform order from_key (need {from_key_len}, have {})",
-            cursor.remaining()
-        ));
-    }
-    let from_key_bytes = cursor.copy_to_bytes(from_key_len);
-    let from_key = String::from_utf8_lossy(from_key_bytes.as_ref()).into_owned();
-    let from_key_hex = hex::encode(from_key_bytes.as_ref());
-
-    let bbo_spread = if cursor.has_remaining() {
-        let bbo_len = read_u16(&mut cursor, "uniform order bbo_spread_len")? as usize;
-        read_bytes_as_string(&mut cursor, bbo_len, "uniform order bbo_spread")?
-    } else {
-        String::new()
-    };
-
-    let signal_bbo = if cursor.has_remaining() {
-        if !matches!(
-            cursor.remaining(),
-            SIGNAL_BBO_BINARY_LEN | UNIFORM_ORDER_TAIL_BINARY_LEN
-        ) {
-            return Err(anyhow!(
-                "uniform order tail must contain signal_bbo and optional fill_liquidity, got {} bytes",
-                cursor.remaining()
-            ));
-        }
-        let bytes = cursor.copy_to_bytes(SIGNAL_BBO_BINARY_LEN);
-        SignalBbo::decode_optional(bytes.as_ref()).map_err(|err| anyhow!(err))?
-    } else {
-        None
-    };
-
-    let fill_liquidity = if cursor.has_remaining() {
-        let code = read_u8(&mut cursor, "uniform order fill_liquidity")?;
-        Some(
-            FillLiquidity::from_u8(code)
-                .ok_or_else(|| anyhow!("invalid fill_liquidity: {code}"))?,
-        )
-    } else {
-        None
-    };
-
-    if cursor.has_remaining() {
-        return Err(anyhow!(
-            "uniform order payload has {} trailing bytes",
-            cursor.remaining()
-        ));
-    }
-
-    let trading_venue = TradingVenue::from_u8(venue_raw)
-        .map(|v| v.as_str().to_string())
-        .unwrap_or_else(|| format!("Venue({venue_raw})"));
-    let order_type = OrderType::from_u8(order_type_raw)
-        .map(|v| v.as_str().to_string())
-        .unwrap_or_else(|| format!("Type({order_type_raw})"));
-    let side = Side::from_u8(side_raw)
-        .map(|v| v.as_str().to_string())
-        .unwrap_or_else(|| format!("Side({side_raw})"));
-    let status = OrderStatus::from_u8(status_raw)
-        .map(|v| v.as_str().to_string())
-        .unwrap_or_else(|| format!("Status({status_raw})"));
-
+    let decoded = persist_common::uniform_fill::decode(bytes)?;
+    let row = decoded.record;
     Ok(DecodedUniformOrderRecord {
-        recv_ts_us,
-        symbol,
-        create_ts,
-        update_ts,
-        signal_ts,
-        submit_ts,
-        local_ts,
-        mkt_ts,
-        client_order_id,
-        trading_venue,
-        order_type,
-        side,
-        price,
-        price_offset,
-        amount_init,
-        amount_update,
-        status,
-        from_key,
-        from_key_hex,
-        signal_bbo,
-        fill_liquidity,
-        bbo_spread,
+        recv_ts_us: decoded.received_at_us,
+        symbol: String::from_utf8_lossy(&row.symbol).into_owned(),
+        create_ts: row.create_ts,
+        update_ts: row.update_ts,
+        signal_ts: row.signal_ts,
+        submit_ts: row.submit_ts,
+        local_ts: row.local_ts,
+        mkt_ts: row.mkt_ts,
+        client_order_id: row.client_order_id,
+        trading_venue: venue_name(row.venue),
+        order_type: OrderType::from_u8(row.ttype)
+            .map(|v| v.as_str().to_owned())
+            .unwrap_or_else(|| format!("Type({})", row.ttype)),
+        side: Side::from_u8(row.side)
+            .map(|v| v.as_str().to_owned())
+            .unwrap_or_else(|| format!("Side({})", row.side)),
+        price: row.price,
+        price_offset: row.price_offset,
+        amount_init: row.amount_init,
+        amount_update: row.amount_update,
+        status: OrderStatus::from_u8(row.status)
+            .map(|v| v.as_str().to_owned())
+            .unwrap_or_else(|| format!("Status({})", row.status)),
+        from_key: String::from_utf8_lossy(&row.from_key).into_owned(),
+        from_key_hex: hex::encode(&row.from_key),
+        signal_bbo: row.signal_bbo,
+        fill_liquidity: decoded.role_present.then_some(row.fill_liquidity),
+        bbo_spread: decoded.bbo_spread,
     })
-}
-
-fn read_bytes_as_string(cursor: &mut Bytes, len: usize, field: &str) -> Result<String> {
-    if cursor.remaining() < len {
-        return Err(anyhow!(
-            "payload too short to read {field} (need {len}, have {})",
-            cursor.remaining()
-        ));
-    }
-
-    let bytes = cursor.copy_to_bytes(len);
-    Ok(String::from_utf8_lossy(bytes.as_ref()).into_owned())
 }
 
 fn venue_name(raw: u8) -> String {
@@ -1004,20 +905,6 @@ fn read_i64(cursor: &mut Bytes, field: &str) -> Result<i64> {
         return Err(anyhow!("payload too short to read {field}"));
     }
     Ok(cursor.get_i64_le())
-}
-
-fn read_u16(cursor: &mut Bytes, field: &str) -> Result<u16> {
-    if cursor.remaining() < 2 {
-        return Err(anyhow!("payload too short to read {field}"));
-    }
-    Ok(cursor.get_u16_le())
-}
-
-fn read_u32(cursor: &mut Bytes, field: &str) -> Result<u32> {
-    if cursor.remaining() < 4 {
-        return Err(anyhow!("payload too short to read {field}"));
-    }
-    Ok(cursor.get_u32_le())
 }
 
 fn read_f64(cursor: &mut Bytes, field: &str) -> Result<f64> {

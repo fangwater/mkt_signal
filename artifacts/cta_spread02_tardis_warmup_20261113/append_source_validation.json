@@ -1,0 +1,483 @@
+{
+  "checked_utc": "2026-11-13T06:13:34.441880+00:00",
+  "files": 68,
+  "all_valid": true,
+  "rows": [
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_aaveusdt/trades/okex-swap_trades_2026-11-11_AAVEUSDT.csv.gz",
+      "bytes": 1773771,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_aaveusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_AAVEUSDT.csv.gz",
+      "bytes": 37024253,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_adausdt/trades/okex-swap_trades_2026-11-11_ADAUSDT.csv.gz",
+      "bytes": 847748,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_adausdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_ADAUSDT.csv.gz",
+      "bytes": 18490638,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_atomusdt/trades/okex-swap_trades_2026-11-11_ATOMUSDT.csv.gz",
+      "bytes": 323679,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_atomusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_ATOMUSDT.csv.gz",
+      "bytes": 5772632,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_avaxusdt/trades/okex-swap_trades_2026-11-11_AVAXUSDT.csv.gz",
+      "bytes": 2052331,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_avaxusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_AVAXUSDT.csv.gz",
+      "bytes": 29869469,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_bchusdt/trades/okex-swap_trades_2026-11-11_BCHUSDT.csv.gz",
+      "bytes": 2105040,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_bchusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_BCHUSDT.csv.gz",
+      "bytes": 35068949,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_crvusdt/trades/okex-swap_trades_2026-11-11_CRVUSDT.csv.gz",
+      "bytes": 1014856,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_crvusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_CRVUSDT.csv.gz",
+      "bytes": 13898481,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_dogeusdt/trades/okex-swap_trades_2026-11-11_DOGEUSDT.csv.gz",
+      "bytes": 3336333,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_dogeusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_DOGEUSDT.csv.gz",
+      "bytes": 58839075,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_dotusdt/trades/okex-swap_trades_2026-11-11_DOTUSDT.csv.gz",
+      "bytes": 1308981,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_dotusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_DOTUSDT.csv.gz",
+      "bytes": 22391918,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_etcusdt/trades/okex-swap_trades_2026-11-11_ETCUSDT.csv.gz",
+      "bytes": 760433,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_etcusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_ETCUSDT.csv.gz",
+      "bytes": 12924049,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_ethusdt/trades/okex-swap_trades_2026-11-11_ETHUSDT.csv.gz",
+      "bytes": 25430272,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_ethusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_ETHUSDT.csv.gz",
+      "bytes": 283429017,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_filusdt/trades/okex-swap_trades_2026-11-11_FILUSDT.csv.gz",
+      "bytes": 2157525,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_filusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_FILUSDT.csv.gz",
+      "bytes": 29675947,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_linkusdt/trades/okex-swap_trades_2026-11-11_LINKUSDT.csv.gz",
+      "bytes": 1898030,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_linkusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_LINKUSDT.csv.gz",
+      "bytes": 32344720,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_ltcusdt/trades/okex-swap_trades_2026-11-11_LTCUSDT.csv.gz",
+      "bytes": 788727,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_ltcusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_LTCUSDT.csv.gz",
+      "bytes": 15875505,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_nearusdt/trades/okex-swap_trades_2026-11-11_NEARUSDT.csv.gz",
+      "bytes": 3705582,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_nearusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_NEARUSDT.csv.gz",
+      "bytes": 52135116,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_trbusdt/trades/okex-swap_trades_2026-11-11_TRBUSDT.csv.gz",
+      "bytes": 164141,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_trbusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_TRBUSDT.csv.gz",
+      "bytes": 4189621,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_uniusdt/trades/okex-swap_trades_2026-11-11_UNIUSDT.csv.gz",
+      "bytes": 2995106,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_uniusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_UNIUSDT.csv.gz",
+      "bytes": 49240002,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_xrpusdt/trades/okex-swap_trades_2026-11-11_XRPUSDT.csv.gz",
+      "bytes": 4388538,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/okex_usd_xrpusdt/incremental_book_L2/okex-swap_incremental_book_L2_2026-11-11_XRPUSDT.csv.gz",
+      "bytes": 70971222,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/trades/binance-futures_trades_2026-11-11_AAVEUSDT.csv.gz",
+      "bytes": 3698633,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_aaveusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_AAVEUSDT.csv.gz",
+      "bytes": 76766448,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/trades/binance-futures_trades_2026-11-11_ADAUSDT.csv.gz",
+      "bytes": 3102644,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_adausdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_ADAUSDT.csv.gz",
+      "bytes": 63517245,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/trades/binance-futures_trades_2026-11-11_ATOMUSDT.csv.gz",
+      "bytes": 1029533,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_atomusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_ATOMUSDT.csv.gz",
+      "bytes": 21719820,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_avaxusdt/trades/binance-futures_trades_2026-11-11_AVAXUSDT.csv.gz",
+      "bytes": 4484699,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_avaxusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_AVAXUSDT.csv.gz",
+      "bytes": 73817431,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bchusdt/trades/binance-futures_trades_2026-11-11_BCHUSDT.csv.gz",
+      "bytes": 3771225,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_bchusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_BCHUSDT.csv.gz",
+      "bytes": 93153244,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/trades/binance-futures_trades_2026-11-11_CRVUSDT.csv.gz",
+      "bytes": 1793770,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_crvusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_CRVUSDT.csv.gz",
+      "bytes": 26830494,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dogeusdt/trades/binance-futures_trades_2026-11-11_DOGEUSDT.csv.gz",
+      "bytes": 6414546,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dogeusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_DOGEUSDT.csv.gz",
+      "bytes": 129037059,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/trades/binance-futures_trades_2026-11-11_DOTUSDT.csv.gz",
+      "bytes": 3826821,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_dotusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_DOTUSDT.csv.gz",
+      "bytes": 68276052,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/trades/binance-futures_trades_2026-11-11_ETCUSDT.csv.gz",
+      "bytes": 1273616,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_etcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_ETCUSDT.csv.gz",
+      "bytes": 28767149,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ethusdt/trades/binance-futures_trades_2026-11-11_ETHUSDT.csv.gz",
+      "bytes": 31795631,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ethusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_ETHUSDT.csv.gz",
+      "bytes": 826396267,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/trades/binance-futures_trades_2026-11-11_FILUSDT.csv.gz",
+      "bytes": 4093488,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_filusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_FILUSDT.csv.gz",
+      "bytes": 62774137,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_linkusdt/trades/binance-futures_trades_2026-11-11_LINKUSDT.csv.gz",
+      "bytes": 4431128,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_linkusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_LINKUSDT.csv.gz",
+      "bytes": 83656747,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/trades/binance-futures_trades_2026-11-11_LTCUSDT.csv.gz",
+      "bytes": 2279407,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_ltcusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_LTCUSDT.csv.gz",
+      "bytes": 49427130,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/trades/binance-futures_trades_2026-11-11_NEARUSDT.csv.gz",
+      "bytes": 8220328,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_nearusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_NEARUSDT.csv.gz",
+      "bytes": 128069168,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_trbusdt/trades/binance-futures_trades_2026-11-11_TRBUSDT.csv.gz",
+      "bytes": 934857,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_trbusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_TRBUSDT.csv.gz",
+      "bytes": 17037025,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_uniusdt/trades/binance-futures_trades_2026-11-11_UNIUSDT.csv.gz",
+      "bytes": 6541972,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_uniusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_UNIUSDT.csv.gz",
+      "bytes": 102781927,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/trades/binance-futures_trades_2026-11-11_XRPUSDT.csv.gz",
+      "bytes": 11251660,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    },
+    {
+      "path": "/mnt/nfs/30.133_xt_crypto/TardisSource/binance_usd_xrpusdt/incremental_book_L2/binance-futures_incremental_book_L2_2026-11-11_XRPUSDT.csv.gz",
+      "bytes": 238506964,
+      "gzip_valid": true,
+      "unchanged": true,
+      "error": null
+    }
+  ]
+}

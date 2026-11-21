@@ -630,6 +630,7 @@ impl ChaseExecStrategy {
             from_key,
             signal_bbo,
             fill_liquidity: persist_common::FillLiquidity::Unknown,
+            extension: None,
         };
         record.refresh_lengths();
         info!(
@@ -1566,6 +1567,21 @@ impl ChaseExecStrategy {
         is_taker: bool,
     ) -> f64 {
         MonitorChannel::instance().refresh_exec_risk_state();
+        if let Err(reason) = MonitorChannel::instance().check_exec_order_leverage(
+            &self.symbol,
+            self.exec_venue,
+            side,
+            qty_venue,
+        ) {
+            crate::pre_trade::log_throttle::log_open_risk_reject_summary(
+                "ChaseExecStrategy",
+                Some(self.strategy_id),
+                &self.symbol,
+                "杠杆风控",
+                &reason,
+            );
+            return 0.0;
+        }
         if order_type.is_limit()
             && MonitorChannel::instance()
                 .check_pending_limit_order_for_exec(&self.symbol, side)
@@ -2231,6 +2247,13 @@ impl HedgeOrderReconcileCommon for ChaseExecStrategy {
         code_desc: &str,
         client_order_id: i64,
     ) {
+        if self.children.contains_key(&client_order_id) {
+            crate::pre_trade::leverage_guard::binance_fallback::report_cap_rejection(
+                self.exec_venue,
+                &self.symbol,
+                i64::from(response.error_code()),
+            );
+        }
         // Post-only (GTX) rejects are transient: the book moved and the order
         // was refused instead of crossing. The remainder already flows back
         // through `unallocated`, so reposting at the next tick's fresh anchor

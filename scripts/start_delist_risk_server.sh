@@ -117,7 +117,6 @@ ARGS=(
   --exposure-hard-limit-factor "${DELIST_EXPOSURE_HARD_LIMIT_FACTOR:-1.5}"
   --nav-strategies-url "${DELIST_NAV_STRATEGIES_URL:-http://127.0.0.1:4191/nav-api/strategies}"
   --nav-strategy-interval-secs "${DELIST_NAV_STRATEGY_INTERVAL_SECS:-60}"
-  --flatten-window-hours "${DELIST_FLATTEN_WINDOW_HOURS:-24}"
   --flatten-manual-threshold-usdt "${DELIST_FLATTEN_MANUAL_THRESHOLD_USDT:-1000}"
   --flatten-env-root "${DELIST_FLATTEN_ENV_ROOT:-/home/ubuntu}"
   --flatten-timeout-secs "${DELIST_FLATTEN_TIMEOUT_SECS:-300}"

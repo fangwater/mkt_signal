@@ -89,7 +89,7 @@ def parse_args() -> argparse.Namespace:
 
 PARAM_COMMENTS: Dict[str, str] = {
     "max_pos_u": "默认单币最大持仓(USDT)，可被 exec:max_pos_u 覆盖",
-    "max_leverage": "最大杠杆倍数",
+    "max_leverage": "账户最大杠杆倍数（缺失或0=关闭，250ms热加载）",
     "max_pending_limit_orders": "最大 live exec 限价挂单数",
     "exec_max_pending_limit_buy_orders": "Exec 买侧最大限价挂单数（0=关闭）",
     "exec_max_pending_limit_sell_orders": "Exec 卖侧最大限价挂单数（0=关闭）",

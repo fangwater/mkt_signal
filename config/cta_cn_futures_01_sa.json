@@ -1,0 +1,88 @@
+{
+  "name": "cta-cn_futures-01",
+  "exchange": "CZCE",
+  "symbol": "SA",
+  "interval": "1h",
+  "enabled": true,
+  "position_algorithm": "v1",
+  "lots_per_rule": 1,
+  "dominant_url": "http://127.0.0.1:18313/api/v1/dominant",
+  "history_grpc": "http://127.0.0.1:18312",
+  "history_days": 120,
+  "redis_endpoint": "10.61.20.11:9380",
+  "data_directory": "data/products/SA",
+  "bind": "127.0.0.1:19401",
+  "entry": {
+    "factor_long_quantile": 0.5,
+    "factor_short_quantile": -0.5,
+    "nq_change_enabled": true,
+    "nq_long_quantile": 0.5,
+    "nq_short_quantile": 0.5
+  },
+  "exits": {
+    "factor_exit_quantile_long": -0.2,
+    "factor_exit_quantile_short": 0.2
+  },
+  "rules": [
+    {
+      "symbol": "SA",
+      "factor": "baseline_008",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "SA",
+      "factor": "baseline_018",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "SA",
+      "factor": "baseline_091",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "SA",
+      "factor": "baseline_093",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "SA",
+      "factor": "baseline_157",
+      "sign": 1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "SA",
+      "factor": "baseline_166",
+      "sign": -1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "SA",
+      "factor": "baseline_193",
+      "sign": -1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "SA",
+      "factor": "factor_trades_048",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "SA",
+      "factor": "td_pt_006",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "SA",
+      "factor": "td_vi_023",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    }
+  ]
+}

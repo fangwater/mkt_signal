@@ -6,6 +6,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
+#include <initializer_list>
 #include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
@@ -24,8 +25,11 @@ constexpr int local_invalid = 9904; // Certain pre-send argument/permission reje
 constexpr int market_price_unavailable = 9903; // Missing native daily price-limit data; nothing sent.
 // Event IDs are bridge-owned, vendor integer constants remain unchanged in the fields.
 enum { Connected=1, Disconnected, ReadyLogin, Login, Init, Begin, Instrument, Account,
-       Position, Order, Trade, End, FailedCancel, Invalidated, Segment, Fatal, Transport, Connection };
+       Position, Order, Trade, End, FailedCancel, Invalidated, Segment, Fatal, Transport, Connection,
+       ServerRestarted };
 static_assert(std::is_standard_layout_v<CnYidaEvent>);
+static_assert(ServerRestarted==19, "event kinds are shared with Rust yida::SERVER_RESTARTED");
+static_assert(std::is_standard_layout_v<CnYidaAccount>);
 // Pin the production headers as well as the loaded library. In 1.502.55 the
 // long instrument ID moved and account/position fields shifted in place.
 static_assert(sizeof(YDInstrument::InstrumentID)==64, "1.502.55.35 requires the full instrument ID");
@@ -58,6 +62,51 @@ struct Library {
 template<typename T> struct ResultDeleter { void operator()(YDQueryResult<T>* p) const { if (p) p->destroy(); } };
 template<typename T> using Query = std::unique_ptr<YDQueryResult<T>, ResultDeleter<T>>;
 
+bool account_amounts_present(std::initializer_list<double> values) {
+    return std::all_of(values.begin(), values.end(), [](double amount) {
+        return std::isfinite(amount) && std::abs(amount) < std::numeric_limits<double>::max();
+    });
+}
+
+CnYidaAccount account_funds(const YDAccount& a, const YDExtendedAccount& x) {
+    CnYidaAccount out{};
+    if (x.m_pAccount != &a) return out;
+    out.present=1;
+    out.balance=x.Balance;
+    out.pre_balance=a.PreBalance;
+    out.pre_position_market_value=x.PrePositionMarketValue;
+    out.deposit=a.Deposit;
+    out.withdraw=a.Withdraw;
+    out.frozen_withdraw=a.FrozenWithdraw;
+    out.max_money_usage=a.MaxMoneyUsage;
+    out.available=x.Available;
+    out.close_profit=x.CloseProfit;
+    out.other_close_profit=x.OtherCloseProfit;
+    out.cash_in=x.CashIn;
+    out.commission=x.Commission;
+    out.message_commission=x.MessageCommission;
+    out.margin=x.Margin;
+    out.margin2=x.Margin2;
+    out.position_profit=x.PositionProfit;
+    out.position_market_value=x.PositionMarketValue;
+    out.exec_margin=x.ExecMargin;
+    out.exec_allocated_amount=x.ExecAllocatedAmount;
+    out.exec_allocated_frozen_amount=x.ExecAllocatedFrozenAmount;
+    const double missing=std::numeric_limits<double>::quiet_NaN();
+    const bool valid_usage=std::isfinite(a.MaxMoneyUsage) && a.MaxMoneyUsage>=0 && a.MaxMoneyUsage<=1;
+    const bool pre_cash_present=valid_usage && account_amounts_present({a.PreBalance});
+    const bool sdk_cash_present=pre_cash_present && account_amounts_present({
+        a.Deposit, a.Withdraw, x.CloseProfit, x.PositionProfit, x.CashIn, x.Commission
+    });
+    out.pre_cash_balance=pre_cash_present ? x.preCashBalance() : missing;
+    out.pre_market_value=pre_cash_present && account_amounts_present({x.PrePositionMarketValue})
+        ? x.preMarketValue() : missing;
+    out.sdk_cash_balance=sdk_cash_present ? x.cashBalance() : missing;
+    out.sdk_market_value=sdk_cash_present && account_amounts_present({x.PositionMarketValue})
+        ? x.marketValue() : missing;
+    return out;
+}
+
 class Bridge final: public YDListener, public YDExtendedListener {
 public:
     Library library;
@@ -89,6 +138,7 @@ public:
                 if (m->TimeStamp>=0) text(e.native_time,api->timeStamp2String(static_cast<unsigned>(m->TimeStamp),time_buffer));
                 if (m->LastTradeTimeStamp>=0) text(e.last_trade_time,api->timeStamp2String(static_cast<unsigned>(m->LastTradeTimeStamp),time_buffer));
                 e.last_price=m->LastPrice; e.bid_price=m->BidPrice; e.ask_price=m->AskPrice;
+                e.lower_limit=m->LowerLimitPrice; e.upper_limit=m->UpperLimitPrice;
                 e.bid_lots=m->BidVolume; e.ask_lots=m->AskVolume; e.market_flags=m->MarketDataFlag;
             }
             l1_callback(l1_context,&e);
@@ -194,6 +244,7 @@ public:
         const auto* a=api->getMyAccount(); const auto* x=api->getExtendedAccount();
         if (!a || !x) throw std::runtime_error("missing trader account");
         CnYidaEvent e{}; e.kind=Account; e.replay=replay; e.day=api->getTradingDay(); e.available=x->usable();
+        e.account=account_funds(*a,*x);
         e.right=a->TradingRight; e.login_count=a->LoginCount; send(e);
     }
     int right(const YDInstrument* i) {
@@ -261,7 +312,13 @@ public:
         if (event==YD_AE_TCPMarketDataConnected || event==YD_AE_TCPMarketDataDisconnected) {
             l1_status(event==YD_AE_TCPMarketDataConnected); return;
         }
-        if (event==YD_AE_ServerRestarted) { l1_status(false); logged_in=false; caught_up=false; fatal(); start_destroy(); return; }
+        if (event==YD_AE_ServerRestarted) {
+            // Every datum of this instance may be invalid. startDestroy inside the callback
+            // keeps the SDK from exiting the process; the runtime cold-restarts instead.
+            l1_status(false); tcp_connected=false; logged_in=false; caught_up=false;
+            CnYidaEvent e{}; e.kind=ServerRestarted; e.status=event; send(e);
+            start_destroy(); transport_event(); return;
+        }
         CnYidaEvent e{};
         if (event==YD_AE_XTCPTradeConnected || event==YD_AE_XTCPTradeDisconnected) {
             xtcp_connected=event==YD_AE_XTCPTradeConnected; transport_event(); return;

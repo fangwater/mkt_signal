@@ -618,7 +618,12 @@
           const summaryRows = groups.map((group) => group.aggregate);
           const tbody = byId("rows");
           tbody.innerHTML = displayRows.map((row) => renderTableRow(row, ready)).join("");
-          byId("empty").style.display = displayRows.length ? "none" : "block";
+          const empty = byId("empty");
+          empty.style.display = displayRows.length ? "none" : "block";
+          empty.textContent = !entry ? "等待 Exec 状态数据"
+            : !ready ? "等待仓位就绪"
+            : allRows.length ? "当前筛选没有匹配的仓位"
+            : "当前无持仓或待执行目标";
           const sum = (key) => sumField(summaryRows, key);
           byId("sum-delta").textContent = fmt(sum("delta_usdt"), usdFmt);
           byId("sum-pending").textContent = fmt(sum("pending_usdt"), usdFmt);

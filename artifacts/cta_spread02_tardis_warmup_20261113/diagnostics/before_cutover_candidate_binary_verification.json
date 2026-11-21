@@ -1,0 +1,8 @@
+{
+  "sha256": {
+    "cta-factor-spread": "4954fa523917ca7d247d04b552e9790f51050da521aa3e2bc6c99e281ed0e418",
+    "cta-hourly-history": "1d5d905e587af3766b7706837c4d0e3f20ee767d45106c58b85ada7ac97e5ceb"
+  },
+  "matches_local_release": true,
+  "installed_in_production_environment": false
+}

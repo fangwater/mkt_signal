@@ -19,25 +19,24 @@ pub(super) struct SymbolId(pub usize);
 pub(super) struct OrderId(pub usize);
 #[derive(Default)]
 pub(super) struct Symbols {
-    indexes: [HashMap<String, SymbolId>; VENUE_SLOTS],
-    identities: Vec<(Venue, String)>,
+    indexes: [HashMap<Symbol, SymbolId>; VENUE_SLOTS],
+    identities: Vec<(Venue, Symbol)>,
 }
 impl Symbols {
     pub fn id(&self, venue: Venue, symbol: &str) -> Option<SymbolId> {
         self.indexes[venue_index(venue)].get(symbol).copied()
     }
-    pub fn intern(&mut self, venue: Venue, symbol: &str) -> SymbolId {
-        if let Some(id) = self.id(venue, symbol) {
+    pub fn intern(&mut self, venue: Venue, symbol: Symbol) -> SymbolId {
+        if let Some(id) = self.id(venue, &symbol) {
             return id;
         }
         let id = SymbolId(self.identities.len());
-        self.identities.push((venue, symbol.into()));
-        self.indexes[venue_index(venue)].insert(symbol.into(), id);
+        self.identities.push((venue, symbol));
+        self.indexes[venue_index(venue)].insert(symbol, id);
         id
     }
-    pub fn identity(&self, id: SymbolId) -> (Venue, &str) {
-        let (venue, symbol) = &self.identities[id.0];
-        (*venue, symbol)
+    pub fn identity(&self, id: SymbolId) -> (Venue, Symbol) {
+        self.identities[id.0]
     }
 }
 /// Dense, string-free state touched by risk checks and order/fill updates.
@@ -91,7 +90,7 @@ impl OrderSlot {
 pub(super) struct OrderIdentity {
     pub request: Intent,
     pub key: OrderKey,
-    pub system_id: String,
+    pub system_id: NativeId,
 }
 impl From<Order> for OrderIdentity {
     fn from(order: Order) -> Self {
@@ -105,13 +104,13 @@ impl From<Order> for OrderIdentity {
 pub(super) struct OrderArena {
     pub slots: Vec<OrderSlot>,
     pub identities: Vec<OrderIdentity>,
-    by_session: HashMap<String, References>,
+    by_session: HashMap<Session, References>,
 }
 #[derive(Default)]
 struct References {
     numbers: HashMap<u64, OrderId>,
     // Noncanonical external references keep their exact spelling and identity.
-    text: HashMap<String, OrderId>,
+    text: HashMap<Reference, OrderId>,
 }
 fn numeric_reference(reference: &str) -> Option<u64> {
     if reference.is_empty()
@@ -141,13 +140,13 @@ impl References {
             None => self.text.get(reference).copied(),
         }
     }
-    fn insert(&mut self, reference: &str, id: OrderId) {
-        match numeric_reference(reference) {
+    fn insert(&mut self, reference: Reference, id: OrderId) {
+        match numeric_reference(&reference) {
             Some(number) => {
                 self.numbers.insert(number, id);
             }
             None => {
-                self.text.insert(reference.into(), id);
+                self.text.insert(reference, id);
             }
         }
     }
@@ -177,8 +176,8 @@ impl OrderArena {
             .fill_with(std::mem::MaybeUninit::zeroed);
         Ok(())
     }
-    pub fn reserve_session(&mut self, session: &str, count: usize) -> anyhow::Result<()> {
-        let refs = self.by_session.entry(session.to_owned()).or_default();
+    pub fn reserve_session(&mut self, session: Session, count: usize) -> anyhow::Result<()> {
+        let refs = self.by_session.entry(session).or_default();
         refs.reserve(count)?;
         Ok(())
     }
@@ -235,14 +234,14 @@ impl OrderArena {
             INITIAL_ORDER_SLOTS
         };
         if let Some(refs) = self.by_session.get_mut(order.key.session.as_str()) {
-            refs.insert(&order.key.order_ref, id);
+            refs.insert(order.key.order_ref, id);
         } else {
             let mut refs = References {
                 numbers: HashMap::with_capacity(capacity),
                 text: HashMap::new(),
             };
-            refs.insert(&order.key.order_ref, id);
-            self.by_session.insert(order.key.session.clone(), refs);
+            refs.insert(order.key.order_ref, id);
+            self.by_session.insert(order.key.session, refs);
         }
         self.slots.push(OrderSlot::new(&order, symbol, None));
         self.identities.push(order.into());
@@ -254,7 +253,7 @@ impl OrderArena {
 mod tests {
     use super::*;
     #[test]
-    fn numeric_index_preserves_noncanonical_and_overflowing_reference_identities() {
+    fn numeric_index_preserves_noncanonical_reference_identities() {
         let mut refs = References::default();
         refs.reserve(4096).unwrap();
         assert!(refs.numbers.is_empty() && refs.text.is_empty());
@@ -264,12 +263,11 @@ mod tests {
             "01",
             "0001",
             "+1",
-            "18446744073709551615",
-            "18446744073709551616",
+            "9999999999999999",
             "manual-ref",
         ];
         for (i, reference) in identities.iter().enumerate() {
-            refs.insert(reference, OrderId(i));
+            refs.insert(Reference::new(reference).unwrap(), OrderId(i));
         }
         refs.reserve(8192).unwrap();
         for (i, reference) in identities.iter().enumerate() {
@@ -277,5 +275,7 @@ mod tests {
         }
         assert_eq!(refs.id("0000"), None);
         assert_eq!(refs.numbers.len(), 3);
+        // Native references are at most 16 bytes, so none can overflow u64.
+        assert!(Reference::new("18446744073709551616").is_err());
     }
 }

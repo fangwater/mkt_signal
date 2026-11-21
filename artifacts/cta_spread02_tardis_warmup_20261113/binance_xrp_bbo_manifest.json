@@ -1,0 +1,19 @@
+{
+  "market": "binance-futures",
+  "interval": "1h",
+  "start_ms": 1794096000000,
+  "end_ms": 1794355200000,
+  "source": "Tardis trades + incremental_book_L2; current Redis thresholds and historical previous-month hourly KLL",
+  "symbols": {
+    "XRPUSDT": {
+      "file": "XRPUSDT.bin.gz",
+      "rows": 72,
+      "sha256": "e3c39e1da178197064544083c15cde8aa9ca9375d2289ca9f0ec58a00b7f371a",
+      "first_end_ms": 1794099600000,
+      "last_end_ms": 1794355200000,
+      "source_book_events": 9313341,
+      "source_trades": 5043947,
+      "thresholds": {}
+    }
+  }
+}

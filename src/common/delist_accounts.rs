@@ -12,8 +12,9 @@ use crate::common::delist_risk::{
 use crate::common::delist_store::LlmRunStatus;
 use crate::common::exchange_info::ListingIndex;
 
-const FR_LISTS: [&str; 5] = [
+const FR_LISTS: [&str; 6] = [
     "dump_symbols",
+    signal_common::delist_close::DELIST_DUMP_LIST,
     "pos_dump_symbols",
     "fwd_trade_symbols",
     "bwd_trade_symbols",
@@ -658,15 +659,12 @@ pub async fn mget_strings(url: &str, keys: &[String]) -> Result<Vec<Option<Strin
     if keys.is_empty() {
         return Ok(Vec::new());
     }
-    let client = redis::Client::open(url).with_context(|| format!("open redis {url}"))?;
+    let client = redis::Client::open(url).context("open Redis connection settings")?;
     let mut conn = client
         .get_multiplexed_async_connection()
         .await
-        .with_context(|| format!("connect redis {url}"))?;
-    let values: Vec<Option<String>> = conn
-        .mget(keys)
-        .await
-        .with_context(|| format!("mget redis {url}"))?;
+        .context("connect to account Redis")?;
+    let values: Vec<Option<String>> = conn.mget(keys).await.context("read account Redis keys")?;
     Ok(values)
 }
 
@@ -804,10 +802,28 @@ pub async fn load_fr_dump_symbols(
     jp_url: &str,
     sg_url: Option<&str>,
 ) -> BTreeMap<String, Result<BTreeSet<String>, String>> {
-    load_fr_symbol_list(accounts, "dump_symbols", jp_url, sg_url)
-        .await
+    let (ordinary, mut delist) = tokio::join!(
+        load_fr_symbol_list(accounts, "dump_symbols", jp_url, sg_url),
+        load_fr_symbol_list(
+            accounts,
+            signal_common::delist_close::DELIST_DUMP_LIST,
+            jp_url,
+            sg_url
+        ),
+    );
+    ordinary
         .into_iter()
-        .map(|(slug, state)| (slug, state.map(|state| state.symbols)))
+        .map(|(account, ordinary)| {
+            let symbols = match (ordinary, delist.remove(&account)) {
+                (Ok(mut ordinary), Some(Ok(delist))) => {
+                    ordinary.symbols.extend(delist.symbols);
+                    Ok(ordinary.symbols)
+                }
+                (Err(err), _) | (_, Some(Err(err))) => Err(err),
+                (_, None) => Err("delist dump list missing from account results".into()),
+            };
+            (account, symbols)
+        })
         .collect()
 }
 

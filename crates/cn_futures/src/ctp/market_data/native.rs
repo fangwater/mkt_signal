@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::io::{BufWriter, Write};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,8 +33,20 @@ extern "C" {
     ) -> i32;
     fn nf_md_subscribe(handle: *mut c_void, symbols: *const *const c_char, count: usize) -> i32;
 }
+/// Buckets for per-contract "latest queued quote" sequence numbers. A hash
+/// collision can only make the same-contract backlog check conservative.
+pub(super) const QUOTE_BUCKETS: usize = 1024;
+pub(super) fn quote_bucket(symbol: &[u8]) -> usize {
+    let mut hash: u32 = 0x811c_9dc5;
+    for &byte in symbol.iter().take_while(|&&b| b != 0) {
+        hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+    }
+    hash as usize % QUOTE_BUCKETS
+}
 struct ContextState {
-    sender: Sender<(RawEvent, u64)>,
+    sender: Sender<(RawEvent, u64, u64)>,
+    sequence: AtomicU64,
+    latest: Arc<[AtomicU64]>,
     failed: Arc<AtomicBool>,
     placement: Arc<CallbackPlacement>,
     placement_fault: Arc<AtomicBool>,
@@ -49,9 +61,19 @@ unsafe extern "C" fn callback(context: *mut c_void, event: *const RawEvent) {
         context.failed.store(true, Ordering::Release);
         return;
     }
+    let event = unsafe { *event };
+    let sequence = if event.kind == 22 {
+        // Published before the send: the consumer may only over-estimate a
+        // newer queued quote for this contract, never miss one.
+        let sequence = context.sequence.fetch_add(1, Ordering::Relaxed) + 1;
+        context.latest[quote_bucket(&event.symbol)].store(sequence, Ordering::Release);
+        sequence
+    } else {
+        0
+    };
     if context
         .sender
-        .try_send((unsafe { *event }, crate::persistence::now_us()))
+        .try_send((event, crate::persistence::now_us(), sequence))
         .is_err()
     {
         context.failed.store(true, Ordering::Release);
@@ -77,7 +99,8 @@ pub(super) fn credential(name: &str, capacity: usize) -> Result<CString> {
 pub(super) struct Native {
     handle: NonNull<c_void>,
     _context: Box<ContextState>,
-    pub(super) events: Receiver<(RawEvent, u64)>,
+    pub(super) events: Receiver<(RawEvent, u64, u64)>,
+    pub(super) latest: Arc<[AtomicU64]>,
     pub(super) failed: Arc<AtomicBool>,
     pub(super) placement_fault: Arc<AtomicBool>,
     _symbols: Vec<CString>,
@@ -92,8 +115,11 @@ impl Native {
         let (sender, events) = crossbeam_channel::bounded(config.event_capacity);
         let failed = Arc::new(AtomicBool::new(false));
         let placement_fault = Arc::new(AtomicBool::new(false));
+        let latest: Arc<[AtomicU64]> = (0..QUOTE_BUCKETS).map(|_| AtomicU64::new(0)).collect();
         let mut context = Box::new(ContextState {
             sender,
+            sequence: AtomicU64::new(0),
+            latest: latest.clone(),
             failed: failed.clone(),
             placement,
             placement_fault: placement_fault.clone(),
@@ -129,11 +155,21 @@ impl Native {
             handle,
             _context: context,
             events,
+            latest,
             failed,
             placement_fault,
             _symbols: symbols,
             symbol_pointers,
         })
+    }
+    pub(super) fn set_symbols(&mut self, subscriptions: &[Subscription]) -> Result<()> {
+        let symbols: Vec<CString> = subscriptions
+            .iter()
+            .map(|s| CString::new(s.symbol.as_str()))
+            .collect::<std::result::Result<_, _>>()?;
+        self.symbol_pointers = symbols.iter().map(|s| s.as_ptr()).collect();
+        self._symbols = symbols;
+        Ok(())
     }
     pub(super) fn start(&self, config: &Config) -> Result<()> {
         let fronts = CString::new(config.fronts.join(","))?;
@@ -226,7 +262,7 @@ impl Output {
                     let encode = |message: OutputMessage| -> Result<String> {
                         match message {
                             OutputMessage::Status(mut value) => {
-                                crate::runtime::redact(&mut value, &secrets);
+                                crate::persist::redact(&mut value, &secrets);
                                 Ok(serde_json::to_string(&value)?)
                             }
                             OutputMessage::Tick(record) => {
@@ -332,7 +368,7 @@ impl Drop for Output {
 }
 
 pub fn run(config: Config, duration: Option<Duration>, stop: &AtomicBool) -> Result<()> {
-    config.validate()?;
+    config.validate_standalone()?;
     let placement = Placement::enter(&config.placement)?;
     let _lock = crate::runtime::lock_flow(&config.flow_directory)?;
     let broker = CString::new(config.broker_id.as_str())?;
@@ -379,7 +415,7 @@ pub fn run(config: Config, duration: Option<Duration>, stop: &AtomicBool) -> Res
                     "MD callback queue overflow; stream incomplete"
                 );
                 for _ in 0..256 {
-                    let Ok((event, received_us)) = transport.events.try_recv() else {
+                    let Ok((event, received_us, _)) = transport.events.try_recv() else {
                         break;
                     };
                     work = true;
@@ -400,13 +436,13 @@ pub fn run(config: Config, duration: Option<Duration>, stop: &AtomicBool) -> Res
                             if session.login(&event)? {
                                 progress = Instant::now();
                                 transport.subscribe()?;
-                                output.send(json!({"type":"login_ok","received_us":received_us,"trading_day":super::super::text(&event.trading_day)?,"generation":session.generation}))?;
+                                output.send(json!({"type":"login_ok","received_us":received_us,"trading_day":super::super::text_ref(&event.trading_day)?,"generation":session.generation}))?;
                             }
                         }
                         21 => {
                             session.subscribed(&event)?;
                             progress = Instant::now();
-                            output.send(json!({"type":"subscribed","received_us":received_us,"symbol":super::super::text(&event.symbol)?,"ready":session.ready(),"generation":session.generation}))?;
+                            output.send(json!({"type":"subscribed","received_us":received_us,"symbol":super::super::text_ref(&event.symbol)?,"ready":session.ready(),"generation":session.generation}))?;
                         }
                         22 => {
                             let venue = session.tick_venue(&event)?;

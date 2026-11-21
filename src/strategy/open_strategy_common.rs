@@ -2,6 +2,7 @@ use crate::pre_trade::account_open_block::{
     register_bybit_internal_system_open_block, BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US,
 };
 use crate::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
+use crate::pre_trade::binance_pm_buy_capacity::{self, OpenFunding};
 use crate::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
 use crate::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
@@ -215,6 +216,7 @@ fn build_open_order_request_prepared_scoped(
     price_qv: Option<OrderQuantizedValue>,
     reduce_only: bool,
     bitget_spot_order: bool,
+    binance_cash_only: bool,
     qty_multiplier: f64,
     create_ts: i64,
     signal_type_u8: u8,
@@ -235,6 +237,7 @@ fn build_open_order_request_prepared_scoped(
             price_qv,
             reduce_only,
             bitget_spot_order,
+            binance_cash_only,
             qty_multiplier,
             create_ts,
             signal_type_u8,
@@ -358,6 +361,7 @@ pub struct OpenOrderState {
     pub cancel_query_watchdog: Option<QueryWatchdog>,
     pub last_cancel_trigger_ts: Option<i64>,
     pub last_open_cancel_reason: Option<&'static str>,
+    binance_cash_only: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1255,8 +1259,42 @@ pub trait OpenStrategyCommon {
         pre_order_gate_us = stage_done_us.saturating_sub(precreate_stage_start_us);
         precreate_stage_start_us = stage_done_us;
 
-        let order_qty = input.qty;
         let order_price = input.price;
+        let funding = if is_arb_open && !input.reduce_only && !skip_position_risk_checks {
+            binance_pm_buy_capacity::open_funding(
+                venue,
+                side,
+                &symbol,
+                input.qty * order_price,
+                order_type.is_limit() && input.order_qty_qv.is_some(),
+            )
+        } else {
+            Ok(OpenFunding::AutoBorrow)
+        };
+        let order_size = match funding {
+            Ok(OpenFunding::AutoBorrow) => Ok((input.qty, input.order_qty_qv, false)),
+            Ok(OpenFunding::CashOnly { max_notional }) => input
+                .order_qty_qv
+                .ok_or("binance_usdt_cash_only_quantity_unavailable")
+                .and_then(|quantity| {
+                    binance_pm_buy_capacity::cash_only_quantity(
+                        &symbol,
+                        quantity,
+                        order_price,
+                        max_notional,
+                        input.signal_bbo,
+                    )
+                })
+                .map(|quantity| (quantity.get_val(), Some(quantity), true)),
+            Err(reason) => Err(reason),
+        };
+        let (order_qty, order_qty_qv, binance_cash_only) = match order_size {
+            Ok(size) => size,
+            Err(reason) => {
+                self.mark_open_strategy_inactive(reason.to_string());
+                return None;
+            }
+        };
         let signed_qty = match side {
             Side::Buy => order_qty.abs(),
             Side::Sell => -order_qty.abs(),
@@ -1271,17 +1309,6 @@ pub trait OpenStrategyCommon {
         // - Binance STANDARD 在 FR / Cross arb 等非 intra 场景仍独立兜底。
         // - FR / Cross arb（非 intra）下不受此白名单影响。
         let binance_is_standard = order_manager.borrow().binance_is_standard();
-        if is_arb_open && !input.reduce_only && !skip_position_risk_checks {
-            if let Err(reason) = crate::pre_trade::binance_pm_buy_capacity::check_open(
-                venue,
-                side,
-                &symbol,
-                order_qty * order_price,
-            ) {
-                self.mark_open_strategy_inactive(reason.to_string());
-                return None;
-            }
-        }
         let order_query_watchdog_delay_us =
             order_query_watchdog_delay_us_for_venue(venue, binance_is_standard);
         let venue_is_margin = matches!(
@@ -1627,10 +1654,11 @@ pub trait OpenStrategyCommon {
             order.trade_lite_cumulative_base_qty = 0.0;
             order.trade_cumulative_base_qty = 0.0;
             order.seen_trade_lite_ids.clear();
+            order.binance_cash_only = binance_cash_only;
         }
 
         let request_build_start_us = get_timestamp_us();
-        let quantity_qv = input.order_qty_qv.map(order_qv_from_quantized_value);
+        let quantity_qv = order_qty_qv.map(order_qv_from_quantized_value);
         let price_qv = if order_type.is_limit() {
             input.order_price_qv.map(order_qv_from_quantized_value)
         } else {
@@ -1649,6 +1677,7 @@ pub trait OpenStrategyCommon {
             price_qv,
             input.reduce_only,
             input.bitget_spot_order,
+            binance_cash_only,
             qty_multiplier,
             input.create_ts,
             input.signal_type_u8,
@@ -1678,6 +1707,18 @@ pub trait OpenStrategyCommon {
                 "pt_open_request_build",
                 get_timestamp_us().saturating_sub(request_build_start_us),
             );
+            if let Err(reason) = binance_pm_buy_capacity::reserve_submission(
+                venue,
+                side,
+                &symbol,
+                client_order_id,
+                order_qty * order_price,
+                binance_cash_only,
+            ) {
+                self.mark_open_strategy_inactive(reason.to_string());
+                self.handle_open_failed_cleanup(client_order_id);
+                return None;
+            }
         }
         if !suppress_pre_submit_hot_path_logs() {
             info!(
@@ -1703,6 +1744,9 @@ pub trait OpenStrategyCommon {
             &request,
             order_query_watchdog_delay_us,
         ) {
+            if is_arb_open {
+                binance_pm_buy_capacity::release_submission(venue, client_order_id);
+            }
             error!(
                 "{}: strategy_id={} open order send failed: {}",
                 self.strategy_name(),
@@ -1721,12 +1765,6 @@ pub trait OpenStrategyCommon {
             );
         }
         if is_arb_open {
-            crate::pre_trade::binance_pm_buy_capacity::record_submission(
-                venue,
-                side,
-                &symbol,
-                order_qty * order_price,
-            );
             record_arb_open_latency(
                 "pt_open_publish_request",
                 get_timestamp_us().saturating_sub(publish_start_us),
@@ -2882,12 +2920,16 @@ pub trait OpenStrategyCommon {
         };
 
         if let Some(venue) = self.open_state().open_venue {
-            crate::pre_trade::binance_pm_buy_capacity::record_rejection(
+            if binance_pm_buy_capacity::record_rejection(
                 venue,
                 side,
                 &symbol,
+                client_order_id,
                 response.error_code(),
-            );
+                self.open_order_state().binance_cash_only,
+            ) {
+                return;
+            }
         }
 
         if register_signal_throttle_for_mode(
@@ -3335,6 +3377,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             false,
             1.0,
             1,

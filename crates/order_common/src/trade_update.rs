@@ -1,4 +1,4 @@
-use crate::{OrderStatus, Side, TradingVenue};
+use crate::{OrderStatus, PositionEffect, Side, TradingVenue};
 
 /// 成交更新trait - 提供成交信息的通用接口
 ///
@@ -55,6 +55,34 @@ pub trait TradeUpdate {
 
     // 成交单状态，即对应的额order_status
     fn order_status(&self) -> Option<OrderStatus>;
+
+    // Optional cross-market facts. Crypto adapters leave them unset and their
+    // encoded bytes stay unchanged; domestic futures report all of them.
+
+    /// Open/close direction of this fill where the venue distinguishes it.
+    fn position_effect(&self) -> Option<PositionEffect> {
+        None
+    }
+    /// Exchange trading day (domestic night sessions belong to the next day).
+    fn trading_day(&self) -> Option<&str> {
+        None
+    }
+    /// Exchange trade identifier; venues may replay the same fill on recovery.
+    fn trade_id(&self) -> Option<&str> {
+        None
+    }
+    /// Quantity of this fill alone, in the venue's order units.
+    fn last_filled_quantity(&self) -> Option<f64> {
+        None
+    }
+    /// Fee charged for this fill in the account currency.
+    fn commission(&self) -> Option<f64> {
+        None
+    }
+    /// Native order identity when it is not a single integer.
+    fn client_order_text(&self) -> Option<&str> {
+        None
+    }
 
     fn debug_summary(&self) -> String {
         format!(

@@ -1,0 +1,1 @@
+{"execute": false, "env": "/home/ubuntu/cta-factor-spread", "markets": ["okex-futures", "binance-futures"], "hourly_symbols": 17, "shared_calculations": 532, "restart": ["cta-factor-spread"], "cpu": "18", "spread02_enabled": false, "replay_records": 190180}

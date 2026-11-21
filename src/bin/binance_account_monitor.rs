@@ -254,32 +254,6 @@ fn build_ws_url(ws_base: &str, listen_key: &str) -> String {
     }
 }
 
-fn credential_edges(value: &str) -> (String, String, usize) {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return (String::new(), String::new(), 0);
-    }
-    let chars: Vec<char> = trimmed.chars().collect();
-    let len = chars.len();
-    let prefix_len = len.min(4);
-    let suffix_len = len.min(4);
-    let first: String = chars.iter().take(prefix_len).collect();
-    let last: String = chars.iter().skip(len.saturating_sub(suffix_len)).collect();
-    (first, last, len)
-}
-
-fn log_credential_preview(label: &str, value: &str) {
-    let (first4, last4, len) = credential_edges(value);
-    if len == 0 {
-        info!("{} not set or empty", label);
-    } else {
-        info!(
-            "{} preview len={} first4='{}' last4='{}'",
-            label, len, first4, last4
-        );
-    }
-}
-
 async fn signed_get_binance(
     client: &Client,
     base_url: &str,
@@ -1254,12 +1228,10 @@ async fn main() -> Result<()> {
         anyhow::anyhow!("BINANCE_API_KEY not set. Export it before running account_monitor")
     })?;
     let api_key = api_key_raw.trim().to_string();
-    log_credential_preview("BINANCE_API_KEY", &api_key);
 
     let api_secret = match std::env::var("BINANCE_API_SECRET") {
         Ok(secret_raw) => {
             let secret = secret_raw.trim().to_string();
-            log_credential_preview("BINANCE_API_SECRET", &secret);
             secret
         }
         Err(_) => {
@@ -2249,7 +2221,8 @@ fn log_parsed_event(msg: &Bytes) {
         | BasicAccountEventType::HyperliquidTwapSliceFill
         | BasicAccountEventType::HyperliquidTwapHistory
         | BasicAccountEventType::HyperliquidNativeEvent
-        | BasicAccountEventType::ExternalFuturesFill => {}
+        | BasicAccountEventType::ExternalFuturesFill
+        | BasicAccountEventType::RapidXFinancial => {}
         BasicAccountEventType::Error => {}
     }
 }
@@ -2320,7 +2293,8 @@ impl AccountEventDeduper {
             | BasicAccountEventType::HyperliquidTwapSliceFill
             | BasicAccountEventType::HyperliquidTwapHistory
             | BasicAccountEventType::HyperliquidNativeEvent
-            | BasicAccountEventType::ExternalFuturesFill => return true,
+            | BasicAccountEventType::ExternalFuturesFill
+            | BasicAccountEventType::RapidXFinancial => return true,
             BasicAccountEventType::Error => return true,
         };
 

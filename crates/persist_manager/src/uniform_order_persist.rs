@@ -41,6 +41,16 @@ pub(crate) struct PendingUniformOrder {
 
 impl UniformOrderPersistor {
     pub fn new(store: Arc<RocksDbStore>, sync_enabled: bool) -> Result<Self> {
+        if let Some(marker) = crate::rapidx_uniform::marker(&store)? {
+            anyhow::ensure!(
+                marker.complete,
+                "resume the explicit uniform repair before starting persist_manager"
+            );
+            anyhow::ensure!(
+                !sync_enabled,
+                "normalized uniform records require local owner-only persistence"
+            );
+        }
         let subscriber = create_record_subscriber(UNIFORM_ORDER_RECORD_CHANNEL)?;
         Ok(Self {
             subscriber,
@@ -66,6 +76,9 @@ impl UniformOrderPersistor {
     pub(crate) fn poll_available(&self, pending: &mut VecDeque<PendingUniformOrder>) -> PollStats {
         let mut stats = PollStats::default();
         for _ in 0..MAX_DRAIN_PER_CHANNEL {
+            if pending.len() >= 4096 {
+                break;
+            }
             match self.subscriber.receive() {
                 Ok(Some(sample)) => {
                     stats.record_received();
@@ -99,7 +112,7 @@ impl UniformOrderPersistor {
     fn flush_due(&self, pending: &mut VecDeque<PendingUniformOrder>) {
         let now = Instant::now();
         while matches!(pending.front(), Some(order) if order.due_at <= now) {
-            let Some(order) = pending.pop_front() else {
+            let Some(order) = pending.front() else {
                 break;
             };
 
@@ -108,24 +121,43 @@ impl UniformOrderPersistor {
                 .as_ref()
                 .map(|store| store.format_spread_for_symbol(&order.symbol, order.update_ts))
                 .unwrap_or_default();
-            let payload = append_bbo_spread(order.payload, &bbo_spread);
+            let payload = append_bbo_spread(order.payload.clone(), &bbo_spread);
             debug!(
                 "persist uniform order: key={} payload_len={} bbo_spread_len={}",
                 order.key,
                 payload.len(),
                 bbo_spread.len()
             );
-            if let Err(err) = persist_with_outbox(
+            let result = crate::rapidx_uniform::persist_lifecycle(
                 &self.store,
-                CF_UNIFORM_ORDER,
                 order.key.as_bytes(),
                 payload.as_ref(),
-                order.update_ts,
                 self.sync_enabled,
-            ) {
+            )
+            .and_then(|normalized| {
+                if normalized {
+                    Ok(())
+                } else {
+                    persist_with_outbox(
+                        &self.store,
+                        CF_UNIFORM_ORDER,
+                        order.key.as_bytes(),
+                        payload.as_ref(),
+                        order.update_ts,
+                        self.sync_enabled,
+                    )
+                }
+            });
+            if let Err(err) = result {
                 warn!("persist uniform order failed key={}: {err:#}", order.key);
+                break;
             }
+            pending.pop_front();
         }
+    }
+
+    pub(crate) fn poll_normalized(&self) -> Result<usize> {
+        crate::rapidx_uniform::poll(&self.store)
     }
 }
 

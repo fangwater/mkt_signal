@@ -1,0 +1,93 @@
+{
+  "markets": {
+    "binance-futures": {
+      "cutoff_ms": 1794355200000,
+      "formula_symbols": 12,
+      "formula_rows": {
+        "AAVEUSDT": 816,
+        "ADAUSDT": 816,
+        "ATOMUSDT": 816,
+        "BCHUSDT": 816,
+        "CRVUSDT": 816,
+        "DOGEUSDT": 816,
+        "DOTUSDT": 816,
+        "ETCUSDT": 816,
+        "FILUSDT": 816,
+        "NEARUSDT": 816,
+        "TRBUSDT": 816,
+        "UNIUSDT": 816
+      },
+      "nq_rows": {
+        "binance-futures-aaveusdt-1h-nq": 816,
+        "binance-futures-atomusdt-1h-nq": 816,
+        "binance-futures-bchusdt-1h-nq": 816,
+        "binance-futures-dogeusdt-1h-nq": 816,
+        "binance-futures-dotusdt-1h-nq": 816,
+        "binance-futures-etcusdt-1h-nq": 816,
+        "binance-futures-filusdt-1h-nq": 816,
+        "binance-futures-nearusdt-1h-nq": 816,
+        "binance-futures-uniusdt-1h-nq": 816
+      }
+    },
+    "okex-futures": {
+      "cutoff_ms": 1794355200000,
+      "formula_symbols": 17,
+      "formula_rows": {
+        "AAVEUSDT": 816,
+        "ADAUSDT": 816,
+        "ATOMUSDT": 816,
+        "AVAXUSDT": 816,
+        "BCHUSDT": 816,
+        "CRVUSDT": 816,
+        "DOGEUSDT": 816,
+        "DOTUSDT": 816,
+        "ETCUSDT": 816,
+        "ETHUSDT": 240,
+        "FILUSDT": 816,
+        "LINKUSDT": 816,
+        "LTCUSDT": 816,
+        "NEARUSDT": 816,
+        "TRBUSDT": 816,
+        "UNIUSDT": 816,
+        "XRPUSDT": 816
+      },
+      "nq_rows": {
+        "okex-futures-aaveusdt-1h-nq": 816,
+        "okex-futures-adausdt-1h-nq": 816,
+        "okex-futures-atomusdt-1h-nq": 816,
+        "okex-futures-bchusdt-1h-nq": 816,
+        "okex-futures-crvusdt-1h-nq": 816,
+        "okex-futures-dogeusdt-1h-nq": 816,
+        "okex-futures-dotusdt-1h-nq": 816,
+        "okex-futures-etcusdt-1h-nq": 816,
+        "okex-futures-ethusdt-1h-nq": 240,
+        "okex-futures-filusdt-1h-nq": 816,
+        "okex-futures-linkusdt-1h-nq": 816,
+        "okex-futures-ltcusdt-1h-nq": 816,
+        "okex-futures-nearusdt-1h-nq": 816,
+        "okex-futures-trbusdt-1h-nq": 816,
+        "okex-futures-uniusdt-1h-nq": 816,
+        "okex-futures-xrpusdt-1h-nq": 816
+      }
+    }
+  },
+  "hourly_tables": [
+    {
+      "strategy_group": "spread01",
+      "calculations": 109,
+      "ready": 109,
+      "missing": [],
+      "unready": [],
+      "enabled": true
+    },
+    {
+      "strategy_group": "spread02",
+      "calculations": 130,
+      "ready": 130,
+      "missing": [],
+      "unready": [],
+      "enabled": false
+    }
+  ],
+  "all_hourly_ready": true
+}

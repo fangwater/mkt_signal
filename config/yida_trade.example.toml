@@ -9,10 +9,8 @@ execution_route = { mode = "any" } # fixed/preferred also require connection_id=
 public_simulation = false # explicit official-simulator-only, one-lot test mode
 # Configure the strict [placement] example below for a trading host.
 flow_directory = "/tmp/mkt_yida_sim/flow"
-journal = "/tmp/mkt_yida_sim/events.jsonl"
 position_ipc = { namespace = "cn_yida_sim", interval_ms = 1000 }
 # persistence_directory defaults to flow_directory/persist_manager; one account/adapter/front per store.
-sync_before_send = false # true: wait for synced RocksDB intent before calling the SDK
 user_id_env = "YIDA_USER_ID"
 password_env = "YIDA_PASSWORD"
 app_id_env = "YIDA_APP_ID"
@@ -20,7 +18,7 @@ auth_code_env = "YIDA_AUTH_CODE"
 event_capacity = 8192
 preallocated_orders = 4096 # cold-path capacity hint, grows automatically; not a history limit
 response_timeout_ms = 30000
-idle_sleep_us = 0
+poll = { mode = "busy", spin = 2048 }
 
 [[symbols]]
 venue = "SHFE"

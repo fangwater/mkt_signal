@@ -36,6 +36,7 @@ impl MeanStd {
 /// mean +/- clip_zscore*sample_std, then standardize its current clipped value
 /// with the recomputed clipped-window statistics. Historical emitted z-scores
 /// are not rewritten. Zero variance maps to 0; unknown results carry forward.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NormalizeState {
     raw_window: VecDeque<Option<f64>>,
     window: usize,
@@ -45,6 +46,14 @@ pub(crate) struct NormalizeState {
 }
 
 impl NormalizeState {
+    pub(crate) fn valid_for(&self, window: usize, min_periods: usize, clip: f64) -> bool {
+        self.window == window
+            && self.min_periods == min_periods
+            && self.clip_zscore == clip
+            && self.raw_window.len() <= window
+            && self.raw_window.iter().flatten().all(|v| v.is_finite())
+            && self.last_z.is_none_or(|v| v.is_finite())
+    }
     pub(crate) fn new(window: usize, min_periods: usize, clip_zscore: f64) -> Self {
         Self {
             raw_window: VecDeque::with_capacity(window.max(1)),

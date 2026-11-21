@@ -2,8 +2,7 @@ use super::{
     config::{
         Combination, Config, Interval, Market, Plan, SymbolGroups, Worker, SYMBOL_GROUPS_FILE,
     },
-    engine::{Engine, FactorEvent, FactorPoint},
-    hourly_nq_seed::HourlyNqSeed,
+    engine::{Engine, FactorEvent, FactorPoint, MinuteFormulaState},
 };
 use crate::factor_pub::model_output_publisher::ModelPublisher;
 use anyhow::{ensure, Context, Result};
@@ -30,6 +29,12 @@ struct Args {
     /// Validate and print the merged plan without Kafka, IPC, or filesystem writes.
     #[arg(long)]
     check: bool,
+    /// Validate mandatory Tardis hourly inputs without Kafka or IPC.
+    #[arg(long, requires = "check")]
+    validate_hourly_history: bool,
+    /// Also inspect retained Kafka starts before replacing a running worker.
+    #[arg(long, requires = "validate_hourly_history")]
+    validate_kafka_continuity: bool,
     /// Install or replace one named combination from JSON.
     #[arg(long)]
     put_combination: Option<PathBuf>,
@@ -60,6 +65,9 @@ struct Args {
     /// Native hourly input archive; also accepts CTA_HOURLY_HISTORY_DIR.
     #[arg(long)]
     hourly_history: Option<PathBuf>,
+    /// Restore only ordinary minute normalization/rank windows from this worker.
+    #[arg(long)]
+    minute_state: Option<PathBuf>,
     /// Dedicated factor IPC output for an independent runtime instance.
     #[arg(long)]
     output_service: Option<String>,
@@ -310,10 +318,9 @@ struct Generation {
     journal: Journal,
     publish_from: i64,
     records: u64,
-    hourly_nq_seed: HourlyNqSeed,
-    pending_period: Option<PendingPeriod>,
-    hourly_history: Option<super::hourly_history::HourlyHistory>,
-    hourly_history_status: Option<super::hourly_history::SeedSummary>,
+    hourly_history_checks: BTreeMap<(String, i32), i64>,
+    hourly_history_status: BTreeMap<Market, super::hourly_history::SeedSummary>,
+    minute_restored: usize,
 }
 impl Generation {
     fn new(
@@ -321,6 +328,7 @@ impl Generation {
         config: &Config,
         worker: Worker,
         history_path: Option<&Path>,
+        minute_state: Option<&MinuteFormulaState>,
     ) -> Result<Self> {
         worker.validate_plan(&plan)?;
         let id = uuid::Uuid::new_v4().to_string();
@@ -332,7 +340,13 @@ impl Generation {
         kafka.group_id = format!("{}-{id}", worker.name());
         kafka.client_id = kafka.group_id.clone();
         let consumer = (!topics.is_empty())
-            .then(|| RawKafkaConsumer::new(&kafka))
+            .then(|| {
+                if history_path.is_some() {
+                    RawKafkaConsumer::new_unassigned(&kafka)
+                } else {
+                    RawKafkaConsumer::new(&kafka)
+                }
+            })
             .transpose()?;
         let mut targets = BTreeMap::new();
         let mut retained_offsets = Vec::new();
@@ -357,19 +371,34 @@ impl Generation {
                 consumer.assign_offsets(&retained_offsets)?;
             }
         }
-        let journal = Journal::new(config.history_dir.join("generations").join(&id), &plan)?;
-        let hourly_nq_seed = HourlyNqSeed::new(&plan);
-        let hourly_history = history_path
-            .filter(|_| {
-                plan.calculations.values().any(|c| {
-                    c.id.interval == Interval::Hour && c.id.market == Market::BinanceFutures
-                })
-            })
-            .map(super::hourly_history::HourlyHistory::load)
-            .transpose()?;
+        let histories = super::hourly_history::load_for_plan(history_path, &plan)?;
+        let mut engine = Engine::new(plan, config)?;
+        let hourly_history_status = engine.seed_hourly_histories(&histories)?;
+        let minute_restored = minute_state
+            .map(|s| engine.restore_minute_formula_state(s, config))
+            .transpose()?
+            .unwrap_or(0);
+        let mut hourly_history_checks = BTreeMap::new();
+        for (market, history) in &histories {
+            ensure!(
+                history.manifest.end_ms <= now_ms().div_euclid(3_600_000) * 3_600_000,
+                "native hourly history contains future hours"
+            );
+            for key in targets.keys().filter(|(topic, _)| topic == market.topic()) {
+                hourly_history_checks.insert(key.clone(), history.manifest.end_ms);
+            }
+        }
+        let journal = Journal::new(
+            config.history_dir.join("generations").join(&id),
+            &engine.plan,
+        )?;
+        atomic_json(
+            &journal.root.join("hourly_history_seed.json"),
+            &hourly_history_status,
+        )?;
         Ok(Self {
             id,
-            engine: Engine::new(plan, config)?,
+            engine,
             consumer,
             targets,
             consumed: BTreeMap::new(),
@@ -379,10 +408,9 @@ impl Generation {
                 (config.lookback_secs.saturating_mul(1000)).min(i64::MAX as u64) as i64,
             ),
             records: 0,
-            hourly_nq_seed,
-            pending_period: None,
-            hourly_history,
-            hourly_history_status: None,
+            hourly_history_checks,
+            hourly_history_status,
+            minute_restored,
         })
     }
     fn caught_up(&self) -> bool {
@@ -408,42 +436,6 @@ impl Generation {
         Ok(())
     }
     fn poll(&mut self, config: &Config, timeout: u64) -> Result<Vec<FactorPoint>> {
-        if let Some(batch) = self.hourly_nq_seed.poll() {
-            let cutoff = self
-                .hourly_nq_seed
-                .status
-                .cutoff_ms
-                .context("missing hourly NQ seed cutoff")?;
-            let mut errors = batch.errors;
-            let mut rows = BTreeMap::new();
-            for (id, history) in &batch.histories {
-                match self.engine.seed_hourly_nq(id, history, cutoff) {
-                    Ok(()) => {
-                        rows.insert(id.clone(), history.len());
-                    }
-                    Err(error) => {
-                        errors.insert(id.clone(), format!("{error:#}"));
-                    }
-                }
-            }
-            for (id, error) in &errors {
-                warn!("hourly NQ close bootstrap {id}: {error}");
-            }
-            self.hourly_nq_seed.finish(rows, errors);
-            atomic_json(
-                &self.journal.root.join("hourly_nq_seed.json"),
-                &json!({
-                    "source":"binance-futures-hourly-kline-close", "cutoff_ms":cutoff,
-                    "histories":batch.histories, "status":self.hourly_nq_seed.status,
-                }),
-            )?;
-        }
-        if self.hourly_nq_seed.loading() {
-            return Ok(Vec::new());
-        }
-        if let Some(pending) = self.pending_period.take() {
-            return self.process_period(pending);
-        }
         let Some(consumer) = &self.consumer else {
             return Ok(Vec::new());
         };
@@ -465,27 +457,21 @@ impl Generation {
             partition: record.partition,
             offset: record.offset,
         };
-        if market == Market::BinanceFutures {
-            if let Some(history) = self.hourly_history.take() {
-                let first_hour = super::hourly_history::cutoff_ms(pending.period.ts)?;
-                ensure!(
-                    first_hour <= history.manifest.end_ms,
-                    "hourly history ends before retained Kafka; refresh the history package"
-                );
-                let cutoff = history.manifest.end_ms;
-                let summary = self.engine.seed_hourly_history(&history, cutoff)?;
-                self.hourly_nq_seed.exclude_seeded(&summary.nq_rows);
-                atomic_json(
-                    &self.journal.root.join("hourly_history_seed.json"),
-                    &summary,
-                )?;
-                self.hourly_history_status = Some(summary);
-            }
+        if !self
+            .consumed
+            .contains_key(&(pending.topic.clone(), pending.partition))
+        {
+            self.engine
+                .validate_minute_state_start(market, pending.period.ts)?;
         }
-        if self.hourly_nq_seed.needs_start(market) {
-            self.hourly_nq_seed.start(pending.period.ts)?;
-            self.pending_period = Some(pending);
-            return Ok(Vec::new());
+        if let Some(cutoff) = self
+            .hourly_history_checks
+            .remove(&(pending.topic.clone(), pending.partition))
+        {
+            let first_hour = super::hourly_history::cutoff_ms(pending.period.ts)?;
+            ensure!(first_hour <= cutoff,
+                    "{} Tardis hourly history ends before retained Kafka: history_end_ms={}, first_source_hour_ms={}; refresh the archive",
+                    market.name(), cutoff, first_hour);
         }
         self.process_period(pending)
     }
@@ -553,11 +539,25 @@ async fn run(worker: Worker) -> Result<()> {
         .hourly_history
         .clone()
         .or_else(|| std::env::var_os("CTA_HOURLY_HISTORY_DIR").map(PathBuf::from));
-    let mut excluded_symbols = Vec::new();
+    let minute_state_path = config.history_dir.join("minute_formula_state.json");
+    let resume_path = args.minute_state.as_ref().unwrap_or(&minute_state_path);
     let editing = args.put_combination.is_some()
         || args.put_symbol_groups.is_some()
         || args.delete_combination.is_some()
         || args.import_symbol_factors.is_some();
+    let minute_state =
+        if resume_path.is_file() && !editing && (!args.check || args.validate_hourly_history) {
+            ensure!(
+                fs::metadata(resume_path)?.len() <= 64 * 1024 * 1024,
+                "minute checkpoint too large"
+            );
+            Some(serde_json::from_slice::<MinuteFormulaState>(&fs::read(
+                resume_path,
+            )?)?)
+        } else {
+            None
+        };
+    let mut excluded_symbols = Vec::new();
     let plan = if let Some(path) = &args.put_symbol_groups {
         let groups = serde_json::from_slice(&fs::read(path)?).context("parse symbol groups")?;
         edit_symbol_groups_checked(&config, groups, args.execute, worker, None)?
@@ -602,12 +602,50 @@ async fn run(worker: Worker) -> Result<()> {
     };
     worker.validate_plan(&plan)?;
     if args.check || editing {
+        let mut kafka_starts = None;
+        let mut minute_restored = 0;
+        let hourly_history = if args.validate_hourly_history {
+            let histories =
+                super::hourly_history::load_for_plan(hourly_history_path.as_deref(), &plan)?;
+            ensure!(
+                histories
+                    .values()
+                    .all(|h| h.manifest.end_ms <= now_ms().div_euclid(3_600_000) * 3_600_000),
+                "native hourly history contains future hours"
+            );
+            if args.validate_kafka_continuity && !histories.is_empty() {
+                let starts =
+                    super::hourly_history::retained_kafka_start(&config.kafka, plan.topics())?;
+                super::hourly_history::validate_kafka_start(&histories, &starts)?;
+                kafka_starts = Some(starts);
+            }
+            let mut engine = Engine::new(plan.clone(), &config)?;
+            let summary = engine.seed_hourly_histories(&histories)?;
+            if let Some(state) = &minute_state {
+                let mut resume_config = config.clone();
+                resume_config.amount_thresholds = state.amount_thresholds.clone();
+                minute_restored = engine.restore_minute_formula_state(state, &resume_config)?;
+                if let Some(starts) = &kafka_starts {
+                    for market in Market::ALL {
+                        for (_, ts) in starts
+                            .iter()
+                            .filter(|(key, _)| key.starts_with(&format!("{}:", market.topic())))
+                        {
+                            engine.validate_minute_state_start(market, *ts)?;
+                        }
+                    }
+                }
+            }
+            Some(summary)
+        } else {
+            None
+        };
         let position_tables=plan.combinations.values().filter_map(|c|c.signal.as_ref().map(|p|
             json!({"strategy_name":c.manager_strategy_name(),"strategy_group":c.strategy_group,"symbol_group":c.symbol_group,"combination_name":c.name,"interval":c.interval,"enabled":p.enabled,"max_pos_u":p.max_pos_u}))).collect::<Vec<_>>();
         println!(
             "{}",
             serde_json::to_string_pretty(
-                &json!({"worker":worker,"topics":plan.topics(),"position_tables":position_tables,"plan":plan,"excluded_symbols":excluded_symbols})
+                &json!({"worker":worker,"topics":plan.topics(),"position_tables":position_tables,"plan":plan,"excluded_symbols":excluded_symbols,"hourly_history_warmup":hourly_history,"retained_kafka_start":kafka_starts,"minute_formulas_restored":minute_restored})
             )?
         );
         return Ok(());
@@ -642,6 +680,7 @@ async fn run(worker: Worker) -> Result<()> {
         &config,
         worker,
         hourly_history_path.as_deref(),
+        minute_state.as_ref(),
     )?);
     let publisher = if args.replay_only {
         None
@@ -664,6 +703,7 @@ async fn run(worker: Worker) -> Result<()> {
     };
     let mut last_position_poll = Instant::now() - Duration::from_secs(1);
     let mut positions_error: Option<String> = None;
+    let mut last_minute_checkpoint = Instant::now() - Duration::from_secs(60);
     loop {
         let mut progressed = false;
         if let Some(generation) = &mut active {
@@ -791,6 +831,9 @@ async fn run(worker: Worker) -> Result<()> {
                                 .is_none_or(|old| old.parameters != new.parameters)
                         });
                     if changed_definitions || active.is_none() {
+                        let resume = active
+                            .as_ref()
+                            .map(|g| g.engine.minute_formula_state(&config.amount_thresholds));
                         let mut replay_config = config.clone();
                         if let Some(values) = next_thresholds {
                             replay_config.amount_thresholds = values;
@@ -800,6 +843,7 @@ async fn run(worker: Worker) -> Result<()> {
                             &replay_config,
                             worker,
                             hourly_history_path.as_deref(),
+                            resume.as_ref(),
                         ) {
                             Ok(g) => {
                                 config = replay_config;
@@ -877,6 +921,19 @@ async fn run(worker: Worker) -> Result<()> {
             }
             last_position_poll = Instant::now();
         }
+        if last_minute_checkpoint.elapsed() >= Duration::from_secs(60) {
+            if let Some(generation) = &active {
+                if let Err(error) = atomic_json(
+                    &minute_state_path,
+                    &generation
+                        .engine
+                        .minute_formula_state(&config.amount_thresholds),
+                ) {
+                    warn!("save minute formula checkpoint: {error:#}");
+                }
+                last_minute_checkpoint = Instant::now();
+            }
+        }
         // Yield both replay and network tasks, without imposing a per-record sleep.
         if !progressed {
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -896,12 +953,8 @@ fn write_status(
     position_tables: Option<&serde_json::Value>,
     positions_error: Option<&str>,
 ) -> Result<()> {
-    let seed_error = active
-        .and_then(|g| g.hourly_nq_seed.status.errors.values().next())
-        .or_else(|| candidate.and_then(|g| g.hourly_nq_seed.status.errors.values().next()));
-    let error = error.or(seed_error.map(String::as_str));
     atomic_json(
         &config.history_dir.join("state.json"),
-        &json!({"worker":worker,"service":output_service,"updated_ms":now_ms(),"generation":active.map(|g| &g.id),"warming":candidate.is_some(),"warm_records":candidate.map(|g| g.records),"plan":active.map(|g| &g.engine.plan),"pending_plan":candidate.map(|g| &g.engine.plan),"latest":active.map(|g| &g.engine.latest),"error":error,"position_tables":position_tables,"positions_error":positions_error,"amount_threshold_symbols":config.amount_thresholds.len(),"hourly_nq_warmup":{"active":active.map(|g| &g.hourly_nq_seed.status),"candidate":candidate.map(|g| &g.hourly_nq_seed.status)},"hourly_history_warmup":{"active":active.and_then(|g| g.hourly_history_status.as_ref()),"candidate":candidate.and_then(|g| g.hourly_history_status.as_ref())}}),
+        &json!({"worker":worker,"service":output_service,"updated_ms":now_ms(),"generation":active.map(|g| &g.id),"warming":candidate.is_some(),"warm_records":candidate.map(|g| g.records),"plan":active.map(|g| &g.engine.plan),"pending_plan":candidate.map(|g| &g.engine.plan),"latest":active.map(|g| &g.engine.latest),"error":error,"position_tables":position_tables,"positions_error":positions_error,"amount_threshold_symbols":config.amount_thresholds.len(),"hourly_history_warmup":{"active":active.map(|g| &g.hourly_history_status),"candidate":candidate.map(|g| &g.hourly_history_status)},"minute_formulas_restored":{"active":active.map(|g| g.minute_restored),"candidate":candidate.map(|g| g.minute_restored)}}),
     )
 }

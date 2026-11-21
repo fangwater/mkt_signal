@@ -49,6 +49,21 @@ impl super::Source for CtpSource {
             FeedEvent::Disconnected { .. } => {
                 return Ok(Some(MarketDataMsg::reset(self.generation)))
             }
+            FeedEvent::DominantSelected(list) => {
+                eprintln!(
+                    "CTP MD selected {} SHFE dominant contracts for {} ({})",
+                    list.symbols.len(),
+                    list.trading_day,
+                    list.source
+                );
+                return Ok(None);
+            }
+            FeedEvent::DominantUnavailable { error, trading_day } => {
+                eprintln!(
+                    "CTP MD dominant contracts unavailable for {trading_day}; retrying: {error}"
+                );
+                return Ok(None);
+            }
             FeedEvent::Tick(tick) => tick,
         };
         let mut msg = MarketDataMsg {

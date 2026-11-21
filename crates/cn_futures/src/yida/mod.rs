@@ -9,7 +9,7 @@ pub mod session;
 
 use crate::model::*;
 use anyhow::{bail, ensure, Result};
-use serde::Serialize;
+use serde::{ser::SerializeMap, Serialize};
 
 pub const CONNECTED: i32 = 1;
 pub const DISCONNECTED: i32 = 2;
@@ -29,6 +29,8 @@ pub const SEGMENT: i32 = 15;
 pub const FATAL: i32 = 16;
 pub const TRANSPORT: i32 = 17;
 pub const CONNECTION: i32 = 18;
+/// `YD_AE_ServerRestarted`: the SDK instance is being destroyed; cold restart.
+pub const SERVER_RESTARTED: i32 = 19;
 pub const SDK_REFERENCE: &str = "1.502.55.35";
 
 pub fn scope() -> ExecutionScope {
@@ -36,20 +38,30 @@ pub fn scope() -> ExecutionScope {
         venues: [Venue::Shfe, Venue::Ine].into_iter().collect(),
         reference_limit: i32::MAX as u64,
         require_market_status: false,
+        require_bootstrap_instruments: true,
         cancel_requires_system_id: false,
         allow_implicit_fill_reference: false,
         allow_options: true,
     }
 }
-pub fn session_key(day: i32) -> String {
-    format!("yida:{day}")
+pub fn session_key(day: i32) -> Session {
+    Session::format(format_args!("yida:{day}")).expect("an i32 day fits the Yida session capacity")
 }
-pub fn group_session_key(day: i32, group: i32) -> String {
+pub fn group_session_key(day: i32, group: i32) -> Session {
     if group == 0 {
         session_key(day)
     } else {
-        format!("yida:{day}:group:{group}")
+        Session::format(format_args!("yida:{day}:group:{group}"))
+            .expect("i32 day and group fit the Yida session capacity")
     }
+}
+/// A native integer identity as fixed text, without allocating.
+pub(crate) fn int<const N: usize>(value: impl Into<i64>) -> Text<N> {
+    let value: i64 = value.into();
+    Text::format(format_args!("{value}")).expect("an i64 fits every native identity capacity")
+}
+fn valid_day(day: i32) -> bool {
+    (10_000_000..100_000_000).contains(&day)
 }
 pub fn parse_group_key(key: &OrderKey) -> Result<(i32, i32, i32)> {
     let mut parts = key.session.split(':');
@@ -78,8 +90,89 @@ pub fn parse_group_key(key: &OrderKey) -> Result<(i32, i32, i32)> {
     Ok((day, group, reference))
 }
 
+/// Passive SDK copies. The mark time behind the derived SDK values is unknown.
 #[repr(C)]
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct RawAccount {
+    present: u64,
+    balance: f64,
+    pre_balance: f64,
+    pre_cash_balance: f64,
+    pre_market_value: f64,
+    pre_position_market_value: f64,
+    deposit: f64,
+    withdraw: f64,
+    frozen_withdraw: f64,
+    max_money_usage: f64,
+    available: f64,
+    close_profit: f64,
+    other_close_profit: f64,
+    cash_in: f64,
+    commission: f64,
+    message_commission: f64,
+    margin: f64,
+    margin2: f64,
+    position_profit: f64,
+    position_market_value: f64,
+    exec_margin: f64,
+    exec_allocated_amount: f64,
+    exec_allocated_frozen_amount: f64,
+    sdk_cash_balance: f64,
+    sdk_market_value: f64,
+}
+
+impl RawAccount {
+    fn is_absent(&self) -> bool {
+        self.present != 1
+    }
+}
+
+impl Serialize for RawAccount {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let mut values = serializer.serialize_map(Some(26))?;
+        values.serialize_entry("currency", "CNY")?;
+        values.serialize_entry("valuation_basis", "sdk_mark_time_unverified")?;
+        for (name, amount) in [
+            ("balance", self.balance),
+            ("pre_balance", self.pre_balance),
+            ("pre_cash_balance", self.pre_cash_balance),
+            ("pre_market_value", self.pre_market_value),
+            ("pre_position_market_value", self.pre_position_market_value),
+            ("deposit", self.deposit),
+            ("withdraw", self.withdraw),
+            ("frozen_withdraw", self.frozen_withdraw),
+            ("max_money_usage", self.max_money_usage),
+            ("available", self.available),
+            ("close_profit", self.close_profit),
+            ("other_close_profit", self.other_close_profit),
+            ("cash_in", self.cash_in),
+            ("commission", self.commission),
+            ("message_commission", self.message_commission),
+            ("margin", self.margin),
+            ("margin2", self.margin2),
+            ("position_profit", self.position_profit),
+            ("position_market_value", self.position_market_value),
+            ("exec_margin", self.exec_margin),
+            ("exec_allocated_amount", self.exec_allocated_amount),
+            (
+                "exec_allocated_frozen_amount",
+                self.exec_allocated_frozen_amount,
+            ),
+            ("sdk_cash_balance", self.sdk_cash_balance),
+            ("sdk_market_value", self.sdk_market_value),
+        ] {
+            let amount = (amount.is_finite() && amount.abs() < f64::MAX).then_some(amount);
+            values.serialize_entry(name, &amount)?;
+        }
+        values.end()
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Serialize, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RawEvent {
     pub kind: i32,
     pub error: i32,
@@ -142,6 +235,11 @@ pub struct RawEvent {
     #[serde(serialize_with = "serialize_bytes")]
     pub underlying: [u8; 64],
     pub underlying_exchange: [u8; 12],
+    /// Explicit C alignment padding before `account`; never read or audited.
+    #[serde(skip)]
+    pub reserved: [u8; 4],
+    #[serde(skip_serializing_if = "RawAccount::is_absent")]
+    pub account: RawAccount,
 }
 fn serialize_bytes<S: serde::Serializer>(
     bytes: &[u8; 64],
@@ -154,7 +252,7 @@ impl Default for RawEvent {
         unsafe { std::mem::zeroed() }
     }
 }
-pub fn text(bytes: &[u8]) -> Result<String> {
+pub fn text<const N: usize>(bytes: &[u8]) -> Result<Text<N>> {
     crate::ctp::text(bytes)
 }
 impl RawEvent {
@@ -174,7 +272,7 @@ impl RawEvent {
         }
         ensure!(self.product_class == 2, "unsupported native product class");
         ensure!(
-            text(&self.underlying_exchange)? == venue.as_str(),
+            crate::ctp::text_ref(&self.underlying_exchange)? == venue.as_str(),
             "option underlying venue mismatch"
         );
         let option = OptionContract {
@@ -223,7 +321,7 @@ impl RawEvent {
             );
             return Ok(OrderKey {
                 session: group_session_key(self.day, self.order_group),
-                order_ref: self.reference.to_string(),
+                order_ref: int(self.reference),
             });
         }
         ensure!(
@@ -231,13 +329,13 @@ impl RawEvent {
             "recovered order without system identity"
         );
         Ok(OrderKey {
-            session: format!(
+            session: Session::format(format_args!(
                 "{}:{}:sys:{}",
                 session_key(self.day),
                 self.venue()?.as_str(),
                 self.system_id
-            ),
-            order_ref: self.reference.to_string(),
+            ))?,
+            order_ref: int(self.reference),
         })
     }
     pub fn to_order(&self, key: OrderKey) -> Result<OrderUpdate> {
@@ -285,7 +383,7 @@ impl RawEvent {
         ensure!(
             matches!(venue, Venue::Shfe | Venue::Ine)
                 && scope().supports_symbol(venue, &symbol)
-                && self.day.to_string().len() == 8,
+                && valid_day(self.day),
             "native order outside supported futures/day scope"
         );
         ensure!(
@@ -300,9 +398,9 @@ impl RawEvent {
             symbol,
             venue,
             system_id: if self.system_id > 0 {
-                self.system_id.to_string()
+                int(self.system_id)
             } else {
-                String::new()
+                NativeId::default()
             },
             side: self.side()?,
             offset: self.offset()?,
@@ -318,7 +416,7 @@ impl RawEvent {
             limit_price: self.price,
             status,
             cancel_rejected: false,
-            trading_day: self.day.to_string(),
+            trading_day: int(self.day),
         })
     }
     pub fn to_fill(&self) -> Result<Fill> {
@@ -342,24 +440,24 @@ impl RawEvent {
         ensure!(
             matches!(venue, Venue::Shfe | Venue::Ine)
                 && scope().supports_symbol(venue, &symbol)
-                && self.day.to_string().len() == 8,
+                && valid_day(self.day),
             "native fill outside supported futures/day scope"
         );
         Ok(Fill {
             identity: TradeIdentity {
                 venue,
                 symbol,
-                trading_day: self.day.to_string(),
-                trade_id: self.trade_id.to_string(),
+                trading_day: int(self.day),
+                trade_id: int(self.trade_id),
                 side: self.side()?,
             },
-            order_ref: self.reference.to_string(),
+            order_ref: int(self.reference),
             order_key: if self.order_group != 0 {
                 Some(self.recovered_key()?)
             } else {
                 None
             },
-            system_id: self.system_id.to_string(),
+            system_id: int(self.system_id),
             offset: self.offset()?,
             lots: self.lots,
             price: self.price,
@@ -376,7 +474,7 @@ pub fn decode_event(e: &RawEvent, historical_rejection: bool) -> Result<DecodedU
             let key = if historical_rejection {
                 OrderKey {
                     session: group_session_key(e.day, e.order_group),
-                    order_ref: e.reference.to_string(),
+                    order_ref: int(e.reference),
                 }
             } else {
                 e.recovered_key()?

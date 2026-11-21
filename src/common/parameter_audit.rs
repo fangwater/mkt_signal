@@ -337,7 +337,7 @@ pub fn read_batch(root: &Path, cursor: u64) -> Result<Batch> {
                 && event.objects.len() <= 256
                 && matches!(
                     event.metadata.family.as_str(),
-                    "cta_prep" | "cta_spread" | "funding_rate" | "market_making"
+                    "cta_prep" | "cta_spread" | "funding_rate" | "market_making" | "exec"
                 )
                 && matches!(event.storage.as_str(), "redis" | "cta"),
             "invalid parameter event identity"
