@@ -51,7 +51,7 @@ use mkt_signal::common::delist_flatten::{
 };
 use mkt_signal::common::delist_prune::{
     apply_redis_removal, confirmed_removal_candidates, prepare_redis_removal,
-    removal_universe_errors, RedisRemovalCandidate,
+    removal_universe_errors, RedisRemovalCandidate, RemovalPreparation, RemovalScope,
 };
 use mkt_signal::common::delist_risk::{
     announcement_from_raw, events_from_bitget_offtime, events_from_delist_schedule,
@@ -1597,7 +1597,8 @@ async fn query_removal_candidates(State(state): State<AppState>) -> impl IntoRes
     let accounts = state.accounts.read().await.clone();
     let universes = load_universes(&accounts, &state.jp_redis, state.sg_redis.as_deref()).await;
     let redis_errors = removal_universe_errors(&accounts, &universes);
-    let candidates = confirmed_removal_candidates(&accounts, &listings, &universes);
+    let risk = removal_events(&state).await;
+    let candidates = confirmed_removal_candidates(&accounts, &listings, &risk, &universes);
     let catalog_complete = state
         .status
         .read()
@@ -3342,6 +3343,17 @@ async fn dump_position_candidate(
     }
 }
 
+/// Every recorded delist, including those already in effect, for confirming a
+/// leg whose venue catalog still lists the symbol.
+async fn removal_events(state: &AppState) -> mkt_signal::common::delist_risk::RiskQueryResponse {
+    state.book.read().await.query(&RiskQuery {
+        venue: None,
+        exchange: None,
+        days: Some(state.default_days),
+        include_past: true,
+    })
+}
+
 async fn prune_confirmed_delists(state: &AppState) -> Result<usize> {
     if !nav_accounts_ready(state).await {
         anyhow::bail!("NAV strategy catalog is not current; automatic removal paused");
@@ -3357,7 +3369,8 @@ async fn prune_confirmed_delists(state: &AppState) -> Result<usize> {
     if !universe_errors.is_empty() {
         anyhow::bail!("Redis universe load failed: {}", universe_errors.join("; "));
     }
-    let candidates = confirmed_removal_candidates(&accounts, &listings, &universes);
+    let risk = removal_events(state).await;
+    let candidates = confirmed_removal_candidates(&accounts, &listings, &risk, &universes);
     let mut removed = 0usize;
     let mut errors = Vec::new();
     for candidate in candidates {
@@ -3404,8 +3417,16 @@ async fn prune_candidate(
             .context("SG Redis is not configured")?,
         site => anyhow::bail!("unsupported Redis site {site}"),
     };
-    let Some(plan) = prepare_redis_removal(redis_url, candidate).await? else {
-        return Ok(false);
+    let plan = match prepare_redis_removal(redis_url, candidate).await? {
+        RemovalPreparation::Plan(plan) => plan,
+        RemovalPreparation::Absent => return Ok(false),
+        RemovalPreparation::StillTraded { key } => {
+            info!(
+                "Redis delist removal retained traded symbol account={} symbol={} key={key}",
+                candidate.account_slug, candidate.symbol
+            );
+            return Ok(false);
+        }
     };
     let audit_id = store
         .begin_redis_removal(
@@ -3429,7 +3450,11 @@ async fn prune_candidate(
             store
                 .finish_redis_removal(audit_id, "success", None)
                 .await?;
-            fr_event(state, "operation", format!("[操作日志] 确认下架后移出策略名单\n{} {} | 审计 {}\n该币对仓位已通过现有清空校验；已更新Redis名单。", candidate.account_slug, candidate.symbol, audit_id)).await;
+            let scope = match candidate.scope {
+                RemovalScope::AllLists => "各腿均已下架，移出全部名单",
+                RemovalScope::CloseOnly => "单腿已下架，移出平仓名单",
+            };
+            fr_event(state, "operation", format!("[操作日志] 确认下架后移出策略名单\n{} {} | 审计 {}\n{scope}；该币对仓位已通过现有清空校验；已更新Redis名单。", candidate.account_slug, candidate.symbol, audit_id)).await;
             info!(
                 "Redis delist removal success audit_id={} account={} symbol={} changes={}",
                 audit_id,

@@ -5,9 +5,24 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::common::delist_accounts::{pair_and_base, redis_keys, AccountSpec, RedisSite};
-use crate::common::delist_risk::normalize_symbol;
+use crate::common::delist_accounts::{
+    matched_symbols, pair_and_base, redis_keys, AccountSpec, RedisSite,
+};
+use crate::common::delist_risk::{normalize_symbol, RiskQueryResponse};
 use crate::common::exchange_info::ListingIndex;
+
+/// Which of the account's Redis lists a confirmed removal may touch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemovalScope {
+    /// Every account venue's catalog dropped the symbol: remove it everywhere.
+    AllLists,
+    /// Only one leg is gone (catalog removal, or a margin-only delist that a
+    /// spot catalog never shows). The pair can no longer be arbitraged, but a
+    /// catalog gap must not stop live trading, so a symbol still in any trade
+    /// list is retained; otherwise it leaves the close-only lists.
+    CloseOnly,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RedisRemovalCandidate {
@@ -17,6 +32,25 @@ pub struct RedisRemovalCandidate {
     pub symbol: String,
     pub venues: Vec<String>,
     pub redis_keys: Vec<String>,
+    pub scope: RemovalScope,
+}
+
+/// Outcome of reading an account's lists for one candidate.
+#[derive(Debug)]
+pub enum RemovalPreparation {
+    Plan(RedisRemovalPlan),
+    /// No list holds the symbol any more.
+    Absent,
+    /// A close-only candidate that a trade list still holds; never removed.
+    StillTraded {
+        key: String,
+    },
+}
+
+/// Lists the strategy opens positions from. Every other list (dump,
+/// delist_dump, pos_dump, unimmr_close) only closes or tracks positions.
+fn is_trade_list(key: &str) -> bool {
+    key.split(':').any(|part| part.ends_with("_trade_symbols"))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,9 +82,15 @@ fn supports_removal(spec: &AccountSpec) -> bool {
         || (spec.kind == "funding_rate" && spec.exchange == "bybit")
 }
 
+/// Symbols whose delist is confirmed for an account. `risk` must include past
+/// events (`include_past`): a `delist` that has taken effect on one of the
+/// account's venues confirms that leg even when the venue's catalog still lists
+/// the symbol (Bybit margin delists, where the spot pair keeps trading).
+/// Position flatness is checked by the caller before any removal.
 pub fn confirmed_removal_candidates(
     accounts: &[AccountSpec],
     listings: &ListingIndex,
+    risk: &RiskQueryResponse,
     universes: &BTreeMap<String, Result<BTreeSet<String>, String>>,
 ) -> Vec<RedisRemovalCandidate> {
     let mut out = Vec::new();
@@ -62,25 +102,50 @@ pub fn confirmed_removal_candidates(
             continue;
         };
         let (keys, venues) = redis_keys(spec);
+        let effective_delists: BTreeSet<String> = risk
+            .exchanges
+            .get(&spec.exchange)
+            .into_iter()
+            .flat_map(|bucket| &bucket.items)
+            .filter(|event| {
+                event.action == "delist"
+                    && matches!(event.status.as_str(), "due" | "past")
+                    && venues.contains(&event.venue)
+            })
+            .flat_map(|event| matched_symbols(event, symbols))
+            .collect();
         for symbol in symbols {
-            let fully_delisted = venues.iter().all(|venue| {
-                listings.listing_for(venue, std::slice::from_ref(symbol), &[]) == "delisted"
-            });
-            if fully_delisted {
-                out.push(RedisRemovalCandidate {
-                    account_slug: spec.slug.to_string(),
-                    exchange: spec.exchange.to_string(),
-                    redis_site: match spec.site {
-                        RedisSite::Jp => "jp",
-                        RedisSite::Sg => "sg",
-                        RedisSite::Unsupported => continue,
-                    }
-                    .to_string(),
-                    symbol: symbol.clone(),
-                    venues: venues.clone(),
-                    redis_keys: keys.clone(),
-                });
+            let catalog: Vec<String> = venues
+                .iter()
+                .map(|venue| listings.listing_for(venue, std::slice::from_ref(symbol), &[]))
+                .collect();
+            // An unavailable or expired catalog confirms nothing.
+            if catalog.iter().any(|listing| listing == "unknown") {
+                continue;
             }
+            let scope = if catalog.iter().all(|listing| listing == "delisted") {
+                RemovalScope::AllLists
+            } else if catalog.iter().any(|listing| listing == "delisted")
+                || effective_delists.contains(symbol)
+            {
+                RemovalScope::CloseOnly
+            } else {
+                continue;
+            };
+            out.push(RedisRemovalCandidate {
+                account_slug: spec.slug.to_string(),
+                exchange: spec.exchange.to_string(),
+                redis_site: match spec.site {
+                    RedisSite::Jp => "jp",
+                    RedisSite::Sg => "sg",
+                    RedisSite::Unsupported => continue,
+                }
+                .to_string(),
+                symbol: symbol.clone(),
+                venues: venues.clone(),
+                redis_keys: keys.clone(),
+                scope,
+            });
         }
     }
     out
@@ -107,9 +172,9 @@ pub fn removal_universe_errors(
 pub async fn prepare_redis_removal(
     redis_url: &str,
     candidate: &RedisRemovalCandidate,
-) -> Result<Option<RedisRemovalPlan>> {
+) -> Result<RemovalPreparation> {
     if candidate.redis_keys.is_empty() {
-        return Ok(None);
+        return Ok(RemovalPreparation::Absent);
     }
     let client = redis::Client::open(redis_url).context("open Redis for delist removal")?;
     let mut conn = client
@@ -122,9 +187,17 @@ pub async fn prepare_redis_removal(
         .await
         .context("read Redis symbol lists for delist removal")?;
 
+    plan_removal(candidate, candidate.redis_keys.iter().zip(values))
+}
+
+/// Builds the compare-and-set plan from the lists as read.
+fn plan_removal<'a>(
+    candidate: &RedisRemovalCandidate,
+    lists: impl Iterator<Item = (&'a String, Option<String>)>,
+) -> Result<RemovalPreparation> {
     let mut mutations = Vec::new();
     let mut changes = Vec::new();
-    for (key, raw) in candidate.redis_keys.iter().zip(values) {
+    for (key, raw) in lists {
         let Some(raw) = raw else {
             continue;
         };
@@ -134,6 +207,9 @@ pub async fn prepare_redis_removal(
         else {
             continue;
         };
+        if candidate.scope == RemovalScope::CloseOnly && is_trade_list(key) {
+            return Ok(RemovalPreparation::StillTraded { key: key.clone() });
+        }
         changes.push(RedisKeyChange {
             key: key.clone(),
             before_count,
@@ -147,9 +223,12 @@ pub async fn prepare_redis_removal(
         });
     }
     if mutations.is_empty() {
-        Ok(None)
+        Ok(RemovalPreparation::Absent)
     } else {
-        Ok(Some(RedisRemovalPlan { mutations, changes }))
+        Ok(RemovalPreparation::Plan(RedisRemovalPlan {
+            mutations,
+            changes,
+        }))
     }
 }
 
@@ -229,6 +308,7 @@ fn symbol_key(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::delist_risk::{ExchangeRisk, RiskEventView};
 
     fn binance_intra_account() -> AccountSpec {
         AccountSpec {
@@ -266,28 +346,169 @@ mod tests {
             .is_none());
     }
 
+    fn risk(events: Vec<(&str, &str, &str, &str)>) -> RiskQueryResponse {
+        let mut exchanges: BTreeMap<String, ExchangeRisk> = BTreeMap::new();
+        for (venue, action, status, asset) in events {
+            let exchange = venue.split('-').next().unwrap().to_string();
+            exchanges
+                .entry(exchange.clone())
+                .or_default()
+                .items
+                .push(RiskEventView {
+                    exchange,
+                    venue: venue.into(),
+                    action: action.into(),
+                    utc: "2026-11-18T12:00:00Z".into(),
+                    status: status.into(),
+                    assets: vec![asset.into()],
+                    symbols: vec![],
+                    note: String::new(),
+                    source: String::new(),
+                    title: String::new(),
+                    url: String::new(),
+                    announcement_id: String::new(),
+                    listing: String::new(),
+                });
+        }
+        RiskQueryResponse {
+            ok: true,
+            as_of_ms: 0,
+            abnormal: false,
+            count: 0,
+            exchanges,
+        }
+    }
+
+    fn candidate(scope: RemovalScope) -> RedisRemovalCandidate {
+        RedisRemovalCandidate {
+            account_slug: "gate_fr_arb01".into(),
+            exchange: "gate".into(),
+            redis_site: "jp".into(),
+            symbol: "BGSCUSDT".into(),
+            venues: vec!["gate-margin".into(), "gate-futures".into()],
+            redis_keys: vec![],
+            scope,
+        }
+    }
+
     #[test]
-    fn candidate_requires_all_account_venues_to_be_gone() {
+    fn one_gone_leg_is_close_only_and_every_gone_leg_is_all_lists() {
         let accounts = vec![binance_intra_account()];
+        let universes = BTreeMap::from([(
+            "binance-intra-arb01".to_string(),
+            Ok(BTreeSet::from([
+                "HEIUSDT".to_string(),
+                "BTCUSDT".to_string(),
+            ])),
+        )]);
         let mut listings = ListingIndex::default();
         listings.insert_test("binance-margin", "BTCUSDT");
         listings.insert_test("binance-futures", "BTCUSDT");
         listings.insert_test("binance-futures", "HEIUSDT");
-        let universes = BTreeMap::from([(
-            "binance-intra-arb01".to_string(),
-            Ok(BTreeSet::from(["HEIUSDT".to_string()])),
-        )]);
-        assert!(confirmed_removal_candidates(&accounts, &listings, &universes).is_empty());
+        let candidates =
+            confirmed_removal_candidates(&accounts, &listings, &risk(vec![]), &universes);
+        assert_eq!(candidates.len(), 1, "BTCUSDT is listed on both legs");
+        assert_eq!(candidates[0].symbol, "HEIUSDT");
+        assert_eq!(candidates[0].scope, RemovalScope::CloseOnly);
 
         let mut listings = ListingIndex::default();
         listings.insert_test("binance-margin", "BTCUSDT");
         listings.insert_test("binance-futures", "BTCUSDT");
-        let candidates = confirmed_removal_candidates(&accounts, &listings, &universes);
+        let candidates =
+            confirmed_removal_candidates(&accounts, &listings, &risk(vec![]), &universes);
         assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].scope, RemovalScope::AllLists);
         assert_eq!(
             candidates[0].venues,
             vec!["binance-margin", "binance-futures"]
         );
+    }
+
+    #[test]
+    fn effective_margin_only_delist_confirms_a_leg_its_spot_catalog_still_lists() {
+        let mut account = binance_intra_account();
+        account.slug = "bybit_fr_arb01".into();
+        account.exchange = "bybit".into();
+        account.kind = "funding_rate".into();
+        let universes = BTreeMap::from([(
+            account.slug.clone(),
+            Ok(BTreeSet::from(["BILLUSDT".to_string()])),
+        )]);
+        let mut listings = ListingIndex::default();
+        listings.insert_test("bybit-margin", "BILLUSDT");
+        listings.insert_test("bybit-futures", "BILLUSDT");
+        let accounts = [account];
+        let find =
+            |events| confirmed_removal_candidates(&accounts, &listings, &risk(events), &universes);
+        assert!(find(vec![]).is_empty(), "listed everywhere, no notice");
+        assert!(
+            find(vec![("bybit-margin", "delist", "upcoming", "BILL")]).is_empty(),
+            "a scheduled delist is the dump path's job"
+        );
+        assert!(find(vec![("bybit-margin", "disable_loan", "past", "BILL")]).is_empty());
+        assert!(find(vec![("gate-margin", "delist", "past", "BILL")]).is_empty());
+        for status in ["due", "past"] {
+            let candidates = find(vec![("bybit-margin", "delist", status, "BILL")]);
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].scope, RemovalScope::CloseOnly);
+        }
+    }
+
+    #[test]
+    fn close_only_removal_never_touches_a_symbol_still_traded() {
+        let key = |list: &str| format!("gate_fr_arb01:fr_{list}:gate-margin_gate-futures");
+        let lists = |trade: &str| {
+            vec![
+                (
+                    key("dump_symbols"),
+                    Some(r#"["BGSCUSDT","ETHUSDT"]"#.to_string()),
+                ),
+                (
+                    key("unimmr_close_symbols"),
+                    Some(r#"["BGSCUSDT"]"#.to_string()),
+                ),
+                (key("fwd_trade_symbols"), Some(trade.to_string())),
+            ]
+        };
+        let plan = |scope, trade: &str| {
+            let rows = lists(trade);
+            plan_removal(&candidate(scope), rows.iter().map(|(k, v)| (k, v.clone()))).unwrap()
+        };
+        match plan(RemovalScope::CloseOnly, r#"["BGSCUSDT"]"#) {
+            RemovalPreparation::StillTraded { key: traded } => {
+                assert_eq!(traded, key("fwd_trade_symbols"))
+            }
+            other => panic!("expected StillTraded, got {other:?}"),
+        }
+        let RemovalPreparation::Plan(close_only) = plan(RemovalScope::CloseOnly, r#"["ETHUSDT"]"#)
+        else {
+            panic!("close-only lists should change");
+        };
+        assert_eq!(
+            close_only
+                .changes
+                .iter()
+                .map(|c| c.key.clone())
+                .collect::<Vec<_>>(),
+            vec![key("dump_symbols"), key("unimmr_close_symbols")]
+        );
+        let RemovalPreparation::Plan(all) = plan(RemovalScope::AllLists, r#"["BGSCUSDT"]"#) else {
+            panic!("all-lists removal should change");
+        };
+        assert_eq!(
+            all.changes.len(),
+            3,
+            "a fully delisted symbol leaves trade lists too"
+        );
+        assert!(matches!(
+            plan(RemovalScope::CloseOnly, "[]"),
+            RemovalPreparation::Plan(_)
+        ));
+        assert!(is_trade_list("mm_trade_symbols:binance-futures"));
+        assert!(is_trade_list("x:intra_bwd_trade_symbols:binance"));
+        assert!(!is_trade_list(
+            "x:fr_unimmr_close_symbols:gate-margin_gate-futures"
+        ));
     }
 
     #[test]
@@ -301,10 +522,17 @@ mod tests {
             BTreeMap::from([(account.slug.clone(), Ok(BTreeSet::from(["HEIUSDT".into()])))]);
         let mut listings = ListingIndex::default();
         listings.insert_test("bybit-margin", "BTCUSDT");
-        assert!(confirmed_removal_candidates(&[account.clone()], &listings, &universes).is_empty());
+        let none = risk(vec![]);
+        assert!(
+            confirmed_removal_candidates(&[account.clone()], &listings, &none, &universes)
+                .is_empty(),
+            "an unavailable futures catalog confirms nothing"
+        );
         listings.insert_test("bybit-futures", "BTCUSDT");
-        let candidates = confirmed_removal_candidates(&[account.clone()], &listings, &universes);
+        let candidates =
+            confirmed_removal_candidates(&[account.clone()], &listings, &none, &universes);
         assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].scope, RemovalScope::AllLists);
         assert_eq!(candidates[0].redis_site, "sg");
         assert_eq!(candidates[0].redis_keys.len(), 6);
         assert!(candidates[0]
@@ -316,7 +544,7 @@ mod tests {
             1
         );
         account.kind = "intra_exchange".into();
-        assert!(confirmed_removal_candidates(&[account], &listings, &universes).is_empty());
+        assert!(confirmed_removal_candidates(&[account], &listings, &none, &universes).is_empty());
     }
 
     #[test]
