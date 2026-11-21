@@ -1,6 +1,26 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新于 2026-11-20 13:45 UTC。**部署、迁移、下线任何绑核进程时，请同步更新本表。**
+最后更新于 2026-11-21 09:10 UTC。**部署、迁移、下线任何绑核进程时，请同步更新本表。**
+
+2026-11-21 08:52–09:05 UTC，JP 按标准 Binance FR 流程（`update-jp-meta-fr.sh`）依次重发
+`binance_fr_arb02`、`binance_fr_arb04` 的完整栈（`arbmm f1f4da86`，含 `0c02f9aa` 冷却与小额借币、
+`7ab80bc0` 撤单保留所借 USDT 及定时还款保留 2,000 USDT）。本地 release 构建一次，相关库测试全部通过；
+每盘先备份程序、脚本与日志，标准停机撤单核验为 0，发布 6 个二进制和 11 个脚本并 SHA-256 核对，
+启动基础进程后就绪检查（`free_trade`、合约限额 `missing_online=0`、买入能力快照、无 panic、
+配置哈希不变）通过再起信号。两盘非 BNB 残差与停机前一致（arb02 约 12U、arb04 约 45U），未做人工对齐。
+
+| 环境 | account_monitor | trade_engine | pre_trade | trade_signal | persist_manager | Viz | config_server |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| binance_fr_arb02 | 2189806 | 2189253 | 2189535 | 2190532 | 2188599 | 2188129 | 2187903 |
+| binance_fr_arb04 | 2201749 | 2201155 | 2201443 | 2202513 | 2200570 | 2200242 | 2200051 |
+
+persist_manager 仍 CPU15，其他组件 `0-5,48-95`；标准启动脚本把 config_server 起在 `0-5,48-95`，
+已就地恢复为原先的 `0-5`（与 arb03 一致）。FR dashboard 未重启（arb02 3184203、arb04 3180187）。
+arb04 停机前旧程序 08:55 整点还款把 2,199.20 可用 USDT 全部还掉；新程序启动还款因可用低于 2,000
+保留额跳过，信号恢复后 2 分钟内开仓发单 79 笔、拒单 0，借入 USDT 由 2,506 升至 3,623。
+arb02 账户开仓门控（`AccountOpenBlock`，可用约 1,705 USDT 低于 2,000 阈值）发布前全天已生效，
+发布后照旧阻断开仓，非本次引入。回执与回退：`~/<env>/run/f1f4da86_20261121T084526Z/`（`before/` 为原程序、脚本与日志）；
+本机 `data/ops/binance_fr_arb02_04_f1f4da86_20261121T084526Z/`。
 
 2026-11-20 13:43–13:45 UTC，JP 单独发布 Binance FR `binance_fr_arb03` 的
 `trade_engine` 和 `pre_trade`（`arbmm 7ab80bc0`）。暂停信号，连续两次确认交易所
