@@ -52,7 +52,7 @@ cd /home/ubuntu/yida_paper01
 正常停止先发送 `shutdown`，等待 SDK 尾部回报和持久化完成。
 
 应用亲和性：业务 CPU 0、SDK CPU 1、后台 CPU 3、NUMA 节点 0；persist_manager 与 Viz 在 CPU 3。
-交易端是云主机部署，`poll = { mode = "sleep", idle_us = 100000 }`，空闲时每 100 ms 唤醒一次，不自旋占用业务核。主机暴露 4 个不同 core ID，CPU 2 没有分配给该环境。没有修改内核 CPU 隔离或 IRQ 策略，不宣称独占物理核或实测低延迟。
+交易端是云主机部署，`poll = { mode = "sleep", idle_us = 100000 }`：空闲时挂起，原生回报或 L1 一到立即唤醒，最长 100 ms 检查一次 Manager 目标与超时，不自旋占用业务核。主机暴露 4 个不同 core ID，CPU 2 没有分配给该环境。没有修改内核 CPU 隔离或 IRQ 策略，不宣称独占物理核或实测低延迟。
 
 ## 数据与验证
 

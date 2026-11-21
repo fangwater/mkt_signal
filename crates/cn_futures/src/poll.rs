@@ -1,7 +1,10 @@
 //! Business-loop idle policy, matching crypto pre_trade's fast-poll split:
 //! `busy` for an isolated core (spin, then yield the slice; never sleep) and
-//! `sleep` for a shared host.
+//! `sleep` for a shared host. Sleep parks on the SDK callback queues, so market
+//! data, order and trade callbacks wake the loop at once; `idle_us` only bounds
+//! inputs that cannot wake it (network tasks, stdin commands, deadlines).
 use anyhow::{ensure, Result};
+use crossbeam_channel::Select;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -16,7 +19,8 @@ pub enum PollMode {
         #[serde(default = "default_spin")]
         spin: u32,
     },
-    /// Sleep `idle_us` after an iteration without work.
+    /// Park after an iteration without work until a registered SDK queue has an
+    /// event, or at most `idle_us`.
     Sleep { idle_us: u64 },
 }
 fn default_spin() -> u32 {
@@ -53,7 +57,10 @@ impl Idle {
         self.spins = 0;
     }
     /// The iteration found nothing to do.
-    pub fn wait(&mut self) {
+    /// Called after an iteration without work. `wake_on` registers the queues
+    /// whose events end a sleep; it runs only in sleep mode, so busy polling
+    /// pays nothing. Nothing is consumed: the loop drains as usual.
+    pub fn wait<'a>(&mut self, wake_on: impl FnOnce(&mut Select<'a>)) {
         match self.mode {
             PollMode::Busy { spin } => {
                 if self.spins < spin {
@@ -64,7 +71,12 @@ impl Idle {
                     std::thread::yield_now();
                 }
             }
-            PollMode::Sleep { idle_us } => std::thread::sleep(Duration::from_micros(idle_us)),
+            PollMode::Sleep { idle_us } => {
+                let mut select = Select::new();
+                wake_on(&mut select);
+                // Ready (or disconnected) queues return at once; none means a plain sleep.
+                let _ = select.ready_timeout(Duration::from_micros(idle_us));
+            }
         }
     }
 }
@@ -91,5 +103,45 @@ mod tests {
         assert!(PollMode::Sleep { idle_us: 2000 }.validate(1000).is_err());
         assert!(PollMode::Busy { spin: 0 }.validate(MAX_SLEEP_US).is_err());
         assert!(toml::from_str::<Wrapper>("poll = { mode = \"busy\", idle_us = 1 }").is_err());
+    }
+
+    #[test]
+    fn sleep_wakes_on_a_queued_event_and_otherwise_waits_out_idle_us() {
+        let (sender, events) = crossbeam_channel::bounded::<u8>(4);
+        let (_quiet_sender, quiet) = crossbeam_channel::bounded::<u64>(4);
+        let mut idle = Idle::new(PollMode::Sleep { idle_us: 100_000 });
+        let waker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5));
+            sender.send(7).unwrap();
+            sender
+        });
+        let started = std::time::Instant::now();
+        idle.wait(|select| {
+            select.recv(&quiet);
+            select.recv(&events);
+        });
+        assert!(
+            started.elapsed() < Duration::from_millis(80),
+            "woken by the event"
+        );
+        assert_eq!(events.try_recv(), Ok(7), "waiting consumes nothing");
+        let _sender = waker.join().unwrap();
+
+        let started = std::time::Instant::now();
+        let mut idle = Idle::new(PollMode::Sleep { idle_us: 20_000 });
+        idle.wait(|select| {
+            select.recv(&events);
+        });
+        assert!(
+            started.elapsed() >= Duration::from_millis(20),
+            "no event: full idle_us"
+        );
+    }
+
+    #[test]
+    fn busy_never_registers_queues() {
+        let mut idle = Idle::new(PollMode::Busy { spin: 1 });
+        idle.wait(|_| panic!("busy polling must not build a wait set"));
+        idle.wait(|_| panic!("busy polling must not build a wait set"));
     }
 }

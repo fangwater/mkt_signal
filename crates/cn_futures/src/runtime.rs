@@ -962,7 +962,12 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
             } else if wait_for_front && !transport_online {
                 std::thread::sleep(Duration::from_millis(10));
             } else {
-                idle.wait();
+                idle.wait(|select| {
+                    select.recv(&runtime.trader.events);
+                    if let Some(md) = &feed {
+                        md.wake_on(select);
+                    }
+                });
             }
         }
         Ok(())

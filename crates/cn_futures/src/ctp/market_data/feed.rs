@@ -94,6 +94,10 @@ impl Feed {
             && !self.native.failed.load(Ordering::Acquire)
             && !self.native.placement_fault.load(Ordering::Acquire)
     }
+    /// Registers the MD callback queue for the business loop's idle wait.
+    pub(crate) fn wake_on<'a>(&'a self, select: &mut crossbeam_channel::Select<'a>) {
+        select.recv(&self.native.events);
+    }
     pub fn has_backlog(&self) -> bool {
         !self.native.events.is_empty()
     }

@@ -594,7 +594,10 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
             if work {
                 idle.busy();
             } else {
-                idle.wait();
+                idle.wait(|select| {
+                    select.recv(&runtime.trader.events);
+                    select.recv(&runtime.trader.l1_events);
+                });
             }
         }
         Ok(())

@@ -64,7 +64,7 @@ SDK 注册主/备用前置并负责传输重连，每次重新连接仍重新认
 
 行情驱动交易采用[固定四核布局](ctp_layout.md)：行情消费、策略、风控、OMS 和报撤单调用共用一个业务核，Trader/Md SDK 各一核，后台 I/O 一核。两个配置的业务核、后台核和 NUMA 节点相同，SDK 核不同；合并检查四个域不共享 SMT 物理核。配置字段 `sdk_cpus` 和 `background_cpus` 均只允许一个 CPU。仍强制 `MPOL_BIND | MPOL_F_STATIC_NODES`，失败退出，不放宽策略。
 
-CTP 是单线程业务循环，与 crypto pre_trade 的 fast-poll 一样提供两种部署：`poll = { mode = "busy", spin = 2048 }`（默认）用于独占隔离核，空闲先自旋 `spin` 轮、再 `sched_yield` 一次，从不休眠；`poll = { mode = "sleep", idle_us = 64000 }` 用于共享主机，整轮无柜台回报、行情、目标或其他工作才休眠（1–100000 µs）。示例为 sleep 64 ms；实际唤醒时间受操作系统调度影响。旧的 `idle_sleep_us` 会被拒绝。`sync_before_send` 与交易端 `reconnect_backoff_ms` 已移除。持久化由同目录的独立 `persist_manager` 进程完成（与 crypto 对齐，异步推送、不回 ack，见[持久化说明](cn_order_persistence.md)）；完整对账后即发布 `reconciled` 并可交易，不等待落盘。
+CTP 是单线程业务循环，与 crypto pre_trade 的 fast-poll 一样提供两种部署：`poll = { mode = "busy", spin = 2048 }`（默认）用于独占隔离核，空闲先自旋 `spin` 轮、再 `sched_yield` 一次，从不休眠；`poll = { mode = "sleep", idle_us = 64000 }` 用于共享主机：整轮无工作时挂起在交易回报与行情的 SDK 回调队列上，回调一到立即唤醒（不消费，循环照常排空），否则最多等 `idle_us`（1–100000 µs）。因此行情、回报、成交不受 `idle_us` 影响；它只约束不能唤醒循环的输入：Manager gRPC 目标、stdin 命令和超时检查。实现与易达共用 `poll::Idle`，busy 模式不构造等待集合。旧的 `idle_sleep_us` 会被拒绝。`sync_before_send` 与交易端 `reconnect_backoff_ms` 已移除。持久化由同目录的独立 `persist_manager` 进程完成（与 crypto 对齐，异步推送、不回 ack，见[持久化说明](cn_order_persistence.md)）；完整对账后即发布 `reconciled` 并可交易，不等待落盘。
 
 高频回报仍使用 328 字节紧凑事件，928 字节控制响应池化，后台审计持有槽引用至序列化结束；尺寸为编译期结果。报撤单复用不可变模板，避免逐笔构造固定字段字符串。请求 ID 使用每页 1024 项直接索引，`preallocated_requests` 默认 16384，只是初始容量提示，仍保留迟到响应和跨会话歧义检查。
 

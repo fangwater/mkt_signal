@@ -67,7 +67,7 @@ stdout 即 trader 日志），`start` 先起持久化再起交易，`IPC_NAMESPA
 
 2026-11-21 两项调整：启动恢复只读打开 RocksDB 时会留下 flush/compaction 线程，原先在业务线程上创建，
 `placement_audit` 列出 `rocksdb:low` / `rocksdb:high` 两个入侵线程；现在恢复在后台 CPU 域内执行，线程落在 CPU 3，
-审计为空。云主机部署把 `poll` 改为 `{ mode = "sleep", idle_us = 100000 }`（100 ms，上限）。周六 08:52 换装重启，
+审计为空。云主机部署把 `poll` 改为 `{ mode = "sleep", idle_us = 100000 }`（100 ms，上限）；同日 sleep 改为挂起在 SDK 回调队列上、事件到达即唤醒，行情与回报不再等 100 ms。周六 08:52 换装重启，
 前置未开放时进程等待重连。
 
 ## 操作入口
