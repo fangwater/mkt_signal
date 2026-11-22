@@ -32,6 +32,21 @@ const LOAN_MAX_PATH: &str = "/api/v1/trading/rapidxLoan/loan/maxLoan";
 const LOAN_CONFIG_PATH: &str = "/api/v1/trading/rapidxLoan/loan/config";
 const LOAN_ORDERS_PATH: &str = "/api/v1/trading/rapidxLoan/loan/orders";
 const LOAN_REPAY_PATH: &str = "/api/v1/trading/rapidxLoan/loan/repay";
+const BORROWING_NOT_PERMITTED: i64 = 406019;
+
+#[derive(Debug)]
+pub struct LtpBorrowingNotPermitted;
+
+impl std::fmt::Display for LtpBorrowingNotPermitted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "RapidX loan info: margin borrowing not permitted ({BORROWING_NOT_PERMITTED})"
+        )
+    }
+}
+
+impl std::error::Error for LtpBorrowingNotPermitted {}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -555,13 +570,7 @@ impl LtpRestClient {
         anyhow::ensure!(status == 200, "RapidX financial HTTP status {status}");
         let response: Value =
             serde_json::from_str(&body).context("decode RapidX financial response")?;
-        anyhow::ensure!(
-            matches!(
-                response.get("code").and_then(Value::as_i64),
-                Some(200 | 200000)
-            ),
-            "RapidX financial response failed or missing code"
-        );
+        validate_financial_response(path, &response)?;
         Ok(response)
     }
 
@@ -630,6 +639,18 @@ impl LtpRestClient {
         })?;
         Ok((status, body))
     }
+}
+
+fn validate_financial_response(path: &str, response: &Value) -> Result<()> {
+    let code = response.get("code").and_then(Value::as_i64);
+    if path == LOAN_INFO_PATH && code == Some(BORROWING_NOT_PERMITTED) {
+        return Err(LtpBorrowingNotPermitted.into());
+    }
+    anyhow::ensure!(
+        matches!(code, Some(200 | 200000)),
+        "RapidX financial response failed or missing code: {code:?}"
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -1350,6 +1371,24 @@ fn ltp_order_state_to_exec_status(state: &str) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_loan_info_recognizes_the_borrowing_permission_denial() {
+        let denied =
+            json!({"code":406019,"message":"Margin borrowing not permitted for this account."});
+        assert!(validate_financial_response(LOAN_INFO_PATH, &denied)
+            .unwrap_err()
+            .is::<LtpBorrowingNotPermitted>());
+        assert!(!validate_financial_response(LOAN_MAX_PATH, &denied)
+            .unwrap_err()
+            .is::<LtpBorrowingNotPermitted>());
+        for unknown in [json!({"code":401000}), json!({"code":"406019"}), json!({})] {
+            assert!(!validate_financial_response(LOAN_INFO_PATH, &unknown)
+                .unwrap_err()
+                .is::<LtpBorrowingNotPermitted>());
+        }
+        assert!(validate_financial_response(LOAN_INFO_PATH, &json!({"code":200000})).is_ok());
+    }
     use crate::query_request::GenericQueryRequest;
     use mkt_parsers::msg::basic_account_msg::{
         BasicBalanceMsg, BasicPositionMsg, BasicUmUnrealizedMsg,

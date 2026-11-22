@@ -15,6 +15,15 @@ impl RecoveryReadiness {
     pub fn mark_complete(&mut self, channel: &str) {
         self.complete.insert(channel.into());
     }
+
+    pub fn mark_incomplete(&mut self, channel: &str) {
+        self.complete.remove(channel);
+    }
+
+    pub fn is_complete(&self, channel: &str) -> bool {
+        self.complete.contains(channel)
+    }
+
     pub fn is_ready(&self) -> bool {
         [
             "Assets",
@@ -26,7 +35,7 @@ impl RecoveryReadiness {
             "Executions",
         ]
         .iter()
-        .all(|channel| self.complete.contains(*channel))
+        .all(|channel| self.is_complete(channel))
     }
 }
 
@@ -201,6 +210,10 @@ mod tests {
         assert!(!readiness.is_ready());
         readiness.mark_complete("Executions");
         assert!(readiness.is_ready());
+        readiness.mark_incomplete("LoanInfo");
+        assert!(!readiness.is_ready());
+        assert!(readiness.is_complete("Accounts"));
+        assert!(readiness.is_complete("LoanCapacity"));
     }
 
     fn balance(scope: BasicAccountScope, coin: &str, wallet: f64, ts: i64) -> Bytes {

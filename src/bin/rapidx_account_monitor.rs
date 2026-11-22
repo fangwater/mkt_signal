@@ -21,7 +21,7 @@ use trade_engine::ltp_account::{parse_account_push, parse_order_push, PositionSn
 use trade_engine::ltp_delivery::Delivery;
 use trade_engine::ltp_finance::PortfolioFinancialSnapshot;
 use trade_engine::ltp_outbox::{DeliveryStore, Fact, Identity};
-use trade_engine::ltp_rest::LtpRestClient;
+use trade_engine::ltp_rest::{LtpBorrowingNotPermitted, LtpRestClient};
 use trade_engine::ltp_snapshot::{AccountSnapshotState, RecoveryReadiness};
 use trade_engine::ltp_statement::STATEMENT_REQUEST_INTERVAL;
 use trade_engine::ltp_ws::{LtpCredentials, LtpWsResponse, DEFAULT_WS_URL};
@@ -53,6 +53,7 @@ struct Forwarder {
     assets: AccountSnapshotState,
     readiness: RecoveryReadiness,
     financial: PortfolioFinancialSnapshot,
+    borrowing_not_permitted: bool,
     last_risk_timestamp: i64,
 }
 
@@ -191,11 +192,20 @@ impl Forwarder {
 
     fn publish_financial(&mut self) -> Result<()> {
         let pending = &self.delivery.store.state().pending;
+        // A verified account snapshot is also useful while trading risk is held
+        // at its fail-closed value. Keep its observation time across heartbeats.
+        let equity = self
+            .financial
+            .total_equity
+            .as_deref()
+            .filter(|_| self.readiness.is_complete("Accounts"));
         let body = serde_json::to_vec(&json!({
             "portfolio":self.portfolio,"exchange":self.exchange,
             "published_ms":chrono::Utc::now().timestamp_millis(),
             "recovery_ready":self.readiness.is_ready(),
             "accounts_observed_ms":self.financial.source_observed_ms.get("Accounts"),
+            "equity_usdt":equity,
+            "borrowing_not_permitted":self.borrowing_not_permitted,
             "frozen_margin":self.financial.frozen_margin,
             "execution_persistence_pending":pending.values().filter(|f| matches!(f, Fact::Execution(_) | Fact::Role(_))).count(),
             "statement_persistence_pending":pending.values().filter(|f| matches!(f, Fact::Statement(_))).count(),
@@ -238,6 +248,7 @@ impl Forwarder {
                 let now = chrono::Utc::now().timestamp_millis();
                 if channel == "LoanInfo" {
                     self.financial.apply_loan_info(&response, now)?;
+                    self.borrowing_not_permitted = false;
                     if self.financial.loan_status.as_deref() != Some("NORMAL") {
                         self.publish_invalid_risk()?;
                     }
@@ -245,6 +256,16 @@ impl Forwarder {
                     self.financial.apply_loan_capacity(&response, now)?;
                 }
                 self.readiness.mark_complete(channel);
+            }
+            Refresh::BorrowingNotPermitted => {
+                self.readiness.mark_incomplete("LoanInfo");
+                self.financial.loan_status = None;
+                if !std::mem::replace(&mut self.borrowing_not_permitted, true) {
+                    log::warn!(
+                        "RapidX margin borrowing not permitted; account observation continues"
+                    );
+                    self.publish_invalid_risk()?;
+                }
             }
             Refresh::Executions(end, rows) => {
                 for chunk in rows.chunks(64) {
@@ -295,8 +316,19 @@ impl Forwarder {
 enum Refresh {
     Account(String, i64),
     Financial(&'static str, Value),
+    BorrowingNotPermitted,
     Statements(i64, Vec<StatementRecord>),
     Executions(i64, Vec<Value>),
+}
+
+impl Refresh {
+    fn loan_info(response: Result<Value>) -> Result<Self> {
+        match response {
+            Ok(value) => Ok(Self::Financial("LoanInfo", value)),
+            Err(error) if error.is::<LtpBorrowingNotPermitted>() => Ok(Self::BorrowingNotPermitted),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 async fn refresh_accounts(
@@ -323,10 +355,7 @@ async fn refresh_accounts(
                     Err(error) => Err(error).context("RapidX complete account snapshot deadline"),
                 }
             }
-            3 => rest
-                .fetch_loan_info()
-                .await
-                .map(|value| Refresh::Financial("LoanInfo", value)),
+            3 => Refresh::loan_info(rest.fetch_loan_info().await),
             _ => rest
                 .fetch_loan_capacity(exchange)
                 .await
@@ -471,6 +500,7 @@ async fn main() -> Result<()> {
             rest.portfolio_id().into(),
             wire_exchange.into(),
         )?,
+        borrowing_not_permitted: false,
         last_risk_timestamp: 0,
     };
     let url = std::env::var("LTP_WS_URL").unwrap_or_else(|_| DEFAULT_WS_URL.to_string());
@@ -586,7 +616,20 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::decode_private_push;
+    use super::*;
+
+    #[test]
+    fn loan_permission_denial_does_not_end_account_refresh() {
+        assert!(matches!(
+            Refresh::loan_info(Err(LtpBorrowingNotPermitted.into())),
+            Ok(Refresh::BorrowingNotPermitted)
+        ));
+        assert!(matches!(
+            Refresh::loan_info(Ok(json!({"code": 200000}))),
+            Ok(Refresh::Financial("LoanInfo", _))
+        ));
+        assert!(Refresh::loan_info(Err(anyhow::anyhow!("financial HTTP failure"))).is_err());
+    }
 
     #[test]
     fn empty_private_frames_are_ignored() {
