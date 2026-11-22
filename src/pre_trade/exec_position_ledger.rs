@@ -1,7 +1,9 @@
 use crate::pre_trade::exec_algorithm_switch::{ExecAlgorithmSwitch, ExecFamily, ExecSwitchState};
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::PersistChannel;
-use crate::strategy::batch_exec_strategy::BatchExecStrategy;
+use crate::strategy::batch_exec_strategy::{
+    BatchExecStrategy, BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
+};
 use crate::strategy::chase_exec_strategy::ChaseExecStrategy;
 use crate::strategy::StrategyManager;
 use anyhow::{Context, Result};
@@ -19,6 +21,9 @@ use trade_signal::MktChannel;
 const POSITION_LEDGER_VERSION: u32 = 1;
 const POSITION_EPS: f64 = 1e-10;
 const CROSS_MAX_QUOTE_AGE_US: i64 = 5_000_000;
+const BNB_RESERVE_CLOSE_DUST_MAX: f64 = 0.00001;
+pub(super) const BNB_RESERVE_STRATEGY: &str = "SYSTEM_BNB_RESERVE";
+pub(super) const BNB_RESERVE_SYMBOL: &str = "BNBUSDC";
 
 #[derive(Clone)]
 struct CrossCandidate {
@@ -322,6 +327,45 @@ impl ExecPositionLedger {
             .copied()
     }
 
+    pub(super) fn has_bnb_reserve(&self, venue: TradingVenue) -> bool {
+        venue == TradingVenue::BinanceFutures
+            && self
+                .positions
+                .get(BNB_RESERVE_STRATEGY)
+                .is_some_and(|positions| {
+                    positions
+                        .get(BNB_RESERVE_SYMBOL)
+                        .is_some_and(|qty| *qty < -POSITION_EPS)
+                        && positions.iter().all(|(symbol, qty)| {
+                            symbol == BNB_RESERVE_SYMBOL || qty.abs() <= POSITION_EPS
+                        })
+                })
+    }
+
+    pub(super) fn bnb_reserve_close_dust(&self) -> f64 {
+        self.get(BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME, BNB_RESERVE_SYMBOL)
+            .unwrap_or(0.0)
+    }
+
+    pub(super) fn validate_bnb_reserve_ownership(&self, family: ExecFamily) -> Result<()> {
+        for (name, positions) in &self.positions {
+            let qty = positions.get(BNB_RESERVE_SYMBOL).copied().unwrap_or(0.0);
+            let allowed = if name == BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME {
+                qty.abs() <= BNB_RESERVE_CLOSE_DUST_MAX
+            } else {
+                (family == ExecFamily::BatchExec && name == BNB_RESERVE_STRATEGY)
+                    || qty.abs() <= POSITION_EPS
+            };
+            anyhow::ensure!(
+                allowed,
+                "BNBUSDC reserve ownership conflict: family={} strategy={} qty={qty:.8}",
+                family.namespace(),
+                name
+            );
+        }
+        Ok(())
+    }
+
     pub(super) fn set(&mut self, strategy_name: &str, symbol: &str, qty: f64) {
         self.positions
             .entry(strategy_name.to_string())
@@ -365,6 +409,14 @@ impl ExecPositionLedger {
         self.positions.remove(strategy_name);
         self.inverse_notionals.remove(strategy_name);
     }
+}
+
+pub(super) fn bnb_reserve_position_matches(account_qty: f64, owned_qty: f64) -> bool {
+    // Account snapshots were published as f32. Allow the measured rounding
+    // error without modifying either the reserve quantity or close dust.
+    let tolerance = (account_qty.abs() * 2.0 * f64::from(f32::EPSILON))
+        .clamp(POSITION_EPS, BNB_RESERVE_CLOSE_DUST_MAX);
+    (account_qty - owned_qty).abs() <= tolerance
 }
 
 pub(crate) fn inverse_notional_to_base(
@@ -561,6 +613,51 @@ pub(super) fn family_account_qty(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bnb_reserve_recovery_preserves_trade04_rounding_dust_and_checks_ownership() {
+        let mut batch = ExecPositionLedger::empty();
+        batch.set(BNB_RESERVE_STRATEGY, BNB_RESERVE_SYMBOL, -25.499_999_99);
+        batch.set(
+            BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
+            BNB_RESERVE_SYMBOL,
+            -1.000_000_082_740_371e-8,
+        );
+        assert!(batch.has_bnb_reserve(TradingVenue::BinanceFutures));
+        assert!(!batch.has_bnb_reserve(TradingVenue::BinanceMargin));
+        let reserve_qty = batch.get(BNB_RESERVE_STRATEGY, BNB_RESERVE_SYMBOL).unwrap();
+        let close_dust = batch.bnb_reserve_close_dust();
+        assert!(close_dust.abs() > POSITION_EPS);
+        assert!(bnb_reserve_position_matches(
+            -25.5,
+            reserve_qty + close_dust
+        ));
+        assert!(!bnb_reserve_position_matches(
+            -25.49,
+            reserve_qty + close_dust
+        ));
+        batch
+            .validate_bnb_reserve_ownership(ExecFamily::BatchExec)
+            .unwrap();
+        assert!(batch
+            .validate_bnb_reserve_ownership(ExecFamily::ChaseExec)
+            .is_err());
+        batch.set("ordinary_cta", BNB_RESERVE_SYMBOL, -0.1);
+        assert!(batch
+            .validate_bnb_reserve_ownership(ExecFamily::BatchExec)
+            .is_err());
+    }
+
+    #[test]
+    fn bnb_reserve_recovery_requires_the_bnbusdc_hedge_only() {
+        let mut ledger = ExecPositionLedger::empty();
+        assert!(!ledger.has_bnb_reserve(TradingVenue::BinanceFutures));
+        ledger.set(BNB_RESERVE_STRATEGY, BNB_RESERVE_SYMBOL, -26.0);
+        ledger.set(BNB_RESERVE_STRATEGY, "BNBUSDT", 0.0);
+        assert!(ledger.has_bnb_reserve(TradingVenue::BinanceFutures));
+        ledger.set(BNB_RESERVE_STRATEGY, "BNBUSDT", -1.0);
+        assert!(!ledger.has_bnb_reserve(TradingVenue::BinanceFutures));
+    }
 
     #[test]
     fn subtracts_only_the_other_familys_position() {

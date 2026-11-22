@@ -2,8 +2,9 @@ use crate::pre_trade::exec_algorithm_switch::{
     active_names_key, load_switches, switch_key, ExecAlgorithmSwitch, ExecFamily, ExecSwitchState,
 };
 use crate::pre_trade::exec_position_ledger::{
-    current_family_positions, family_account_qty, other_family_positions, outgoing_switch_symbols,
-    ExecPositionLedger,
+    bnb_reserve_position_matches, current_family_positions, family_account_qty,
+    other_family_positions, outgoing_switch_symbols, ExecPositionLedger, BNB_RESERVE_STRATEGY,
+    BNB_RESERVE_SYMBOL,
 };
 use crate::pre_trade::PersistChannel;
 use crate::strategy::batch_exec_strategy::{
@@ -144,6 +145,7 @@ pub struct BatchExecConfigReloader {
     leverage_blocked_symbols: BTreeSet<String>,
     snapshots: BTreeMap<String, BatchExecRedisValue>,
     position_ledger: Option<BatchExecPositionLedger>,
+    preserves_bnb_reserve: bool,
     pending_removals: BTreeSet<String>,
     pending_ledger_removals: BTreeSet<String>,
     removal_configs: BTreeMap<String, BatchExecConfig>,
@@ -734,6 +736,7 @@ impl BatchExecConfigReloader {
             leverage_blocked_symbols: BTreeSet::new(),
             snapshots: BTreeMap::new(),
             position_ledger: None,
+            preserves_bnb_reserve: false,
             pending_removals: BTreeSet::new(),
             pending_ledger_removals: BTreeSet::new(),
             removal_configs: BTreeMap::new(),
@@ -745,6 +748,10 @@ impl BatchExecConfigReloader {
 
     fn redis_key(strategy_name: &str) -> String {
         format!("batch_exec:{strategy_name}")
+    }
+
+    pub fn preserves_bnb_reserve(&self) -> bool {
+        self.preserves_bnb_reserve
     }
 
     fn close_config_for_symbol(&self, symbol: &str) -> BatchExecConfig {
@@ -782,6 +789,15 @@ impl BatchExecConfigReloader {
         ledger.validate().with_context(|| {
             format!("invalid BatchExec position ledger key={POSITION_LEDGER_KEY}")
         })?;
+        self.preserves_bnb_reserve = ledger.has_bnb_reserve(self.venue);
+        if self.preserves_bnb_reserve {
+            ledger.validate_bnb_reserve_ownership(ExecFamily::BatchExec)?;
+            info!(
+                "BatchExec protecting reserved BNBUSDC: ledger_qty={:?} close_dust={:.10}",
+                ledger.get(BNB_RESERVE_STRATEGY, BNB_RESERVE_SYMBOL),
+                ledger.bnb_reserve_close_dust()
+            );
+        }
         info!(
             "BatchExec position ledger loaded: strategies={} updated_at_us={}",
             ledger.positions.len(),
@@ -884,6 +900,9 @@ impl BatchExecConfigReloader {
         let mut changed = false;
         for (strategy_name, positions) in &incoming {
             for (symbol, qty) in positions {
+                if self.preserves_bnb_reserve && symbol == BNB_RESERVE_SYMBOL {
+                    continue;
+                }
                 if ledger.get_for_venue(self.venue, strategy_name, symbol) != Some(*qty) {
                     ledger.set_for_venue(self.venue, strategy_name, symbol, *qty)?;
                     changed = true;
@@ -1289,6 +1308,9 @@ impl BatchExecConfigReloader {
     ) -> usize {
         let mut applied = 0usize;
         for symbol in symbols {
+            if self.preserves_bnb_reserve && symbol == BNB_RESERVE_SYMBOL {
+                continue;
+            }
             let strategy_id = strategy_mgr
                 .borrow_mut()
                 .ensure_batch_exec_strategy_for_normalized_symbol(
@@ -1597,6 +1619,7 @@ impl BatchExecConfigReloader {
         &mut self,
         strategy_mgr: &Rc<RefCell<StrategyManager>>,
         switches: &BTreeMap<String, ExecAlgorithmSwitch>,
+        bnb_reserve_has_target: bool,
     ) -> Result<usize> {
         self.load_position_ledger().await?;
         if !crate::pre_trade::monitor_channel::MonitorChannel::instance()
@@ -1656,7 +1679,9 @@ impl BatchExecConfigReloader {
 
         let mut missing_close_symbols = BTreeSet::new();
         for (symbol, group) in &groups {
-            if settling_symbols.contains(symbol) {
+            if settling_symbols.contains(symbol)
+                || (self.preserves_bnb_reserve && symbol == BNB_RESERVE_SYMBOL)
+            {
                 continue;
             }
             let symbol_not_tradable = monitor
@@ -1723,6 +1748,27 @@ impl BatchExecConfigReloader {
                 &other_positions,
                 &symbol,
             );
+            if self.preserves_bnb_reserve && symbol == BNB_RESERVE_SYMBOL {
+                // The reserve is the only executable owner. Keep the legacy
+                // close dust in the ledger and never generate a residual order.
+                if let [reserve] = group.as_slice() {
+                    let owned_qty = reserve.position_qty
+                        + self
+                            .position_ledger
+                            .as_ref()
+                            .map_or(0.0, |ledger| ledger.bnb_reserve_close_dust());
+                    if bnb_reserve_has_target
+                        && reserve.strategy_name == BNB_RESERVE_STRATEGY
+                        && reserve.reconciliation_settled
+                        && !reserve.missing_position
+                        && !reserve.allocation_ready
+                        && bnb_reserve_position_matches(account_position_qty, owned_qty)
+                    {
+                        plans.extend(group);
+                    }
+                }
+                continue;
+            }
             let needs_initialization = group.iter().any(|candidate| !candidate.allocation_ready);
             let can_initialize = !group.iter().any(|candidate| candidate.execution_in_flight)
                 && !group.iter().any(|candidate| {
@@ -2097,6 +2143,14 @@ impl BatchExecConfigReloader {
         self.load_position_ledger().await?;
         let mut applied = 0usize;
         let switches = load_switches(&mut self.client).await?;
+        if self.preserves_bnb_reserve {
+            anyhow::ensure!(
+                switches
+                    .get(BNB_RESERVE_STRATEGY)
+                    .is_none_or(|switch| switch.state == ExecSwitchState::Completed),
+                "cannot switch execution family for the protected BNB reserve"
+            );
+        }
         self.switching_out_symbols = self.requested_switch_symbols(strategy_mgr, &switches);
         Self::begin_requested_switches(strategy_mgr, self.venue, &switches);
         let incoming_positions = self.import_ready_switches(&switches).await?;
@@ -2120,6 +2174,9 @@ impl BatchExecConfigReloader {
                 anyhow::bail!("duplicate strategy_name in {REMOVED_STRATEGY_NAMES_KEY}: {name}");
             }
         }
+        if self.preserves_bnb_reserve && removal_requests.remove(BNB_RESERVE_STRATEGY) {
+            warn!("BatchExec ignored removal request for the protected BNB reserve");
+        }
         let mut active_names = BTreeSet::new();
         for name in strategy_names {
             validate_config_strategy_name(&name)?;
@@ -2140,6 +2197,7 @@ impl BatchExecConfigReloader {
         }
 
         let mut loaded = Vec::new();
+        let mut bnb_reserve_has_target = false;
         for strategy_name in active_names.iter().cloned() {
             let key = Self::redis_key(&strategy_name);
             let payload = self
@@ -2153,6 +2211,9 @@ impl BatchExecConfigReloader {
                     .with_context(|| format!("invalid Exec target market key={key}"))?,
                 None => {
                     warn!("BatchExec Redis key missing: {}", key);
+                    if self.preserves_bnb_reserve && strategy_name == BNB_RESERVE_STRATEGY {
+                        continue;
+                    }
                     self.snapshots
                         .get(&strategy_name)
                         .cloned()
@@ -2183,6 +2244,7 @@ impl BatchExecConfigReloader {
             let mut normalized_targets = payload
                 .normalized_targets()
                 .with_context(|| format!("invalid BatchExec targets key={key}"))?;
+            let explicit_bnb_target = normalized_targets.get(BNB_RESERVE_SYMBOL).copied();
             if let Some(positions) = self
                 .position_ledger
                 .as_ref()
@@ -2199,6 +2261,19 @@ impl BatchExecConfigReloader {
                     normalized_targets
                         .entry(symbol.clone())
                         .or_insert(BatchExecTarget::ZERO);
+                }
+            }
+            if self.preserves_bnb_reserve {
+                if strategy_name == BNB_RESERVE_STRATEGY {
+                    bnb_reserve_has_target = explicit_bnb_target.is_some_and(|target| {
+                        !target.clear && target.qty <= 0.0 && target.signal == 0
+                    });
+                    if explicit_bnb_target.is_some() && !bnb_reserve_has_target {
+                        warn!("BatchExec ignored invalid target for the protected BNB reserve");
+                    }
+                }
+                if strategy_name != BNB_RESERVE_STRATEGY || !bnb_reserve_has_target {
+                    normalized_targets.remove(BNB_RESERVE_SYMBOL);
                 }
             }
             let normalized_symbol_overrides = payload
@@ -2218,6 +2293,22 @@ impl BatchExecConfigReloader {
                 normalized_targets,
                 normalized_symbol_overrides,
             ));
+        }
+
+        if self.preserves_bnb_reserve && !bnb_reserve_has_target {
+            let mut manager = strategy_mgr.borrow_mut();
+            if let Some(strategy_id) = manager.find_batch_exec_strategy_id_for_normalized_symbol(
+                BNB_RESERVE_STRATEGY,
+                BNB_RESERVE_SYMBOL,
+                self.venue,
+            ) {
+                if let Some(mut strategy) = manager.take(strategy_id) {
+                    if let Some(exec) = strategy.as_any_mut().downcast_mut::<BatchExecStrategy>() {
+                        exec.begin_position_reallocation();
+                    }
+                    manager.insert(strategy);
+                }
+            }
         }
 
         let required_leverage_symbols = loaded
@@ -2249,6 +2340,11 @@ impl BatchExecConfigReloader {
             let mut symbols = BTreeSet::new();
             symbols.extend(targets.keys().cloned());
             symbols.extend(previous_targets.keys().cloned());
+            if self.preserves_bnb_reserve
+                && (strategy_name != BNB_RESERVE_STRATEGY || !bnb_reserve_has_target)
+            {
+                symbols.remove(BNB_RESERVE_SYMBOL);
+            }
 
             for symbol in symbols {
                 self.close_configs
@@ -2349,6 +2445,9 @@ impl BatchExecConfigReloader {
         self.switching_out_symbols = self.requested_switch_symbols(strategy_mgr, &switches);
 
         let mut ledger_exemptions = removal_requests.clone();
+        if self.preserves_bnb_reserve {
+            ledger_exemptions.insert(BNB_RESERVE_STRATEGY.to_string());
+        }
         ledger_exemptions.extend(
             switches
                 .iter()
@@ -2387,7 +2486,7 @@ impl BatchExecConfigReloader {
         applied += self.ensure_position_close_strategies(strategy_mgr, &persisted_close_symbols);
 
         applied += self
-            .reconcile_position_allocations(strategy_mgr, &switches)
+            .reconcile_position_allocations(strategy_mgr, &switches, bnb_reserve_has_target)
             .await?;
         applied += self
             .advance_requested_switches(strategy_mgr, &switches)

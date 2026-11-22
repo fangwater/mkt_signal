@@ -1131,6 +1131,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                         batch_redis,
                         *venue,
                         binance_account_mode,
+                        reloader.preserves_bnb_reserve(),
                     )
                     .await?;
                     chase_reloader.reload(&strategy_mgr).await?;

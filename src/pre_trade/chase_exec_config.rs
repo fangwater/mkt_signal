@@ -3,7 +3,7 @@ use crate::pre_trade::exec_algorithm_switch::{
 };
 use crate::pre_trade::exec_position_ledger::{
     current_family_positions, family_account_qty, other_family_positions, outgoing_switch_symbols,
-    ExecPositionLedger,
+    ExecPositionLedger, BNB_RESERVE_SYMBOL,
 };
 use crate::pre_trade::PersistChannel;
 use crate::strategy::batch_exec_strategy::BatchExecTarget;
@@ -145,6 +145,7 @@ pub struct ChaseExecConfigReloader {
     leverage_blocked_symbols: BTreeSet<String>,
     snapshots: BTreeMap<String, ChaseExecRedisValue>,
     position_ledger: Option<ChaseExecPositionLedger>,
+    preserves_bnb_reserve: bool,
     pending_removals: BTreeSet<String>,
     pending_ledger_removals: BTreeSet<String>,
     removal_configs: BTreeMap<String, ChaseExecConfig>,
@@ -575,6 +576,7 @@ impl ChaseExecConfigReloader {
         redis: RedisSettings,
         venue: TradingVenue,
         binance_account_mode: Option<BinanceAccountMode>,
+        preserves_bnb_reserve: bool,
     ) -> Result<Self> {
         crate::pre_trade::leverage_guard::binance_fallback::spawn(
             redis.clone(),
@@ -609,6 +611,7 @@ impl ChaseExecConfigReloader {
             leverage_blocked_symbols: BTreeSet::new(),
             snapshots: BTreeMap::new(),
             position_ledger: None,
+            preserves_bnb_reserve,
             pending_removals: BTreeSet::new(),
             pending_ledger_removals: BTreeSet::new(),
             removal_configs: BTreeMap::new(),
@@ -656,6 +659,9 @@ impl ChaseExecConfigReloader {
         ledger.validate().with_context(|| {
             format!("invalid ChaseExec position ledger key={POSITION_LEDGER_KEY}")
         })?;
+        if self.preserves_bnb_reserve {
+            ledger.validate_bnb_reserve_ownership(ExecFamily::ChaseExec)?;
+        }
         info!(
             "ChaseExec position ledger loaded: strategies={} updated_at_us={}",
             ledger.positions.len(),
@@ -758,6 +764,9 @@ impl ChaseExecConfigReloader {
         let mut changed = false;
         for (strategy_name, positions) in &incoming {
             for (symbol, qty) in positions {
+                if self.preserves_bnb_reserve && symbol == BNB_RESERVE_SYMBOL {
+                    continue;
+                }
                 if ledger.get_for_venue(self.venue, strategy_name, symbol) != Some(*qty) {
                     ledger.set_for_venue(self.venue, strategy_name, symbol, *qty)?;
                     changed = true;
@@ -1153,6 +1162,9 @@ impl ChaseExecConfigReloader {
     ) -> usize {
         let mut applied = 0usize;
         for symbol in symbols {
+            if self.preserves_bnb_reserve && symbol == BNB_RESERVE_SYMBOL {
+                continue;
+            }
             let strategy_id = strategy_mgr
                 .borrow_mut()
                 .ensure_chase_exec_strategy_for_normalized_symbol(
@@ -1958,6 +1970,9 @@ impl ChaseExecConfigReloader {
                         .or_insert(BatchExecTarget::ZERO);
                 }
             }
+            if self.preserves_bnb_reserve {
+                normalized_targets.remove(BNB_RESERVE_SYMBOL);
+            }
             let normalized_symbol_overrides = payload
                 .normalized_symbol_overrides()
                 .with_context(|| format!("invalid ChaseExec symbol overrides key={key}"))?;
@@ -2006,6 +2021,9 @@ impl ChaseExecConfigReloader {
             let mut symbols = BTreeSet::new();
             symbols.extend(targets.keys().cloned());
             symbols.extend(previous_targets.keys().cloned());
+            if self.preserves_bnb_reserve {
+                symbols.remove(BNB_RESERVE_SYMBOL);
+            }
 
             for symbol in symbols {
                 self.close_configs
