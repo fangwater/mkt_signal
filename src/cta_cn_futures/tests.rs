@@ -777,6 +777,10 @@ async fn native_panel_reads_without_authorization_but_protects_configuration_wri
 }
 
 fn live_context() -> super::live::Context {
+    session_context(&[(21 * 3600, 3600)])
+}
+
+fn session_context(windows: &[(u32, u32)]) -> super::live::Context {
     use cn_market_proto::*;
     super::live::Context::new(
         cn_futures_core::session::Exchange::Xsge,
@@ -795,14 +799,107 @@ fn live_context() -> super::live::Context {
             snapshot_as_of: "2026-11-01".into(),
             products: vec![ProductSessions {
                 product: "SN".into(),
-                windows: vec![SessionWindow {
-                    begin_sec: 21 * 3600,
-                    end_sec: 3600,
-                }],
+                windows: windows
+                    .iter()
+                    .map(|&(begin_sec, end_sec)| SessionWindow { begin_sec, end_sec })
+                    .collect(),
             }],
         },
     )
     .unwrap()
+}
+
+fn shanghai_ms(local: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(&format!("{local}+08:00"))
+        .unwrap()
+        .timestamp_millis()
+}
+
+#[test]
+fn weekend_session_times_are_not_trading_minutes() {
+    let context = session_context(&[(9 * 3600, 10 * 3600 + 900), (21 * 3600, 3600)]);
+    // Friday night and its after-midnight tail on Saturday trade.
+    assert!(context.allows(shanghai_ms("2026-11-20T21:30:00")));
+    assert!(context.allows(shanghai_ms("2026-11-21T00:30:00")));
+    // Saturday day/night and Sunday's night tail on Monday do not.
+    assert!(!context.allows(shanghai_ms("2026-11-21T09:00:00")));
+    assert!(!context.allows(shanghai_ms("2026-11-21T21:30:00")));
+    assert!(!context.allows(shanghai_ms("2026-11-22T09:30:00")));
+    assert!(!context.allows(shanghai_ms("2026-11-23T00:30:00")));
+    // Monday day and night trade again.
+    assert!(context.allows(shanghai_ms("2026-11-23T09:00:00")));
+    assert!(context.allows(shanghai_ms("2026-11-23T21:30:00")));
+}
+
+#[test]
+fn friday_night_close_has_no_overdue_minute_over_the_weekend() {
+    let context = session_context(&[(9 * 3600, 10 * 3600 + 900), (21 * 3600, 3600)]);
+    let main = Dominant {
+        contract: "sn2612".into(),
+        trading_day: 20261123,
+        source_trading_day: 20261120,
+        scheduled_next: "sn2612".into(),
+        secondary: None,
+        secondary_next: None,
+    };
+    let start = shanghai_ms("2026-11-21T00:58:00");
+    let mut input = super::live::Input::new(context, 1., start);
+    let mut volume = 100;
+    // Snapshots every 500 ms through the 01:00 close of Friday's night session.
+    for slot in 1..=240 {
+        volume += 1;
+        let super::live::Event::Quote(mut q) = quote(start + slot * 500, volume) else {
+            unreachable!()
+        };
+        q.trading_day = 20261123;
+        q.action_day = 20261120;
+        input.observe(super::live::Event::Quote(q), &main).unwrap();
+    }
+    // Saturday 09:00 used to be reported missing after the close grace period.
+    assert_eq!(
+        input.overdue_minute(shanghai_ms("2026-11-21T10:30:00")),
+        None
+    );
+    assert_eq!(
+        input.overdue_minute(shanghai_ms("2026-11-22T23:30:00")),
+        None
+    );
+    // Monday morning belongs to the same trading day and is due again.
+    assert_eq!(
+        input.overdue_minute(shanghai_ms("2026-11-23T09:02:00")),
+        Some(shanghai_ms("2026-11-23T09:00:00"))
+    );
+}
+
+#[test]
+fn day_close_has_no_overdue_minute_in_the_next_trading_day() {
+    let context = session_context(&[(9 * 3600, 10 * 3600 + 900), (21 * 3600, 3600)]);
+    let main = Dominant {
+        contract: "sn2612".into(),
+        trading_day: 20261120,
+        source_trading_day: 20261119,
+        scheduled_next: "sn2612".into(),
+        secondary: None,
+        secondary_next: None,
+    };
+    let start = shanghai_ms("2026-11-20T10:13:00");
+    let mut input = super::live::Input::new(context, 1., start);
+    let mut volume = 100;
+    for slot in 1..=240 {
+        volume += 1;
+        let super::live::Event::Quote(mut q) = quote(start + slot * 500, volume) else {
+            unreachable!()
+        };
+        q.trading_day = 20261120;
+        q.action_day = 20261120;
+        input.observe(super::live::Event::Quote(q), &main).unwrap();
+    }
+    // Friday 21:00 opens trading day 20261123 (also the case before a holiday);
+    // it starts with that day's first quote, not as this day's overdue minute.
+    assert_eq!(
+        input.overdue_minute(shanghai_ms("2026-11-20T21:30:00")),
+        None
+    );
 }
 
 #[test]

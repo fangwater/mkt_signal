@@ -194,8 +194,22 @@ impl Context {
             .get(&month)
             .with_context(|| format!("gRPC has no applicable size thresholds for {month}"))
     }
+    /// A continuous-trading minute: inside a session window and on a weekday
+    /// session. The windows are time-of-day only; without the weekday rule a
+    /// weekend (Saturday 09:00) would count as a due minute that Market Replay
+    /// can never fill. Holidays still need a calendar.
     pub(super) fn allows(&self, ts_ms: i64) -> bool {
-        let sec = shanghai(ts_ms / 1000).time().num_seconds_from_midnight();
+        let local = shanghai(ts_ms / 1000);
+        let sec = local.time().num_seconds_from_midnight();
+        // After-midnight minutes continue the previous evening's night session.
+        let session_date = if sec < AFTER_MIDNIGHT_END_SEC {
+            local.date_naive().pred_opt()
+        } else {
+            Some(local.date_naive())
+        };
+        if session_date.is_none_or(|date| date.weekday().number_from_monday() > 5) {
+            return false;
+        }
         self.windows.iter().any(|w| {
             if w.begin_sec < w.end_sec {
                 w.begin_sec <= sec && sec < w.end_sec
@@ -210,6 +224,21 @@ impl Context {
             .num_seconds_from_midnight();
         self.windows.iter().any(|w| w.end_sec % 86400 == sec)
     }
+}
+/// Night sessions end by 02:30; earlier minutes belong to the previous evening.
+const AFTER_MIDNIGHT_END_SEC: u32 = 6 * 3600;
+/// Day sessions end by 15:15; later minutes open the next trading day.
+const DAY_SESSION_END_SEC: u32 = 18 * 3600;
+
+/// End (exclusive) of trading day `day` (YYYYMMDD): 18:00 Shanghai on that date.
+fn trading_day_end_ms(day: u32) -> Option<i64> {
+    let date = NaiveDate::from_ymd_opt((day / 10_000) as i32, day / 100 % 100, day % 100)?;
+    let local = date.and_hms_opt(DAY_SESSION_END_SEC / 3600, 0, 0)?;
+    Some(
+        (local - chrono::Duration::hours(8))
+            .and_utc()
+            .timestamp_millis(),
+    )
 }
 /// A bar sealed from both contracts' final snapshot slots closes up to one
 /// snapshot interval before its end on the wall clock; still treat it as live.
@@ -539,6 +568,12 @@ impl Input {
         // Give the terminal quote and the ordinary next-minute seal time to
         // arrive before declaring a trading minute missing without a reset.
         let through = (now_ms - 5_000).div_euclid(60_000) * 60_000;
+        // Only this trading day's minutes can be due without a quote; the next
+        // day's session (or a holiday) starts with a quote of the next day.
+        let through = match trading_day_end_ms(self.day) {
+            Some(end) => through.min(end),
+            None => through,
+        };
         (self.processed_minute_ms + 60_000..through)
             .step_by(60_000)
             .find(|&minute| self.context.allows(minute))
