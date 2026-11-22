@@ -1,6 +1,35 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新于 2026-11-21 09:10 UTC。**部署、迁移、下线任何绑核进程时，请同步更新本表。**
+最后更新于 2026-11-22 08:01 UTC。**部署、迁移、下线任何绑核进程时，请同步更新本表。**
+
+2026-11-22 15:59–16:00 北京时间，JP trade03 和 trade04 发布同版 Viz（PID 2435894、2437058），
+分别重启现有 exec-pre-trade（PID 2436655、2437203），恢复 1 MiB 执行明细通道。
+四个进程的 CPU 亲和为 `0-5,48-95`，两路 Exec 仍每 30000 ms 刷新执行配置。
+16:01 核对两条原生永续行情均保持 256 节点／256 订阅者，其余六路 Exec 的 PID 一致。
+
+2026-11-22 15:24–15:26 北京时间，JP 的 trade03（PID 2431919）和 trade04（PID 2432227）
+恢复 exec-pre-trade，仍用 `0-5,48-95`、每 30000 ms 刷新执行配置。八路 Exec 均已接入
+256 节点／256 订阅者的原生永续行情。BNBUSDC 储备实仓在两盘分别为 −26.00、−25.50 BNB，
+启动后未新增 BNBUSDC 订单。当时两盘的旧 Viz 持有 64 KiB 执行明细通道，
+与新版 Exec 的 1 MiB 类型不兼容。
+
+2026-11-22 14:17 北京时间，JP Binance 永续两个原生行情服务切换至 256 节点／256 订阅者。
+Market PID 2421456 使用 CPU 14，bookticker PID 2421085 使用 CPU 9。实测 SOL、NEAR
+的盘口和标记价均到达后恢复消费者。rolling_metrics PID 2421644 使用 `0-5,48-95`，
+NAV PID 2421658 使用 CPU 35。FR arb02/03/04 pre-trade 分别为 2422627、2422828、
+2423041，dashboard 分别为 2422697、2422880、2423093，均继续使用 `0-5,48-95`，交易信号暂停。
+两路 CTA 计算继续 CPU 17（2423209）与 CPU 18（2423285），14:49–14:50 完成 Kafka 回放。
+小时就绪数与停机前相同，15 分钟公式分别有 28、7 项仍待就绪。
+六路 Exec 接入原生行情，trade01/02、rx01/rx03、sbh11 仍用 `0-5,48-95`，
+spread01 仍用 CPU 26。trade03/04 当时因 BNB 储备账本有非零归属而在用策略和目标缺失，
+触发启动保护，后续恢复时间见上。旧 IPC proxy 已停止，运行目录留在私有回退备份。
+
+2026-11-22 13:41–13:43 北京时间，JP 的 Binance FR `arb02/03/04` pre-trade 和 NAV
+迁至现有原生 Binance 永续 derivatives 服务。三盘 pre-trade 分别为 PID 2413725、
+2413977、2414218，CPU 仍为 `0-5,48-95`。NAV PID 2413553 仍在 CPU 35，健康检查通过。
+三盘的直连 `trade_signal` 已安装，信号继续暂停。ZMQ 转发已下线，6320 无监听。
+Binance 永续 BBO 和 derivatives 仍为 64 节点／64 订阅者，256 容量行情已暂存。
+常驻行情、两个 CTA 计算进程与 8 路 Exec pre-trade 等待协同切换。
 
 2026-11-21 08:52–09:05 UTC，JP 按标准 Binance FR 流程（`update-jp-meta-fr.sh`）依次重发
 `binance_fr_arb02`、`binance_fr_arb04` 的完整栈（`arbmm f1f4da86`，含 `0c02f9aa` 冷却与小额借币、
@@ -1908,15 +1937,16 @@ pre_trade、viz_server、fr_config_server、fr_signal_dashboard；**九套 trade
 没有修改 local_ips/ENI/EIP/路由。九套 Nginx 页面、healthz、snapshot、Config
 symbol-lists/risk-params 均200，Viz及FR WebSocket均实际收到数据。
 
-Binance mark price 依赖 `~/binance_futures_ipc_proxy/scripts/start.sh`：必须在
-NAV、FR dashboard、rolling_metrics、pre_trade 等代理消费者之前启动。消费者
-先启动会创建64 subscribers/20 nodes通道，而代理要求128/128，导致代理启动
-失败。本次暂停三个 Binance pre_trade/FR dashboard、Binance rolling_metrics
-及 systemd crypto-nav-manager，待消费者退出后原通道自动清理，代理重建128/128
-通道，再恢复消费者；没有手工删除共享IPC文件。代理PID58430持续转发，九套
-pre_trade均确认收到mark price。Gate仍有冷启动价格未齐警告，08:37–08:38 UTC arb01/02/03
+当时重建共享行情服务后，九套 pre_trade 均确认收到 mark price。
+Gate仍有冷启动价格未齐警告，08:37–08:38 UTC arb01/02/03
 分别剩3/4/1项：ACH尚未收到mark，SUPER已恢复；SLVON/TSLAX/CRCLX为只有现货的资产，
 不能把它们算作对应USDT合约行情故障。未将此抽样写成全资产风控就绪。
+
+当前源码统一使用原生 `spread_pbs/binance-futures/ask_bid_spread` 和
+`dat_pbs/binance-futures/derivatives`。可创建这两条服务的发布者和订阅者都申请
+256 个 node、256 个 subscriber。Iceoryx2 的容量在创建时固定，现有小容量实例
+须等最后一个持有者退出后重建。正式切换前应盘点两条原生服务的持有者，并在
+切换后核验 Exec、FR 和 NAV 都收到新数据，再退役旧转发。不要手工删除共享 IPC 文件。
 
 环境内 Config/FR dashboard start/stop 的 PM2 delete 已收窄到精确进程名，避免
 带 `--namespace` 同时删除同环境的其他服务；保持其余环境脚本原样。
