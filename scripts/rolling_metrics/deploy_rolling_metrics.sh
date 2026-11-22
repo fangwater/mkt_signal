@@ -235,6 +235,7 @@ SYNC_FILES=(
   "scripts/rolling_metrics/deploy_rolling_metrics.sh"
   "scripts/rolling_metrics/start_rolling_metrics.sh"
   "scripts/rolling_metrics/stop_rolling_metrics.sh"
+  "scripts/rolling_metrics/promote_warm_rolling_metrics.sh"
   "scripts/rolling_metrics/print_rolling_metrics_thresholds.py"
   "scripts/rolling_metrics/print_rolling_metrics_params.py"
   "scripts/rolling_metrics/sync_rolling_metrics_params.py"
