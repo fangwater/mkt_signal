@@ -7,7 +7,7 @@ BASE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 usage() {
   cat <<'USAGE'
 Usage:
-  start_rolling_metrics.sh [--open-venue <venue> --hedge-venue <venue>]
+  start_rolling_metrics.sh [--open-venue <venue> --hedge-venue <venue>] [--warm-up-dir <path>]
 
 Examples:
   ./scripts/rolling_metrics/start_rolling_metrics.sh --open-venue binance-margin --hedge-venue binance-futures
@@ -19,6 +19,7 @@ Notes:
     e.g. ~/rolling_metrics/binance-margin-binance-futures
   - Managed by pmdaemon with process name:
       rm_<open_tag>_<hedge_tag>（兼容删除旧名 rolling_metrics_<open_venue>_<hedge_venue>）
+  - Optional: put one CPU index in rolling_metrics.core in the deployment directory.
 USAGE
 }
 
@@ -79,6 +80,7 @@ validate_venue() {
 
 OPEN_VENUE=""
 HEDGE_VENUE=""
+WARM_UP_DIR=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -88,6 +90,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --hedge-venue)
       HEDGE_VENUE="${2:-}"
+      shift 2
+      ;;
+    --warm-up-dir)
+      WARM_UP_DIR="$(realpath -e -- "${2:?missing --warm-up-dir path}")"
       shift 2
       ;;
     -h|--help)
@@ -137,6 +143,13 @@ BIN_CANDIDATES=(
   "${BASE_DIR}/rolling_metrics"
   "${BASE_DIR}/target/release/rolling_metrics"
 )
+if [[ -n "$WARM_UP_DIR" ]]; then
+  [[ "$WARM_UP_DIR" != "$BASE_DIR"* && -s "$WARM_UP_DIR/required.json" && ! -e "$WARM_UP_DIR/publish" ]] || {
+    echo "[ERROR] use a separate warm-up directory with required.json and no publish marker" >&2
+    exit 1
+  }
+  BIN_CANDIDATES=("$WARM_UP_DIR/rolling_metrics")
+fi
 
 BIN_PATH=""
 for cand in "${BIN_CANDIDATES[@]}"; do
@@ -153,6 +166,10 @@ fi
 
 PROC_NAME="rm_$(venue_short_tag "$OPEN_VENUE")_$(venue_short_tag "$HEDGE_VENUE")"
 LEGACY_PROC_NAME="rolling_metrics_$(legacy_token "$OPEN_VENUE")_$(legacy_token "$HEDGE_VENUE")"
+json_warmup_args=""
+if [[ -n "$WARM_UP_DIR" ]]; then
+  PROC_NAME="${PROC_NAME}_warm"
+fi
 RUST_LOG_VAL="${RUST_LOG:-info,rolling_metrics=info,mkt_signal=info}"
 
 cfg_file="$(mktemp)"
@@ -169,6 +186,22 @@ json_base="$(json_escape "$BASE_DIR")"
 json_open="$(json_escape "$OPEN_VENUE")"
 json_hedge="$(json_escape "$HEDGE_VENUE")"
 json_rust_log="$(json_escape "$RUST_LOG_VAL")"
+if [[ -n "$WARM_UP_DIR" ]]; then
+  json_warmup_args=", \"--warm-up-dir\", \"$(json_escape "$WARM_UP_DIR")\", \"--iceoryx-node\", \"${PROC_NAME}\""
+fi
+
+json_affinity_args=""
+if [[ -f "${BASE_DIR}/rolling_metrics.core" ]]; then
+  core="$(<"${BASE_DIR}/rolling_metrics.core")"
+  if [[ ! "$core" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] rolling_metrics.core must contain one CPU index" >&2
+    exit 1
+  fi
+  taskset_bin="$(command -v taskset)"
+  "$taskset_bin" -c "$core" true
+  json_affinity_args="\"-c\", \"${core}\", \"${json_bin}\", "
+  json_bin="$(json_escape "$taskset_bin")"
+fi
 
 cat >"$cfg_file" <<EOF
 {
@@ -176,7 +209,7 @@ cat >"$cfg_file" <<EOF
     {
       "name": "${json_name}",
       "script": "${json_bin}",
-      "args": ["--open-venue", "${json_open}", "--hedge-venue", "${json_hedge}"],
+      "args": [${json_affinity_args}"--open-venue", "${json_open}", "--hedge-venue", "${json_hedge}"${json_warmup_args}],
       "cwd": "${json_base}",
       "env": {
         "RUST_LOG": "${json_rust_log}"
@@ -192,7 +225,9 @@ if [[ ! -x "$STOP_SCRIPT" ]]; then
   echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
   exit 1
 fi
-"$STOP_SCRIPT" --open-venue "$OPEN_VENUE" --hedge-venue "$HEDGE_VENUE"
+if [[ -z "$WARM_UP_DIR" ]]; then
+  "$STOP_SCRIPT" --open-venue "$OPEN_VENUE" --hedge-venue "$HEDGE_VENUE"
+fi
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo "[INFO] Started ${PROC_NAME}"

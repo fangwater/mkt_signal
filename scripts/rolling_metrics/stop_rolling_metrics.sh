@@ -13,7 +13,7 @@ fi
 usage() {
   cat <<'USAGE'
 Usage:
-  stop_rolling_metrics.sh [--open-venue <venue> --hedge-venue <venue>]
+  stop_rolling_metrics.sh [--open-venue <venue> --hedge-venue <venue>] [--legacy-only]
 
 Examples:
   ./scripts/rolling_metrics/stop_rolling_metrics.sh --open-venue binance-margin --hedge-venue binance-futures
@@ -78,6 +78,7 @@ validate_venue() {
 
 OPEN_VENUE=""
 HEDGE_VENUE=""
+LEGACY_ONLY=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -88,6 +89,10 @@ while [[ $# -gt 0 ]]; do
     --hedge-venue)
       HEDGE_VENUE="${2:-}"
       shift 2
+      ;;
+    --legacy-only)
+      LEGACY_ONLY=true
+      shift
       ;;
     -h|--help)
       usage
@@ -140,6 +145,9 @@ find_running_pids() {
   local open_arg="--open-venue ${OPEN_VENUE}"
   local hedge_arg="--hedge-venue ${HEDGE_VENUE}"
   safe_find_running_pids "rolling_metrics" "$BASE_DIR" "$open_arg" "$hedge_arg"
+  if [[ "$LEGACY_ONLY" == false ]]; then
+    safe_find_running_pids "rolling_metrics" "$open_arg" "$hedge_arg" "--warm-up-dir "
+  fi
 }
 
 echo "[INFO] Stopping ${PROC_NAME}"
@@ -148,6 +156,9 @@ if "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1; then
   stopped=true
 fi
 if [[ "$LEGACY_PROC_NAME" != "$PROC_NAME" ]] && "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1; then
+  stopped=true
+fi
+if [[ "$LEGACY_ONLY" == false ]] && "${PMDAEMON[@]}" delete "${PROC_NAME}_warm" >/dev/null 2>&1; then
   stopped=true
 fi
 if [[ "$stopped" == true ]]; then

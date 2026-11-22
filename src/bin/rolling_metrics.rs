@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -55,6 +56,9 @@ struct Args {
     output_hash_key: Option<String>,
     #[arg(long)]
     iceoryx_node: Option<String>,
+    /// Wait for the listed windows to fill and for an explicit publish marker.
+    #[arg(long)]
+    warm_up_dir: Option<PathBuf>,
     #[arg(long, default_value = "info,rolling_metrics=info,mkt_signal=info")]
     log_filter: String,
     #[arg(long, default_value_t = 1800)]
@@ -338,6 +342,20 @@ async fn main() -> Result<()> {
         .unwrap_or(default_output_hash_key);
 
     config.finalize();
+    let required_windows = args
+        .warm_up_dir
+        .as_ref()
+        .map(|directory| -> Result<Vec<(String, String)>> {
+            let path = directory.join("required.json");
+            let contents = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+            let windows: Vec<(String, String)> = serde_json::from_slice(&contents)
+                .with_context(|| format!("parse {}", path.display()))?;
+            if windows.is_empty() {
+                anyhow::bail!("no required windows in {}", path.display());
+            }
+            Ok(windows)
+        })
+        .transpose()?;
     let factor_summary = config
         .factors_iter()
         .map(|(name, cfg)| {
@@ -375,8 +393,9 @@ async fn main() -> Result<()> {
         open_topic.clone(),
         hedge_topic.clone(),
         tx,
+        required_windows,
     );
-    spawn_writer_thread(redis_url.clone(), rx);
+    spawn_writer_thread(redis_url.clone(), rx, args.warm_up_dir);
     spawn_ringbuffer_monitor(Arc::clone(&series_map), Duration::from_secs(300));
 
     if let Some(refresh_source) = symbol_refresh_source(&open_topic, &hedge_topic) {
@@ -1548,8 +1567,20 @@ fn describe_config_changes(prev: &RollingConfig, new: &RollingConfig) -> Option<
     }
 }
 
-fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<ComputeResult>) {
+fn publish_after_warmup(directory: &Path, remaining: usize) -> std::io::Result<bool> {
+    let temp = directory.join("status.new");
+    fs::write(&temp, format!("{} {remaining}\n", std::process::id()))?;
+    fs::rename(temp, directory.join("status"))?;
+    Ok(remaining == 0 && directory.join("publish").try_exists()?)
+}
+
+fn spawn_writer_thread(
+    redis_url: String,
+    receiver: crossbeam_channel::Receiver<ComputeResult>,
+    warm_up_dir: Option<PathBuf>,
+) {
     thread::spawn(move || {
+        let mut warm_up_dir = warm_up_dir;
         let client = loop {
             match redis::Client::open(redis_url.as_str()) {
                 Ok(c) => break c,
@@ -1579,11 +1610,30 @@ fn spawn_writer_thread(redis_url: String, receiver: crossbeam_channel::Receiver<
         let mut initial_cleanup_done: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         while let Ok(result) = receiver.recv() {
+            let promoting = warm_up_dir.is_some();
+            if let Some(directory) = &warm_up_dir {
+                let Some(remaining) = result.warm_windows_remaining else {
+                    continue;
+                };
+                match publish_after_warmup(directory, remaining) {
+                    Ok(true) => warm_up_dir = None,
+                    Ok(false) => continue,
+                    Err(err) => {
+                        error!("{}: warm-up publication gate failed: {err}", log_prefix());
+                        continue;
+                    }
+                }
+            }
             for batch in result.batches.iter() {
                 let cleanup_done = initial_cleanup_done.contains(&batch.output_key);
                 let mut removals = batch.removals.clone();
 
-                if removals.is_empty() && !cleanup_done {
+                if promoting {
+                    // Side hashes can also be written by another pair. Retain
+                    // its existing fields during a warm handoff.
+                    removals.clear();
+                    initial_cleanup_done.insert(batch.output_key.clone());
+                } else if removals.is_empty() && !cleanup_done {
                     if let Ok(stale) =
                         load_stale_fields(&mut conn, &batch.output_key, &batch.payloads)
                     {

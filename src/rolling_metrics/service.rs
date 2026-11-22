@@ -180,6 +180,7 @@ pub struct OutputBatch {
 pub struct ComputeResult {
     pub batches: Vec<OutputBatch>,
     pub stats: ComputeStats,
+    pub warm_windows_remaining: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -195,6 +196,7 @@ pub fn spawn_compute_thread(
     open_venue: String,
     hedge_venue: String,
     sender: Sender<ComputeResult>,
+    required_windows: Option<Vec<(String, String)>>,
 ) {
     thread::spawn(move || {
         let mut last_fields_by_hash: HashMap<String, HashSet<String>> = HashMap::new();
@@ -219,6 +221,22 @@ pub fn spawn_compute_thread(
 
             let start = Instant::now();
             let now_ms = chrono::Utc::now().timestamp_millis();
+            let warm_windows_remaining = required_windows.as_ref().map(|windows| {
+                windows
+                    .iter()
+                    .filter(|(symbol, factor)| {
+                        let width = cfg_snapshot
+                            .factor(factor)
+                            .filter(|cfg| !cfg.quantiles.is_empty())
+                            .map(|cfg| cfg.rolling_window);
+                        let count = series_map
+                            .get(symbol)
+                            .and_then(|series| series.ring(factor))
+                            .map(|ring| ring.len());
+                        !matches!((width, count), (Some(width), Some(count)) if count >= width)
+                    })
+                    .count()
+            });
             let snapshot = series_map
                 .iter()
                 .map(|entry| (entry.key().clone(), entry.value().clone()))
@@ -332,7 +350,14 @@ pub fn spawn_compute_thread(
                 build_three_line_table_str(["metric", "ready/total", "percent"], &coverage_rows);
             info!("{}: factor coverage\n{}", log_prefix(), coverage_table);
 
-            if sender.send(ComputeResult { batches, stats }).is_err() {
+            if sender
+                .send(ComputeResult {
+                    batches,
+                    stats,
+                    warm_windows_remaining,
+                })
+                .is_err()
+            {
                 warn!(
                     "{}: compute thread exiting because receiver dropped",
                     log_prefix()
