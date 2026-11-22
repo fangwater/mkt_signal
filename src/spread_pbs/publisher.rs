@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::builder::publish_subscribe::{
@@ -7,6 +7,7 @@ use iceoryx2::service::builder::publish_subscribe::{
 use iceoryx2::service::ipc;
 use iceoryx2::service::port_factory::publish_subscribe::PortFactory;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
+use runtime_common::ipc_service_name::binance_futures_market_data_capacity;
 use runtime_common::symbol_util::market_data_pub_slug;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -102,10 +103,9 @@ fn clean_service_root(root: String) -> Result<String> {
     Ok(root)
 }
 
-/// Opens or creates a spread_pbs pub/sub service. Newly created services get
-/// `PUBSUB_MAX_NODES`/`PUBSUB_MAX_SUBSCRIBERS`; when an older service with
-/// smaller baked-in caps already exists, falls back to the legacy caps so new
-/// binaries keep running against it. Recreate the service to raise its caps.
+/// Open or create a spread_pbs pub/sub service. Shared Binance futures
+/// services require their full capacity. Other services can still open
+/// existing instances with their original capacity.
 fn open_or_create_pubsub<Payload>(
     node: &iceoryx2::node::Node<ipc::Service>,
     service_name: &str,
@@ -123,6 +123,17 @@ where
             .history_size(history_size)
             .subscriber_max_buffer_size(SUBSCRIBER_MAX_BUFFER)
     };
+    if let Some(capacity) = binance_futures_market_data_capacity(service_name) {
+        return builder()
+            .max_nodes(capacity)
+            .max_subscribers(capacity)
+            .open_or_create()
+            .with_context(|| {
+                format!(
+                    "open or create {service_name} with capacity {capacity}; existing smaller services must be recreated"
+                )
+            });
+    }
     match builder()
         .max_subscribers(PUBSUB_MAX_SUBSCRIBERS)
         .max_nodes(PUBSUB_MAX_NODES)
@@ -1064,8 +1075,7 @@ fn write_liquidation_payload_with_prefix(
 
 /// `spread_pbs/<venue>/ask_bid_spread` 服务的 publisher 包装。
 ///
-/// `max_subscribers = 64` 与 `max_publishers = 1` 与 plan 约定一致，
-/// 与 dat_pbs 的同名 channel 完全独立。
+/// Each service has a single publisher and is independent of `dat_pbs` BBO.
 pub struct SpreadPublisher {
     publisher: Rc<Publisher<ipc::Service, [u8; SPREAD_PAYLOAD_BYTES], ()>>,
     service_name: String,
@@ -2086,6 +2096,62 @@ mod tests {
         AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg,
         TradeMsg,
     };
+    use runtime_common::ipc_service_name::{
+        BINANCE_FUTURES_BBO_SERVICE, BINANCE_FUTURES_DERIVATIVES_SERVICE,
+    };
+
+    #[test]
+    fn native_binance_services_deliver_to_more_than_128_subscriber_nodes() {
+        let directory =
+            std::env::temp_dir().join(format!("native_binance_ipc_{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut config = iceoryx2::config::Config::default();
+        config.global.set_root_path(
+            &iceoryx2::prelude::Path::new(directory.as_os_str().as_encoded_bytes()).unwrap(),
+        );
+        {
+            let pool = SpreadPbsPublisherPool::with_test_config(config.clone());
+            let bbo = pool.bbo_for("binance-futures", "spread_pbs").unwrap();
+            let derivatives = pool.derivatives_for("binance-futures", "dat_pbs").unwrap();
+            let bbo_name = ServiceName::new(BINANCE_FUTURES_BBO_SERVICE).unwrap();
+            let derivatives_name = ServiceName::new(BINANCE_FUTURES_DERIVATIVES_SERVICE).unwrap();
+            let mut subscribers = Vec::new();
+            for _ in 0..129 {
+                let node = NodeBuilder::new()
+                    .config(&config)
+                    .create::<ipc::Service>()
+                    .unwrap();
+                let bbo_service = node
+                    .service_builder(&bbo_name)
+                    .publish_subscribe::<[u8; SPREAD_PAYLOAD_BYTES]>()
+                    .open()
+                    .unwrap();
+                let derivatives_service = node
+                    .service_builder(&derivatives_name)
+                    .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD_BYTES]>()
+                    .open()
+                    .unwrap();
+                let bbo_subscriber = bbo_service.subscriber_builder().buffer_size(1).create();
+                let derivatives_subscriber = derivatives_service
+                    .subscriber_builder()
+                    .buffer_size(1)
+                    .create();
+                subscribers.push((bbo_subscriber.unwrap(), derivatives_subscriber.unwrap()));
+            }
+            bbo.publish_bbo("BTCUSDT", 123, 100.0, 1.0, 101.0, 2.0)
+                .unwrap();
+            derivatives
+                .publish_mark_price("BTCUSDT", 100.5, 123)
+                .unwrap();
+            for (bbo_subscriber, derivatives_subscriber) in subscribers {
+                let quote = bbo_subscriber.receive().unwrap().unwrap();
+                assert_eq!(AskBidSpreadMsg::get_symbol(quote.payload()), "BTCUSDT");
+                let mark_price = derivatives_subscriber.receive().unwrap().unwrap();
+                assert_eq!(MarkPriceMsg::get_mark_price(mark_price.payload()), 100.5);
+            }
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn futures_bbo_coexists_with_fr_and_keeps_venues_isolated() {

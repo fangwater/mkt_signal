@@ -8,6 +8,7 @@ use mkt_parsers::msg::mkt_msg::{
 };
 use order_common::TradingVenue;
 use redis::Commands;
+use runtime_common::ipc_service_name::binance_futures_market_data_capacity;
 use runtime_common::time_util::get_timestamp_us;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -178,13 +179,18 @@ fn main() -> Result<()> {
         .name(&NodeName::new(&node_name)?)
         .create::<ipc::Service>()
         .with_context(|| format!("failed to create iceoryx node {node_name}"))?;
-    let service = node
-        .service_builder(&ServiceName::new(&service_name)?)
+    let name = ServiceName::new(&service_name)?;
+    let mut builder = node
+        .service_builder(&name)
         .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD]>()
         .max_publishers(1)
         .max_subscribers(DERIVATIVES_MAX_SUBSCRIBERS)
         .history_size(DERIVATIVES_HISTORY_SIZE)
-        .subscriber_max_buffer_size(DERIVATIVES_SUBSCRIBER_MAX_BUFFER)
+        .subscriber_max_buffer_size(DERIVATIVES_SUBSCRIBER_MAX_BUFFER);
+    if let Some(capacity) = binance_futures_market_data_capacity(&service_name) {
+        builder = builder.max_nodes(capacity).max_subscribers(capacity);
+    }
+    let service = builder
         .open_or_create()
         .with_context(|| format!("failed to open/create derivatives service {service_name}"))?;
     let subscriber: Subscriber<ipc::Service, [u8; DERIVATIVES_PAYLOAD], ()> =

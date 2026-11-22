@@ -8,6 +8,7 @@ use log::{debug, info, warn, Level};
 use mkt_parsers::msg::mkt_msg::FundingRateMsg;
 use mkt_parsers::msg::mkt_msg::MktMsg;
 use mkt_parsers::msg::mkt_msg::MktMsgType;
+use runtime_common::ipc_service_name::binance_futures_market_data_capacity;
 use std::time::{Duration, Instant};
 
 const TRADE_MAX_BYTES: usize = 128;
@@ -146,18 +147,19 @@ impl IceOryxForwarder {
 
         // Derivatives频道只在启用时创建（仅衍生品交易所使用）
         let derivatives_publisher = if config.data_types.enable_derivatives {
-            let service = node
-                .service_builder(&ServiceName::new(&format!(
-                    "dat_pbs/{}/derivatives",
-                    market_data_slug
-                ))?)
+            let service_name = format!("dat_pbs/{}/derivatives", market_data_slug);
+            let name = ServiceName::new(&service_name)?;
+            let mut builder = node
+                .service_builder(&name)
                 .publish_subscribe::<[u8; DERIVATIVES_MAX_BYTES]>()
                 .max_publishers(1)
                 .max_subscribers(DERIVATIVES_MAX_SUBSCRIBERS)
                 .history_size(der_hist)
-                .subscriber_max_buffer_size(8192)
-                .open_or_create()?;
-
+                .subscriber_max_buffer_size(8192);
+            if let Some(capacity) = binance_futures_market_data_capacity(&service_name) {
+                builder = builder.max_nodes(capacity).max_subscribers(capacity);
+            }
+            let service = builder.open_or_create()?;
             Some(service.publisher_builder().create()?)
         } else {
             None

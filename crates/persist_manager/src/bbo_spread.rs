@@ -11,6 +11,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use parking_lot::RwLock;
+use runtime_common::ipc_service_name::binance_futures_market_data_capacity;
 
 use crate::runtime_common::{
     spread_f64, spread_symbol, spread_timestamp, RedisClient, RedisSettings,
@@ -366,13 +367,18 @@ impl SpreadBboSubscriber {
                 continue;
             }
             let service_name = format!("spread_pbs/{}/ask_bid_spread", venue_slug);
-            let service = node
-                .service_builder(&ServiceName::new(&service_name)?)
+            let name = ServiceName::new(&service_name)?;
+            let mut builder = node
+                .service_builder(&name)
                 .publish_subscribe::<[u8; SPREAD_PAYLOAD_BYTES]>()
                 .max_publishers(1)
                 .max_subscribers(64)
                 .history_size(SPREAD_HISTORY_SIZE)
-                .subscriber_max_buffer_size(SPREAD_SUBSCRIBER_BUFFER)
+                .subscriber_max_buffer_size(SPREAD_SUBSCRIBER_BUFFER);
+            if let Some(capacity) = binance_futures_market_data_capacity(&service_name) {
+                builder = builder.max_nodes(capacity).max_subscribers(capacity);
+            }
+            let service = builder
                 .open_or_create()
                 .with_context(|| format!("failed to open spread service {}", service_name))?;
 

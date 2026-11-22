@@ -60,7 +60,7 @@ use persist_common::{
     HYPERLIQUID_ACCOUNT_FACT_MAX_BYTES, HYPERLIQUID_ACCOUNT_FACT_STABLE_KEY_BYTES,
 };
 use runtime_common::exchange::Exchange;
-use runtime_common::ipc_service_name::build_service_name;
+use runtime_common::ipc_service_name::{build_service_name, BINANCE_FUTURES_DERIVATIVES_SERVICE};
 use runtime_common::symbol_util::{
     extract_assets_from_internal_symbol, min_qty_symbol_key, normalize_symbol_for_internal,
     normalize_symbol_for_venue,
@@ -77,8 +77,6 @@ const DERIVATIVES_PAYLOAD: usize = 128;
 const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 64;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
-const BINANCE_DIRECT_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-futures/derivatives";
-const BINANCE_PROXY_DERIVATIVES_SERVICE: &str = "dat_pbs_proxy/binance-futures/derivatives";
 const BITGET_COIN_DERIVATIVES_SERVICE: &str = "dat_pbs/bitget-coin-futures/derivatives";
 const OKEX_DERIVATIVES_SERVICE: &str = "dat_pbs/okex-futures/derivatives";
 const BYBIT_DERIVATIVES_SERVICE: &str = "dat_pbs/bybit-futures/derivatives";
@@ -4862,7 +4860,7 @@ impl MonitorChannel {
         if open_venue == TradingVenue::BinanceCoinFutures
             || hedge_venue == TradingVenue::BinanceCoinFutures
         {
-            return BINANCE_DIRECT_DERIVATIVES_SERVICE;
+            return BINANCE_FUTURES_DERIVATIVES_SERVICE;
         }
         if open_venue == TradingVenue::BitgetCoinFutures
             || hedge_venue == TradingVenue::BitgetCoinFutures
@@ -4875,15 +4873,7 @@ impl MonitorChannel {
             Exchange::Bitget => BITGET_DERIVATIVES_SERVICE,
             Exchange::Gate => GATE_DERIVATIVES_SERVICE,
             Exchange::Hyperliquid => HYPERLIQUID_DERIVATIVES_SERVICE,
-            _ => BINANCE_DIRECT_DERIVATIVES_SERVICE,
-        }
-    }
-
-    fn mark_price_service_with_proxy(direct_service: &'static str, enabled: bool) -> &'static str {
-        if direct_service == BINANCE_DIRECT_DERIVATIVES_SERVICE && enabled {
-            BINANCE_PROXY_DERIVATIVES_SERVICE
-        } else {
-            direct_service
+            _ => BINANCE_FUTURES_DERIVATIVES_SERVICE,
         }
     }
 
@@ -5507,22 +5497,13 @@ impl MonitorChannel {
         //
         // 约定：默认使用 Binance Futures 的衍生品指标；当 open/hedge 两腿属于同一交易所时，
         // 切换到对应 venue 的 mark/index price。所有交易所均直连 dat_pbs。
-        let direct_services = [Self::derivatives_service_for_mark_price_source(
-            open_venue,
-            hedge_venue,
-            arb_mode,
-        )];
-        let proxy_enabled = std::env::var("BINANCE_FUTURES_IPC_PROXY").as_deref() == Ok("1");
-        let mut derivatives_listeners = Vec::new();
-        for (index, direct_service) in direct_services.into_iter().enumerate() {
-            let service_name =
-                Self::mark_price_service_with_proxy(direct_service, proxy_enabled).to_string();
-            derivatives_listeners.push(DerivativesPriceListener::new(
-                price_table.clone(),
-                format!("{DEFAULT_NODE_PRE_TRADE_DERIVATIVES}_{index}"),
-                service_name,
-            )?);
-        }
+        let service_name =
+            Self::derivatives_service_for_mark_price_source(open_venue, hedge_venue, arb_mode);
+        let derivatives_listeners = vec![DerivativesPriceListener::new(
+            price_table.clone(),
+            format!("{DEFAULT_NODE_PRE_TRADE_DERIVATIVES}_0"),
+            service_name.to_string(),
+        )?];
 
         // 创建内部实例并保存到 thread-local
         let inner = MonitorChannelInner {
@@ -12340,18 +12321,6 @@ pub(crate) mod tests {
                 ArbMode::IntraArb,
             ),
             "dat_pbs/binance-futures/derivatives"
-        );
-    }
-
-    #[test]
-    fn binance_mark_price_proxy_does_not_change_other_venues() {
-        assert_eq!(
-            MonitorChannel::mark_price_service_with_proxy(BINANCE_DIRECT_DERIVATIVES_SERVICE, true,),
-            BINANCE_PROXY_DERIVATIVES_SERVICE
-        );
-        assert_eq!(
-            MonitorChannel::mark_price_service_with_proxy(OKEX_DERIVATIVES_SERVICE, true),
-            OKEX_DERIVATIVES_SERVICE
         );
     }
 

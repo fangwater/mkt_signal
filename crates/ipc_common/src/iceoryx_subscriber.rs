@@ -4,6 +4,7 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info};
+use runtime_common::ipc_service_name::binance_futures_market_data_capacity;
 use std::collections::HashMap;
 
 /// 支持的频道类型
@@ -291,6 +292,9 @@ impl MultiChannelSubscriber {
                     .max_publishers(1)
                     .max_subscribers(max_subscribers)
                     .history_size(history_size);
+                if let Some(capacity) = binance_futures_market_data_capacity(&service_name) {
+                    builder = builder.max_nodes(capacity).max_subscribers(capacity);
+                }
                 if let Some(buffer) = subscriber_max_buffer_size {
                     builder = builder.subscriber_max_buffer_size(buffer);
                 }

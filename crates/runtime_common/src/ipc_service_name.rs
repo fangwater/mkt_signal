@@ -1,5 +1,21 @@
 use std::env;
 
+pub const BINANCE_FUTURES_BBO_SERVICE: &str = "spread_pbs/binance-futures/ask_bid_spread";
+pub const BINANCE_FUTURES_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-futures/derivatives";
+
+/// Creation capacity for the two shared native Binance futures services.
+///
+/// Publishers and subscribers that can create these services must agree on
+/// capacity. The bound has room for the combined former 64 and 128 subscriber
+/// pools, including the publisher's node.
+pub fn binance_futures_market_data_capacity(service_name: &str) -> Option<usize> {
+    matches!(
+        service_name,
+        BINANCE_FUTURES_BBO_SERVICE | BINANCE_FUTURES_DERIVATIVES_SERVICE
+    )
+    .then_some(256)
+}
+
 /// 构造带有命名空间前缀的 IceOryx service name
 ///
 /// # 规则

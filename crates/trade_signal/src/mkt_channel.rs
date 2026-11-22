@@ -4,10 +4,10 @@
 //!
 //! 数据结构：TradingVenue -> HashMap<Symbol, Value>
 
-use anyhow::Result;
-use iceoryx2::port::subscriber::Subscriber;
+use anyhow::{Context, Result};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
+use iceoryx2::service::port_factory::publish_subscribe::PortFactory;
 use log::{debug, info, warn};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -26,17 +26,15 @@ use mkt_parsers::symbol_match::{
 };
 use order_common::TradingVenue;
 use rolling_common::kll_quantile::segmented_quantiles_linear;
+use runtime_common::ipc_service_name::binance_futures_market_data_capacity;
 use runtime_common::time_util::get_timestamp_us;
 
 // 常量定义
-const ASKBID_PAYLOAD: usize = 128;
+const MARKET_DATA_PAYLOAD: usize = 128;
+const MARKET_DATA_MAX_SUBSCRIBERS: usize = 64;
+const MARKET_DATA_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 const ASKBID_HISTORY_SIZE: usize = 100;
-const ASKBID_MAX_SUBSCRIBERS: usize = 64;
-const ASKBID_SUBSCRIBER_MAX_BUFFER: usize = 8192;
-const DERIVATIVES_PAYLOAD: usize = 128;
 const DERIVATIVES_HISTORY_SIZE: usize = 50;
-const DERIVATIVES_MAX_SUBSCRIBERS: usize = 64;
-const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 const DERIVATIVES_DRAIN_BUDGET: usize = 1024;
 const DECISION_QUOTE_AGE_KLL_CAPACITY: usize = 10_000;
 const DECISION_QUOTE_AGE_KLL_MAX_WINDOW: Duration = Duration::from_secs(60);
@@ -100,52 +98,33 @@ fn derivative_price_symbol_key(symbol: &str, venue: TradingVenue) -> String {
     }
 }
 
-fn binance_futures_proxy_enabled() -> bool {
-    std::env::var("BINANCE_FUTURES_IPC_PROXY").as_deref() == Ok("1")
-}
-
-fn askbid_service_root(venue: TradingVenue) -> &'static str {
-    askbid_service_root_with_proxy(venue, binance_futures_proxy_enabled())
-}
-
-fn askbid_service_root_with_proxy(venue: TradingVenue, proxy_enabled: bool) -> &'static str {
-    if venue.market_data_pub_slug() == "binance-futures" && proxy_enabled {
-        "spread_pbs_proxy"
-    } else {
-        "spread_pbs"
-    }
-}
-
-fn derivatives_service_root(venue: TradingVenue) -> &'static str {
-    derivatives_service_root_with_proxy(venue, binance_futures_proxy_enabled())
-}
-
-fn derivatives_service_root_with_proxy(venue: TradingVenue, proxy_enabled: bool) -> &'static str {
-    if venue.market_data_pub_slug() == "binance-futures" && proxy_enabled {
-        "dat_pbs_proxy"
-    } else {
-        "dat_pbs"
-    }
-}
-
-fn askbid_service_root_for_pair(venue: TradingVenue) -> &'static str {
-    askbid_service_root(venue)
-}
-
 fn askbid_service_name_for_pair(venue: TradingVenue) -> String {
-    format!(
-        "{}/{}/ask_bid_spread",
-        askbid_service_root_for_pair(venue),
-        venue.market_data_pub_slug()
-    )
+    format!("spread_pbs/{}/ask_bid_spread", venue.market_data_pub_slug())
 }
 
 fn derivatives_service_name(venue: TradingVenue) -> String {
-    format!(
-        "{}/{}/derivatives",
-        derivatives_service_root(venue),
-        venue.market_data_pub_slug()
-    )
+    format!("dat_pbs/{}/derivatives", venue.market_data_pub_slug())
+}
+
+fn open_market_data_service(
+    node: &Node<ipc::Service>,
+    service_name: &str,
+    history_size: usize,
+) -> Result<PortFactory<ipc::Service, [u8; MARKET_DATA_PAYLOAD], ()>> {
+    let name = ServiceName::new(service_name)?;
+    let mut builder = node
+        .service_builder(&name)
+        .publish_subscribe::<[u8; MARKET_DATA_PAYLOAD]>()
+        .max_publishers(1)
+        .max_subscribers(MARKET_DATA_MAX_SUBSCRIBERS)
+        .history_size(history_size)
+        .subscriber_max_buffer_size(MARKET_DATA_SUBSCRIBER_MAX_BUFFER);
+    if let Some(capacity) = binance_futures_market_data_capacity(service_name) {
+        builder = builder.max_nodes(capacity).max_subscribers(capacity);
+    }
+    builder
+        .open_or_create()
+        .with_context(|| format!("open or create market data service {service_name}"))
 }
 
 fn should_trigger_decision(symbol: &str) -> bool {
@@ -621,16 +600,8 @@ impl MktChannel {
         }
 
         info!(
-            "MktChannel 初始化完成: askbid_roots={}:{} {}:{} derivatives_roots={}:{} {}:{} trigger_decisions={}",
-            open_slug,
-            askbid_service_root_for_pair(open_venue),
-            hedge_slug,
-            askbid_service_root_for_pair(hedge_venue),
-            open_slug,
-            derivatives_service_root(open_venue),
-            hedge_slug,
-            derivatives_service_root(hedge_venue),
-            trigger_decisions
+            "MktChannel 初始化完成: open={} hedge={} subscribe_derivatives={} trigger_decisions={}",
+            open_service, hedge_service, subscribe_derivatives, trigger_decisions
         );
 
         // Publish the singleton before listeners start. IPC backlog can deliver a
@@ -857,17 +828,8 @@ impl MktChannel {
                     .name(&NodeName::new(&node_name)?)
                     .create::<ipc::Service>()?;
 
-                let service = node
-                    .service_builder(&ServiceName::new(&service_name)?)
-                    .publish_subscribe::<[u8; ASKBID_PAYLOAD]>()
-                    .max_publishers(1)
-                    .max_subscribers(ASKBID_MAX_SUBSCRIBERS)
-                    .history_size(ASKBID_HISTORY_SIZE)
-                    .subscriber_max_buffer_size(ASKBID_SUBSCRIBER_MAX_BUFFER)
-                    .open_or_create()?;
-
-                let subscriber: Subscriber<ipc::Service, [u8; ASKBID_PAYLOAD], ()> =
-                    service.subscriber_builder().create()?;
+                let service = open_market_data_service(&node, &service_name, ASKBID_HISTORY_SIZE)?;
+                let subscriber = service.subscriber_builder().create()?;
 
                 info!("订阅盘口: {} ({:?})", service_name, this_venue);
 
@@ -964,27 +926,15 @@ impl MktChannel {
                     .name(&NodeName::new(&hedge_node_name)?)
                     .create::<ipc::Service>()?;
 
-                let open_service = open_node
-                    .service_builder(&ServiceName::new(&open_service_name)?)
-                    .publish_subscribe::<[u8; ASKBID_PAYLOAD]>()
-                    .max_publishers(1)
-                    .max_subscribers(ASKBID_MAX_SUBSCRIBERS)
-                    .history_size(ASKBID_HISTORY_SIZE)
-                    .subscriber_max_buffer_size(ASKBID_SUBSCRIBER_MAX_BUFFER)
-                    .open_or_create()?;
-                let hedge_service = hedge_node
-                    .service_builder(&ServiceName::new(&hedge_service_name)?)
-                    .publish_subscribe::<[u8; ASKBID_PAYLOAD]>()
-                    .max_publishers(1)
-                    .max_subscribers(ASKBID_MAX_SUBSCRIBERS)
-                    .history_size(ASKBID_HISTORY_SIZE)
-                    .subscriber_max_buffer_size(ASKBID_SUBSCRIBER_MAX_BUFFER)
-                    .open_or_create()?;
-
-                let open_subscriber: Subscriber<ipc::Service, [u8; ASKBID_PAYLOAD], ()> =
-                    open_service.subscriber_builder().create()?;
-                let hedge_subscriber: Subscriber<ipc::Service, [u8; ASKBID_PAYLOAD], ()> =
-                    hedge_service.subscriber_builder().create()?;
+                let open_service =
+                    open_market_data_service(&open_node, &open_service_name, ASKBID_HISTORY_SIZE)?;
+                let hedge_service = open_market_data_service(
+                    &hedge_node,
+                    &hedge_service_name,
+                    ASKBID_HISTORY_SIZE,
+                )?;
+                let open_subscriber = open_service.subscriber_builder().create()?;
+                let hedge_subscriber = hedge_service.subscriber_builder().create()?;
 
                 info!(
                     "订阅成对盘口: open={} ({:?}) hedge={} ({:?})",
@@ -1127,17 +1077,9 @@ impl MktChannel {
                     .name(&NodeName::new(&node_name)?)
                     .create::<ipc::Service>()?;
 
-                let service = node
-                    .service_builder(&ServiceName::new(&service_name)?)
-                    .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD]>()
-                    .max_publishers(1)
-                    .max_subscribers(DERIVATIVES_MAX_SUBSCRIBERS)
-                    .history_size(DERIVATIVES_HISTORY_SIZE)
-                    .subscriber_max_buffer_size(DERIVATIVES_SUBSCRIBER_MAX_BUFFER)
-                    .open_or_create()?;
-
-                let subscriber: Subscriber<ipc::Service, [u8; DERIVATIVES_PAYLOAD], ()> =
-                    service.subscriber_builder().create()?;
+                let service =
+                    open_market_data_service(&node, &service_name, DERIVATIVES_HISTORY_SIZE)?;
+                let subscriber = service.subscriber_builder().create()?;
 
                 info!("订阅衍生品数据: {}", service_name);
 
@@ -1320,6 +1262,7 @@ impl MktChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iceoryx2::prelude::PortFactory as _;
 
     #[tokio::test]
     async fn arb_backward_queries_wait_for_market_cache() {
@@ -1517,31 +1460,31 @@ mod tests {
     }
 
     #[test]
-    fn binance_futures_proxy_selection_is_venue_scoped() {
-        assert_eq!(
-            askbid_service_root_with_proxy(TradingVenue::BinanceCoinFutures, true),
-            "spread_pbs_proxy"
+    fn subscriber_first_creates_native_binance_services_at_full_capacity() {
+        let directory =
+            std::env::temp_dir().join(format!("binance_subscriber_ipc_{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut config = iceoryx2::config::Config::default();
+        config.global.set_root_path(
+            &iceoryx2::prelude::Path::new(directory.as_os_str().as_encoded_bytes()).unwrap(),
         );
-        assert_eq!(
-            derivatives_service_root_with_proxy(TradingVenue::BinanceCoinFutures, true),
-            "dat_pbs_proxy"
-        );
-        assert_eq!(
-            askbid_service_root_with_proxy(TradingVenue::BinanceFutures, true),
-            "spread_pbs_proxy"
-        );
-        assert_eq!(
-            derivatives_service_root_with_proxy(TradingVenue::BinanceFutures, true),
-            "dat_pbs_proxy"
-        );
-        assert_eq!(
-            askbid_service_root_with_proxy(TradingVenue::BinanceMargin, true),
-            "spread_pbs"
-        );
-        assert_eq!(
-            derivatives_service_root_with_proxy(TradingVenue::OkexFutures, true),
-            "dat_pbs"
-        );
+        {
+            let node = NodeBuilder::new()
+                .config(&config)
+                .create::<ipc::Service>()
+                .unwrap();
+            let venue = TradingVenue::BinanceFutures;
+            for (name, history) in [
+                (askbid_service_name_for_pair(venue), ASKBID_HISTORY_SIZE),
+                (derivatives_service_name(venue), DERIVATIVES_HISTORY_SIZE),
+            ] {
+                let service = open_market_data_service(&node, &name, history).unwrap();
+                assert_eq!(service.static_config().max_nodes(), 256);
+                assert_eq!(service.static_config().max_subscribers(), 256);
+                assert_eq!(service.static_config().history_size(), history);
+            }
+        }
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
