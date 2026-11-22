@@ -1,6 +1,30 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新于 2026-11-22 09:30 UTC。**部署、迁移、下线任何绑核进程时，请同步更新本表。**
+最后更新于 2026-11-22 14:18 UTC。**部署、迁移、下线任何绑核进程时，请同步更新本表。**
+
+2026-11-22 22:16 北京时间，按操作人要求将 Bybit `depth_pub` 和五个 `rolling_metrics`
+统一放到共享 CPU 37。原 CPU 38、39 的四个 rolling 在线迁入，六个 PID 保持。
+环境启动配置均写为 CPU 37，释放 CPU 38、39。
+22:17–22:18 的短窗内 CPU 37 平均 99.1%，五个 rolling 继续写入，Bybit 两路 depth25
+在完整迁后一分钟内发布丢弃均为零。
+
+2026-11-22 22:12 北京时间，JP 将 Bybit `depth_pub` 和五个 `rolling_metrics` 合到三个
+共享核。CPU 37 为 Bybit depth25 与 Binance rolling，38 为 Gate 与 Bybit rolling，
+39 为 Bitget 单所与 Bitget/Gate 跨永续 rolling。六个进程继续使用原 PID，调整了三份
+`rolling_metrics.core`，释放原分配 CPU 42–44。
+
+2026-11-22 20:15 北京时间，JP 在线迁移 Bybit `depth_pub` 和五个 `rolling_metrics`，
+共六个进程的 PID 保持。Bybit depth25 移到 CPU 37，Gate、Bitget、Bitget/Gate 跨永续、
+Bybit、Binance rolling 分别移到 38、39、42、43、44。Bybit 标准启动读取
+`env.sh` 的 `DEPTH_PUB_CORE=37`，五个 rolling 标准启动读取各目录的 `rolling_metrics.core`。
+迁后 Bybit 现货和永续 depth25 持续发布，五个 rolling 继续写 Redis，0–5 核迁前后短窗
+均值为 66.3% 和 49.2%。
+
+2026-11-22 17:55 北京时间，JP 将 `binance_exec_rx01` 和 `binance_exec_rx03` 的
+`persist_manager` 在线迁至隔离 CPU 40 和 41。PID 1200516 和 1202831 及各自四个线程
+继续运行，两环境 `env.sh` 已设置 `PERSIST_MANAGER_CORE=40`／`41` 供启动使用。迁移后
+生产库继续留存两户 NEW 回报。0–5 核迁移前后短窗均值为 85.6% 和 65.1%，同窗
+CPU 40／41 分别为 68.3%／78.8%。两户 pre-trade 仍使用 `0-5,48-95`。
 
 2026-11-22 16:54–16:55 北京时间，JP 的 RX01、RX03 账户监控发布 `arbmm 8a300684`
 制品，含 RapidX 权益修复 `e2049c4f`。新版 PID 分别为 2444143、2444408，
@@ -2284,7 +2308,11 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 33 | spread_pbs bybit-both market | 现货/永续成交、增量及衍生指标 |
 | 34 | spread_pbs bybit-both bookticker | 现货/永续 BBO |
 | 35 | (空) | 原 binance-intra-arb02 已下线删除 |
-| 36-45 | (空) | |
+| 36 | Manager 冷信号清理 | 定时任务 |
+| 37 | Bybit depth_pub / 五个 rolling_metrics | Binance、Gate、Bitget、Bybit、Bitget/Gate 跨永续，共享 |
+| 38–39 | 未分配 | |
+| 40–41 | persist_manager RX01 / RX03 | PID 1200516 / 1202831 |
+| 42–45 | 未分配 | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |
 | 47 | NIC IRQ: ens42 全部 Tx-Rx 队列(16) | 第二块网卡;禁止再绑用户进程。原 pred_rnn_infer 已下线 |
 
