@@ -106,7 +106,6 @@ impl GridConfig {
 
 // Algorithm internals, not user configuration.
 pub const VOL_STALE_MS: u32 = 15_000;
-pub const QUOTE_STALE_MS: u32 = 1_000;
 
 pub fn grid_offset(level: u32, levels: u32, vol: f64, multiplier: f64) -> Result<f64, String> {
     if !vol.is_finite()

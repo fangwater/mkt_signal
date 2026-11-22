@@ -4,7 +4,7 @@ use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimite
 use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
-use crate::strategy::grid_exec::{grid_offset, GridConfig, QUOTE_STALE_MS, VOL_STALE_MS};
+use crate::strategy::grid_exec::{grid_offset, GridConfig, VOL_STALE_MS};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::mark_price_lookup_symbol;
 use crate::strategy::hedge_strategy_common::signed_qty_from_side;
@@ -1144,11 +1144,12 @@ impl BatchExecStrategy {
         )
     }
 
-    fn grid_can_submit(&self, now_us: i64, quote_ts: i64) -> bool {
+    // Grid needs fresh volatility for level spacing. The BBO timestamp only
+    // advances when the book changes, so its age is not a data-health signal:
+    // gating on it paused quiet symbols without consuming maker requotes and
+    // prevented the taker fallback.
+    fn grid_can_submit(&self, now_us: i64) -> bool {
         self.grid_volatility(now_us).is_some()
-            && quote_ts > 0
-            && quote_ts <= now_us
-            && now_us - quote_ts <= i64::from(QUOTE_STALE_MS) * 1_000
     }
 
     fn pause_batches_for_data(&mut self, expired: bool) {
@@ -2152,7 +2153,7 @@ impl BatchExecStrategy {
         let Some(quote) = MktChannel::instance().get_quote(&self.symbol, self.exec_venue) else {
             return;
         };
-        if self.config.algorithm == ExecAlgorithm::Grid && !self.grid_can_submit(now_ts, quote.ts) {
+        if self.config.algorithm == ExecAlgorithm::Grid && !self.grid_can_submit(now_ts) {
             return;
         }
         // Settlement must not wait for a batch/retry deadline, or depend on
@@ -2600,7 +2601,7 @@ impl BatchExecStrategy {
         let Some(quote) = MktChannel::instance().get_quote(&self.symbol, self.exec_venue) else {
             return;
         };
-        if self.config.algorithm == ExecAlgorithm::Grid && !self.grid_can_submit(now_ts, quote.ts) {
+        if self.config.algorithm == ExecAlgorithm::Grid && !self.grid_can_submit(now_ts) {
             return;
         }
         if self.config.algorithm == ExecAlgorithm::Pov && !self.pov_can_submit(now_ts, quote.ts) {
@@ -3721,14 +3722,8 @@ impl Strategy for BatchExecStrategy {
                 self.pause_batches_for_data(expired);
             }
         }
-        if self.config.algorithm == ExecAlgorithm::Grid {
-            let quote_ts = MktChannel::instance()
-                .get_quote(&self.symbol, self.exec_venue)
-                .map(|quote| quote.ts)
-                .unwrap_or(0);
-            if !self.grid_can_submit(now_ts, quote_ts) {
-                self.pause_batches_for_data(false);
-            }
+        if self.config.algorithm == ExecAlgorithm::Grid && !self.grid_can_submit(now_ts) {
+            self.pause_batches_for_data(false);
         }
         self.maybe_start_or_requote_batch(now_ts);
     }
@@ -4127,10 +4122,43 @@ mod tests {
     }
 
     #[test]
+    fn grid_submission_depends_on_fresh_volatility_not_quote_age() {
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.config = grid_config();
+        assert!(!strategy.grid_can_submit(10_000_000));
+        crate::pre_trade::exec_volatility_channel::observe_for_test(
+            TradingVenue::BinanceFutures,
+            mkt_parsers::msg::mkt_msg::ModelMsg::create(
+                "BTCUSDT".into(),
+                9_000,
+                9_000,
+                1,
+                0.01,
+                None,
+                true,
+                mkt_parsers::msg::mkt_msg::MODEL_STATUS_OK,
+                Vec::new(),
+                Vec::new(),
+            ),
+            9_000,
+        );
+        // A quiet book keeps an old BBO timestamp; only volatility age gates Grid.
+        assert!(strategy.grid_can_submit(10_000_000));
+        assert!(strategy.grid_can_submit(9_000_000 + i64::from(VOL_STALE_MS) * 1_000));
+        assert!(!strategy.grid_can_submit(9_001_000 + i64::from(VOL_STALE_MS) * 1_000));
+    }
+
+    #[test]
     fn grid_config_changes_wait_for_old_fills_before_releasing_reservations() {
         let mut strategy = strategy_with_orphan_batch(&[(11, 0, 2.0, 0.0)]);
         strategy.config = grid_config();
-        assert!(!strategy.grid_can_submit(1_000_000, 1_000_000));
+        assert!(!strategy.grid_can_submit(1_000_000));
         let mut changed = strategy.config.clone();
         changed.grid.futures.maker_timeout_ms = 4_000;
         strategy.update_config(changed).unwrap();

@@ -65,6 +65,11 @@ pub fn latest(venue: TradingVenue, symbol: &str, now_us: i64, max_age_ms: u32) -
     CACHE.with(|cache| cache.borrow().latest(venue, symbol, now_us, max_age_ms))
 }
 
+#[cfg(test)]
+pub(crate) fn observe_for_test(venue: TradingVenue, msg: ModelMsg, now_ms: i64) {
+    CACHE.with(|cache| cache.borrow_mut().observe(venue, msg, now_ms));
+}
+
 fn subscribe(
     venue: TradingVenue,
 ) -> Result<Subscriber<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()>> {
