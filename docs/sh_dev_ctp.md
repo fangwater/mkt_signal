@@ -85,6 +85,12 @@ arbmm `551831fc` 与 Manager `4658e51`：
   ctp-trader sha256 `98a532a5…`，persist_manager `00d7e73e…`；旧二进制、配置和脚本备份在
   `data/ops/no-lease-20261123T043717Z`。sh_dev 上 cn_futures 193 项测试通过。
 - 易达 paper 随后同版本换装，见 [易达记录](sh_dev_yida_paper.md)。
+- 13:30 开盘 9 笔中 8 笔一秒内成交；lc2701 买开 1 手被广期所以 40024（自 2026-09-22 LC2610–LC2709
+  每次最小开仓 2 手，CTP 合约最小下单量仍报 1）拒绝，并按 1 秒重试被拒 141 次，13:33 停机。
+  修复 arbmm `c6b776af`：交易所／柜台拒单后只退避该合约（从 `retry_interval_ms` 翻倍至 5 分钟，
+  成交或该合约净目标变化时清零，同净目标的新批次不再重置）；CTA 新增 `direction_lots`，
+  `cta-cn_futures-01` 的 LC 设为 2。13:49 换装 ctp-trader `dbadc078…`（备份 `data/ops/backoff-20261123T054938Z/`），
+  重启后 lc 拒单间隔按 1、2、4… 秒退避，其余合约均到达目标。
 
 ## 操作入口
 
