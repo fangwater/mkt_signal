@@ -446,7 +446,12 @@ impl Session {
                 );
                 ensure!(self.available.is_none(), "duplicate CNY account row");
                 let account = AccountSnapshot::from_event(e.control()?)?;
-                self.account_funds = Some(account.funds(crate::persistence::now_us())?);
+                let login_day = self.login.as_ref().map_or("", |login| login.0.as_str());
+                // Display-only funds never stop the trading session.
+                self.account_funds = account
+                    .funds(crate::persistence::now_us(), login_day)
+                    .inspect_err(|error| log::warn!("CTP account funds unavailable: {error:#}"))
+                    .ok();
                 self.account_not_ready_retries = 0;
                 self.account = Some(account);
                 self.available = Some(e.control()?.available);

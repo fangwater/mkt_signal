@@ -86,7 +86,11 @@ fn account_query_freshness_is_independent_of_snapshot_heartbeat_and_trade_permis
     s.reason = Text::new("settlement not confirmed; read-only queries remain available").unwrap();
     s.account = Some(cn_futures_state::AccountFunds {
         observed_us: s.observed_us - 1,
+        trading_day: Text::new("20261123").unwrap(),
         currency: Text::new("CNY").unwrap(),
+        pre_balance: 499999.72,
+        deposit: 0.0,
+        withdraw: 0.0,
         balance: 499999.72,
         available: 499999.72,
         withdraw_quota: 499899.72,
@@ -112,6 +116,48 @@ fn account_query_freshness_is_independent_of_snapshot_heartbeat_and_trade_permis
     hub.apply(&source, s).unwrap();
     assert_eq!(hub.health()["sources"][0]["account_available"], false);
     assert!(frame(&hub)["entry"]["account"].is_null());
+}
+
+#[test]
+fn account_funds_are_served_only_by_explicit_manager_identity() {
+    let mut source = source("ctp");
+    source.adapter = Adapter::Ctp;
+    source.manager_source_id = Some("sh_dev_ctp01".into());
+    let hub = Hub::new(std::slice::from_ref(&source), 15000);
+    assert!(hub.account_funds("ctp").is_none());
+    assert!(hub.account_funds("sh_dev_ctp01").unwrap()["account"].is_null());
+    let mut s = snapshot(&source, 100, 1);
+    s.account = Some(cn_futures_state::AccountFunds {
+        observed_us: s.observed_us - 1,
+        trading_day: Text::new("20261123").unwrap(),
+        currency: Text::new("CNY").unwrap(),
+        pre_balance: 500000.0,
+        deposit: 100.0,
+        withdraw: 50.0,
+        balance: 501234.5,
+        available: 400000.0,
+        withdraw_quota: 399000.0,
+        curr_margin: 90000.0,
+        frozen_margin: 0.0,
+        frozen_cash: 0.0,
+        frozen_commission: 0.0,
+        position_profit: 1000.0,
+        close_profit: 200.0,
+        commission: 15.5,
+    });
+    hub.apply(&source, s.clone()).unwrap();
+    let funds = hub.account_funds("sh_dev_ctp01").unwrap();
+    assert_eq!(funds["counter_id"], "ctp");
+    assert_eq!(funds["adapter"], "ctp");
+    assert_eq!(funds["observed_us"], s.observed_us);
+    assert_eq!(funds["account"]["pre_balance"], 500000.0);
+    assert_eq!(funds["account"]["trading_day"], "20261123");
+    assert!(funds.get("account_hash").is_none() && funds["error"].is_null());
+    hub.unavailable(&source, "等待持仓 IPC");
+    assert_eq!(
+        hub.account_funds("sh_dev_ctp01").unwrap()["error"],
+        "等待持仓 IPC"
+    );
 }
 
 #[test]
@@ -186,6 +232,7 @@ fn native_config_has_one_ipc_contract_and_safe_ws_path() {
         "/",
         "/healthz",
         "/snapshot",
+        "/account-funds/x",
         "/ws/:id",
         "/ws?x",
         "/ws\"</script>",

@@ -106,7 +106,8 @@ impl Config {
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'-'))
                 && !["/", "/snapshot", "/healthz"].contains(&self.http.ws_path.as_str())
-                && !self.http.ws_path.starts_with("/strategy-positions/"),
+                && !self.http.ws_path.starts_with("/strategy-positions/")
+                && !self.http.ws_path.starts_with("/account-funds/"),
             "invalid ws_path"
         );
         let mut ids = HashSet::new();

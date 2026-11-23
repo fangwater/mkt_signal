@@ -111,10 +111,16 @@ impl InstrumentMark {
 }
 
 /// Factual broker account values. The query time is independent of IPC heartbeats.
+/// `pre_balance` is the broker's settled equity of the previous trading day;
+/// `deposit`/`withdraw` are the cash movements of `trading_day`.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct AccountFunds {
     pub observed_us: u64,
+    pub trading_day: Text<16>,
     pub currency: Text<8>,
+    pub pre_balance: f64,
+    pub deposit: f64,
+    pub withdraw: f64,
     pub balance: f64,
     pub available: f64,
     pub withdraw_quota: f64,
@@ -130,11 +136,23 @@ impl AccountFunds {
     pub fn validate(&self) -> Result<()> {
         ensure!(self.observed_us > 0, "account query time is missing");
         ensure!(
+            self.trading_day.as_str().len() == 8
+                && self
+                    .trading_day
+                    .as_str()
+                    .bytes()
+                    .all(|b| b.is_ascii_digit()),
+            "account funds require the native trading day"
+        );
+        ensure!(
             self.currency.as_str() == "CNY",
             "unsupported account currency"
         );
         ensure!(
             [
+                self.pre_balance,
+                self.deposit,
+                self.withdraw,
                 self.balance,
                 self.available,
                 self.withdraw_quota,

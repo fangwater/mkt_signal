@@ -28,7 +28,11 @@ fn sample() -> Snapshot {
 fn sample_funds(observed_us: u64) -> AccountFunds {
     AccountFunds {
         observed_us,
+        trading_day: Text::new("20261123").unwrap(),
         currency: Text::new("CNY").unwrap(),
+        pre_balance: 499000.5,
+        deposit: 1000.0,
+        withdraw: 0.25,
         balance: 499999.72,
         available: -10.25,
         withdraw_quota: 499899.72,
@@ -52,8 +56,23 @@ fn account_funds_codec_preserves_actual_values_and_query_time() {
     assert_eq!(decoded.available, -10.25);
     assert_eq!(decoded.observed_us, account.observed_us);
     assert_eq!(decoded.frozen_commission, 0.5);
+    assert_eq!(decoded.trading_day.as_str(), "20261123");
+    assert_eq!(decoded.pre_balance, 499000.5);
+    assert_eq!((decoded.deposit, decoded.withdraw), (1000.0, 0.25));
     s.account.as_mut().unwrap().balance = f64::NAN;
     assert!(s.validate().is_err());
+    s.account = Some(AccountFunds {
+        pre_balance: f64::INFINITY,
+        ..account
+    });
+    assert!(s.validate().is_err());
+    for day in ["", "2026112", "2026-11-2"] {
+        s.account = Some(AccountFunds {
+            trading_day: Text::new(day).unwrap(),
+            ..account
+        });
+        assert!(s.validate().is_err(), "{day:?}");
+    }
     s.account = Some(AccountFunds {
         observed_us: s.observed_us + 1,
         ..account

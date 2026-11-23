@@ -640,10 +640,25 @@ pub struct AccountSnapshot {
     pub option_value: f64,
 }
 impl AccountSnapshot {
-    pub fn funds(&self, observed_us: u64) -> Result<cn_futures_state::AccountFunds> {
+    /// `login_day` supplies the trading day when the broker leaves the account
+    /// row's own trading day empty.
+    pub fn funds(
+        &self,
+        observed_us: u64,
+        login_day: &str,
+    ) -> Result<cn_futures_state::AccountFunds> {
+        let day = if self.trading_day.is_empty() {
+            login_day
+        } else {
+            &self.trading_day
+        };
         let funds = cn_futures_state::AccountFunds {
             observed_us,
+            trading_day: cn_futures_state::Text::new(day)?,
             currency: cn_futures_state::Text::new(&self.currency)?,
+            pre_balance: self.pre_balance,
+            deposit: self.deposit,
+            withdraw: self.withdraw,
             balance: self.balance,
             available: self.available,
             withdraw_quota: self.withdraw_quota,

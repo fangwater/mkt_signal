@@ -49,6 +49,19 @@ pub fn router(cfg: &crate::config::HttpCfg, hub: Hub, positions: manager::Positi
                 }
             }),
         )
+        .route(
+            "/account-funds/:source",
+            get(
+                |State(hub): State<Hub>, Path(source): Path<String>| async move {
+                    match hub.account_funds(&source) {
+                        Some(value) => {
+                            ([(header::CACHE_CONTROL, "no-store")], Json(value)).into_response()
+                        }
+                        None => axum::http::StatusCode::NOT_FOUND.into_response(),
+                    }
+                },
+            ),
+        )
         .route(&cfg.ws_path, get(ws_route))
         .with_state(hub)
 }

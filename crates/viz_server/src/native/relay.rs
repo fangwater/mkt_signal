@@ -12,6 +12,8 @@ use tokio::sync::broadcast;
 pub struct Hub {
     pub tx: broadcast::Sender<String>,
     latest: Arc<Mutex<BTreeMap<String, Frame>>>,
+    /// Explicit Manager source identity -> counter id; never inferred.
+    managed: Arc<BTreeMap<String, String>>,
 }
 struct Frame {
     value: Value,
@@ -66,9 +68,14 @@ impl Hub {
                 )
             })
             .collect();
+        let managed = sources
+            .iter()
+            .filter_map(|s| Some((s.manager_source_id.clone()?, s.id.clone())))
+            .collect();
         Self {
             tx,
             latest: Arc::new(Mutex::new(latest)),
+            managed: Arc::new(managed),
         }
     }
     /// Relay the producer's complete state immediately; no projection or timer.
@@ -176,6 +183,21 @@ impl Hub {
             .values()
             .map(|f| f.raw.clone())
             .collect()
+    }
+    /// Read-only broker funds of the live producer for one Manager source.
+    /// A retained cold-restart checkpoint is never reported as live funds.
+    pub fn account_funds(&self, manager_source_id: &str) -> Option<Value> {
+        let counter = self.managed.get(manager_source_id)?;
+        let cache = self.latest.lock().unwrap_or_else(|e| e.into_inner());
+        let frame = cache.get(counter)?;
+        let e = &frame.value["entry"];
+        Some(
+            json!({"manager_source_id":manager_source_id, "counter_id":counter,
+            "adapter":frame.value["adapter"], "error":frame.value["error"],
+            "observed_us":e["observed_us"], "runtime_status":e["runtime_status"],
+            "connected":e["connected"], "transport_ready":e["transport_ready"],
+            "trading_day":e["trading_day"], "account":e["account"]}),
+        )
     }
     /// Operations-only transport health; the dashboard consumes WebSocket frames.
     pub fn health(&self) -> Value {
