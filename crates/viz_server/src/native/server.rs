@@ -1,4 +1,4 @@
-use super::{manager, relay::Hub, DASHBOARD};
+use super::{manager, now_us, relay::Hub, DASHBOARD};
 use anyhow::Result;
 use axum::{
     extract::{
@@ -10,7 +10,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{stream::SplitSink, SinkExt, StreamExt};
 use std::time::Duration;
 use tokio::sync::broadcast;
 
@@ -69,22 +69,39 @@ pub async fn serve(
 async fn ws_route(ws: WebSocketUpgrade, State(hub): State<Hub>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| stream(socket, hub))
 }
+
+async fn send_text(sender: &mut SplitSink<WebSocket, Message>, text: String) -> bool {
+    matches!(
+        tokio::time::timeout(Duration::from_secs(2), sender.send(Message::Text(text))).await,
+        Ok(Ok(()))
+    )
+}
+
 async fn stream(socket: WebSocket, hub: Hub) {
     let mut rx = hub.tx.subscribe();
     let (mut sender, mut receiver) = socket.split();
     let mut pending = hub.latest();
     loop {
         for raw in pending.drain(..) {
-            if !matches!(
-                tokio::time::timeout(Duration::from_secs(2), sender.send(Message::Text(raw))).await,
-                Ok(Ok(()))
-            ) {
+            if !send_text(&mut sender, raw).await {
                 return;
             }
         }
         tokio::select! {
             incoming = receiver.next() => match incoming {
                 None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return,
+                Some(Ok(Message::Text(text))) => {
+                    if let Some(id) = text.strip_prefix("clock:").and_then(|id| id.parse::<u32>().ok()) {
+                        let reply = serde_json::json!({
+                            "type": "cn_futures_clock",
+                            "id": id,
+                            "server_now_us": now_us()
+                        });
+                        if !send_text(&mut sender, reply.to_string()).await {
+                            return;
+                        }
+                    }
+                },
                 Some(Ok(_)) => {},
             },
             message = rx.recv() => match message {

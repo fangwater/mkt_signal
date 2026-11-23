@@ -153,6 +153,20 @@ fn relay_preserves_producer_fields_replaces_full_state_and_pins_identity() {
 }
 
 #[test]
+fn relay_rejects_future_heartbeat_without_replacing_cached_observation() {
+    let source = source("paper");
+    let hub = Hub::new(std::slice::from_ref(&source), 10_000);
+    let current = snapshot(&source, 100, 1);
+    hub.apply(&source, current.clone()).unwrap();
+
+    let mut future = snapshot(&source, 100, 2);
+    future.observed_us = now_us() + 60_000_000;
+    assert!(hub.apply(&source, future).is_err());
+    assert_eq!(frame(&hub)["entry"]["observed_us"], current.observed_us);
+    assert_eq!(frame(&hub)["entry"]["sequence"], "1");
+}
+
+#[test]
 fn native_config_has_one_ipc_contract_and_safe_ws_path() {
     let source = source("paper");
     let mut cfg = Config {

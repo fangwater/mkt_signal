@@ -75,6 +75,10 @@ impl Hub {
     pub fn apply(&self, source: &Counter, snapshot: Snapshot) -> Result<()> {
         snapshot.validate()?;
         ensure!(
+            snapshot.observed_us <= now_us(),
+            "position IPC timestamp is in the future"
+        );
+        ensure!(
             snapshot.adapter == source.adapter
                 && snapshot.account_hash.as_str() == source.expected_account_hash,
             "position IPC account/adapter identity mismatch"

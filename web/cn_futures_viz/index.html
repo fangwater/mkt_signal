@@ -320,7 +320,17 @@
     const managerUrl = new URL('/manager/', location.origin);
     managerUrl.port = '';
     const state = { sources:new Map(), ws:null, timer:null, detailChoices:new Map(), brokerDetails:new Set(), factorDetails:new Set(), groups:[],
-      preferredSource:new URLSearchParams(location.search).get('source'), strategy:null };
+      preferredSource:new URLSearchParams(location.search).get('source'), strategy:null, clock:null, clockProbe:null };
+    function ageMs(us) {
+      if (!state.clock || !Number.isSafeInteger(us) || us<=0) return NaN;
+      // At receipt, the server can be at most one round trip ahead of its reply.
+      // The request's monotonic time gives that upper bound without using the wall clock.
+      return (state.clock.serverUs-us)/1000 + (performance.now()-state.clock.sentAt);
+    }
+    const freshAt = (us, limit) => {
+      const age = ageMs(us);
+      return age >= 0 && age <= limit;
+    };
     const recoveryReasons = new Map([
       ['CTP trader front offline; waiting for reconnection','waiting-trader'],
       ['CTP market-data front offline; waiting for reconnection','waiting-md'],
@@ -336,12 +346,13 @@
       if (!s && source.saved_entry && (!source.error || source.error==='等待持仓 IPC')) return 'waiting-counter';
       if (source.error) return s ? 'unavailable' : 'waiting';
       if (!s) return 'waiting';
-      const age = Date.now() - Number(s.observed_us) / 1000;
+      const age = ageMs(s.observed_us);
       const recovery = source.adapter==='ctp' ? recoveryReasons.get(s.reason) : undefined;
       const restarting=recovery==='restarting' || recovery==='waiting-md-day';
       if (s.runtime_status==='stopped' && restarting && age>=0 && age<90_000) return recovery;
       if (s.runtime_status !== 'running') return s.runtime_status;
-      if (age < 0 || age > source.stale_after_ms) return 'stale';
+      if (!state.clock) return 'waiting';
+      if (!(age >= 0 && age <= source.stale_after_ms)) return 'stale';
       if (recovery && !restarting) return recovery;
       if (!s.position_ready) return 'recovering';
       if (!s.connected) return 'disconnected';
@@ -388,11 +399,11 @@
       if(!validPrice(price)) return {amount:null,reason:'等待同交易日 L1 行情'};
       const amount=(g.long-g.short)*mark.contract_multiple*price;
       if(!Number.isFinite(amount)) return {amount:null,reason:'估值超出数值范围'};
-      const age=Date.now()-Number(mark.received_us)/1000;
+      const quoteFresh=freshAt(mark.received_us,g.source.stale_after_ms);
       const oldNative=oldExchangeQuote(mark,g.source.stale_after_ms);
-      const historical=g.historical || oldNative || mark.initial || mark.paused || !g.l1Connected || age<0 || age>g.source.stale_after_ms || status(g.source)!=='observing' || !mark.trading_day || !mark.native_time;
+      const historical=g.historical || oldNative || mark.initial || mark.paused || !g.l1Connected || !quoteFresh || status(g.source)!=='observing' || !mark.trading_day || !mark.native_time;
       const quoteTime=String(mark.trading_day||'未知交易日')+' '+(mark.last_trade_time||mark.native_time||'时刻未知');
-      return {amount,price,priceLabel,historical,reason:mark.initial?(ctp?'已完成分钟的最后一档盘口':'初始快照'+(mark.paused?' · 暂停':'')):mark.paused?'行情中断或暂停':age<0||age>g.source.stale_after_ms?'行情停更':!g.l1Connected?'行情断开':oldNative?'原生行情时间较旧':historical?'来源未就绪':ctp?'通联 L1':'易达 L1',quoteTime};
+      return {amount,price,priceLabel,historical,reason:mark.initial?(ctp?'已完成分钟的最后一档盘口':'初始快照'+(mark.paused?' · 暂停':'')):mark.paused?'行情中断或暂停':!quoteFresh?'行情停更':!g.l1Connected?'行情断开':oldNative?'原生行情时间较旧':historical?'来源未就绪':ctp?'通联 L1':'易达 L1',quoteTime};
     }
     function amountCell(g) {
       const v=valuation(g);
@@ -408,10 +419,6 @@
       return Number.isFinite(total)?total:null;
     }
     const activeStrategy = row => row.attributed_lots !== 0 || row.signal_target_lots !== 0;
-    const freshAt = (us, limit) => {
-      const age = Date.now() - Number(us) / 1000;
-      return us > 0 && age >= 0 && age <= limit;
-    };
     function positionView(source) {
       const live=source.entry, saved=source.saved_entry;
       const currentLive=live?.position_ready && !source.error
@@ -525,7 +532,9 @@
     }
     function selectedSources() {
       const sources=[...state.sources.values()];
-      const selected=state.sources.get(state.preferredSource) ?? sources.find(s=>s.adapter==='ctp') ?? sources[0];
+      const selected=state.preferredSource
+        ? state.sources.get(state.preferredSource)
+        : sources.find(s=>s.adapter==='ctp') ?? sources[0];
       const tabs=sources.map(s=>`<button type="button" role="tab" data-source="${escape(s.source_id)}" aria-selected="${s===selected}">${adapterName(s)}</button>`).join('');
       if ($('source-tabs').innerHTML!==tabs) $('source-tabs').innerHTML=tabs;
       $('source-tabs').hidden=sources.length<=1;
@@ -641,17 +650,40 @@
       renderFunds(sources[0]); renderOverview(sources,allGroups); renderPositions(sources,visible);
     }
     function accept(frame) {
+      if (frame.type==='cn_futures_clock') {
+        const probe=state.clockProbe;
+        if (!probe || probe.id!==frame.id || performance.now()-probe.sentAt>1000 ||
+            !Number.isSafeInteger(frame.server_now_us) || frame.server_now_us<=0) return;
+        state.clock={serverUs:frame.server_now_us,sentAt:probe.sentAt};
+        state.clockProbe=null;
+        render();
+        return;
+      }
       if (frame.type!=='cn_futures_state' || !frame.source_id) return;
+      const previous=state.sources.get(frame.source_id)?.entry, next=frame.entry;
+      if (previous && next && next.publisher_epoch===previous.publisher_epoch &&
+          BigInt(next.sequence)<BigInt(previous.sequence)) return;
       state.sources.set(frame.source_id,frame);
       render();
+    }
+    let clockProbeId=0;
+    function probeClock() {
+      if (state.ws?.readyState!==WebSocket.OPEN) return;
+      const id=++clockProbeId;
+      state.clockProbe={id,sentAt:performance.now()};
+      state.ws.send('clock:'+id);
     }
     function connect() {
       clearTimeout(state.timer);
       if(state.ws){state.ws.onclose=null;state.ws.close();}
+      state.clockProbe=null;
       connection('连接中','');
       const ws=state.ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+WS_PATH);
-      ws.onopen=()=>connection('实时连接','ok');
-      ws.onmessage=event=>{try{accept(JSON.parse(event.data));}catch(error){console.error(error);}};
+      ws.onopen=()=>{connection('实时连接','ok');probeClock();};
+      ws.onmessage=event=>{
+        if (state.ws!==ws) return;
+        try{accept(JSON.parse(event.data));}catch(error){console.error(error);}
+      };
       ws.onerror=()=>ws.close();
       ws.onclose=()=>{connection('重连中','err');state.timer=setTimeout(connect,2000);};
     }
@@ -690,7 +722,7 @@
 
     $('show-zero').onchange=render;$('symbol').oninput=render;
     $('refresh').onclick=()=>{connect();void loadStrategy();};
-    render();setInterval(render,1000);setInterval(loadStrategy,5000);connect();
+    render();setInterval(render,1000);setInterval(loadStrategy,5000);setInterval(probeClock,5000);connect();
   })();
   </script>
 </body></html>
