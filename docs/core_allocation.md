@@ -1,6 +1,23 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新于 2026-11-22 15:52 UTC。**部署、迁移、下线任何绑核进程时，请同步更新本表。**
+最后更新于 2026-11-23 04:03 UTC。**部署、迁移、下线任何绑核进程时，请同步更新本表。**
+
+2026-11-23 12:03 北京时间，JP Bybit `depth_pub`（PID 2872256）在线从 CPU 37 迁到 CPU 13，
+与 `depth_pub_general`（PID 37298）共用。两个进程均保留原启动刻度，Bybit `env.sh` 的
+`DEPTH_PUB_CORE` 和托管启动参数均更新为 13。
+
+2026-11-23 11:57 北京时间，JP 的 Binance、Bitget、Gate、Bybit 四个 `rolling_metrics`
+及其 21 个线程在线改为共享 CPU 0–5。PID 和启动刻度保持，四路阈值继续刷新。
+各环境 `rolling_metrics.core` 与托管启动参数均为 `0-5`。启动脚本由 `arbmm 22b2b229` 支持 CPU 列表。
+
+2026-11-23 11:45 北京时间，JP Binance 现货–永续 `rolling_metrics` 热替换至
+`arbmm dc93846d`，新发布者 PID 2607303，CPU 37。旧发布者 PID 2421644 已退出，
+两个 Redis 主输出均连续刷新 956 个字段，现货–永续有效 spread 覆盖仍为 351 个合约。
+
+2026-11-23 11:38 北京时间，JP 下线 Bitget–Gate 跨永续 `rm_bg_fu_gt_fu`（原 PID 32996）。
+已通过环境内停止脚本移除托管登记并确认进程退出。CPU 37 继续共用 Bybit `depth_pub`
+和 Binance、Bybit、Bitget、Gate 四个 `rolling_metrics`。Bitget 和 Gate 现货–永续由
+`arbmm dc93846d` 的增量分位数发布者运行，PID 分别为 2603035 和 2603172。
 
 2026-11-22 23:47 北京时间，JP `binance_exec_rx03` 仅替换并重启 exec-pre-trade，发布 `arbmm 499c5e96`
 （Grid 不再因盘口时间戳超过 1 秒未变而暂停撤单），制品 SHA-256
@@ -2286,6 +2303,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 
 | 核 | 进程 | 备注 |
 |----|------|------|
+| 0–5 | 四个 rolling_metrics | Binance、Bitget、Gate、Bybit 共用 housekeeping |
 | 5 | spread_bbo_zmq_pub(binance-futures) | 绑在 housekeeping 边缘核 |
 | 6 | fusion_factor_pub(binance-futures) | |
 | 7 | 未分配 | 2026-10-13 停止旧 model_pub ×3；现场无 model_1m_pub 或单独绑定 CPU7 的进程 |
@@ -2294,7 +2312,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 10 | spread_pbs gate-both | |
 | 11 | spread_pbs bitget-both | 忙时单核饱和,候选拆分(margin/futures 两进程) |
 | 12 | spread_pbs okex-both | |
-| 13 | depth_pub_general | 本机 8 路 depth25（BN/OKX/Bitget/Gate × margin+futures）；Bybit 由独立 depth_pub 负责。pm2 `dp_general` |
+| 13 | depth_pub_general / Bybit depth_pub | Binance、OKX、Bitget、Gate 各两路 depth25 由 `dp_general` 发布，Bybit 两路由 `dp_bb_both` 发布 |
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | 原FR等及okex_exec_trade01/binance_exec_spread01持久化；新账户MM PID421889，旧MM alpha停止 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
@@ -2317,7 +2335,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 34 | spread_pbs bybit-both bookticker | 现货/永续 BBO |
 | 35 | (空) | 原 binance-intra-arb02 已下线删除 |
 | 36 | Manager 冷信号清理 | 定时任务 |
-| 37 | Bybit depth_pub / 五个 rolling_metrics | Binance、Gate、Bitget、Bybit、Bitget/Gate 跨永续，共享 |
+| 37 | 未分配 | Bybit depth_pub 已迁到 CPU 13 |
 | 38–39 | 未分配 | |
 | 40–41 | persist_manager RX01 / RX03 | PID 1200516 / 1202831 |
 | 42–45 | 未分配 | |
