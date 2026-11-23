@@ -19,7 +19,7 @@ Notes:
     e.g. ~/rolling_metrics/binance-margin-binance-futures
   - Managed by pmdaemon with process name:
       rm_<open_tag>_<hedge_tag>（兼容删除旧名 rolling_metrics_<open_venue>_<hedge_venue>）
-  - Optional: put one CPU index in rolling_metrics.core in the deployment directory.
+  - Optional: put a taskset CPU list (e.g. 37 or 0-5) in rolling_metrics.core.
 USAGE
 }
 
@@ -192,14 +192,14 @@ fi
 
 json_affinity_args=""
 if [[ -f "${BASE_DIR}/rolling_metrics.core" ]]; then
-  core="$(<"${BASE_DIR}/rolling_metrics.core")"
-  if [[ ! "$core" =~ ^[0-9]+$ ]]; then
-    echo "[ERROR] rolling_metrics.core must contain one CPU index" >&2
+  cpu_list="$(<"${BASE_DIR}/rolling_metrics.core")"
+  if [[ ! "$cpu_list" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]]; then
+    echo "[ERROR] rolling_metrics.core must contain a CPU list such as 37 or 0-5" >&2
     exit 1
   fi
   taskset_bin="$(command -v taskset)"
-  "$taskset_bin" -c "$core" true
-  json_affinity_args="\"-c\", \"${core}\", \"${json_bin}\", "
+  "$taskset_bin" -c "$cpu_list" true
+  json_affinity_args="\"-c\", \"${cpu_list}\", \"${json_bin}\", "
   json_bin="$(json_escape "$taskset_bin")"
 fi
 
