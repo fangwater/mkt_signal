@@ -188,3 +188,45 @@ fn configuration_uses_crypto_algorithm_names_and_bounds_chase() {
     assert_eq!(AlgoConfig::default().algorithm, ExecutionAlgorithm::Ctaker);
     assert!(serde_json::from_str::<ExecutionAlgorithm>("\"taker\"").is_err());
 }
+#[test]
+fn venue_rejections_back_off_exponentially_until_a_fill_or_new_target() {
+    let second = 1_000_000;
+    let mut algo = Algo::new(&AlgoConfig::default(), second);
+    let mut out = Commands::new();
+    let mut now = 0;
+    let mut waits = Vec::new();
+    for _ in 0..12 {
+        out.clear();
+        assert_eq!(
+            algo.step(&step(1, &[], now), &mut out),
+            "order_action_emitted"
+        );
+        algo.on_rejected(now);
+        let wait = algo.blocked_until_us - now;
+        assert_eq!(
+            algo.step(&step(1, &[], now + wait - 1), &mut out),
+            "rejection_backoff"
+        );
+        waits.push(wait / second);
+        now += wait;
+    }
+    // 1, 2, 4 ... seconds, capped at five minutes.
+    assert_eq!(&waits[..4], [1, 2, 4, 8]);
+    assert_eq!(*waits.last().unwrap(), 300);
+    // A reached target still reports as such while backing off.
+    algo.on_rejected(now);
+    assert_eq!(algo.step(&step(0, &[], now), &mut out), "target_reached");
+    algo.on_fill();
+    out.clear();
+    assert_eq!(
+        algo.step(&step(1, &[], now), &mut out),
+        "order_action_emitted"
+    );
+    algo.on_rejected(now);
+    algo.on_target();
+    out.clear();
+    assert_eq!(
+        algo.step(&step(1, &[], now), &mut out),
+        "order_action_emitted"
+    );
+}

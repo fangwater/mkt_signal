@@ -377,6 +377,9 @@ impl Exec {
                 -1
             };
         let contract = self.contract(fill.identity.venue, &fill.identity.symbol);
+        if let (true, Some(index)) = (own_order, contract) {
+            self.contracts[index].algo.on_fill();
+        }
         let attributed = self
             .target
             .as_ref()
@@ -407,6 +410,12 @@ impl Exec {
                 price: fill.price,
                 allocations,
             }));
+    }
+    /// One of this process's orders was rejected by the counter or venue.
+    pub fn on_rejected(&mut self, venue: Venue, symbol: &str, now_us: u64) {
+        if let Some(index) = self.contract(venue, symbol) {
+            self.contracts[index].algo.on_rejected(now_us);
+        }
     }
     fn contract(&self, venue: Venue, symbol: &str) -> Option<usize> {
         self.index.get(&venue)?.get(symbol).copied()
@@ -457,22 +466,31 @@ impl Exec {
                 );
             }
         }
-        let mut previous: HashMap<Market, Algo> = self
+        let mut previous: HashMap<Market, (Algo, i64)> = self
             .contracts
             .drain(..)
-            .map(|contract| (contract.market, contract.algo))
+            .map(|contract| (contract.market, (contract.algo, contract.net)))
             .collect();
         let mut index: HashMap<Venue, HashMap<Symbol, usize>> = HashMap::new();
         for (venue, symbol, _) in contracts {
             let symbol = Symbol::new(symbol)?;
             let market = Market::format(format_args!("{}:{symbol}", venue.as_str()))?;
-            let mut algo = previous.remove(&market).unwrap_or_else(|| {
-                Algo::new(
-                    &self.settings.algo(),
-                    self.settings.retry_interval_ms * 1000,
-                )
-            });
-            algo.on_target();
+            let net = target.net(&market);
+            // Only a changed net target restarts the contract; an unchanged
+            // one keeps its retry and rejection backoff across batches.
+            let algo = match previous.remove(&market) {
+                Some((algo, old)) if old == net => algo,
+                kept => {
+                    let mut algo = kept.map(|(algo, _)| algo).unwrap_or_else(|| {
+                        Algo::new(
+                            &self.settings.algo(),
+                            self.settings.retry_interval_ms * 1000,
+                        )
+                    });
+                    algo.on_target();
+                    algo
+                }
+            };
             index
                 .entry(venue)
                 .or_default()
@@ -481,7 +499,7 @@ impl Exec {
                 venue,
                 symbol,
                 targets: target.strategy_targets(&market),
-                net: target.net(&market),
+                net,
                 market,
                 algo,
                 wait: "",
@@ -766,6 +784,9 @@ impl Strategy for Exec {
     }
     fn on_fill(&mut self, fill: &Fill, own_order: bool) {
         Exec::on_fill(self, fill, own_order)
+    }
+    fn on_rejected(&mut self, venue: Venue, symbol: &str, now_us: u64) {
+        Exec::on_rejected(self, venue, symbol, now_us)
     }
     fn take_ledger_events(&mut self) -> Vec<LedgerEvent> {
         Exec::take_ledger_events(self)

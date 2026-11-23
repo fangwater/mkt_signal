@@ -21,6 +21,10 @@ pub struct Config {
     lots_per_rule: Option<i32>,
     #[serde(default)]
     pub position_algorithm: PositionAlgorithm,
+    /// Lots held per v1 direction. Set it to the exchange's minimum opening
+    /// order (GFEX LC: 2 lots since 2026-09-22) so every opening is valid.
+    #[serde(default = "one_direction_lot")]
+    pub direction_lots: i32,
     pub dominant_url: String,
     pub history_grpc: String,
     pub history_days: i64,
@@ -80,6 +84,9 @@ impl PublicationConfig {
     }
 }
 
+fn one_direction_lot() -> i32 {
+    1
+}
 fn enabled_by_default() -> bool {
     true
 }
@@ -306,6 +313,10 @@ impl Config {
             cfg.lots_per_rule
                 .is_none_or(|lots| (1..=100).contains(&lots)),
             "invalid historical lots_per_rule"
+        );
+        ensure!(
+            (1..=100).contains(&cfg.direction_lots),
+            "direction_lots must be 1..100"
         );
         ensure!(
             (60..=730).contains(&cfg.history_days),

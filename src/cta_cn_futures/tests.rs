@@ -560,6 +560,25 @@ fn warmed_engine(cfg: &Config) -> Engine {
     engine
 }
 #[test]
+fn a_v1_direction_is_published_with_the_configured_direction_lots() {
+    let mut cfg = config();
+    cfg.direction_lots = 2;
+    cfg.validate().unwrap();
+    let mut engine = warmed_engine(&cfg);
+    for (direction, lots) in [(-1, -2), (0, 0), (1, 2)] {
+        engine.ledger.target_direction = Some(direction);
+        assert_eq!(engine.targets()["targets"][0]["target_lots"], lots);
+        let positions = engine.publication_positions().unwrap();
+        let position = positions.values().next().unwrap();
+        assert_eq!(
+            position.targets.values().copied().collect::<Vec<_>>(),
+            [lots]
+        );
+    }
+    cfg.direction_lots = 0;
+    assert!(cfg.validate().is_err());
+}
+#[test]
 fn panel_changes_keep_factual_lots_until_a_new_live_decision() {
     use crate::cta_perp::config::PositionAlgorithm;
     let cfg = config();

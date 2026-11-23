@@ -153,6 +153,8 @@ pub trait Strategy {
     }
     /// A newly applied live factual fill; `own_order` marks this process's order.
     fn on_fill(&mut self, _fill: &crate::model::Fill, _own_order: bool) {}
+    /// The counter or venue rejected an order this process placed.
+    fn on_rejected(&mut self, _venue: crate::model::Venue, _symbol: &str, _now_us: u64) {}
     fn take_ledger_events(&mut self) -> Vec<super::exec::LedgerEvent> {
         Vec::new()
     }
@@ -227,6 +229,11 @@ impl Strategy for ConfiguredStrategy {
     fn on_fill(&mut self, fill: &crate::model::Fill, own_order: bool) {
         if let Some(strategy) = &mut self.0 {
             strategy.on_fill(fill, own_order);
+        }
+    }
+    fn on_rejected(&mut self, venue: crate::model::Venue, symbol: &str, now_us: u64) {
+        if let Some(exec) = &mut self.0 {
+            exec.on_rejected(venue, symbol, now_us);
         }
     }
     fn take_ledger_events(&mut self) -> Vec<super::exec::LedgerEvent> {

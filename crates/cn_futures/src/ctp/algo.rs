@@ -121,32 +121,74 @@ pub(crate) enum Command {
 }
 pub(crate) type Commands = SmallVec<[Command; 4]>;
 
+/// Longest wait after repeated venue rejections of a contract's orders.
+const MAX_REJECTION_BACKOFF_US: u64 = 300_000_000;
+
 /// Per-contract algorithm state.
-pub(crate) enum Algo {
+pub(crate) struct Algo {
+    inner: Inner,
+    retry_us: u64,
+    /// Doubles from `retry_us` with each venue rejection, up to
+    /// [`MAX_REJECTION_BACKOFF_US`]; a fill or a changed target clears it.
+    rejection_backoff_us: u64,
+    blocked_until_us: u64,
+}
+enum Inner {
     Ctaker(ctaker::Ctaker),
     Chase(chase::Chase),
 }
 impl Algo {
     pub fn new(config: &AlgoConfig, retry_us: u64) -> Self {
-        match config.algorithm {
-            ExecutionAlgorithm::Ctaker => Self::Ctaker(ctaker::Ctaker::new(retry_us)),
-            ExecutionAlgorithm::Chase => Self::Chase(chase::Chase::new(&config.chase, retry_us)),
+        Self {
+            inner: match config.algorithm {
+                ExecutionAlgorithm::Ctaker => Inner::Ctaker(ctaker::Ctaker::new(retry_us)),
+                ExecutionAlgorithm::Chase => {
+                    Inner::Chase(chase::Chase::new(&config.chase, retry_us))
+                }
+            },
+            retry_us,
+            rejection_backoff_us: 0,
+            blocked_until_us: 0,
         }
     }
 
-    /// A new target batch: act immediately and restart any maker clock.
+    /// The contract's target changed: act immediately and restart any maker clock.
     pub fn on_target(&mut self) {
-        match self {
-            Self::Ctaker(algo) => algo.on_target(),
-            Self::Chase(algo) => algo.on_target(),
+        self.clear_backoff();
+        match &mut self.inner {
+            Inner::Ctaker(algo) => algo.on_target(),
+            Inner::Chase(algo) => algo.on_target(),
         }
+    }
+
+    /// The venue or counter rejected one of this contract's orders. A repeated
+    /// rejection must not turn into an order every retry interval.
+    pub fn on_rejected(&mut self, now_us: u64) {
+        self.rejection_backoff_us = if self.rejection_backoff_us == 0 {
+            self.retry_us
+        } else {
+            (self.rejection_backoff_us * 2).min(MAX_REJECTION_BACKOFF_US)
+        };
+        self.blocked_until_us = now_us.saturating_add(self.rejection_backoff_us);
+    }
+
+    pub fn on_fill(&mut self) {
+        self.clear_backoff();
+    }
+
+    fn clear_backoff(&mut self) {
+        self.rejection_backoff_us = 0;
+        self.blocked_until_us = 0;
     }
 
     /// Returns the stable reason recorded in the trader log.
     pub fn step(&mut self, step: &Step<'_>, out: &mut Commands) -> &'static str {
-        match self {
-            Self::Ctaker(algo) => algo.step(step, out),
-            Self::Chase(algo) => algo.step(step, out),
+        if step.delta != 0 && step.live.is_empty() && step.now_us < self.blocked_until_us {
+            return "rejection_backoff";
+        }
+        match &mut self.inner {
+            Inner::Ctaker(algo) => algo.step(step, out),
+            Inner::Chase(algo) => algo.step(step, out),
         }
     }
 }

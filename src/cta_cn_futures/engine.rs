@@ -703,8 +703,17 @@ impl Engine {
         }
         Ok(BTreeMap::from([(
             format!("{group}-{}", self.cfg.interval),
-            native(self.ledger.target_lots()),
+            native(self.published_lots()),
         )]))
+    }
+    /// A v1 direction is held with `direction_lots`; v0 rule sums are unchanged.
+    fn published_lots(&self) -> i64 {
+        let lots = self.ledger.target_lots();
+        if self.ledger.target_direction.is_some() {
+            lots * i64::from(self.cfg.direction_lots)
+        } else {
+            lots
+        }
     }
     pub fn factor_signals(&self) -> serde_json::Value {
         use serde_json::json;
@@ -731,7 +740,7 @@ impl Engine {
             .map(|c| serde_json::json!({"exchange":self.cfg.exchange,"symbol":c,"target_lots":0}))
             .collect();
         if !self.ledger.contract.is_empty() {
-            let lots = self.ledger.target_lots();
+            let lots = self.published_lots();
             targets.push(serde_json::json!({"exchange":self.cfg.exchange,"symbol":self.ledger.contract,"target_lots":lots}));
         }
         serde_json::json!({"strategy_name":self.cfg.name,"interval":self.cfg.interval,"position_unit":"lot","decision_ms":self.ledger.last_decision_ms,"targets":targets})

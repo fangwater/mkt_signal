@@ -756,3 +756,29 @@ fn assigned_legacy_position_is_a_priced_cross_and_is_not_crossed_again() {
     assert!(decide(&mut s, &c, tick(NOW), NOW).is_empty());
     assert!(s.take_ledger_events().is_empty());
 }
+#[test]
+fn a_rejected_contract_keeps_backing_off_across_batches_until_its_target_changes() {
+    let c = core(0, 0);
+    let mut s = strategy(&c, 1);
+    assert_eq!(decide(&mut s, &c, tick(NOW), NOW).len(), 1);
+    s.on_rejected(Venue::Shfe, "cu2612", NOW);
+    let batch = |revision: i64, qty: i32| {
+        let mut t = target(qty);
+        t.target_revision = revision;
+        t.batch_id = format!("batch-{revision:02}");
+        t
+    };
+    // Another batch with the same net target: the 500 ms backoff still holds.
+    s.accept(batch(2, 1), context(&c)).unwrap();
+    let early = NOW + 499_999;
+    assert!(decide(&mut s, &c, tick(early), early).is_empty());
+    let later = NOW + 500_000;
+    assert_eq!(decide(&mut s, &c, tick(later), later).len(), 1);
+    // A second rejection doubles the wait; a changed target clears it.
+    s.on_rejected(Venue::Shfe, "cu2612", later);
+    let retry = later + 999_999;
+    assert!(decide(&mut s, &c, tick(retry), retry).is_empty());
+    s.accept(batch(3, 2), context(&c)).unwrap();
+    let (intent, _) = request(decide(&mut s, &c, tick(retry), retry).remove(0));
+    assert_eq!(intent.lots, 2);
+}

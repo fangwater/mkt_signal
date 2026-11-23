@@ -597,6 +597,24 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                             journal.orders(&runtime.core, &[key])?;
                         }
                     }
+                    // A counter or venue rejection of our own order backs off its contract.
+                    let rejected = match (&outcome, event.kind, &decoded) {
+                        (Ok(()), ctp::ORDER, Ok(crate::model::DecodedUpdate::Order(order)))
+                            if order.status == crate::model::OrderStatus::Rejected =>
+                        {
+                            Some(order.key)
+                        }
+                        (Ok(()), ctp::INSERT_RESPONSE, _) if event.error != 0 => {
+                            runtime.trader.response_key(&event).ok()
+                        }
+                        _ => None,
+                    }
+                    .and_then(|key| runtime.core.order(&key))
+                    .filter(|order| order.owned)
+                    .map(|order| (order.request.venue, order.request.symbol));
+                    if let Some((venue, symbol)) = rejected {
+                        strategy.on_rejected(venue, &symbol, crate::persistence::now_us());
+                    }
                     if let Err(error) = outcome {
                         runtime.core.block(
                         "native event could not be reconciled; factual event retained in journal",
