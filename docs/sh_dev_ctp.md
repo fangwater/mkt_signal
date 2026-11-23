@@ -1,6 +1,6 @@
 # sh_dev 创元 CTP
 
-最后更新：2026-11-19
+最后更新：2026-11-23
 
 部署主机为用户指定的腾讯云 CVM `ssh sh_dev`，独立环境为
 `/home/ubuntu/ctp_chuangyuan01`。使用上期技术官方 CTP 6.7.11，
@@ -69,6 +69,22 @@ stdout 即 trader 日志），`start` 先起持久化再起交易，`IPC_NAMESPA
 `placement_audit` 列出 `rocksdb:low` / `rocksdb:high` 两个入侵线程；现在恢复在后台 CPU 域内执行，线程落在 CPU 3，
 审计为空。云主机部署把 `poll` 改为 `{ mode = "sleep", idle_us = 100000 }`（100 ms，上限）；同日 sleep 改为挂起在 SDK 回调队列上、事件到达即唤醒，行情与回报不再等 100 ms。周六 08:52 换装重启，
 前置未开放时进程等待重连。
+
+## 目标常驻执行（2026-11-23）
+
+11-23 上午创元 TA 等合约有目标却未执行：10:00 一批目标下 AP、SA 成交后，SM 第三笔触发本地
+`max_actions_per_second = 2` 被拒，Exec 全局 halt；10:15 的新目标落在盘中休息，60 秒 lease
+在 10:30 开盘前过期。用户要求任何时候都直接执行推送仓位，午休（北京时间约 12:40）部署
+arbmm `551831fc` 与 Manager `4658e51`：
+
+- 目标无 lease、无交易日，直到新批次替换；Exec 重启后重新接收当前目标。无本地限速。
+- 拒单或被扣住的单只暂停该合约，按 `retry_interval_ms` 重试；行情重连保留目标。
+- 无合约白名单；准入不等费率查询和行情订阅回执，缺规则的合约单独等待并每秒补请求。
+- 报单/撤单 SDK 结果不确定时只将该单标为未确认，3 秒后后台 `ReqQryOrder` 结算。
+- `trade.toml` 删除 `max_actions_per_second`、`target_max_age_ms`、`contracts`；环境脚本不再要求合约范围。
+  ctp-trader sha256 `98a532a5…`，persist_manager `00d7e73e…`；旧二进制、配置和脚本备份在
+  `data/ops/no-lease-20261123T043717Z`。sh_dev 上 cn_futures 193 项测试通过。
+- 易达 paper 暂时下线，未更新；其旧版本不接受新 Manager 的无 lease 目标。
 
 ## 操作入口
 
