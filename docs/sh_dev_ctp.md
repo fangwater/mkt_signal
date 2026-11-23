@@ -84,7 +84,7 @@ arbmm `551831fc` 与 Manager `4658e51`：
 - `trade.toml` 删除 `max_actions_per_second`、`target_max_age_ms`、`contracts`；环境脚本不再要求合约范围。
   ctp-trader sha256 `98a532a5…`，persist_manager `00d7e73e…`；旧二进制、配置和脚本备份在
   `data/ops/no-lease-20261123T043717Z`。sh_dev 上 cn_futures 193 项测试通过。
-- 易达 paper 暂时下线，未更新；其旧版本不接受新 Manager 的无 lease 目标。
+- 易达 paper 随后同版本换装，见 [易达记录](sh_dev_yida_paper.md)。
 
 ## 操作入口
 

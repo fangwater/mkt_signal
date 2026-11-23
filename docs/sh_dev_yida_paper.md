@@ -1,6 +1,6 @@
 # sh_dev 易达 paper 与 Viz
 
-最后更新：2026-11-21
+最后更新：2026-11-23
 
 用户指定的部署主机为 `ssh sh_dev`，运行目录 `/home/ubuntu/yida_paper01`，使用 SDK `1.502.55.35`。
 2026-11-18 易达官方仿真恢复登录，作为 `sh_dev_yida_paper01` 接入国内期货 Manager。
@@ -22,6 +22,13 @@
 `yida-paper01-rb` 按当前柜台对账快照初始化为零手，执行端通过同一条 SSH 反向隧道订阅 gRPC。
 账户完整恢复和展示既有持仓。已启用 `observation_l1=true`，同一 SDK 登录订阅现有持仓和执行合约。
 接入验收时，Manager 已同步 30 条持仓，执行端收到 `no_batch`。
+
+2026-11-23 北京时间约 13:00 随创元一起换装 arbmm `551831fc`（目标无 lease／交易日、无本地限速，见
+[创元记录](sh_dev_ctp.md#目标常驻执行2026-11-23)）：`yida-trader` sha256 `d4e46ae4…`，`persist_manager`
+`00d7e73e…`；`yida.toml` 删除 `max_actions_per_second`、`target_max_age_ms`。SDK 头文件取自本地
+`~/ds/ydClient_1_502_55_35`（`ydApi.h` 哈希与 [易达说明](yida_trade.md) 一致）。易达仍在未确认报单时阻断账户
+（`query_unconfirmed_orders = false`）。旧二进制和配置备份在 `data/ops/no-lease-20261123T045916Z/`。
+双 SDK feature 的 cn_futures 197 项测试在 sh_dev 通过；Manager 为 `no_batch`，上线未下单。
 
 ## 操作入口
 
