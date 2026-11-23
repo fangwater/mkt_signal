@@ -92,6 +92,14 @@ arbmm `551831fc` 与 Manager `4658e51`：
   （`a97d7c5e`），可在配置中心 JSON／表单修改，保存后若目标变化立即推送；14:13 经配置中心把 LC 设为 2，
   Manager 确认 rev 84，lc2701 一笔买开 2 手成交。13:49 换装 ctp-trader `dbadc078…`（备份 `data/ops/backoff-20261123T054938Z/`），
   重启后 lc 拒单间隔按 1、2、4… 秒退避，其余合约均到达目标。
+- 15:24（日盘收盘后、夜盘前）为 Manager 按交易日显示权益换装：`AccountFunds` 增加资金行交易日、
+  `pre_balance`、入金／出金（arbmm `86b21d5b`）。ctp-trader `8d5ae252…`（`--features ctp-sdk`，
+  SDK 桥接静态编入，官方 6.7.11 `.so` 仍运行时 dlopen）与同主机 Viz `78979c9b…` 同时替换，
+  备份在 `data/ops/broker-equity-20261123T072328Z/`（含旧 `account-observation.bin`）。易达 trader 未换：
+  其 `account` 恒为 `None`，帧编码不变，新 Viz 照常解码。重启后柜台就绪、11 个持仓合约，
+  Viz `/account-funds/sh_dev_chuangyuan01_ctp` 返回交易日 `20261123` 资金；云端导出器
+  `cn_futures_sync` 换装为 CN Manager `9a826b4` 并配置 `account_funds_url`，配置备份在
+  `cn_futures_sync/run/backup-broker-equity-20261123T072328Z/`。
 
 ## 操作入口
 

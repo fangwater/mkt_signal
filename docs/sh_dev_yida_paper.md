@@ -16,6 +16,10 @@
 | `yida_paper01-persist.service` | `bin/persist_manager --core 3` | 写 `data/persist_manager`，stdout 即 trader 日志 |
 | `yida_paper01-viz.service` | `config/viz.toml` | 按用户要求监听 `0.0.0.0:8811`，浏览器直接访问 VPS 公网地址的 8811 端口，无需 SSH 转发 |
 
+2026-11-23 15:24 换装 Viz `78979c9b…`（arbmm `86b21d5b`，备份 `data/ops/broker-equity-20261123T072328Z/`），新增只读
+`/account-funds/<manager_source_id>`；易达 counter 未配置 `manager_source_id`，该接口对易达返回 404。
+仅重启 Viz，易达 trader／persist PID 不变。
+
 服务由 Ubuntu 用户的 systemd 管理，已开启 user linger，退出 SSH 后继续运行。交易端只在冷启动状态码 75（柜台重启、登录／恢复超时）时由 drop-in `10-cold-restart.conf` 在 60 秒后重启，与创元 CTP 相同；登录／认证错误等其他退出不自动重启，避免重复提交。persist_manager 与 Viz 失败时自动重启。所有启停都通过环境内脚本，不直接操作监管器。
 
 当前执行范围为 `SHFE:rb2701`，单笔和绝对目标上限均为 1 手。Manager 组
