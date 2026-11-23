@@ -34,6 +34,9 @@ pub(super) struct Controls {
     pub symbol: String,
     pub interval: String,
     pub enabled: bool,
+    /// Lots per v1 direction; omitted keeps the current value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lots_per_rule: Option<i32>,
     #[serde(default)]
     pub position_algorithm: crate::cta_perp::config::PositionAlgorithm,
     pub entry: crate::cta_perp::config::EntryConfig,
@@ -48,6 +51,7 @@ impl From<&Config> for Controls {
             symbol: c.symbol.clone(),
             interval: c.interval.clone(),
             enabled: c.enabled,
+            lots_per_rule: Some(c.lots_per_rule),
             position_algorithm: c.position_algorithm,
             entry: c.entry.clone(),
             exits: c.exits.clone(),
@@ -73,6 +77,9 @@ impl Controls {
         );
         let mut next = base.clone();
         next.enabled = self.enabled;
+        if let Some(lots) = self.lots_per_rule {
+            next.lots_per_rule = lots;
+        }
         next.position_algorithm = self.position_algorithm;
         next.entry = self.entry;
         next.exits = self.exits;
@@ -289,7 +296,7 @@ pub(super) fn apply(
     cfg: &mut Config,
     engine: &mut Engine,
     audit_root: &Path,
-) -> Result<Value> {
+) -> Result<(Value, bool)> {
     let current = Config::load(path)?;
     if request.expected_revision.is_empty()
         || request.expected_revision != revision(&current)?
@@ -342,7 +349,7 @@ pub(super) fn apply(
         *engine = replacement.context("missing replacement factor engine")?;
         *cfg = next;
     }
-    Ok(value)
+    Ok((value, execute && changed))
 }
 pub(super) fn process(
     command: Mutation,
@@ -351,9 +358,9 @@ pub(super) fn process(
     engine: &mut Engine,
     extras: &mut Extras,
     catalog: &Arc<RwLock<Value>>,
-) {
+) -> bool {
     if command.reply.is_closed() {
-        return;
+        return false;
     }
     let result = parameter_audit::default_root()
         .and_then(|root| {
@@ -380,12 +387,14 @@ pub(super) fn process(
             }
         })
         .map_err(failure);
+    let saved = matches!(result, Ok((_, true)));
     if command.execute {
-        if let Ok(value) = &result {
+        if let Ok((value, _)) = &result {
             *catalog.write().unwrap_or_else(|p| p.into_inner()) = value.clone();
         }
     }
-    let _ = command.reply.send(result);
+    let _ = command.reply.send(result.map(|(value, _)| value));
+    saved
 }
 
 pub(super) fn apply_extra(
@@ -396,7 +405,7 @@ pub(super) fn apply_extra(
     cfg: &mut Config,
     extras: &mut Extras,
     audit_root: &Path,
-) -> Result<Value> {
+) -> Result<(Value, bool)> {
     let current = Config::load(path)?;
     if request.expected_revision.is_empty()
         || request.expected_revision != revision(&current)?
@@ -410,16 +419,20 @@ pub(super) fn apply_extra(
         "15min" => crate::cta_factor_calc::config::Interval::FifteenMinutes,
         _ => anyhow::bail!("unsupported native CTA frequency"),
     };
+    let requested_lots = request.configuration.lots_per_rule;
     let next_frequency = request.configuration.merge(&cfg.for_interval(interval))?;
     let mut next = cfg.clone();
     next.frequencies.insert(
         interval.name().into(),
         FrequencyConfig {
             enabled: next_frequency.enabled,
-            lots_per_rule: cfg
-                .frequencies
-                .get(interval.name())
-                .and_then(|f| f.lots_per_rule),
+            lots_per_rule: requested_lots
+                .map(|_| next_frequency.lots_per_rule)
+                .or_else(|| {
+                    cfg.frequencies
+                        .get(interval.name())
+                        .and_then(|f| f.lots_per_rule)
+                }),
             position_algorithm: next_frequency.position_algorithm,
             entry: next_frequency.entry.clone(),
             exits: next_frequency.exits.clone(),
@@ -476,5 +489,5 @@ pub(super) fn apply_extra(
         )?;
         *cfg = next;
     }
-    Ok(value)
+    Ok((value, execute && changed))
 }

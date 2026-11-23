@@ -856,8 +856,11 @@ async fn run_worker(worker: Worker) -> Result<()> {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
+        // A saved configuration (lots included) is a decision of its own:
+        // changed targets are pushed at once instead of at the next bar.
+        let mut saved_decision = None;
         while let Ok(command) = config_rx.try_recv() {
-            panel::process(
+            let saved = panel::process(
                 command,
                 &path,
                 &mut cfg,
@@ -868,6 +871,9 @@ async fn run_worker(worker: Worker) -> Result<()> {
                     .context("missing minute frequency states")?,
                 &catalog,
             );
+            if saved {
+                saved_decision = Some((chrono::Utc::now().timestamp_millis(), current.trading_day));
+            }
         }
         let decision_before = engine.ledger.last_decision_ms;
         let extra_before = stream
@@ -1148,7 +1154,7 @@ async fn run_worker(worker: Worker) -> Result<()> {
         if let Ok(Some(publisher)) = &mut publisher {
             publisher.observe(
                 positions.clone(),
-                hour_decision.max(extra_decision),
+                hour_decision.max(extra_decision).max(saved_decision),
                 current.trading_day,
                 ready,
             )?;

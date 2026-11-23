@@ -560,9 +560,9 @@ fn warmed_engine(cfg: &Config) -> Engine {
     engine
 }
 #[test]
-fn a_v1_direction_is_published_with_the_configured_direction_lots() {
+fn a_v1_direction_is_published_with_lots_per_rule() {
     let mut cfg = config();
-    cfg.direction_lots = 2;
+    cfg.lots_per_rule = 2;
     cfg.validate().unwrap();
     let mut engine = warmed_engine(&cfg);
     for (direction, lots) in [(-1, -2), (0, 0), (1, 2)] {
@@ -575,7 +575,7 @@ fn a_v1_direction_is_published_with_the_configured_direction_lots() {
             [lots]
         );
     }
-    cfg.direction_lots = 0;
+    cfg.lots_per_rule = 0;
     assert!(cfg.validate().is_err());
 }
 #[test]
@@ -648,6 +648,67 @@ fn repeated_formula_keeps_independent_signals_and_drops_removed_rules() {
     assert!(!restored.ledger.flags.contains_key("baseline_101"));
     assert_eq!(restored.ledger.flags.len(), 2);
     assert_eq!(restored.publication_positions().unwrap().len(), 1);
+}
+#[test]
+fn saving_lots_per_rule_in_the_panel_changes_published_targets_at_once() {
+    use super::panel;
+    use crate::cta_perp::config::PositionAlgorithm;
+    let (_dir, mut cfg, _) = live_fixture();
+    cfg.position_algorithm = PositionAlgorithm::V1;
+    let path = cfg.data_directory.join("config.json");
+    super::atomic(&path, &cfg).unwrap();
+    let audit = cfg.data_directory.join("audit");
+    let mut engine = warmed_engine(&cfg);
+    engine.ledger.position_algorithm = PositionAlgorithm::V1;
+    engine.ledger.target_direction = Some(-1);
+    assert_eq!(engine.targets()["targets"][0]["target_lots"], -1);
+    // The panel JSON carries the field; omitting it keeps the current value.
+    let mut controls = panel::Controls::from(&cfg);
+    assert_eq!(controls.lots_per_rule, Some(1));
+    controls.lots_per_rule = None;
+    let save = |controls: &panel::Controls, cfg: &Config| panel::Save {
+        configuration: controls.clone(),
+        expected_revision: panel::revision(cfg).unwrap(),
+    };
+    let request = save(&controls, &cfg);
+    let (_, saved) = panel::apply(
+        request,
+        &Default::default(),
+        true,
+        &path,
+        &mut cfg,
+        &mut engine,
+        &audit,
+    )
+    .unwrap();
+    assert!(!saved, "an unchanged configuration is not a decision");
+    controls.lots_per_rule = Some(2);
+    let request = save(&controls, &cfg);
+    let (_, saved) = panel::apply(
+        request,
+        &Default::default(),
+        true,
+        &path,
+        &mut cfg,
+        &mut engine,
+        &audit,
+    )
+    .unwrap();
+    assert!(saved);
+    assert_eq!(Config::load(&path).unwrap().lots_per_rule, 2);
+    assert_eq!(engine.targets()["targets"][0]["target_lots"], -2);
+    controls.lots_per_rule = Some(0);
+    let request = save(&controls, &cfg);
+    assert!(panel::apply(
+        request,
+        &Default::default(),
+        true,
+        &path,
+        &mut cfg,
+        &mut engine,
+        &audit
+    )
+    .is_err());
 }
 #[test]
 fn configuration_preview_save_conflicts_and_invalid_rules_preserve_the_ledger() {

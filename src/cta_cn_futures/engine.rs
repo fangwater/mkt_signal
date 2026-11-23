@@ -706,11 +706,11 @@ impl Engine {
             native(self.published_lots()),
         )]))
     }
-    /// A v1 direction is held with `direction_lots`; v0 rule sums are unchanged.
+    /// A v1 direction is held with `lots_per_rule`; v0 rule sums are unchanged.
     fn published_lots(&self) -> i64 {
         let lots = self.ledger.target_lots();
         if self.ledger.target_direction.is_some() {
-            lots * i64::from(self.cfg.direction_lots)
+            lots * i64::from(self.cfg.lots_per_rule)
         } else {
             lots
         }

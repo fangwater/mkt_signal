@@ -54,6 +54,7 @@
       <label for="enabled" class="kv-key">策略开关</label><div class="kv-input"><select id="enabled"><option value="false">关闭</option><option value="true">启用</option></select></div><div class="kv-desc">只控制当前策略组、券池和频段。</div>
       <label for="max-pos" class="kv-key">单份金额（USDT）</label><div class="kv-input"><input id="max-pos" type="number" min="0" step="any"></div><div class="kv-desc">每条因子规则的单份金额，修改后用于后续新开仓。</div>
       <label for="native-position-algorithm" class="kv-key" hidden>仓位算法</label><div class="kv-input" hidden><select id="native-position-algorithm"><option value="v0">v0 · 逐因子判断</option><option value="v1">v1 · 等权均值</option></select></div><div class="kv-desc" hidden>同一品种的每个频段最多一手。</div>
+      <label for="native-lots" class="kv-key" hidden>每方向手数</label><div class="kv-input" hidden><input id="native-lots" type="number" min="1" max="100" step="1"></div><div class="kv-desc" hidden>lots_per_rule：v1 每个方向持有的手数，不低于交易所最小开仓手数。保存后立即推送新目标。</div>
       <label for="entry-long" class="kv-key">多头开仓阈值</label><div class="kv-input"><input id="entry-long" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">因子值高于此阈值时开多。</div>
       <label for="entry-short" class="kv-key">空头开仓阈值</label><div class="kv-input"><input id="entry-short" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">因子值低于此阈值时开空。</div>
       <label for="exit-long" class="kv-key">多头平仓阈值</label><div class="kv-input"><input id="exit-long" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">多头因子值低于此阈值时退出。</div>
@@ -249,7 +250,7 @@ function nativeRules(){
   });
 }
 function nativeCollect(){
-  const doc=clone(draft);doc.enabled=$('enabled').value==='true';doc.position_algorithm=$('native-position-algorithm').value;
+  const doc=clone(draft);doc.enabled=$('enabled').value==='true';doc.position_algorithm=$('native-position-algorithm').value;doc.lots_per_rule=Math.round(number('native-lots'));
   doc.entry.factor_long_quantile=number('entry-long');doc.entry.factor_short_quantile=number('entry-short');
   doc.exits.factor_exit_quantile_long=number('exit-long');doc.exits.factor_exit_quantile_short=number('exit-short');
   doc.rules=nativeRules();return doc;
@@ -263,9 +264,9 @@ function prepareNative(){
   $('symbol-group').previousElementSibling.textContent='品种';
   $('strategy-settings').hidden=false;
   $('strategy-settings').querySelector('.hint').textContent='v0 汇总逐因子方向，v1 根据因子等权均值判断方向并使用本频段统一 NQ。关闭策略会保留已发布目标。';
-  const size=$('max-pos').parentElement,mode=$('native-position-algorithm').parentElement;
+  const size=$('max-pos').parentElement,mode=$('native-position-algorithm').parentElement,lots=$('native-lots').parentElement;
   for(const cell of [size.previousElementSibling,size,size.nextElementSibling])cell.hidden=true;
-  for(const cell of [mode.previousElementSibling,mode,mode.nextElementSibling])cell.hidden=false;
+  for(const cell of [mode.previousElementSibling,mode,mode.nextElementSibling,lots.previousElementSibling,lots,lots.nextElementSibling])cell.hidden=false;
   $('native-position-algorithm').onchange=event=>{
     const algorithm=event.target.value;
     nativeThresholds(algorithm,algorithm===(draft.position_algorithm||'v0')
@@ -284,7 +285,7 @@ function showNative(doc){
   $('symbol-group').replaceChildren(new Option(market,doc.symbol));
   $('symbol-members').textContent='实际交割合约由主力 REST 选择。';
   $('strategy-group').replaceChildren(new Option(doc.name,doc.name));
-  $('enabled').value=String(doc.enabled);$('native-position-algorithm').value=doc.position_algorithm||'v0';
+  $('enabled').value=String(doc.enabled);$('native-position-algorithm').value=doc.position_algorithm||'v0';$('native-lots').value=doc.lots_per_rule??1;
   nativeThresholds($('native-position-algorithm').value,[doc.entry.factor_long_quantile,doc.entry.factor_short_quantile,doc.exits.factor_exit_quantile_long,doc.exits.factor_exit_quantile_short]);
   $('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.rules);
   const windows=catalog.window_parameters?.[doc.interval],hint=$('native-window-params');
@@ -303,7 +304,7 @@ function showNative(doc){
 async function nativeAction(save){
   if(busy||!draft)return;setBusy(true);
   try{const configuration=nativeCollect(),result=await api(save?'config':'preview',{method:'POST',body:JSON.stringify({configuration,expected_revision:catalog.revision})});
-    if(save){catalog=result;renderCatalog();message('已保存，后续实时决策使用新配置；已发布目标保留。');}
+    if(save){catalog=result;renderCatalog();message('已保存；手数变化时立即推送新目标，其余参数用于后续实时决策。');}
     else{updateCount(configuration.rules);message('校验通过：'+configuration.rules.length+' 条规则；尚未保存。');}
   }catch(error){message(error.message,true);}finally{setBusy(false);}
 }
@@ -321,7 +322,7 @@ $('symbol-groups-json').addEventListener('input',()=>{groupsDirty=true;$('dirty'
 $('save-groups').onclick=()=>groupsAction(true);$('validate-groups').onclick=()=>groupsAction(false);
 $('reload').onclick=load;$('save').onclick=()=>action(true);$('validate').onclick=()=>action(false);
 $('format').onclick=()=>{if(!draft||busy)return;try{const doc=clone(draft);if(nativeMode){doc.rules=nativeRules();$('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.rules);}else{doc.factor_rules=parseRules();$('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.factor_rules);}changed();message('JSON 已格式化，尚未保存');}catch(error){message(error.message,true);}};
-for(const id of ['factor-json','enabled','max-pos','entry-long','entry-short','exit-long','exit-short','spread-long','spread-short'])$(id).addEventListener('input',changed);
+for(const id of ['factor-json','enabled','max-pos','native-lots','entry-long','entry-short','exit-long','exit-short','spread-long','spread-short'])$(id).addEventListener('input',changed);
 window.addEventListener('hashchange',()=>{if(nativeMode||!catalog||busy)return;const requested=decodeURIComponent(location.hash.slice(1)),next=catalog.plan.combinations[requested];if(!next||next.name===draft?.name)return;if(dirty&&!confirm('放弃未保存修改，切换频段？')){const url=new URL(location.href);url.hash=draft.name;history.replaceState(null,'',url);return;}show(next);message('');});
 window.addEventListener('beforeunload',event=>{if(hasChanges()){event.preventDefault();event.returnValue='';}});
 load();
