@@ -72,10 +72,20 @@ fn instance_01_has_exactly_one_hourly_strategy_per_product() {
             enabled_settings.enabled_for(&cfg.symbol),
             matches!(suffix.as_str(), "rb" | "sa")
         );
-        assert_eq!(
-            cfg.position_algorithm,
-            crate::cta_perp::config::PositionAlgorithm::V1
-        );
+        use crate::cta_perp::config::PositionAlgorithm;
+        if matches!(cfg.symbol.as_str(), "IC" | "IM") {
+            assert_eq!(cfg.position_algorithm, PositionAlgorithm::V0);
+            let (exchange, grpc_exchange) = cfg.exchange_codes().unwrap();
+            assert_eq!(exchange.as_str(), "ccfx");
+            assert_eq!(grpc_exchange, cn_market_proto::Exchange::Cffex);
+            assert_eq!(
+                super::super::history::native_contract(&cfg, &format!("{suffix}2612")).unwrap(),
+                format!("{}2612", cfg.symbol)
+            );
+            assert_eq!(cfg.rules.len(), if cfg.symbol == "IC" { 25 } else { 24 });
+        } else {
+            assert_eq!(cfg.position_algorithm, PositionAlgorithm::V1);
+        }
         let engine = Engine::new(&cfg, Ledger::default()).unwrap();
         let positions = engine.publication_positions().unwrap();
         assert_eq!(
@@ -84,11 +94,13 @@ fn instance_01_has_exactly_one_hourly_strategy_per_product() {
         );
         group.extend(positions);
     }
-    assert_eq!(group.len(), 21);
+    assert_eq!(group.len(), 23);
     assert!(group.contains_key("cn-futures-01-sa-1h"));
     assert!(!group.contains_key("cn-futures-01-sa-baseline_193-1h"));
     assert!(group.contains_key("cn-futures-01-1h"));
     assert!(group.contains_key("cn-futures-01-rb-1h"));
+    assert!(group.contains_key("cn-futures-01-ic-1h"));
+    assert!(group.contains_key("cn-futures-01-im-1h"));
 }
 
 #[test]

@@ -1,0 +1,180 @@
+{
+  "name": "cta-cn_futures-01",
+  "exchange": "CFFEX",
+  "symbol": "IC",
+  "interval": "1h",
+  "enabled": true,
+  "position_algorithm": "v0",
+  "lots_per_rule": 1,
+  "dominant_url": "http://127.0.0.1:18313/api/v1/dominant",
+  "history_grpc": "http://127.0.0.1:18312",
+  "history_days": 240,
+  "redis_endpoint": "10.61.20.11:9380",
+  "data_directory": "data/products/IC",
+  "bind": "127.0.0.1:19401",
+  "entry": {
+    "factor_long_quantile": 0.75,
+    "factor_short_quantile": 0.25,
+    "nq_change_enabled": true,
+    "nq_long_quantile": 0.5,
+    "nq_short_quantile": 0.5
+  },
+  "exits": {
+    "factor_exit_quantile_long": 0.4,
+    "factor_exit_quantile_short": 0.6
+  },
+  "rules": [
+    {
+      "symbol": "IC",
+      "factor": "baseline_135",
+      "sign": 1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "IC",
+      "factor": "baseline_136",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "tp_vpi_005",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "factor_127",
+      "sign": 1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "IC",
+      "factor": "td_pr_002",
+      "sign": 1,
+      "NQ": "0.20/0.80",
+      "id": "td_pr_002_positive"
+    },
+    {
+      "symbol": "IC",
+      "factor": "td_pr_002",
+      "sign": -1,
+      "NQ": "0.20/0.80",
+      "id": "td_pr_002_negative"
+    },
+    {
+      "symbol": "IC",
+      "factor": "td_pr_001",
+      "sign": -1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "IC",
+      "factor": "baseline_160",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "factor_066",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "baseline_134",
+      "sign": -1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "IC",
+      "factor": "baseline_047",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "factor_trades_044",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "baseline_118",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "td_ti_008",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "baseline_041",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "factor_077",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "baseline_039",
+      "sign": 1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "IC",
+      "factor": "td_vi_005",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "factor_049",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "baseline_071",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "factor_112",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "factor_167",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "factor_trades_017",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "factor_125",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IC",
+      "factor": "td_vi_020",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    }
+  ]
+}

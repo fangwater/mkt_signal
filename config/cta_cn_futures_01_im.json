@@ -1,0 +1,172 @@
+{
+  "name": "cta-cn_futures-01",
+  "exchange": "CFFEX",
+  "symbol": "IM",
+  "interval": "1h",
+  "enabled": true,
+  "position_algorithm": "v0",
+  "lots_per_rule": 1,
+  "dominant_url": "http://127.0.0.1:18313/api/v1/dominant",
+  "history_grpc": "http://127.0.0.1:18312",
+  "history_days": 240,
+  "redis_endpoint": "10.61.20.11:9380",
+  "data_directory": "data/products/IM",
+  "bind": "127.0.0.1:19401",
+  "entry": {
+    "factor_long_quantile": 0.75,
+    "factor_short_quantile": 0.25,
+    "nq_change_enabled": true,
+    "nq_long_quantile": 0.5,
+    "nq_short_quantile": 0.5
+  },
+  "exits": {
+    "factor_exit_quantile_long": 0.4,
+    "factor_exit_quantile_short": 0.6
+  },
+  "rules": [
+    {
+      "symbol": "IM",
+      "factor": "factor_150",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IM",
+      "factor": "factor_trades_034",
+      "sign": -1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "IM",
+      "factor": "td_ti_021",
+      "sign": 1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "IM",
+      "factor": "baseline_072",
+      "sign": 1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "IM",
+      "factor": "factor_trades_049",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IM",
+      "factor": "td_pr_010",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IM",
+      "factor": "td_ti_037",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IM",
+      "factor": "baseline_136",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IM",
+      "factor": "td_ti_026",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IM",
+      "factor": "factor_trades_030",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IM",
+      "factor": "factor_021",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IM",
+      "factor": "factor_049",
+      "sign": 1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "IM",
+      "factor": "td_ci_007",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IM",
+      "factor": "factor_094",
+      "sign": 1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "IM",
+      "factor": "factor_103",
+      "sign": -1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "IM",
+      "factor": "baseline_160",
+      "sign": -1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IM",
+      "factor": "baseline_079",
+      "sign": 1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "IM",
+      "factor": "factor_165",
+      "sign": -1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "IM",
+      "factor": "factor_trades_022",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IM",
+      "factor": "td_ti_044",
+      "sign": 1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "IM",
+      "factor": "factor_130",
+      "sign": 1,
+      "NQ": "0.20/0.80"
+    },
+    {
+      "symbol": "IM",
+      "factor": "baseline_148",
+      "sign": -1,
+      "NQ": "关"
+    },
+    {
+      "symbol": "IM",
+      "factor": "baseline_080",
+      "sign": 1,
+      "NQ": "0.50/0.50"
+    },
+    {
+      "symbol": "IM",
+      "factor": "factor_088",
+      "sign": -1,
+      "NQ": "0.20/0.80"
+    }
+  ]
+}

@@ -194,6 +194,7 @@ impl Config {
             self.exchange.as_str(),
             cn_futures_core::segments::exchange_of(&self.symbol),
         ) {
+            ("CFFEX", Some("ccfx")) => Ok((Core::Ccfx, Grpc::Cffex)),
             ("SHFE", Some("xsge")) => Ok((Core::Xsge, Grpc::Shfe)),
             ("INE", Some("xsie")) => Ok((Core::Xsie, Grpc::Ine)),
             ("CZCE", Some("xzce")) => Ok((Core::Xzce, Grpc::Czce)),
@@ -207,7 +208,7 @@ impl Config {
         }
     }
     pub fn native_prefix(&self) -> String {
-        if self.exchange == "CZCE" {
+        if matches!(self.exchange.as_str(), "CFFEX" | "CZCE") {
             self.symbol.clone()
         } else {
             self.symbol.to_ascii_lowercase()
