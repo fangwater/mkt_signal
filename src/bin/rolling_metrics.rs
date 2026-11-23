@@ -1567,11 +1567,20 @@ fn describe_config_changes(prev: &RollingConfig, new: &RollingConfig) -> Option<
     }
 }
 
-fn publish_after_warmup(directory: &Path, remaining: usize) -> std::io::Result<bool> {
+fn publish_after_warmup(
+    directory: &Path,
+    remaining: usize,
+    processed: usize,
+) -> std::io::Result<bool> {
     let temp = directory.join("status.new");
-    fs::write(&temp, format!("{} {remaining}\n", std::process::id()))?;
+    fs::write(
+        &temp,
+        format!("{} {remaining} {processed}\n", std::process::id()),
+    )?;
     fs::rename(temp, directory.join("status"))?;
-    Ok(remaining == 0 && directory.join("publish").try_exists()?)
+    Ok(processed > 0
+        && (remaining == 0 || directory.join("publish-partial").try_exists()?)
+        && directory.join("publish").try_exists()?)
 }
 
 fn spawn_writer_thread(
@@ -1615,7 +1624,7 @@ fn spawn_writer_thread(
                 let Some(remaining) = result.warm_windows_remaining else {
                     continue;
                 };
-                match publish_after_warmup(directory, remaining) {
+                match publish_after_warmup(directory, remaining, result.stats.processed) {
                     Ok(true) => warm_up_dir = None,
                     Ok(false) => continue,
                     Err(err) => {
@@ -1780,6 +1789,23 @@ mod tests {
         compute_spread_fr, get_or_insert_series, symbol_refresh_source, SymbolRefreshSource,
     };
     use mkt_signal::rolling_metrics::service::new_series_map;
+
+    #[test]
+    fn warm_publication_requires_permission_and_computed_output() {
+        use super::{fs, publish_after_warmup};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        assert!(!publish_after_warmup(path, 0, 10).unwrap());
+        fs::write(path.join("publish"), b"enabled").unwrap();
+        assert!(!publish_after_warmup(path, 4, 10).unwrap());
+        assert!(publish_after_warmup(path, 0, 10).unwrap());
+        fs::write(path.join("publish-partial"), b"").unwrap();
+        assert!(!publish_after_warmup(path, 4, 0).unwrap());
+        assert!(publish_after_warmup(path, 4, 10).unwrap());
+        let status = fs::read_to_string(path.join("status")).unwrap();
+        assert_eq!(status, format!("{} 4 10\n", std::process::id()));
+    }
 
     #[test]
     fn derivative_microseconds_produce_one_sample_per_second() {
