@@ -107,8 +107,6 @@ pub(crate) enum ActionRecord<'a> {
         source_id: Cow<'a, str>,
         batch_id: Cow<'a, str>,
         target_revision: i64,
-        trading_day: Cow<'a, str>,
-        expires_at_us: u64,
     },
     Cancel {
         tag: u64,
@@ -313,11 +311,8 @@ fn strategy_result(result: StrategyResult<'_>) -> Value {
                     source_id,
                     batch_id,
                     target_revision,
-                    trading_day,
-                    expires_at_us,
                 } => json!({"op":"submit_exec","tag":tag,"intent":intent,"source_id":source_id,
-                    "batch_id":batch_id,"target_revision":target_revision,"trading_day":trading_day,
-                    "expires_at_us":expires_at_us}),
+                    "batch_id":batch_id,"target_revision":target_revision}),
                 ActionRecord::Cancel { tag, key } => json!({"op":"cancel","tag":tag,"key":key}),
             };
             json!({"type":"ctp_strategy_dispatch_blocked","sent_to_sdk":false,"retryable":retryable,

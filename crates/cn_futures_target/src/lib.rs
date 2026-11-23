@@ -30,8 +30,6 @@ pub struct Target {
     pub source_id: String,
     pub batch_id: String,
     pub target_revision: i64,
-    pub trading_day: String,
-    pub expires_at_us: u64,
     /// Complete roster; every strategy carries the same contract vector.
     pub strategies: BTreeMap<String, Vector>,
 }
@@ -62,22 +60,9 @@ fn validate_market(market: &str) -> Result<()> {
 impl TryFrom<wire::PositionTarget> for Target {
     type Error = anyhow::Error;
 
+    /// A target has no lease or trading day: it stands until replaced.
     fn try_from(value: wire::PositionTarget) -> Result<Self> {
-        Self::from_message(value, false)
-    }
-}
-
-impl Target {
-    fn from_message(value: wire::PositionTarget, observation: bool) -> Result<Self> {
-        ensure!(
-            value.target_revision > 0 && (value.expires_at_us == 0) == observation,
-            "invalid revision or lease"
-        );
-        ensure!(
-            (value.trading_day.len() == 8 && value.trading_day.bytes().all(|v| v.is_ascii_digit()))
-                || (observation && value.trading_day.is_empty()),
-            "invalid trading day"
-        );
+        ensure!(value.target_revision > 0, "invalid target revision");
         let mut strategies = BTreeMap::new();
         for row in value.strategy_targets {
             let mut vector = Vector::new();
@@ -96,14 +81,14 @@ impl Target {
             source_id: value.source_id,
             batch_id: value.batch_id,
             target_revision: value.target_revision,
-            trading_day: value.trading_day,
-            expires_at_us: value.expires_at_us,
             strategies,
         };
         target.validate_shape()?;
         Ok(target)
     }
+}
 
+impl Target {
     /// Identity, complete identical contract vectors and representable net lots.
     pub fn validate_shape(&self) -> Result<()> {
         ensure!(
@@ -175,8 +160,6 @@ impl Target {
             source_id: self.source_id,
             batch_id: self.batch_id,
             target_revision: self.target_revision,
-            trading_day: self.trading_day,
-            expires_at_us: self.expires_at_us,
             decision_us,
             strategy_targets: self
                 .strategies

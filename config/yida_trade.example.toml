@@ -34,7 +34,6 @@ cash_budget_per_open_lot = 250000.0
 max_order_lots = 1
 max_position_lots_per_side = 2
 max_working_lots = 2
-max_actions_per_second = 2
 minimum_cash_remaining = 10000.0
 enable_fak_fok = false
 close_priority = "today_first"

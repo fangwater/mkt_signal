@@ -273,8 +273,6 @@ impl PersistChannel {
                             source_id: Cow::Borrowed(&target.source_id),
                             batch_id: Cow::Borrowed(&target.batch_id),
                             target_revision: target.target_revision,
-                            trading_day: Cow::Borrowed(&target.trading_day),
-                            expires_at_us: target.expires_at_us,
                         },
                         Native::Cancel { tag, key } => ActionRecord::Cancel {
                             tag: *tag,

@@ -143,20 +143,17 @@ fn options_inventory_uses_the_same_ledger_and_still_requires_a_trading_allowlist
             19
         );
         assert!(core
-            .prepare(
-                Intent {
-                    venue: Venue::Ine,
-                    symbol: "sc2701C790".into(),
-                    side: Side::Sell,
-                    offset: Offset::CloseYesterday,
-                    lots: 1,
-                    price_type: PriceType::Limit,
-                    price_ticks: 2000,
-                    time_in_force: TimeInForce::Day,
-                    execution_route: None
-                },
-                std::time::Instant::now()
-            )
+            .prepare(Intent {
+                venue: Venue::Ine,
+                symbol: "sc2701C790".into(),
+                side: Side::Sell,
+                offset: Offset::CloseYesterday,
+                lots: 1,
+                price_type: PriceType::Limit,
+                price_ticks: 2000,
+                time_in_force: TimeInForce::Day,
+                execution_route: None
+            })
             .is_err());
         begin(&mut session, &c);
         e.lots = -1;
@@ -620,20 +617,17 @@ fn native_terminal_reports_before_fills_preserve_factual_positions_and_reservati
     for (status, traded) in [(3, 3), (2, 1)] {
         let mut core = restored_core();
         let prepared = core
-            .prepare(
-                Intent {
-                    venue: Venue::Shfe,
-                    symbol: "cu2612".into(),
-                    side: Side::Buy,
-                    offset: Offset::Open,
-                    lots: 3,
-                    price_ticks: 20000,
-                    price_type: PriceType::Limit,
-                    time_in_force: TimeInForce::Day,
-                    execution_route: None,
-                },
-                std::time::Instant::now(),
-            )
+            .prepare(Intent {
+                venue: Venue::Shfe,
+                symbol: "cu2612".into(),
+                side: Side::Buy,
+                offset: Offset::Open,
+                lots: 3,
+                price_ticks: 20000,
+                price_type: PriceType::Limit,
+                time_in_force: TimeInForce::Day,
+                execution_route: None,
+            })
             .unwrap();
         let e = RawEvent {
             traded,

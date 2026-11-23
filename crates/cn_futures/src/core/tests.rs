@@ -1,11 +1,9 @@
 use super::*;
 
 #[test]
-fn prefaulting_capacity_preserves_live_orders_references_and_action_rate_history() {
+fn prefaulting_capacity_preserves_live_orders_and_references() {
     let mut c = core();
-    c.limits.max_actions_per_second = 2;
-    let now = Instant::now();
-    let a = c.prepare(intent(Side::Buy, Offset::Open, 1), now).unwrap();
+    let a = c.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
     let before = serde_json::to_value(c.view()).unwrap();
     c.reserve_orders(16_384).unwrap();
     assert_eq!(serde_json::to_value(c.view()).unwrap(), before);
@@ -15,16 +13,11 @@ fn prefaulting_capacity_preserves_live_orders_references_and_action_rate_history
             order_ref: "4095".into()
         })
         .is_none());
-    let b = c.prepare(intent(Side::Buy, Offset::Open, 1), now).unwrap();
+    let b = c.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
     assert_eq!(
         b.key.order_ref.parse::<u64>().unwrap(),
         a.key.order_ref.parse::<u64>().unwrap() + 1
     );
-    assert!(c
-        .prepare(intent(Side::Buy, Offset::Open, 1), now)
-        .unwrap_err()
-        .to_string()
-        .contains("rate limit"));
     assert_eq!(c.orders.slots.len(), 2);
     assert_working_index(&c);
 }
@@ -32,13 +25,11 @@ fn prefaulting_capacity_preserves_live_orders_references_and_action_rate_history
 #[test]
 fn same_session_reconciliation_keeps_rejected_attempt_references_consumed() {
     let mut core = core();
-    let request = core
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .unwrap();
+    let request = core.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
     core.reject(&request.key).unwrap();
     core.restore(snapshot()).unwrap();
     assert_eq!(
-        core.prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
+        core.prepare(intent(Side::Buy, Offset::Open, 1))
             .unwrap()
             .key
             .order_ref,
@@ -49,14 +40,12 @@ fn same_session_reconciliation_keeps_rejected_attempt_references_consumed() {
 #[test]
 fn recovery_does_not_reuse_an_observed_reference_above_the_login_maximum() {
     let mut core = core();
-    let request = core
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .unwrap();
+    let request = core.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
     let mut s = snapshot();
     s.orders.push(update(&request, 0, OrderStatus::Working));
     core.restore(s).unwrap();
     assert_eq!(
-        core.prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
+        core.prepare(intent(Side::Buy, Offset::Open, 1))
             .unwrap()
             .key
             .order_ref,
@@ -66,9 +55,7 @@ fn recovery_does_not_reuse_an_observed_reference_above_the_login_maximum() {
 #[test]
 fn incomplete_fact_queries_cannot_restore_reported_fills() {
     let mut core = core();
-    let request = core
-        .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
+    let request = core.prepare(intent(Side::Buy, Offset::Open, 3)).unwrap();
     let mut s = snapshot();
     s.orders.push(update(&request, 1, OrderStatus::Working));
     assert!(core.restore(s).is_err());
@@ -84,7 +71,7 @@ fn evidence_failure_after_the_sdk_call_keeps_the_order_and_blocks_trading() {
     };
     // Evidence is published after the SDK call and never withholds the order.
     let key = runtime
-        .submit_with(intent(Side::Buy, Offset::Open, 1), Instant::now(), |_| {
+        .submit_with(intent(Side::Buy, Offset::Open, 1), |_| {
             bail!("audit unavailable")
         })
         .unwrap();
@@ -99,7 +86,6 @@ fn limits() -> RiskLimits {
         max_order_lots: Some(10),
         max_position_lots_per_side: Some(20),
         max_working_lots: Some(20),
-        max_actions_per_second: 20,
         minimum_cash_remaining: 1000.0,
         enable_fak_fok: false,
         close_priority: ClosePriority::TodayFirst,
@@ -149,9 +135,9 @@ fn czce_three_digit_contract_uses_its_native_product_status_and_symbol_override(
     let mut request = intent(Side::Buy, Offset::Open, 1);
     request.venue = Venue::Czce;
     request.symbol = "SR701".into();
-    assert!(core.prepare(request, Instant::now()).is_ok());
+    assert!(core.prepare(request).is_ok());
     core.set_trading_status(Venue::Czce, "SR701", false);
-    assert!(core.prepare(request, Instant::now()).is_err());
+    assert!(core.prepare(request).is_err());
 }
 
 #[test]
@@ -177,9 +163,7 @@ fn queried_margin_and_opening_fee_cover_positions_with_or_without_a_cash_floor()
     for floor in [0.0, 10_000.0] {
         image.instruments[0].cash_budget_per_open_lot = floor;
         core.restore(image.clone()).unwrap();
-        let prepared = core
-            .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-            .unwrap();
+        let prepared = core.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
         assert!((core.order(&prepared.key).unwrap().cash_reserved_per_lot - 144029.6).abs() < 1e-8);
         core.reject(&prepared.key).unwrap();
     }
@@ -283,9 +267,7 @@ fn synchronous_acceptance_only_reserves_does_not_fill() {
         trader: Fake::default(),
         execute: true,
     };
-    let key = runtime
-        .submit(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
+    let key = runtime.submit(intent(Side::Buy, Offset::Open, 3)).unwrap();
     assert_eq!(runtime.trader.inserts, 1);
     assert_eq!(runtime.core.order(&key).unwrap().remaining(), 3);
     assert_eq!(
@@ -304,13 +286,9 @@ fn read_only_and_pretrade_rejections_never_call_sdk() {
         trader: Fake::default(),
         execute: false,
     };
-    assert!(runtime
-        .submit(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .is_err());
+    assert!(runtime.submit(intent(Side::Buy, Offset::Open, 1)).is_err());
     runtime.execute = true;
-    assert!(runtime
-        .submit(intent(Side::Buy, Offset::Open, 11), Instant::now())
-        .is_err());
+    assert!(runtime.submit(intent(Side::Buy, Offset::Open, 11)).is_err());
     assert_eq!(runtime.trader.inserts, 0);
     assert!(runtime.core.view().orders.is_empty());
 }
@@ -324,16 +302,14 @@ fn documented_local_failure_releases_once() {
         },
         execute: true,
     };
-    assert!(runtime
-        .submit(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .is_err());
+    assert!(runtime.submit(intent(Side::Buy, Offset::Open, 3)).is_err());
     let key = *runtime.core.view().orders[0].key;
     runtime.core.reject(&key).unwrap();
     assert_eq!(runtime.core.view().available_local_budget, 1_000_000.0);
     assert_eq!(runtime.core.order(&key).unwrap().remaining(), 0);
 }
 #[test]
-fn uncertain_submission_keeps_reservation_and_blocks_new_orders() {
+fn uncertain_submission_keeps_only_its_reservation_until_an_order_query() {
     let mut runtime = SingleLoop {
         core: core(),
         trader: Fake {
@@ -342,19 +318,146 @@ fn uncertain_submission_keeps_reservation_and_blocks_new_orders() {
         },
         execute: true,
     };
-    assert!(runtime
-        .submit(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .is_err());
-    assert!(!runtime.core.is_ready());
-    assert_eq!(runtime.core.view().orders[0].remaining(), 3);
+    let before = Instant::now();
+    assert!(runtime.submit(intent(Side::Buy, Offset::Open, 3)).is_err());
+    // The account keeps trading; only this order is unconfirmed.
+    assert!(runtime.core.is_ready());
+    let key = *runtime.core.view().orders[0].key;
+    assert_eq!(runtime.core.order(&key).unwrap().remaining(), 3);
     assert_eq!(runtime.core.view().available_local_budget, 970_000.0);
+    assert!(runtime.core.oldest_unconfirmed().is_some());
+    // A query requested before the mark cannot settle it.
+    assert!(runtime
+        .core
+        .resolve_unconfirmed(&[], before)
+        .unwrap()
+        .is_empty());
+    let resolved = runtime
+        .core
+        .resolve_unconfirmed(&[], Instant::now())
+        .unwrap();
+    assert_eq!(
+        (resolved[0].key, resolved[0].call, resolved[0].outcome),
+        (key, Unconfirmed::Insert, "absent")
+    );
+    assert_eq!(runtime.core.order(&key).unwrap().remaining(), 0);
+    assert_eq!(runtime.core.view().available_local_budget, 1_000_000.0);
+    assert!(runtime.core.oldest_unconfirmed().is_none());
+}
+#[test]
+fn queried_or_reported_uncertain_orders_take_the_venue_state() {
+    for report in [false, true] {
+        let mut runtime = SingleLoop {
+            core: core(),
+            trader: Fake {
+                uncertain: true,
+                ..Fake::default()
+            },
+            execute: true,
+        };
+        assert!(runtime.submit(intent(Side::Buy, Offset::Open, 3)).is_err());
+        let view = runtime.core.view().orders[0];
+        let request = PreparedOrder {
+            key: *view.key,
+            intent: *view.request,
+            limit_price: view.limit_price,
+            option_market_buy_ceiling: 0.0,
+        };
+        let row = update(&request, 0, OrderStatus::Working);
+        if report {
+            runtime.core.on_order(&row).unwrap();
+            assert!(runtime.core.oldest_unconfirmed().is_none());
+        } else {
+            let resolved = runtime
+                .core
+                .resolve_unconfirmed(&[row], Instant::now())
+                .unwrap();
+            assert_eq!(resolved[0].outcome, "found");
+        }
+        let order = runtime.core.order(&request.key).unwrap();
+        assert_eq!((order.status, order.remaining()), (OrderStatus::Working, 3));
+        assert!(runtime.core.oldest_unconfirmed().is_none());
+    }
+}
+#[test]
+fn a_complete_snapshot_without_an_unconfirmed_insert_releases_it() {
+    let mut runtime = SingleLoop {
+        core: core(),
+        trader: Fake {
+            uncertain: true,
+            ..Fake::default()
+        },
+        execute: true,
+    };
+    assert!(runtime.submit(intent(Side::Buy, Offset::Open, 3)).is_err());
+    runtime.core.restore(snapshot()).unwrap();
+    assert!(runtime.core.view().orders.is_empty());
+    assert!(runtime.core.oldest_unconfirmed().is_none());
+}
+#[test]
+fn uncertain_cancel_is_retryable_after_the_query_shows_the_order_working() {
+    struct CancelUnknown;
+    impl Trader for CancelUnknown {
+        fn insert(&mut self, _: &PreparedOrder) -> Result<i32> {
+            Ok(0)
+        }
+        fn cancel(&mut self, _: &PreparedCancel) -> Result<i32> {
+            bail!("cancel uncertain")
+        }
+    }
+    let mut runtime = SingleLoop {
+        core: core(),
+        trader: CancelUnknown,
+        execute: true,
+    };
+    let key = runtime.submit(intent(Side::Buy, Offset::Open, 3)).unwrap();
+    let view = runtime.core.order(&key).unwrap();
+    let request = PreparedOrder {
+        key,
+        intent: *view.request,
+        limit_price: view.limit_price,
+        option_market_buy_ceiling: 0.0,
+    };
+    runtime
+        .core
+        .on_order(&update(&request, 0, OrderStatus::Working))
+        .unwrap();
+    assert!(runtime.cancel(&key).is_err());
+    assert!(runtime.core.is_ready());
+    assert!(runtime.core.order(&key).unwrap().cancel_pending);
+    let resolved = runtime
+        .core
+        .resolve_unconfirmed(&[update(&request, 0, OrderStatus::Working)], Instant::now())
+        .unwrap();
+    assert_eq!(
+        (resolved[0].call, resolved[0].outcome),
+        (Unconfirmed::Cancel, "found")
+    );
+    assert!(!runtime.core.order(&key).unwrap().cancel_pending);
+}
+#[test]
+fn without_order_queries_an_uncertain_submission_blocks_the_account() {
+    let mut scope = crate::ctp::scope();
+    scope.query_unconfirmed_orders = false;
+    let mut core = TradingCore::new(limits(), scope).unwrap();
+    core.set_trading_status(crate::model::Venue::Cffex, "IF", true);
+    core.restore(snapshot()).unwrap();
+    let mut runtime = SingleLoop {
+        core,
+        trader: Fake {
+            uncertain: true,
+            ..Fake::default()
+        },
+        execute: true,
+    };
+    assert!(runtime.submit(intent(Side::Buy, Offset::Open, 3)).is_err());
+    assert!(!runtime.core.is_ready());
+    assert!(runtime.core.oldest_unconfirmed().is_none());
 }
 #[test]
 fn duplicate_fill_is_idempotent_and_conflicting_identity_fails() {
     let mut core = core();
-    let request = core
-        .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
+    let request = core.prepare(intent(Side::Buy, Offset::Open, 3)).unwrap();
     let first = fill(&request, "TRADE-A", 1);
     assert!(core.on_fill(&first.clone()).unwrap());
     assert!(!core.on_fill(&first.clone()).unwrap());
@@ -370,9 +473,7 @@ fn duplicate_fill_is_idempotent_and_conflicting_identity_fails() {
 #[test]
 fn cumulative_order_report_does_not_invent_a_fill_or_release_pending_fill() {
     let mut core = core();
-    let request = core
-        .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
+    let request = core.prepare(intent(Side::Buy, Offset::Open, 3)).unwrap();
     core.on_order(&update(&request, 3, OrderStatus::Filled))
         .unwrap();
     assert_eq!(core.position(Venue::Cffex, "IF2612", Side::Buy).total(), 0);
@@ -393,11 +494,9 @@ fn cancel_request_and_cancel_failure_do_not_release_budget() {
         trader: Fake::default(),
         execute: true,
     };
-    let key = runtime
-        .submit(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
+    let key = runtime.submit(intent(Side::Buy, Offset::Open, 3)).unwrap();
     runtime.trader.code = -3;
-    assert!(runtime.cancel(&key, Instant::now()).is_err());
+    assert!(runtime.cancel(&key).is_err());
     assert_eq!(runtime.core.order(&key).unwrap().remaining(), 3);
     assert!(!runtime.core.order(&key).unwrap().cancel_pending);
     assert_eq!(runtime.core.view().available_local_budget, 970_000.0);
@@ -405,10 +504,8 @@ fn cancel_request_and_cancel_failure_do_not_release_budget() {
 #[test]
 fn cancel_confirmation_retains_unseen_reported_fill_reservation() {
     let mut core = core();
-    let request = core
-        .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
-    core.prepare_cancel(&request.key, Instant::now()).unwrap();
+    let request = core.prepare(intent(Side::Buy, Offset::Open, 3)).unwrap();
+    core.prepare_cancel(&request.key).unwrap();
     assert_eq!(core.order(&request.key).unwrap().remaining(), 3);
     core.on_order(&update(&request, 1, OrderStatus::Cancelled))
         .unwrap();
@@ -430,13 +527,9 @@ fn close_allocation_reserves_dates_and_releases_only_cancelled_part() {
         yesterday: 2,
     });
     core.restore(s).unwrap();
-    let request = core
-        .prepare(intent(Side::Sell, Offset::Close, 3), Instant::now())
-        .unwrap();
+    let request = core.prepare(intent(Side::Sell, Offset::Close, 3)).unwrap();
     assert_eq!(core.position(Venue::Cffex, "IF2612", Side::Buy).frozen(), 3);
-    assert!(core
-        .prepare(intent(Side::Sell, Offset::Close, 1), Instant::now())
-        .is_err());
+    assert!(core.prepare(intent(Side::Sell, Offset::Close, 1)).is_err());
     core.on_order(&update(&request, 1, OrderStatus::Cancelled))
         .unwrap();
     let p = core.position(Venue::Cffex, "IF2612", Side::Buy);
@@ -457,9 +550,7 @@ fn rejected_close_restores_frozen_inventory() {
         yesterday: 0,
     });
     core.restore(s).unwrap();
-    let request = core
-        .prepare(intent(Side::Buy, Offset::Close, 2), Instant::now())
-        .unwrap();
+    let request = core.prepare(intent(Side::Buy, Offset::Close, 2)).unwrap();
     core.reject(&request.key).unwrap();
     assert_eq!(
         core.position(Venue::Cffex, "IF2612", Side::Sell).frozen(),
@@ -470,25 +561,19 @@ fn rejected_close_restores_frozen_inventory() {
 #[test]
 fn disconnect_preserves_state_and_cancels_remain_possible_after_reconnect() {
     let mut core = core();
-    let request = core
-        .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
+    let request = core.prepare(intent(Side::Buy, Offset::Open, 3)).unwrap();
     core.disconnect();
-    assert!(core.prepare_cancel(&request.key, Instant::now()).is_err());
+    assert!(core.prepare_cancel(&request.key).is_err());
     core.connected();
     assert!(!core.is_ready());
     assert_eq!(core.order(&request.key).unwrap().remaining(), 3);
-    assert!(core.prepare_cancel(&request.key, Instant::now()).is_ok());
-    assert!(core
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .is_err());
+    assert!(core.prepare_cancel(&request.key).is_ok());
+    assert!(core.prepare(intent(Side::Buy, Offset::Open, 1)).is_err());
 }
 #[test]
 fn malformed_restore_does_not_overwrite_live_state() {
     let mut core = core();
-    let request = core
-        .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
+    let request = core.prepare(intent(Side::Buy, Offset::Open, 3)).unwrap();
     let mut s = snapshot();
     s.available_cash = f64::NAN;
     assert!(core.restore(s).is_err());
@@ -498,42 +583,26 @@ fn malformed_restore_does_not_overwrite_live_state() {
 fn status_unknown_inactive_and_non_allowlisted_contracts_cannot_trade() {
     let mut core = TradingCore::new(limits(), crate::ctp::scope()).unwrap();
     core.restore(snapshot()).unwrap();
-    assert!(core
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .is_err());
+    assert!(core.prepare(intent(Side::Buy, Offset::Open, 1)).is_err());
     core.set_trading_status(crate::model::Venue::Cffex, "IF", true);
-    core.prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .unwrap();
+    core.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
     core.set_trading_status(crate::model::Venue::Cffex, "IF", false);
-    assert!(core
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .is_err());
+    assert!(core.prepare(intent(Side::Buy, Offset::Open, 1)).is_err());
     let mut other = intent(Side::Buy, Offset::Open, 1);
     other.symbol = "IF2703".into();
-    assert!(core.prepare(other, Instant::now()).is_err());
+    assert!(core.prepare(other).is_err());
 }
 #[test]
-fn self_trade_and_shared_action_rate_are_checked_before_submission() {
+fn self_trade_is_checked_before_submission() {
     let mut core = core();
-    let now = Instant::now();
-    let request = core
-        .prepare(intent(Side::Buy, Offset::Open, 1), now)
-        .unwrap();
-    assert!(core
-        .prepare(intent(Side::Sell, Offset::Open, 1), now)
-        .is_err());
-    core.limits.max_actions_per_second = 1;
-    assert!(core.prepare_cancel(&request.key, now).is_err());
-    assert!(core
-        .prepare_cancel(&request.key, now + Duration::from_secs(1))
-        .is_ok());
+    let request = core.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
+    assert!(core.prepare(intent(Side::Sell, Offset::Open, 1)).is_err());
+    assert!(core.prepare_cancel(&request.key).is_ok());
 }
 #[test]
 fn snapshot_seeds_trade_deduplication_and_existing_open_reservations() {
     let mut core = core();
-    let request = core
-        .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
+    let request = core.prepare(intent(Side::Buy, Offset::Open, 3)).unwrap();
     let f = fill(&request, "PAST-TRADE", 1);
     let mut s = snapshot();
     s.orders.push(update(&request, 1, OrderStatus::Working));
@@ -551,7 +620,7 @@ fn snapshot_seeds_trade_deduplication_and_existing_open_reservations() {
     assert_eq!(core.position(Venue::Cffex, "IF2612", Side::Buy).today, 1);
     assert_eq!(core.order(&request.key).unwrap().remaining(), 2);
     assert_eq!(
-        core.prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
+        core.prepare(intent(Side::Buy, Offset::Open, 1))
             .unwrap()
             .key
             .order_ref,
@@ -579,41 +648,32 @@ fn unknown_fill_is_an_error_not_silently_dropped_or_attributed() {
 #[test]
 fn cancel_rejection_via_order_stream_allows_retry_without_releasing() {
     let mut core = core();
-    let request = core
-        .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
-    core.prepare_cancel(&request.key, Instant::now()).unwrap();
+    let request = core.prepare(intent(Side::Buy, Offset::Open, 3)).unwrap();
+    core.prepare_cancel(&request.key).unwrap();
     let mut rejected = update(&request, 0, OrderStatus::Working);
     rejected.cancel_rejected = true;
     core.on_order(&rejected).unwrap();
     assert_eq!(core.order(&request.key).unwrap().remaining(), 3);
-    assert!(core.prepare_cancel(&request.key, Instant::now()).is_ok());
+    assert!(core.prepare_cancel(&request.key).is_ok());
 }
 #[test]
 fn completed_rule_omission_and_inactive_refresh_remove_permission() {
     let mut core = core();
     core.replace_instruments(vec![]).unwrap();
-    assert!(core
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .is_err());
+    assert!(core.prepare(intent(Side::Buy, Offset::Open, 1)).is_err());
     let mut rules = snapshot().instruments;
     rules[0].active = false;
     core.replace_instruments(rules).unwrap();
-    assert!(core
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .is_err());
+    assert!(core.prepare(intent(Side::Buy, Offset::Open, 1)).is_err());
 }
 #[test]
 fn cash_poll_tightens_but_never_replenishes_local_reservations() {
     let mut core = core();
-    core.prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
+    core.prepare(intent(Side::Buy, Offset::Open, 3)).unwrap();
     core.constrain_cash(2_000_000.0).unwrap();
     assert_eq!(core.view().available_local_budget, 970_000.0);
     core.constrain_cash(5000.0).unwrap();
-    assert!(core
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .is_err());
+    assert!(core.prepare(intent(Side::Buy, Offset::Open, 1)).is_err());
 }
 #[test]
 fn yesterday_first_cancellation_preserves_missing_fill_in_older_inventory() {
@@ -635,9 +695,7 @@ fn yesterday_first_cancellation_preserves_missing_fill_in_older_inventory() {
         yesterday: 1,
     });
     core.restore(s).unwrap();
-    let request = core
-        .prepare(intent(Side::Sell, Offset::Close, 3), Instant::now())
-        .unwrap();
+    let request = core.prepare(intent(Side::Sell, Offset::Close, 3)).unwrap();
     core.on_order(&update(&request, 1, OrderStatus::Cancelled))
         .unwrap();
     let p = core.position(Venue::Cffex, "IF2612", Side::Buy);
@@ -695,15 +753,9 @@ fn cn_fill(p: &PreparedOrder, id: &str, lots: i32) -> Fill {
 #[test]
 fn shfe_close_requires_exact_date_inventory() {
     let mut c = cn_core();
-    assert!(c
-        .prepare(cn_intent(Offset::Close, 1), Instant::now())
-        .is_err());
-    assert!(c
-        .prepare(cn_intent(Offset::CloseToday, 3), Instant::now())
-        .is_err());
-    let p = c
-        .prepare(cn_intent(Offset::CloseYesterday, 3), Instant::now())
-        .unwrap();
+    assert!(c.prepare(cn_intent(Offset::Close, 1)).is_err());
+    assert!(c.prepare(cn_intent(Offset::CloseToday, 3)).is_err());
+    let p = c.prepare(cn_intent(Offset::CloseYesterday, 3)).unwrap();
     assert_eq!(
         (
             c.order(&p.key).unwrap().reserved_today,
@@ -725,7 +777,7 @@ fn generic_close_reserves_both_dates_before_any_send() {
         execute: true,
     };
     let receipt = r
-        .submit_planned_with(cn_intent(Offset::Close, 5), Instant::now(), |_| Ok(()))
+        .submit_planned_with(cn_intent(Offset::Close, 5), |_| Ok(()))
         .unwrap();
     assert!(receipt.all_submitted_locally);
     assert_eq!(r.trader.inserts, 2);
@@ -750,15 +802,13 @@ fn split_fok_and_second_child_preflight_failure_send_nothing() {
     r.core.limits.enable_fak_fok = true;
     let mut i = cn_intent(Offset::Close, 5);
     i.time_in_force = TimeInForce::Fok;
-    assert!(r
-        .submit_planned_with(i, Instant::now(), |_| Ok(()))
-        .is_err());
+    assert!(r.submit_planned_with(i, |_| Ok(())).is_err());
     let mut s = cn_snapshot();
     s.instruments[0].min_lots = 2;
     r.core.restore(s).unwrap();
     // First child has 2 lots; the 1-lot second child fails validation. No send occurs.
     assert!(r
-        .submit_planned_with(cn_intent(Offset::Close, 3), Instant::now(), |_| Ok(()))
+        .submit_planned_with(cn_intent(Offset::Close, 3), |_| Ok(()))
         .is_err());
     assert_eq!(r.trader.inserts, 0);
     assert_eq!(
@@ -797,7 +847,7 @@ fn split_send_failure_returns_every_identity_and_preserves_correct_reservations(
             execute: true,
         };
         let receipt = r
-            .submit_planned_with(cn_intent(Offset::Close, 5), Instant::now(), |_| Ok(()))
+            .submit_planned_with(cn_intent(Offset::Close, 5), |_| Ok(()))
             .unwrap();
         assert_eq!(receipt.children.len(), 2);
         assert!(!receipt.all_submitted_locally);
@@ -809,6 +859,7 @@ fn split_send_failure_returns_every_identity_and_preserves_correct_reservations(
             r.core.position(Venue::Shfe, "cu2612", Side::Buy).frozen(),
             if uncertain { 5 } else { 2 }
         );
+        // The Yida scope has no order query: uncertainty blocks the account.
         assert_eq!(r.core.is_ready(), !uncertain);
         if uncertain {
             assert!(matches!(
@@ -831,17 +882,14 @@ fn native_cancel_before_system_identity_retains_reservations() {
         trader: Fake::default(),
         execute: true,
     };
-    let p = r
-        .core
-        .prepare(cn_intent(Offset::CloseToday, 1), Instant::now())
-        .unwrap();
-    r.cancel(&p.key, Instant::now()).unwrap();
+    let p = r.core.prepare(cn_intent(Offset::CloseToday, 1)).unwrap();
+    r.cancel(&p.key).unwrap();
     assert!(r.core.order(&p.key).unwrap().cancel_pending);
     assert_eq!(r.trader.cancels, 1);
     r.core
         .on_order(&cn_update(&p, 0, OrderStatus::Working))
         .unwrap();
-    assert!(r.cancel(&p.key, Instant::now()).is_err());
+    assert!(r.cancel(&p.key).is_err());
     assert_eq!(r.trader.cancels, 1);
     assert_eq!(
         r.core.position(Venue::Shfe, "cu2612", Side::Buy).frozen(),
@@ -851,18 +899,13 @@ fn native_cancel_before_system_identity_retains_reservations() {
 #[test]
 fn native_system_ids_and_trade_ids_are_venue_scoped() {
     let mut c = cn_core();
-    let a = c
-        .prepare(cn_intent(Offset::Open, 1), Instant::now())
-        .unwrap();
+    let a = c.prepare(cn_intent(Offset::Open, 1)).unwrap();
     let b = c
-        .prepare(
-            Intent {
-                venue: Venue::Ine,
-                symbol: "sc2612".into(),
-                ..cn_intent(Offset::Open, 1)
-            },
-            Instant::now(),
-        )
+        .prepare(Intent {
+            venue: Venue::Ine,
+            symbol: "sc2612".into(),
+            ..cn_intent(Offset::Open, 1)
+        })
         .unwrap();
     for p in [&a, &b] {
         let mut u = cn_update(p, 0, OrderStatus::Working);
@@ -874,9 +917,7 @@ fn native_system_ids_and_trade_ids_are_venue_scoped() {
     }
     assert_eq!(c.position(Venue::Shfe, "cu2612", Side::Sell).today, 1);
     assert_eq!(c.position(Venue::Ine, "sc2612", Side::Sell).today, 1);
-    assert!(c
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .is_err());
+    assert!(c.prepare(intent(Side::Buy, Offset::Open, 1)).is_err());
 }
 #[test]
 fn recovered_manual_reference_zero_does_not_erase_system_order_identity() {
@@ -928,15 +969,11 @@ fn recovered_manual_reference_zero_does_not_erase_system_order_identity() {
 #[test]
 fn recovery_cannot_forget_known_fills_or_change_pending_order_identity() {
     let mut c = core();
-    let p = c
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .unwrap();
+    let p = c.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
     c.on_fill(&fill(&p, "FACT", 1)).unwrap();
     assert!(c.restore(snapshot()).is_err());
     let mut c = core();
-    let p = c
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .unwrap();
+    let p = c.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
     let mut s = snapshot();
     let mut u = update(&p, 0, OrderStatus::Working);
     u.side = Side::Sell;
@@ -965,29 +1002,23 @@ fn market_intent(side: Side, lots: i32) -> Intent {
 fn market_orders_use_native_quantity_rules_and_cannot_silently_become_limits() {
     let mut c = market_core(2, 4);
     for lots in [1, 3, 5, 6] {
-        assert!(c
-            .prepare(market_intent(Side::Sell, lots), Instant::now())
-            .is_err());
+        assert!(c.prepare(market_intent(Side::Sell, lots)).is_err());
     }
     let mut priced = market_intent(Side::Sell, 2);
     priced.price_ticks = 20000;
-    assert!(c.prepare(priced, Instant::now()).is_err());
-    let p = c
-        .prepare(market_intent(Side::Sell, 2), Instant::now())
-        .unwrap();
+    assert!(c.prepare(priced).is_err());
+    let p = c.prepare(market_intent(Side::Sell, 2)).unwrap();
     assert_eq!(p.limit_price, 0.0);
     assert_eq!(
         c.order(&p.key).unwrap().request.price_type,
         PriceType::Market
     );
     // Unsupported contracts and the CTP adapter do not inherit limit-order limits.
-    assert!(cn_core()
-        .prepare(market_intent(Side::Sell, 1), Instant::now())
-        .is_err());
+    assert!(cn_core().prepare(market_intent(Side::Sell, 1)).is_err());
     let mut ctp_market = intent(Side::Buy, Offset::Open, 1);
     ctp_market.price_type = PriceType::Market;
     ctp_market.price_ticks = 0;
-    assert!(core().prepare(ctp_market, Instant::now()).is_err());
+    assert!(core().prepare(ctp_market).is_err());
 }
 
 #[test]
@@ -1006,9 +1037,9 @@ fn market_self_trade_protection_covers_both_order_arrival_directions() {
             } else {
                 second = market_intent(side.opposite(), 1);
             }
-            c.prepare(first, Instant::now()).unwrap();
+            c.prepare(first).unwrap();
             assert!(c
-                .prepare(second, Instant::now())
+                .prepare(second)
                 .unwrap_err()
                 .to_string()
                 .contains("self-trade"));
@@ -1019,9 +1050,7 @@ fn market_self_trade_protection_covers_both_order_arrival_directions() {
 #[test]
 fn recovery_preserves_zero_price_market_orders_and_self_trade_protection() {
     let mut c = market_core(1, 10);
-    let p = c
-        .prepare(market_intent(Side::Sell, 1), Instant::now())
-        .unwrap();
+    let p = c.prepare(market_intent(Side::Sell, 1)).unwrap();
     let u = cn_update(&p, 0, OrderStatus::Working);
     c.on_order(&u.clone()).unwrap();
     let mut s = cn_snapshot();
@@ -1038,7 +1067,7 @@ fn recovery_preserves_zero_price_market_orders_and_self_trade_protection() {
     let mut opposite = cn_intent(Offset::Open, 1);
     opposite.side = Side::Buy;
     opposite.price_ticks = 1;
-    assert!(c.prepare(opposite, Instant::now()).is_err());
+    assert!(c.prepare(opposite).is_err());
     let mut changed = u;
     changed.price_type = PriceType::Limit;
     changed.limit_price = 4000.0;
@@ -1116,7 +1145,7 @@ fn native_batch_outcomes_release_only_certainly_unsent_reservations() {
     ] {
         let mut runtime = batch_loop(behavior);
         let receipt = runtime
-            .submit_batch_with(close_batch(), Instant::now(), |_| Ok(()))
+            .submit_batch_with(close_batch(), |_| Ok(()))
             .unwrap();
         assert_eq!(runtime.trader.insert_calls, 1);
         assert_eq!(
@@ -1158,7 +1187,7 @@ fn batch_preflight_failure_sends_nothing_and_evidence_failure_blocks_after_send(
     let mut runtime = batch_loop(BatchBehavior::Success);
     let mut intents = close_batch();
     intents[1].lots = 10000;
-    let result = runtime.submit_batch_with(intents, Instant::now(), |_| Ok(()));
+    let result = runtime.submit_batch_with(intents, |_| Ok(()));
     assert!(result.is_err());
     assert_eq!(runtime.trader.insert_calls, 0);
     assert_eq!(
@@ -1171,7 +1200,7 @@ fn batch_preflight_failure_sends_nothing_and_evidence_failure_blocks_after_send(
     let mut runtime = batch_loop(BatchBehavior::Success);
     let mut recorded = 0;
     let receipt = runtime
-        .submit_batch_with(close_batch(), Instant::now(), |_| {
+        .submit_batch_with(close_batch(), |_| {
             recorded += 1;
             anyhow::bail!("audit unavailable")
         })
@@ -1188,15 +1217,9 @@ fn batch_preflight_failure_sends_nothing_and_evidence_failure_blocks_after_send(
         .all(|c| matches!(c.outcome, ChildOutcome::SubmittedLocally)));
     assert!(!runtime.core.is_ready());
     let mut runtime = batch_loop(BatchBehavior::Success);
+    assert!(runtime.submit_batch_with(vec![], |_| Ok(())).is_err());
     assert!(runtime
-        .submit_batch_with(vec![], Instant::now(), |_| Ok(()))
-        .is_err());
-    assert!(runtime
-        .submit_batch_with(
-            vec![cn_intent(Offset::Open, 1); 17],
-            Instant::now(),
-            |_| Ok(())
-        )
+        .submit_batch_with(vec![cn_intent(Offset::Open, 1); 17], |_| Ok(()))
         .is_err());
     assert_eq!(runtime.trader.insert_calls, 0);
 }
@@ -1211,14 +1234,12 @@ fn batch_cancel_before_ack_keeps_frozen_inventory_until_factual_outcomes() {
         let mut runtime = batch_loop(behavior);
         let keys: Vec<_> = close_batch()
             .into_iter()
-            .map(|i| runtime.core.prepare(i, Instant::now()).unwrap().key)
+            .map(|i| runtime.core.prepare(i).unwrap().key)
             .collect();
         assert!(keys
             .iter()
             .all(|k| runtime.core.order(k).unwrap().system_id.is_empty()));
-        let receipt = runtime
-            .cancel_batch_with(keys.clone(), Instant::now(), |_| Ok(()))
-            .unwrap();
+        let receipt = runtime.cancel_batch_with(keys.clone(), |_| Ok(())).unwrap();
         assert_eq!(runtime.trader.cancel_calls, 1);
         assert_eq!(
             runtime
@@ -1247,18 +1268,18 @@ fn duplicate_or_invalid_batch_cancel_never_leaves_a_false_pending_flag() {
     let mut runtime = batch_loop(BatchBehavior::Success);
     let key = runtime
         .core
-        .prepare(cn_intent(Offset::CloseToday, 1), Instant::now())
+        .prepare(cn_intent(Offset::CloseToday, 1))
         .unwrap()
         .key;
     assert!(runtime
-        .cancel_batch_with(vec![key, key], Instant::now(), |_| Ok(()))
+        .cancel_batch_with(vec![key, key], |_| Ok(()))
         .is_err());
     let bad = OrderKey {
         session: key.session,
         order_ref: "99999".into(),
     };
     assert!(runtime
-        .cancel_batch_with(vec![key, bad], Instant::now(), |_| Ok(()))
+        .cancel_batch_with(vec![key, bad], |_| Ok(()))
         .is_err());
     assert!(!runtime.core.order(&key).unwrap().cancel_pending);
     assert_eq!(runtime.trader.cancel_calls, 0);
@@ -1267,9 +1288,7 @@ fn duplicate_or_invalid_batch_cancel_never_leaves_a_false_pending_flag() {
 #[test]
 fn fill_reference_from_another_native_group_cannot_match_a_local_order() {
     let mut runtime = cn_core();
-    let order = runtime
-        .prepare(cn_intent(Offset::Open, 1), Instant::now())
-        .unwrap();
+    let order = runtime.prepare(cn_intent(Offset::Open, 1)).unwrap();
     let mut fill = cn_fill(&order, "group-collision", 1);
     fill.order_key = Some(OrderKey {
         session: crate::yida::group_session_key(20261109, 7),
@@ -1330,15 +1349,11 @@ fn option_intent(side: Side, offset: Offset, lots: i32) -> Intent {
 fn option_buy_open_and_buy_close_reserve_premium_and_sells_do_not_credit_cash() {
     for offset in [Offset::Open, Offset::CloseToday, Offset::CloseYesterday] {
         let mut c = option_core();
-        let buy = c
-            .prepare(option_intent(Side::Buy, offset, 1), Instant::now())
-            .unwrap();
+        let buy = c.prepare(option_intent(Side::Buy, offset, 1)).unwrap();
         assert_eq!(c.order(&buy.key).unwrap().cash_reserved_per_lot, 1010.0);
         assert_eq!(c.view().available_local_budget, 1_000_000.0 - 1010.0);
         let mut c = option_core();
-        let sell = c
-            .prepare(option_intent(Side::Sell, offset, 1), Instant::now())
-            .unwrap();
+        let sell = c.prepare(option_intent(Side::Sell, offset, 1)).unwrap();
         let held = if offset == Offset::Open { 100.0 } else { 0.0 };
         assert_eq!(c.order(&sell.key).unwrap().local_cash_held, held);
         c.on_order(&cn_update(&sell, 1, OrderStatus::Filled))
@@ -1356,14 +1371,14 @@ fn option_market_buy_reserves_the_native_daily_upper_bound_and_rejects_missing_o
         let mut i = option_intent(Side::Buy, offset, 1);
         i.price_type = PriceType::Market;
         i.price_ticks = 0;
-        let order = c.prepare(i, Instant::now()).unwrap();
+        let order = c.prepare(i).unwrap();
         assert_eq!(order.option_market_buy_ceiling, 12000.0);
         assert_eq!(c.order(&order.key).unwrap().local_cash_held, 60010.0);
         let mut snapshot = option_snapshot();
         snapshot.available_cash = 2000.0;
         let mut c = option_core();
         c.restore(snapshot).unwrap();
-        assert!(c.prepare(i, Instant::now()).is_err());
+        assert!(c.prepare(i).is_err());
         let mut snapshot = option_snapshot();
         snapshot.instruments[0]
             .option
@@ -1372,7 +1387,7 @@ fn option_market_buy_reserves_the_native_daily_upper_bound_and_rejects_missing_o
             .upper_limit_price = 0.0;
         let mut c = option_core();
         c.restore(snapshot).unwrap();
-        assert!(c.prepare(i, Instant::now()).is_err());
+        assert!(c.prepare(i).is_err());
     }
 }
 
@@ -1380,10 +1395,7 @@ fn option_market_buy_reserves_the_native_daily_upper_bound_and_rejects_missing_o
 fn option_close_partial_cancel_refunds_original_cash_unit_and_retains_unseen_fill_freeze() {
     let mut c = option_core();
     let p = c
-        .prepare(
-            option_intent(Side::Buy, Offset::CloseToday, 2),
-            Instant::now(),
-        )
+        .prepare(option_intent(Side::Buy, Offset::CloseToday, 2))
         .unwrap();
     let mut rules = option_snapshot().instruments;
     rules[0].option.as_mut().unwrap().cash_buffer_per_buy_lot = 500.0;
@@ -1423,18 +1435,12 @@ fn options_cannot_bypass_scope_metadata_or_the_premium_check_when_closing() {
     let mut c = option_core();
     c.constrain_cash(1000.0).unwrap();
     assert!(c
-        .prepare(
-            option_intent(Side::Buy, Offset::CloseToday, 1),
-            Instant::now()
-        )
+        .prepare(option_intent(Side::Buy, Offset::CloseToday, 1))
         .is_err());
     c.constrain_cash(-1.0).unwrap();
     // Selling an owned option remains possible without crediting its expected proceeds.
-    c.prepare(
-        option_intent(Side::Sell, Offset::CloseToday, 1),
-        Instant::now(),
-    )
-    .unwrap();
+    c.prepare(option_intent(Side::Sell, Offset::CloseToday, 1))
+        .unwrap();
     let mut s = option_snapshot();
     s.instruments[0].option = None;
     assert!(option_core().restore(s).is_err());
@@ -1446,7 +1452,7 @@ fn complete_fills_on_a_native_cancel_report_restore_as_filled_and_keep_tif() {
     core.limits.enable_fak_fok = true;
     let mut intent = intent(Side::Buy, Offset::Open, 1);
     intent.time_in_force = TimeInForce::Fok;
-    let request = core.prepare(intent, Instant::now()).unwrap();
+    let request = core.prepare(intent).unwrap();
     let mut snapshot = snapshot();
     snapshot
         .orders
@@ -1509,9 +1515,7 @@ fn assert_working_index(core: &TradingCore) {
 fn terminal_reports_and_stale_duplicates_keep_working_risk_until_factual_fills() {
     for (lots, traded, status) in [(2, 2, OrderStatus::Filled), (3, 1, OrderStatus::Cancelled)] {
         let mut c = core();
-        let p = c
-            .prepare(intent(Side::Sell, Offset::Open, lots), Instant::now())
-            .unwrap();
+        let p = c.prepare(intent(Side::Sell, Offset::Open, lots)).unwrap();
         assert_working_index(&c);
         c.on_order(&update(&p, traded, status)).unwrap();
         assert_eq!(c.working_lots, i64::from(traded));
@@ -1519,13 +1523,13 @@ fn terminal_reports_and_stale_duplicates_keep_working_risk_until_factual_fills()
         // A terminal report still reserves its missing factual fills for both limits and STP.
         c.limits.max_working_lots = Some(traded);
         assert!(c
-            .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
+            .prepare(intent(Side::Buy, Offset::Open, 1))
             .unwrap_err()
             .to_string()
             .contains("working lot limit"));
         c.limits.max_working_lots = Some(20);
         assert!(c
-            .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
+            .prepare(intent(Side::Buy, Offset::Open, 1))
             .unwrap_err()
             .to_string()
             .contains("self-trade"));
@@ -1538,8 +1542,7 @@ fn terminal_reports_and_stale_duplicates_keep_working_risk_until_factual_fills()
             assert_working_index(&c);
         }
         assert_eq!(c.working_lots, 0);
-        c.prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-            .unwrap();
+        c.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
         assert_working_index(&c);
     }
 }
@@ -1547,12 +1550,8 @@ fn terminal_reports_and_stale_duplicates_keep_working_risk_until_factual_fills()
 #[test]
 fn working_index_matches_account_snapshot_and_batch_uncertainty() {
     let mut c = core();
-    let a = c
-        .prepare(intent(Side::Buy, Offset::Open, 2), Instant::now())
-        .unwrap();
-    let b = c
-        .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
+    let a = c.prepare(intent(Side::Buy, Offset::Open, 2)).unwrap();
+    let b = c.prepare(intent(Side::Buy, Offset::Open, 3)).unwrap();
     let mut s = snapshot();
     s.orders = vec![
         update(&a, 0, OrderStatus::Working),
@@ -1579,7 +1578,6 @@ fn working_index_matches_account_snapshot_and_batch_uncertainty() {
                 intent(Side::Buy, Offset::Open, 1),
                 intent(Side::Buy, Offset::Open, 1),
             ],
-            Instant::now(),
             |_| {
                 n += 1;
                 if n == 2 {
@@ -1601,12 +1599,8 @@ fn working_index_matches_account_snapshot_and_batch_uncertainty() {
 #[test]
 fn failed_in_place_updates_leave_orders_positions_cash_and_indexes_unchanged() {
     let mut c = core();
-    let a = c
-        .prepare(intent(Side::Buy, Offset::Open, 2), Instant::now())
-        .unwrap();
-    let b = c
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .unwrap();
+    let a = c.prepare(intent(Side::Buy, Offset::Open, 2)).unwrap();
+    let b = c.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
     let before = serde_json::to_value(c.view()).unwrap();
     // A new system ID must not bind before the cumulative quantity is validated.
     assert!(c.on_order(&update(&a, 1, OrderStatus::Filled)).is_err());
@@ -1629,9 +1623,7 @@ fn failed_in_place_updates_leave_orders_positions_cash_and_indexes_unchanged() {
 fn numeric_indexes_survive_rule_reordering_omission_and_recovery() {
     let mut c = core();
     c.reserve_orders(16_384).unwrap();
-    let p = c
-        .prepare(intent(Side::Buy, Offset::Open, 2), Instant::now())
-        .unwrap();
+    let p = c.prepare(intent(Side::Buy, Offset::Open, 2)).unwrap();
     let symbol = c.symbols.id(Venue::Cffex, "IF2612").unwrap();
     let mut rules = snapshot().instruments;
     let mut other = rules[0].clone();
@@ -1640,9 +1632,7 @@ fn numeric_indexes_survive_rule_reordering_omission_and_recovery() {
     c.replace_instruments(rules.clone()).unwrap();
     assert_eq!(c.symbols.id(Venue::Cffex, "IF2612"), Some(symbol));
     c.replace_instruments(vec![rules[0].clone()]).unwrap();
-    assert!(c
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .is_err());
+    assert!(c.prepare(intent(Side::Buy, Offset::Open, 1)).is_err());
     // Removing trading permission must still allow factual fills for the old slot.
     c.on_order(&update(&p, 2, OrderStatus::Filled)).unwrap();
     c.on_fill(&fill(&p, "old-rule-fact", 2)).unwrap();

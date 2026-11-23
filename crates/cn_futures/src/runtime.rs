@@ -194,6 +194,11 @@ pub(crate) fn own_order(core: &crate::core::TradingCore, fill: &crate::model::Fi
         .is_some_and(|order| order.owned)
 }
 
+/// Time an SDK call with an unknown outcome gets to reach the venue before
+/// an order query may treat its absence as never received.
+#[cfg(feature = "ctp-sdk")]
+const UNCONFIRMED_GRACE: Duration = Duration::from_secs(3);
+
 #[cfg(feature = "ctp-sdk")]
 fn prepare_ctp_contracts(
     session: &mut crate::ctp::session::Session,
@@ -227,8 +232,12 @@ fn prepare_ctp_contracts(
     Ok(())
 }
 
+/// Requests rules and quotes for a target's contracts without waiting for
+/// them: a pending contract waits on its own, never the whole target. Also
+/// called periodically for the standing target, so a contract absent from the
+/// catalogue or with a failed rate query is requested again.
 #[cfg(feature = "ctp-sdk")]
-fn prepare_ctp_target(
+fn request_ctp_target(
     settings: &crate::ctp::exec::Settings,
     target: &crate::ctp::exec::Target,
     attributes: impl Fn(&str) -> bool,
@@ -237,16 +246,19 @@ fn prepare_ctp_target(
     feed: Option<&mut crate::ctp::market_data::Feed>,
     now: std::time::Instant,
 ) -> Result<()> {
-    let now_us = crate::persistence::now_us();
-    let contracts = crate::ctp::exec::validate_target(settings, target, core, now_us, false)?;
-    let required: Vec<_> = contracts
-        .into_iter()
-        .filter(|&(venue, symbol, required)| {
-            required || attributes(&format!("{}:{symbol}", venue.as_str()))
-        })
-        .map(|(venue, symbol, _)| (venue, symbol))
-        .collect();
-    prepare_ctp_contracts(session, core, feed, &required, now)
+    let contracts = crate::ctp::exec::validate_target(settings, target, core, false)?;
+    let mut known = Vec::with_capacity(contracts.len());
+    for (venue, symbol, required) in contracts {
+        let wanted = required || attributes(&format!("{}:{symbol}", venue.as_str()));
+        if wanted && session.require_active_future(venue, symbol).is_ok() {
+            session.request_rates(venue, symbol, now)?;
+            known.push((venue, symbol));
+        }
+    }
+    if let Some(feed) = feed {
+        feed.subscribe_contracts(&known, now)?;
+    }
+    Ok(())
 }
 
 /// Strategy hooks, feed consumption, risk and order submission share this caller thread.
@@ -407,6 +419,8 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     let mut transport_online = false;
     let mut transport_progress = Instant::now();
     let mut reconcile_after_account_retry = false;
+    let mut next_contract_request = Instant::now();
+    let mut order_check_cutoff: Option<Instant> = None;
     let outcome = (|| -> Result<()> {
         while !stopping && !stop.load(Ordering::Acquire) {
             if runtime.trader.placement_fault.load(Ordering::Acquire) {
@@ -474,6 +488,8 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                 }
                 if let Some(snapshot) = session.on_event(event.as_ref(), batch_now, &decoded)? {
                     reconcile_after_account_retry = false;
+                    // A complete snapshot settles every unconfirmed order.
+                    order_check_cutoff = None;
                     let trades = snapshot.trades.clone();
                     runtime.core.restore(snapshot)?;
                     if !session.settlement_confirmed() {
@@ -495,6 +511,33 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                         reconcile_after_account_retry = false;
                     } else {
                         runtime.core.constrain_cash(available)?;
+                    }
+                }
+                // A result superseded by a full reconciliation has no cutoff.
+                if let (Some(rows), Some(marked_by)) =
+                    (session.take_order_check(), order_check_cutoff)
+                {
+                    order_check_cutoff = None;
+                    match runtime.core.resolve_unconfirmed(&rows, marked_by) {
+                        Ok(resolved) => {
+                            let keys: Vec<_> = resolved.iter().map(|r| r.key).collect();
+                            journal.orders(&runtime.core, &keys)?;
+                            for r in resolved {
+                                journal.record(
+                                    json!({"type":"unconfirmed_order_resolved","key":r.key,"call":r.call,"outcome":r.outcome}),
+                                    true,
+                                )?;
+                            }
+                        }
+                        Err(error) => {
+                            runtime
+                                .core
+                                .block("unconfirmed order unresolved; reconcile");
+                            journal.record(
+                                json!({"type":"trading_blocked","error":format!("{error:#}")}),
+                                true,
+                            )?;
+                        }
                     }
                 }
                 if let Some(rules) = session.take_rule_update() {
@@ -604,6 +647,18 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                         json!({"transport_online":transport_online,"front_timeout":front_timeout,"control_timeout":control_timeout}),
                     ));
                 }
+                // An SDK call with an unknown outcome leaves only its order
+                // unconfirmed; after a grace period one order query settles it.
+                if order_check_cutoff.is_none() && session.ready() {
+                    if let Some(oldest) = runtime.core.oldest_unconfirmed() {
+                        if now.saturating_duration_since(oldest) >= UNCONFIRMED_GRACE {
+                            order_check_cutoff =
+                                Some(now.checked_sub(UNCONFIRMED_GRACE).unwrap_or(oldest));
+                            session.request_order_check();
+                            journal.record(json!({"type":"unconfirmed_order_query"}), true)?;
+                        }
+                    }
+                }
                 if let Some(kind) = session.request_due(now)? {
                     let id = runtime.trader.next_id()?;
                     let code = runtime.trader.control(kind, id, session.query_target())?;
@@ -684,13 +739,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                 };
                                 let allowed = checks.can_dispatch();
                                 let outcome = if allowed {
-                                    ctp::strategy::dispatch(
-                                        &mut runtime,
-                                        &journal,
-                                        action,
-                                        true,
-                                        Instant::now(),
-                                    )?
+                                    ctp::strategy::dispatch(&mut runtime, &journal, action, true)?
                                 } else {
                                     ActionOutcome::CtpDispatchBlocked {
                                         action,
@@ -699,13 +748,6 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                         quote_generation: tick.connection_generation,
                                     }
                                 };
-                                strategy.on_result(
-                                    &outcome,
-                                    StrategyContext {
-                                        core: &runtime.core,
-                                        can_trade: allowed && runtime.core.is_ready(),
-                                    },
-                                )?;
                                 // Every CTP order decision outcome belongs in the operator log.
                                 journal.strategy_result(&outcome, true)?;
                             }
@@ -749,6 +791,22 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
             }
             // Never submit an opening decision ahead of a known backlog of venue events.
             if runtime.trader.events.is_empty() {
+                if execute && runtime.core.is_ready() && batch_now >= next_contract_request {
+                    next_contract_request = batch_now + Duration::from_secs(1);
+                    if let (Some(settings), Some(target)) =
+                        (config.exec.as_ref(), strategy.standing_target())
+                    {
+                        request_ctp_target(
+                            settings,
+                            &target,
+                            |market| strategy.attributes(market),
+                            &mut session,
+                            &runtime.core,
+                            feed.as_mut(),
+                            batch_now,
+                        )?;
+                    }
+                }
                 if let Some(ingress) = &target_ingress {
                     anyhow::ensure!(!ingress.is_finished(), "position target ingress stopped");
                     let can_trade = !feed_failed
@@ -762,8 +820,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                 can_trade,
                                 "exec target admission requires recovered account and ready MD"
                             );
-                            let now_us = crate::persistence::now_us();
-                            prepare_ctp_target(
+                            request_ctp_target(
                                 config
                                     .exec
                                     .as_ref()
@@ -781,7 +838,6 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     core: &runtime.core,
                                     can_trade,
                                 },
-                                now_us,
                             )?;
                             journal.target_accepted(&admitted)
                         } else {
@@ -810,12 +866,11 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                             .unwrap_or_default();
                         let result = match command {
                             Ok(Command::ExecTarget { target }) => {
-                                let now_us = crate::persistence::now_us();
                                 let can_trade = execute
                                     && runtime.core.is_ready()
                                     && feed.as_ref().is_some_and(|md| md.ready());
                                 let admit = |settings| {
-                                    prepare_ctp_target(
+                                    request_ctp_target(
                                         settings,
                                         &target,
                                         |market| strategy.attributes(market),
@@ -838,7 +893,6 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     strategy.on_target(
                                         target,
                                         StrategyContext { core: &runtime.core, can_trade },
-                                        now_us,
                                     )
                                 }).map(|target| json!({"type":"exec_target_accepted","target":target,"venue_accepted":false}))
                             }
@@ -896,7 +950,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     &[(intent.venue, &intent.symbol)],
                                     now,
                                 )?;
-                                runtime.submit_planned_with(intent, Instant::now(), |prepared| {
+                                runtime.submit_planned_with(intent, |prepared| {
                                     journal.prepared(day, prepared, None)
                                 }).map(|receipt| json!({"type":"submit_receipt","receipt":receipt}))
                             })(),
@@ -904,7 +958,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                 key,
                                 execution_route: None,
                             }) => runtime
-                                .cancel_with(&key, Instant::now(), |prepared| {
+                                .cancel_with(&key, |prepared| {
                                     journal.prepared_cancel(prepared)
                                 })
                                 .map(|_| json!({"type":"cancel_submitted_locally","key":key})),

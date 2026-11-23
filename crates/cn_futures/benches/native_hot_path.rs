@@ -12,7 +12,7 @@ use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
     hint::black_box,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 thread_local! { static ALLOCS: Cell<Option<(u64,u64)>> = const { Cell::new(None) }; }
@@ -112,7 +112,6 @@ fn limits() -> RiskLimits {
         max_order_lots: Some(10),
         max_position_lots_per_side: Some(10000),
         max_working_lots: Some(10000),
-        max_actions_per_second: 100000,
         minimum_cash_remaining: 0.0,
         enable_fak_fok: true,
         close_priority: ClosePriority::TodayFirst,
@@ -149,12 +148,10 @@ fn core_bench(samples: usize, ops: usize) -> Result<()> {
             core.set_trading_status(Venue::Cffex, "IF", true);
             core.restore(base.clone())?;
             let before_faults = faults();
-            let start = Instant::now();
             ALLOCS.with(|c| c.set(Some((0, 0))));
-            for i in 0..ops {
+            for _ in 0..ops {
                 let t = Instant::now();
-                let p =
-                    core.prepare(black_box(intent()), start + Duration::from_micros(i as u64))?;
+                let p = core.prepare(black_box(intent()))?;
                 core.reject(black_box(&p.key))?;
                 times.push(t.elapsed().as_nanos() as u64);
                 black_box(p);
@@ -197,15 +194,10 @@ fn planned_bench(samples: usize, ops: usize) -> Result<()> {
             trader: LocalReject,
             execute: true,
         };
-        let now = Instant::now();
         ALLOCS.with(|c| c.set(Some((0, 0))));
-        for n in 0..ops {
+        for _ in 0..ops {
             let start = Instant::now();
-            let receipt = runtime.submit_planned_with(
-                black_box(intent()),
-                now + Duration::from_micros(n as u64),
-                |_| Ok(()),
-            )?;
+            let receipt = runtime.submit_planned_with(black_box(intent()), |_| Ok(()))?;
             times.push(start.elapsed().as_nanos() as u64);
             black_box(receipt);
         }
@@ -226,7 +218,7 @@ fn projection_bench(j: &PersistChannel, samples: usize, ops: usize) -> Result<()
     let mut core = TradingCore::new(limits(), ctp::scope())?;
     core.set_trading_status(Venue::Cffex, "IF", true);
     core.restore(snapshot(0, 0))?;
-    let p = core.prepare(intent(), Instant::now())?;
+    let p = core.prepare(intent())?;
     let fill = Fill {
         identity: TradeIdentity {
             venue: Venue::Cffex,

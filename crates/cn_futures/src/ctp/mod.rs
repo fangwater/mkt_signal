@@ -396,6 +396,7 @@ pub fn scope() -> ExecutionScope {
         cancel_requires_system_id: false,
         allow_implicit_fill_reference: true,
         allow_options: false,
+        query_unconfirmed_orders: true,
     }
 }
 pub fn session_key(front: i32, session: i32) -> Session {

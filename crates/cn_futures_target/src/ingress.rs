@@ -35,7 +35,6 @@ use tonic::{
 const QUEUE_CAPACITY: usize = 8;
 pub(crate) const MAX_WIRE_SIZE: usize = 16 * 1024;
 const ADMISSION_TIMEOUT: Duration = Duration::from_millis(500);
-const MAX_LEASE_US: u64 = 60_000_000;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -202,7 +201,6 @@ impl Ingress {
         let (send, pending) = crossbeam_channel::bounded(QUEUE_CAPACITY);
         let service = Service {
             source_id: config.source_id.clone(),
-            started_us: now_us(),
             pending: send,
             streams: Arc::new(Semaphore::new(8)),
         };
@@ -246,10 +244,7 @@ impl Ingress {
         let Ok(request) = self.pending.try_recv() else {
             return false;
         };
-        if !request.reply.is_closed()
-            && Instant::now() < request.expires
-            && (request.target.expires_at_us == 0 || now_us() < request.target.expires_at_us)
-        {
+        if !request.reply.is_closed() && Instant::now() < request.expires {
             let _ = request
                 .reply
                 .send(admit(request.target).map_err(|e| e.to_string()));
@@ -290,7 +285,6 @@ fn grpc_service(service: Service) -> PositionTargetsServer<Service> {
 #[derive(Clone)]
 pub(crate) struct Service {
     source_id: String,
-    started_us: u64,
     pending: Sender<Pending>,
     streams: Arc<Semaphore>,
 }
@@ -328,22 +322,12 @@ impl Service {
             admission: Admission::Rejected as i32,
             reason: String::new(),
         };
-        let now = now_us();
-        if !observation
-            && (!(self.started_us..=now).contains(&message.decision_us)
-                || message.expires_at_us <= now
-                || message.expires_at_us > message.decision_us.saturating_add(MAX_LEASE_US))
-        {
-            receipt.reason =
-                "target is expired, future-dated, or predates this Exec runtime".into();
+        // No lease: a target decided before this runtime started still stands.
+        if !observation && message.decision_us > now_us() {
+            receipt.reason = "target is future-dated".into();
             return receipt;
         }
-        let decoded = if observation {
-            Target::from_message(message, true)
-        } else {
-            Target::try_from(message)
-        };
-        let target = match decoded {
+        let target = match Target::try_from(message) {
             Ok(target) if target.source_id == self.source_id => target,
             Ok(_) => {
                 receipt.reason = "wrong execution source".into();

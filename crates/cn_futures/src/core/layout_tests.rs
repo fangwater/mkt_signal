@@ -6,7 +6,6 @@ fn core() -> TradingCore {
         max_order_lots: Some(20),
         max_position_lots_per_side: Some(100),
         max_working_lots: Some(100),
-        max_actions_per_second: 100_000,
         minimum_cash_remaining: 0.0,
         enable_fak_fok: true,
         close_priority: ClosePriority::TodayFirst,
@@ -141,9 +140,7 @@ fn dense_hot_state_is_smaller_than_the_previous_full_order_slot() {
 #[test]
 fn terminal_before_fill_retains_reservation_and_projects_each_mutation() {
     let mut c = core();
-    let p = c
-        .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
+    let p = c.prepare(intent(Side::Buy, Offset::Open, 3)).unwrap();
     assert_projection(&c, &p.key);
     c.on_order(&update(&p, 3, OrderStatus::Filled)).unwrap();
     assert_eq!(c.order(&p.key).unwrap().remaining(), 3);
@@ -163,14 +160,12 @@ fn terminal_before_fill_retains_reservation_and_projects_each_mutation() {
 #[test]
 fn close_cancel_and_late_fill_release_exact_inventory() {
     let mut c = core();
-    let open = c
-        .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
+    let open = c.prepare(intent(Side::Buy, Offset::Open, 3)).unwrap();
     c.on_fill(&fill(&open, "open", 3)).unwrap();
     let close = c
-        .prepare(intent(Side::Sell, Offset::CloseToday, 3), Instant::now())
+        .prepare(intent(Side::Sell, Offset::CloseToday, 3))
         .unwrap();
-    c.prepare_cancel(&close.key, Instant::now()).unwrap();
+    c.prepare_cancel(&close.key).unwrap();
     assert_projection(&c, &close.key);
     c.on_order(&update(&close, 1, OrderStatus::Cancelled))
         .unwrap();
@@ -186,9 +181,7 @@ fn close_cancel_and_late_fill_release_exact_inventory() {
 #[test]
 fn invalid_reports_leave_hot_and_cold_state_unchanged() {
     let mut c = core();
-    let p = c
-        .prepare(intent(Side::Buy, Offset::Open, 2), Instant::now())
-        .unwrap();
+    let p = c.prepare(intent(Side::Buy, Offset::Open, 2)).unwrap();
     let before = serde_json::to_value(c.view()).unwrap();
     let mut invalid = update(&p, 0, OrderStatus::Working);
     invalid.side = Side::Sell;
@@ -208,9 +201,7 @@ fn growth_prefault_and_restore_keep_hot_cold_indexes_and_complete_identities() {
     // Exceed the initial reserve and retain the earliest identity after Vec growth.
     let mut first = None;
     for _ in 0..4100 {
-        let p = c
-            .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-            .unwrap();
+        let p = c.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
         c.reject(&p.key).unwrap();
         first.get_or_insert(p.key);
     }
@@ -219,9 +210,7 @@ fn growth_prefault_and_restore_keep_hot_cold_indexes_and_complete_identities() {
     c.reserve_orders(8192).unwrap();
     assert_eq!(serde_json::to_value(c.view()).unwrap(), before);
     assert_projection(&c, &key);
-    let p = c
-        .prepare(intent(Side::Buy, Offset::Open, 2), Instant::now())
-        .unwrap();
+    let p = c.prepare(intent(Side::Buy, Offset::Open, 2)).unwrap();
     let mut report = update(&p, 0, OrderStatus::Working);
     report.system_id = Text::new(&"s".repeat(63)).unwrap();
     c.on_order(&report).unwrap();
@@ -244,37 +233,27 @@ fn growth_prefault_and_restore_keep_hot_cold_indexes_and_complete_identities() {
 #[test]
 fn self_trade_checks_use_hot_side_price_and_market_flag() {
     let mut c = core();
-    let p = c
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .unwrap();
-    assert!(c
-        .prepare(intent(Side::Sell, Offset::Open, 1), Instant::now())
-        .is_err());
+    let p = c.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
+    assert!(c.prepare(intent(Side::Sell, Offset::Open, 1)).is_err());
     let mut sell = intent(Side::Sell, Offset::Open, 1);
     sell.price_ticks = 101;
-    let passive = c.prepare(sell, Instant::now()).unwrap();
+    let passive = c.prepare(sell).unwrap();
     c.reject(&p.key).unwrap();
     let mut market = intent(Side::Buy, Offset::Open, 1);
     market.price_type = PriceType::Market;
     market.price_ticks = 0;
-    assert!(c.prepare(market, Instant::now()).is_err());
+    assert!(c.prepare(market).is_err());
     c.reject(&passive.key).unwrap();
-    let p = c.prepare(market, Instant::now()).unwrap();
+    let p = c.prepare(market).unwrap();
     assert_projection(&c, &p.key);
 }
 
 #[test]
 fn removing_middle_working_order_updates_moved_index_and_pending_lots() {
     let mut c = core();
-    let a = c
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .unwrap();
-    let b = c
-        .prepare(intent(Side::Buy, Offset::Open, 2), Instant::now())
-        .unwrap();
-    let d = c
-        .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
-        .unwrap();
+    let a = c.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
+    let b = c.prepare(intent(Side::Buy, Offset::Open, 2)).unwrap();
+    let d = c.prepare(intent(Side::Buy, Offset::Open, 3)).unwrap();
     c.reject(&b.key).unwrap();
     assert_eq!(c.pending_open[0][0], 4);
     assert_projection(&c, &d.key);
@@ -289,9 +268,7 @@ fn removing_middle_working_order_updates_moved_index_and_pending_lots() {
 #[test]
 fn arena_preserves_noncanonical_identities_and_replaces_both_halves_together() {
     let mut c = core();
-    let p = c
-        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
-        .unwrap();
+    let p = c.prepare(intent(Side::Buy, Offset::Open, 1)).unwrap();
     let original = c.order(&p.key).unwrap().to_order();
     let mut arena = OrderArena::default();
     for reference in ["1", "01", "external", "+1"] {

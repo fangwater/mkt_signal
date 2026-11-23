@@ -28,7 +28,6 @@ response_timeout_ms = 30000
 poll = { mode = "sleep", idle_us = 64000 }
 
 [risk]
-max_actions_per_second = 2
 minimum_cash_remaining = 10000.0
 enable_fak_fok = false
 # Verify the CFFEX Close allocation with the actual broker during simulation.

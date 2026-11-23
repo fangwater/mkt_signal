@@ -34,8 +34,8 @@ if exec_cfg is None:
     print("read-only")
 else:
     ingress = config.get("position_target_ingress", {})
-    if set(ingress) != {"source_id", "manager_plan"} or not exec_cfg.get("contracts"):
-        raise SystemExit("managed execution requires a Manager subscription and an explicit contract scope")
+    if set(ingress) != {"source_id", "manager_plan"}:
+        raise SystemExit("managed execution requires a Manager subscription")
     print("manager-target")
 PY
 )

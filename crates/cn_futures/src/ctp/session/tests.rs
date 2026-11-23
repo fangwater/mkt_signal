@@ -40,6 +40,31 @@ fn background_cash_and_complete_rule_queries_keep_business_session_ready() {
 }
 
 #[test]
+fn background_order_check_runs_first_and_returns_its_rows_without_reconciliation() {
+    let (mut session, mut now) = begin();
+    for id in 1..=20 {
+        let (_, event) = dispatch(&mut session, &mut now, id);
+        if session.on_raw_event(&event, now).unwrap().is_some() {
+            break;
+        }
+    }
+    assert!(session.ready());
+    now += Duration::from_secs(6);
+    session.request_order_check();
+    assert!(session.order_check_pending());
+    assert_eq!(session.request_due(now).unwrap(), Some(QUERY_ORDER));
+    session.sent(QUERY_ORDER, 200, 0, now).unwrap();
+    let mut empty = response(QUERY_ORDER, 200);
+    empty.present = 0;
+    assert!(session.on_raw_event(&empty, now).unwrap().is_none());
+    assert!(!session.order_check_pending());
+    assert_eq!(session.take_order_check(), Some(vec![]));
+    assert!(session.ready());
+    now += Duration::from_secs(2);
+    assert_eq!(session.request_due(now).unwrap(), Some(ACCOUNT));
+}
+
+#[test]
 fn account_not_ready_retries_are_correlated_bounded_and_keep_old_funds_time() {
     let (mut s, mut now) = begin();
     for id in 1..=20 {
@@ -294,7 +319,7 @@ fn unrelated_catalogue_rows_do_not_trigger_rate_queries() {
         execution_route: None,
     };
     assert_eq!(
-        core.prepare(open, now).unwrap_err().to_string(),
+        core.prepare(open).unwrap_err().to_string(),
         "symbol absent from complete rule snapshot"
     );
     session

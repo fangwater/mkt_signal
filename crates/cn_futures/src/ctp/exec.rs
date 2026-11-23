@@ -23,9 +23,7 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub source_id: String,
-    pub contracts: Option<BTreeSet<String>>,
     pub quote_max_age_ms: u64,
-    pub target_max_age_ms: u64,
     pub retry_interval_ms: u64,
     #[serde(default)]
     pub algorithm: ExecutionAlgorithm,
@@ -42,25 +40,11 @@ impl Settings {
     pub fn validate(&self, risk: &RiskLimits) -> Result<()> {
         identifier(&self.source_id)?;
         self.algo().validate()?;
-        if let Some(contracts) = &self.contracts {
-            ensure!(
-                (1..=cn_futures_target::MAX_CONTRACTS).contains(&contracts.len()),
-                "invalid CTP exec contract scope"
-            );
-            for market in contracts {
-                let (exchange, symbol) = market.split_once(':').context("missing target venue")?;
-                ensure!(
-                    is_future_symbol(Venue::parse(exchange)?, symbol),
-                    "invalid CTP exec contract: {market}"
-                );
-            }
-        }
         ensure!(
             (1..=5_000).contains(&self.quote_max_age_ms)
-                && (1..=60_000).contains(&self.target_max_age_ms)
                 && (100..=60_000).contains(&self.retry_interval_ms)
                 && risk.enable_fak_fok,
-            "exec requires bounded quote/target ages and tested limit/FAK support"
+            "exec requires a bounded quote age and tested limit/FAK support"
         );
         Ok(())
     }
@@ -70,20 +54,15 @@ pub(crate) fn validate_target<'a>(
     settings: &Settings,
     target: &'a Target,
     core: &crate::core::TradingCore,
-    now_us: u64,
     allow_options: bool,
 ) -> Result<Vec<(Venue, &'a str, bool)>> {
     target.validate_shape()?;
     ensure!(
-        target.source_id == settings.source_id && target.trading_day == core.trading_day(),
-        "exec target belongs to another source/trading day"
+        target.source_id == settings.source_id,
+        "exec target belongs to another source"
     );
-    ensure!(
-        target.target_revision > 0
-            && target.expires_at_us > now_us
-            && target.expires_at_us - now_us <= settings.target_max_age_ms * 1000,
-        "exec target revision/lease invalid"
-    );
+    // No lease or trading day: a target stands until a newer one replaces it.
+    ensure!(target.target_revision > 0, "exec target revision invalid");
     let mut contracts = Vec::new();
     for market in target.markets() {
         // Crossing opposite strategy targets needs the contract's quote even at
@@ -104,17 +83,6 @@ pub(crate) fn validate_target<'a>(
                 || (allow_options && option_symbol_parts(venue, symbol).is_some()),
             "invalid exec native contract: {market}"
         );
-        if settings
-            .contracts
-            .as_ref()
-            .is_some_and(|scope| !scope.contains(market))
-        {
-            ensure!(
-                !required,
-                "CTP target requires execution outside the configured contracts: {market}"
-            );
-            continue;
-        }
         contracts.push((venue, symbol, required));
     }
     Ok(contracts)
@@ -152,11 +120,10 @@ pub type Market = Text<96>;
 pub struct Exec {
     settings: Settings,
     fixed_scope: Option<FixedScope>,
+    /// The standing target; kept across MD reconnects and order rejections.
     target: Option<Arc<Target>>,
-    last: Option<Arc<Target>>,
     generation: Option<u64>,
     next_tag: u64,
-    halted: bool,
     wait_note: Option<WaitNote>,
     ledger: Ledger,
     ledger_events: Vec<LedgerEvent>,
@@ -267,7 +234,6 @@ pub struct YidaSettings {
     max_target_lots: i32,
     max_order_lots: i32,
     quote_max_age_ms: u64,
-    target_max_age_ms: u64,
     retry_interval_ms: u64,
     #[serde(default)]
     algorithm: ExecutionAlgorithm,
@@ -294,9 +260,7 @@ impl YidaSettings {
     fn timing(&self) -> Settings {
         Settings {
             source_id: self.source_id.clone(),
-            contracts: None,
             quote_max_age_ms: self.quote_max_age_ms,
-            target_max_age_ms: self.target_max_age_ms,
             retry_interval_ms: self.retry_interval_ms,
             algorithm: self.algorithm,
             chase: self.chase,
@@ -341,10 +305,8 @@ impl Exec {
             settings,
             fixed_scope,
             target: None,
-            last: None,
             generation: None,
             next_tag: 0,
-            halted: false,
             wait_note: None,
             ledger: Ledger::default(),
             ledger_events: Vec::new(),
@@ -416,7 +378,7 @@ impl Exec {
             };
         let contract = self.contract(fill.identity.venue, &fill.identity.symbol);
         let attributed = self
-            .last
+            .target
             .as_ref()
             .filter(|_| own_order)
             .zip(contract.map(|i| &self.contracts[i]));
@@ -449,12 +411,7 @@ impl Exec {
     fn contract(&self, venue: Venue, symbol: &str) -> Option<usize> {
         self.index.get(&venue)?.get(symbol).copied()
     }
-    pub fn accept(
-        &mut self,
-        target: Target,
-        context: StrategyContext<'_>,
-        now_us: u64,
-    ) -> Result<Arc<Target>> {
+    pub fn accept(&mut self, target: Target, context: StrategyContext<'_>) -> Result<Arc<Target>> {
         ensure!(
             context.can_trade && context.core.is_ready() && self.generation.is_some(),
             "exec target admission requires recovered account and ready MD"
@@ -463,7 +420,6 @@ impl Exec {
             &self.settings,
             &target,
             context.core,
-            now_us,
             self.fixed_scope.is_some(),
         )?;
         if let Some(scope) = &self.fixed_scope {
@@ -477,27 +433,11 @@ impl Exec {
                     .all(|market| target.net(market).abs() <= i64::from(scope.max_target_lots)),
                 "Yida exec target exceeds account lot limit"
             );
-        } else {
-            for &(venue, symbol, required) in &contracts {
-                let market = format!("{}:{symbol}", venue.as_str());
-                if required || self.attributes(&market) {
-                    ensure!(
-                        context
-                            .core
-                            .instrument(venue, symbol)
-                            .is_some_and(|rule| rule.active),
-                        "exec contract rule unavailable: {}:{symbol}",
-                        venue.as_str()
-                    );
-                }
-            }
         }
-        if let Some(last) = &self.last {
+        // A contract whose rules or quotes are still pending waits on its own
+        // (`contract_rule_missing`); it never holds back the rest of the target.
+        if let Some(last) = &self.target {
             if target == **last {
-                ensure!(
-                    self.target.is_some() && !self.halted,
-                    "exec requires a renewed target after disconnect/rejection"
-                );
                 return Ok(last.clone());
             }
             ensure!(
@@ -550,8 +490,6 @@ impl Exec {
         self.index = index;
         let target = Arc::new(target);
         self.target = Some(target.clone());
-        self.last = Some(target.clone());
-        self.halted = false;
         Ok(target)
     }
     fn decide(
@@ -624,24 +562,18 @@ impl Exec {
         let Some(target) = &self.target else {
             return Ok("no_target");
         };
-        let blocked = if self.halted {
-            Some("halted_after_rejection")
-        } else if !context.can_trade {
+        let blocked = if !context.can_trade {
             Some(WAIT_GATE_CLOSED)
         } else if !context.core.is_ready() {
             Some("account_not_ready")
         } else if self.generation != Some(quote.generation) {
             Some("quote_generation_mismatch")
-        } else if now_us >= target.expires_at_us {
-            Some("target_lease_expired")
         } else if quote.received_us > now_us {
             Some("quote_from_future")
         } else if now_us - quote.received_us > self.settings.quote_max_age_ms * 1000 {
             Some("quote_stale")
-        } else if quote.trading_day != target.trading_day {
+        } else if quote.trading_day != context.core.trading_day() {
             Some("quote_trading_day_mismatch")
-        } else if target.trading_day != context.core.trading_day() {
-            Some("account_trading_day_mismatch")
         } else {
             None
         };
@@ -811,23 +743,20 @@ impl Strategy for Exec {
     ) -> Result<()> {
         self.decide(tick, context, actions, crate::persistence::now_us())
     }
-    fn on_target(
-        &mut self,
-        target: Target,
-        context: StrategyContext<'_>,
-        now_us: u64,
-    ) -> Result<Arc<Target>> {
-        self.accept(target, context, now_us)
+    fn on_target(&mut self, target: Target, context: StrategyContext<'_>) -> Result<Arc<Target>> {
+        self.accept(target, context)
     }
+    /// The target stands across MD reconnects; quotes of another generation
+    /// are ignored until the feed is ready again.
     fn on_market_state(&mut self, ready: bool, generation: u64) -> Result<()> {
-        if !ready || self.generation != Some(generation) {
-            self.target = None;
-        }
         self.generation = ready.then_some(generation);
         Ok(())
     }
     fn take_wait_note(&mut self) -> Option<WaitNote> {
         Exec::take_wait_note(self)
+    }
+    fn standing_target(&self) -> Option<Arc<Target>> {
+        self.target.clone()
     }
     fn restore_ledger(
         &mut self,
@@ -854,20 +783,6 @@ impl Strategy for Exec {
         now_us: u64,
     ) -> Result<()> {
         Exec::assign_position(self, core, strategy, market, lots, price, now_us)
-    }
-    fn on_result(&mut self, outcome: &ActionOutcome, _: StrategyContext<'_>) -> Result<()> {
-        #[cfg(any(feature = "ctp-sdk", test))]
-        if let ActionOutcome::CtpDispatchBlocked { checks, .. } = outcome {
-            // The action was stopped before reservation or an SDK call. Only
-            // transient callback backlog can retry on a later fresh tick.
-            self.halted |= !checks.can_retry();
-        }
-        if matches!(outcome, ActionOutcome::Rejected { .. })
-            || matches!(outcome,ActionOutcome::Submitted{receipt,..} if !receipt.all_submitted_locally)
-        {
-            self.halted = true;
-        }
-        Ok(())
     }
 }
 

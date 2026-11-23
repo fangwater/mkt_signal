@@ -141,7 +141,7 @@ fn submit(
     };
     let day = runtime.core.trading_day().to_owned();
     let before = Instant::now();
-    let receipt = runtime.submit_planned_with(black_box(intent), Instant::now(), |p| {
+    let receipt = runtime.submit_planned_with(black_box(intent), |p| {
         if let Some(j) = j {
             j.prepared(day, p, None)
         } else {
@@ -277,7 +277,7 @@ fn main() -> Result<()> {
                 TimeInForce::Day,
             )?;
             let before = Instant::now();
-            runtime.cancel_with(&key, Instant::now(), |p| {
+            runtime.cancel_with(&key, |p| {
                 if let Some(j) = &journal {
                     j.prepared_cancel(p)
                 } else {

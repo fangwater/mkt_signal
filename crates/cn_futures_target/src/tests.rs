@@ -13,13 +13,11 @@ use tokio::time::{sleep, timeout, Duration};
 use tokio_stream::{wrappers::TcpListenerStream, Stream};
 use tonic::{Request, Response, Status};
 
-fn target(revision: i64, decision_us: u64) -> Target {
+fn target(revision: i64) -> Target {
     Target {
         source_id: "account-a".into(),
         batch_id: format!("decision-{revision}"),
         target_revision: revision,
-        trading_day: "20261118".into(),
-        expires_at_us: decision_us + 5_000_000,
         strategies: BTreeMap::from([
             (
                 "alpha".into(),
@@ -130,10 +128,7 @@ async fn one_reused_local_stream_delivers_complete_targets_to_the_owner_loop() {
     for revision in 1..=128 {
         let decision = now_us();
         let started = Instant::now();
-        let result = client
-            .send(target(revision, decision), decision)
-            .await
-            .unwrap();
+        let result = client.send(target(revision), decision).await.unwrap();
         assert_eq!(result.admission, Admission::Accepted as i32);
         micros.push(started.elapsed().as_micros());
     }
@@ -143,7 +138,7 @@ async fn one_reused_local_stream_delivers_complete_targets_to_the_owner_loop() {
         micros[64], micros[121]
     );
     let decision = now_us();
-    let mut wrong = target(129, decision);
+    let mut wrong = target(129);
     wrong.source_id = "account-b".into();
     assert_eq!(
         client.send(wrong, decision).await.unwrap().admission,
@@ -164,11 +159,12 @@ async fn an_unpolled_request_times_out_and_never_subsequently_reaches_admission(
     );
     let mut client = Client::connect_ipc(socket).await.unwrap();
     let decision = now_us();
-    let result = client.send(target(1, decision), decision).await.unwrap();
+    let result = client.send(target(1), decision).await.unwrap();
     assert_eq!(result.admission, Admission::Busy as i32);
     owner.polling.store(true, Ordering::Release);
     sleep(Duration::from_millis(20)).await;
-    let result = client.send(target(2, decision), 0).await.unwrap();
+    let future = now_us() + 60_000_000;
+    let result = client.send(target(2), future).await.unwrap();
     assert_eq!(result.admission, Admission::Rejected as i32);
     assert!(owner.finish().is_empty());
 }
@@ -289,16 +285,16 @@ async fn manager_stream_delivers_changes_and_retries_only_until_admitted() {
         }),
     )
     .await;
-    let decision = now_us();
-    let current = target(2, decision);
     let subscriptions = || manager.subscriptions.load(Ordering::Acquire);
     wait_for(|| subscriptions() == 1).await;
-    let mut expired = target(1, decision).into_wire(decision);
-    expired.expires_at_us = decision;
-    manager.plan.send_replace(Some(expired));
+    let future = now_us() + 60_000_000;
+    manager.plan.send_replace(Some(target(1).into_wire(future)));
     sleep(Duration::from_millis(40)).await;
     assert!(owner.admitted().is_empty());
 
+    // No lease: a plan decided long before this Exec runtime is still admitted.
+    let decision = 1;
+    let current = target(2);
     let plan = current.clone().into_wire(decision);
     let started = Instant::now();
     manager.plan.send_replace(Some(plan.clone()));
@@ -319,10 +315,8 @@ async fn manager_stream_delivers_changes_and_retries_only_until_admitted() {
 }
 
 #[tokio::test]
-async fn read_only_subscription_observes_existing_targets_without_an_execution_lease() {
-    let mut archived = target(1, 1);
-    archived.expires_at_us = 0;
-    archived.trading_day.clear();
+async fn read_only_subscription_observes_existing_targets() {
+    let archived = target(1);
     let expected = archived.clone();
     let (manager, owner, server) = mock_manager(
         true,
@@ -333,7 +327,6 @@ async fn read_only_subscription_observes_existing_targets_without_an_execution_l
     )
     .await;
     let message = archived.clone().into_wire(1);
-    assert!(Target::try_from(message.clone()).is_err());
     manager.plan.send_replace(Some(message));
     wait_for(|| owner.admitted().len() == 1).await;
     owner.finish();
@@ -343,16 +336,16 @@ async fn read_only_subscription_observes_existing_targets_without_an_execution_l
 #[test]
 fn blocked_and_observational_statuses_cannot_carry_executable_targets() {
     let decision = now_us();
-    let target = target(2, decision).into_wire(decision);
+    let target = target(2).into_wire(decision);
     let mut update = PlanUpdate {
-        status: PlanStatus::LeaseExpired.into(),
+        status: PlanStatus::MissingTradingDay.into(),
         batch_id: target.batch_id.clone(),
         target_revision: target.target_revision,
         target: None,
     };
     assert_eq!(
         manager::update_status(&update, false).unwrap(),
-        PlanStatus::LeaseExpired
+        PlanStatus::MissingTradingDay
     );
     update.target = Some(target);
     assert!(manager::update_status(&update, false).is_err());
@@ -365,18 +358,18 @@ fn blocked_and_observational_statuses_cannot_carry_executable_targets() {
 
 #[test]
 fn strategy_vectors_must_be_complete_and_identical() {
-    let mut incomplete = target(1, now_us());
+    let mut incomplete = target(1);
     incomplete
         .strategies
         .get_mut("beta")
         .unwrap()
         .remove("SHFE:zn2701");
     assert!(Target::try_from(incomplete.into_wire(now_us())).is_err());
-    let mut reserved = target(1, now_us());
+    let mut reserved = target(1);
     let row = reserved.strategies.remove("beta").unwrap();
     reserved.strategies.insert(ledger::UNALLOCATED.into(), row);
     assert!(Target::try_from(reserved.into_wire(now_us())).is_err());
-    let round_trip = target(1, now_us());
+    let round_trip = target(1);
     assert_eq!(
         Target::try_from(round_trip.clone().into_wire(now_us())).unwrap(),
         round_trip

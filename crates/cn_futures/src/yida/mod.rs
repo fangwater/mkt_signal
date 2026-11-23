@@ -42,6 +42,7 @@ pub fn scope() -> ExecutionScope {
         cancel_requires_system_id: false,
         allow_implicit_fill_reference: false,
         allow_options: true,
+        query_unconfirmed_orders: false,
     }
 }
 pub fn session_key(day: i32) -> Session {

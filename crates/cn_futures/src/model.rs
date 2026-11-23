@@ -76,6 +76,10 @@ pub struct ExecutionScope {
     pub cancel_requires_system_id: bool,
     pub allow_implicit_fill_reference: bool,
     pub allow_options: bool,
+    /// An SDK call whose outcome is unknown leaves only that order unconfirmed,
+    /// to be settled by its venue report or a later order query; without this
+    /// the whole account is blocked until reconciliation.
+    pub query_unconfirmed_orders: bool,
 }
 impl ExecutionScope {
     pub fn supports_symbol(&self, venue: Venue, symbol: &str) -> bool {
@@ -98,7 +102,6 @@ pub struct RiskLimits {
     pub max_order_lots: Option<i32>,
     pub max_position_lots_per_side: Option<i32>,
     pub max_working_lots: Option<i32>,
-    pub max_actions_per_second: usize,
     pub minimum_cash_remaining: f64,
     pub enable_fak_fok: bool,
     /// CFFEX Close does not encode a today/yesterday allocation. Confirm this with the broker.
@@ -114,8 +117,7 @@ impl RiskLimits {
             ]
             .into_iter()
             .flatten()
-            .all(|lots| lots > 0)
-                && self.max_actions_per_second > 0,
+            .all(|lots| lots > 0),
             "risk limits must be positive"
         );
         ensure!(

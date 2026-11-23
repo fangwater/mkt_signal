@@ -5,8 +5,8 @@ The default remains `NoStrategy`. An explicit `[exec]` in the Trader TOML,
 all required for target execution. Existing read-only launches stay read-only.
 No live environment is enabled by adding this implementation.
 
-CTP settings require a stable `source_id`, `quote_max_age_ms` (1–5000),
-`target_max_age_ms` (1–60000) and `retry_interval_ms` (100–60000). The optional
+CTP settings require a stable `source_id`, `quote_max_age_ms` (1–5000) and
+`retry_interval_ms` (100–60000). The optional
 `algorithm` (with its parameters) selects how each contract's net gap is
 worked (see [Execution algorithms](#execution-algorithms)); it defaults to
 `"ctaker"`. The Yida `exec` section accepts the same keys.
@@ -18,22 +18,26 @@ Orders derive from the net target, factual inventory and exchange-reported
 contract size rules. Remove `risk.max_order_lots`, `risk.max_position_lots_per_side` and
 `risk.max_working_lots` from the CTP configuration when enabling `[exec]`.
 `risk.enable_fak_fok` must be enabled for the venue/account.
-An optional `contracts` list restricts which native contracts this instance may
-trade. The full account vector may include zero entries for other flat contracts.
+There is no contract allowlist: Exec trades every contract of the target.
+Admission never waits for contract rules or MD subscriptions; Exec requests them
+at admission and every second for the standing target, and a contract whose
+rules or quotes are still pending waits alone (`contract_rule_missing`).
 
 The local private JSON-line command channel accepts:
 
 ```json
-{"op":"exec_target","target":{"source_id":"explicit-source","batch_id":"manager-batch","target_revision":17,"trading_day":"20261117","expires_at_us":1794877230000000,"strategies":{"cn-futures-01-a-1h":{"SHFE:cu2612":2},"cn-futures-01-b-1h":{"SHFE:cu2612":-1}}}}
+{"op":"exec_target","target":{"source_id":"explicit-source","batch_id":"manager-batch","target_revision":17,"strategies":{"cn-futures-01-a-1h":{"SHFE:cu2612":2},"cn-futures-01-b-1h":{"SHFE:cu2612":-1}}}}
 ```
 
-This is an expired documentation example, not a live order instruction. Every
+This is a documentation example, not a live order instruction. Every
 strategy carries the same complete native contract vector, including explicit
 zeros; `__unallocated__` is reserved. Contracts retain their exchange, case and
-delivery month. Another source/day, unknown contracts, missing zero entries,
-mismatched strategy vectors, expired/long leases and old/conflicting revisions
-are rejected. An identical live batch is idempotent; a reconnect or rejection
-requires a new batch/revision. Like crypto targets, a newer batch replaces the
+delivery month. Another source, unknown contracts, missing zero entries,
+mismatched strategy vectors and old/conflicting revisions are rejected.
+A target has no lease and no trading day (2026-11-23): it stands until a newer
+batch replaces it, across sessions, breaks, MD reconnects and order rejections,
+and is executed whenever the account, MD and quote gates allow. An identical
+batch is idempotent. Like crypto targets, a newer batch replaces the
 current one at any time: in-flight FAK fills are attributed against the new
 strategy gaps. Manual submits are blocked in exec mode; operator
 cancel/recovery remains subject to the existing native core gates.
@@ -48,11 +52,20 @@ ownership. A filled order report without its trade facts remains unresolved.
 
 Orders are integer-lot limits; this does not assume a domestic native
 market-order capability. Crossed, missing, off-tick, out-of-limit, wrong-day,
-future/stale or foreign-generation quotes produce no action. FAK cancellation
-does not imply a fill. Submit rejections and uncertain submissions halt this
-target, with unknown reservations left under the native core's control; a
-cancel the OMS refuses (`strategy_cancel_rejected`, e.g. the order just became
-terminal) does not halt, because the order's own reports settle it.
+future/stale or foreign-generation quotes produce no action; wrong-day means a
+quote whose trading day differs from the account's. FAK cancellation does not
+imply a fill. A rejected or withheld order pauses only its contract until the
+algorithm's `retry_interval_ms` has passed; other contracts keep trading.
+An SDK insert or cancel with an unknown outcome leaves only that order
+unconfirmed, with its reservations kept, so only its contract waits; the account
+keeps trading. Its venue report settles it; otherwise, 3 s later, one background
+`ReqQryOrder` does: a listed order takes the queried state (a listed cancel may
+be retried) and an absent insert, which never reached the counter, is released
+and retried by the algorithm (`unconfirmed_order_query` /
+`unconfirmed_order_resolved` in the trader log). A complete reconnection snapshot
+settles them the same way. Yida keeps blocking the account instead. Exec has no
+local action-rate limit; the full rejection chain is logged as
+`strategy_action_rejected`.
 
 ## Execution algorithms
 
@@ -140,13 +153,15 @@ configured `[exec]`.
 
 The CTP Exec I/O task opens an authenticated, source-scoped gRPC
 `ManagerPlans.Watch` subscription. Manager checks the current plan on connect
-and after each committed batch. A plan is `ready` whenever the latest batch has
-a native trading day and a live lease; Manager never waits on the Exec replica,
+and after each committed batch. A plan is `ready` whenever the latest batch is a
+live batch (published with a native trading day) whose decision time is not in
+the future; there is no lease. Manager never waits on the Exec replica,
 account snapshots or attribution. An idle subscription waits for changes.
 
 The I/O task queues new plans for admission inside the existing Exec loop.
-It retries a pending plan while its original lease is valid and deduplicates
-admitted plans across reconnects. The `exec_target_accepted` audit records
+It retries a pending plan until admitted and deduplicates admitted plans across
+reconnects; after an Exec restart the current plan is admitted again, however
+old its decision. The `exec_target_accepted` audit records
 admission by Exec. Factual fills and exchange outcomes come from the native
 order journal. The JSON `exec-plan` GET remains available for diagnostics.
 The subscription and any target IPC/gRPC listener run as local tasks of the
@@ -157,20 +172,19 @@ empty-iteration policy.
 With `--read-only`, the Manager-only ingress can subscribe without a
 `[exec]` section. It reads the current account target, including a flat
 or previously recorded batch, and logs `exec_target_observed` inside the
-business loop. Observations have a zero execution lease. Executable
-subscriptions require a live lease and the existing account and market gates.
+business loop. Executable subscriptions require the existing account and
+market gates.
 
 Each subscription update includes the batch identity and a machine-readable
 plan status. The execution subscriber queues `ready` updates for admission.
 Status transitions are emitted as `manager_plan_status` JSON log events.
-`ready`, `no_batch` and `observe_only` use `info`; `missing_trading_day`,
-`lease_expired` and `decision_in_future` use `warn`. Connection or
+`ready`, `no_batch` and `observe_only` use `info`; `missing_trading_day` and
+`decision_in_future` use `warn`. Connection or
 protocol errors emit `manager_plan_transport_error`. Deploy the Manager
 that emits plan statuses before upgrading its Exec subscribers.
 
 For an account configured to read Manager plans, use the matching
-`[exec].source_id`, and set `target_max_age_ms = 60000` to admit the full
-Manager lease promptly. Add the target reader to the Trader TOML.
+`[exec].source_id`. Add the target reader to the Trader TOML.
 
 ```toml
 [position_target_ingress]

@@ -117,7 +117,6 @@ pub trait Strategy {
         &mut self,
         _target: super::exec::Target,
         _context: StrategyContext<'_>,
-        _now_us: u64,
     ) -> Result<Arc<super::exec::Target>> {
         anyhow::bail!("target execution is not configured")
     }
@@ -130,12 +129,13 @@ pub trait Strategy {
     fn on_market_state(&mut self, _ready: bool, _generation: u64) -> Result<()> {
         Ok(())
     }
+    /// The admitted target that orders currently work towards.
+    fn standing_target(&self) -> Option<Arc<super::exec::Target>> {
+        None
+    }
     /// Latest change in why a target quote did or did not emit an action.
     fn take_wait_note(&mut self) -> Option<super::exec::WaitNote> {
         None
-    }
-    fn on_result(&mut self, _outcome: &ActionOutcome, _context: StrategyContext<'_>) -> Result<()> {
-        Ok(())
     }
     fn on_update(
         &mut self,
@@ -197,12 +197,11 @@ impl Strategy for ConfiguredStrategy {
         &mut self,
         target: super::exec::Target,
         context: StrategyContext<'_>,
-        now_us: u64,
     ) -> Result<Arc<super::exec::Target>> {
         self.0
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("exec is not configured"))?
-            .on_target(target, context, now_us)
+            .on_target(target, context)
     }
     fn on_market_state(&mut self, ready: bool, generation: u64) -> Result<()> {
         if let Some(strategy) = &mut self.0 {
@@ -213,11 +212,8 @@ impl Strategy for ConfiguredStrategy {
     fn take_wait_note(&mut self) -> Option<super::exec::WaitNote> {
         self.0.as_mut().and_then(super::exec::Exec::take_wait_note)
     }
-    fn on_result(&mut self, outcome: &ActionOutcome, context: StrategyContext<'_>) -> Result<()> {
-        if let Some(strategy) = &mut self.0 {
-            strategy.on_result(outcome, context)?;
-        }
-        Ok(())
+    fn standing_target(&self) -> Option<Arc<super::exec::Target>> {
+        self.0.as_ref().and_then(|exec| exec.standing_target())
     }
     fn restore_ledger(
         &mut self,
@@ -264,7 +260,6 @@ pub(crate) fn dispatch<T: crate::model::Trader>(
     journal: &crate::persist::PersistChannel,
     action: Action,
     can_trade: bool,
-    now: std::time::Instant,
 ) -> Result<ActionOutcome> {
     let day = runtime.core.trading_day();
     let tag = match &action {
@@ -285,7 +280,7 @@ pub(crate) fn dispatch<T: crate::model::Trader>(
     let outcome = match action {
         Action::Submit { tag, intent } | Action::SubmitExec { tag, intent, .. } => {
             match runtime
-                .submit_planned_with(intent, now, |p| journal.prepared(day, p, target.as_deref()))
+                .submit_planned_with(intent, |p| journal.prepared(day, p, target.as_deref()))
             {
                 Ok(receipt) => {
                     let keys: SmallVec<[OrderKey; 2]> =
@@ -295,15 +290,16 @@ pub(crate) fn dispatch<T: crate::model::Trader>(
                 }
                 Err(error) => {
                     journal.state(&runtime.core)?;
+                    // The full chain: the context alone hides the cause.
                     ActionOutcome::Rejected {
                         tag,
-                        error: error.to_string(),
+                        error: format!("{error:#}"),
                     }
                 }
             }
         }
         Action::Cancel { tag, key } => {
-            match runtime.cancel_with(&key, now, |p| journal.prepared_cancel(p)) {
+            match runtime.cancel_with(&key, |p| journal.prepared_cancel(p)) {
                 Ok(()) => {
                     journal.orders(&runtime.core, std::slice::from_ref(&key))?;
                     ActionOutcome::CancelledLocally { tag, key }
@@ -311,7 +307,7 @@ pub(crate) fn dispatch<T: crate::model::Trader>(
                 Err(error) => ActionOutcome::CancelRejected {
                     tag,
                     key,
-                    error: error.to_string(),
+                    error: format!("{error:#}"),
                 },
             }
         }

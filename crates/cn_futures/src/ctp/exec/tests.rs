@@ -1,18 +1,14 @@
 use super::*;
 use crate::{config::Config, core::TradingCore};
 use std::collections::BTreeMap;
-use std::time::Instant;
 const NOW: u64 = 1_794_877_200_000_000;
 fn config() -> Config {
     let mut c: Config =
         toml::from_str(include_str!("../../../../../config/ctp_trade.example.toml")).unwrap();
-    c.risk.max_actions_per_second = 20;
     c.risk.enable_fak_fok = true;
     c.exec = Some(Settings {
         source_id: "test-account".into(),
-        contracts: None,
         quote_max_age_ms: 1000,
-        target_max_age_ms: 30000,
         retry_interval_ms: 500,
         algorithm: ExecutionAlgorithm::Ctaker,
         chase: Default::default(),
@@ -21,19 +17,20 @@ fn config() -> Config {
 }
 
 #[test]
-fn ctp_contract_scope_preserves_the_manager_quantity_and_rejects_other_markets() {
-    let mut c = config();
-    let settings = c.exec.as_mut().unwrap();
-    settings.contracts = Some(BTreeSet::from(["SHFE:cu2612".into()]));
+fn a_contract_without_rules_waits_alone_and_never_blocks_the_target() {
     let c = core(0, 0);
+    let settings = config().exec.unwrap();
     let mut batch = target(7);
-    with_market(&mut batch, "SHFE:sn2612", 0);
-    assert_eq!(
-        validate_target(settings, &batch, &c, NOW, false).unwrap(),
-        [(Venue::Shfe, "cu2612", true)]
-    );
     with_market(&mut batch, "SHFE:sn2612", 1);
-    assert!(validate_target(settings, &batch, &c, NOW, false).is_err());
+    assert_eq!(
+        validate_target(&settings, &batch, &c, false).unwrap(),
+        [(Venue::Shfe, "cu2612", true), (Venue::Shfe, "sn2612", true)]
+    );
+    let mut s = Exec::new(&config()).unwrap();
+    s.on_market_state(true, 7).unwrap();
+    s.accept(batch, context(&c)).unwrap();
+    let (intent, _) = request(decide(&mut s, &c, tick(NOW), NOW).remove(0));
+    assert_eq!((intent.symbol.as_str(), intent.lots), ("cu2612", 7));
 }
 fn core(long: i32, short: i32) -> TradingCore {
     let c = config();
@@ -92,8 +89,6 @@ fn target(qty: i32) -> Target {
         source_id: "test-account".into(),
         batch_id: "batch-01".into(),
         target_revision: 1,
-        trading_day: "20261117".into(),
-        expires_at_us: NOW + 30_000_000,
         strategies: BTreeMap::from([(
             "cta-a".into(),
             BTreeMap::from([("SHFE:cu2612".into(), qty)]),
@@ -136,10 +131,13 @@ fn fill(key: &OrderKey, id: &str, side: Side, lots: i32) -> Fill {
     }
 }
 fn tick(at: u64) -> TickRecord {
+    tick_on(at, b"20261117")
+}
+fn tick_on(at: u64, trading_day: &[u8; 8]) -> TickRecord {
     let mut e = super::super::market_data::RawEvent::default();
     e.symbol[..6].copy_from_slice(b"cu2612");
     e.exchange[..4].copy_from_slice(b"SHFE");
-    e.trading_day[..8].copy_from_slice(b"20261117");
+    e.trading_day[..8].copy_from_slice(trading_day);
     e.bid[0] = 100.0;
     e.ask[0] = 101.0;
     e.bid_volume[0] = 5;
@@ -151,7 +149,7 @@ fn tick(at: u64) -> TickRecord {
 fn strategy(core: &TradingCore, qty: i32) -> Exec {
     let mut s = Exec::new(&config()).unwrap();
     s.on_market_state(true, 7).unwrap();
-    s.accept(target(qty), context(core), NOW).unwrap();
+    s.accept(target(qty), context(core)).unwrap();
     s
 }
 fn decide(s: &mut Exec, c: &TradingCore, t: TickRecord, now: u64) -> Vec<Action> {
@@ -167,7 +165,7 @@ fn request(a: Action) -> (Intent, Arc<Target>) {
 }
 
 #[test]
-fn callback_backlog_defers_unsent_ctp_action_within_original_target_lease() {
+fn unsent_ctp_action_is_retried_after_the_interval_with_no_target_lease() {
     for (md, trade) in [(true, false), (false, true), (true, true)] {
         let c = core(0, 0);
         let mut exec = strategy(&c, -2);
@@ -183,33 +181,27 @@ fn callback_backlog_defers_unsent_ctp_action_within_original_target_lease() {
         };
         assert!(!checks.can_dispatch());
         assert!(checks.can_retry());
-        let action = decide(&mut exec, &c, tick(NOW), NOW).remove(0);
-        exec.on_result(
-            &ActionOutcome::CtpDispatchBlocked {
-                action,
-                checks,
-                quote_received_us: NOW,
-                quote_generation: 7,
-            },
-            context(&c),
-        )
-        .unwrap();
+        // The runtime withholds the action; the contract waits for its retry.
+        assert_eq!(decide(&mut exec, &c, tick(NOW), NOW).len(), 1);
         let early = NOW + 499_999;
         assert!(decide(&mut exec, &c, tick(early), early).is_empty());
         let retry = NOW + 500_000;
         let (intent, original) = request(decide(&mut exec, &c, tick(retry), retry).remove(0));
         assert_eq!((intent.side, intent.lots), (Side::Sell, 2));
         assert_eq!(*original, target(-2));
-        let expired = target(-2).expires_at_us;
-        assert!(decide(&mut exec, &c, tick(expired), expired).is_empty());
+        let hours_later = NOW + 3_600_000_000;
+        assert_eq!(
+            decide(&mut exec, &c, tick(hours_later), hours_later).len(),
+            1
+        );
     }
 }
 
 #[test]
-fn failed_dispatch_health_check_halts_even_with_callback_backlog() {
+fn failed_dispatch_health_check_pauses_only_until_the_retry_interval() {
     let c = core(0, 0);
     let mut exec = strategy(&c, -2);
-    let action = decide(&mut exec, &c, tick(NOW), NOW).remove(0);
+    assert_eq!(decide(&mut exec, &c, tick(NOW), NOW).len(), 1);
     let checks = CtpDispatchChecks {
         strategy_can_trade: true,
         execution_enabled: true,
@@ -221,18 +213,9 @@ fn failed_dispatch_health_check_halts_even_with_callback_backlog() {
         trade_ingress_failed: false,
     };
     assert!(!checks.can_retry());
-    exec.on_result(
-        &ActionOutcome::CtpDispatchBlocked {
-            action,
-            checks,
-            quote_received_us: NOW,
-            quote_generation: 7,
-        },
-        context(&c),
-    )
-    .unwrap();
+    assert!(decide(&mut exec, &c, tick(NOW + 499_999), NOW + 499_999).is_empty());
     let later = NOW + 1_000_000;
-    assert!(decide(&mut exec, &c, tick(later), later).is_empty());
+    assert_eq!(decide(&mut exec, &c, tick(later), later).len(), 1);
 }
 #[test]
 fn configuration_requires_tested_fak_and_removes_local_lot_limits() {
@@ -247,20 +230,17 @@ fn configuration_requires_tested_fak_and_removes_local_lot_limits() {
     c.risk.max_order_lots = Some(4);
     assert!(c.validate().is_err());
     assert!(NoStrategy
-        .on_target(target(1), context(&core(0, 0)), NOW)
+        .on_target(target(1), context(&core(0, 0)))
         .is_err());
 }
 #[test]
-fn target_admission_rejects_wrong_identity_scope_day_lease_and_closed_gates() {
+fn target_admission_rejects_wrong_identity_scope_and_closed_gates() {
     let c = core(0, 0);
     let mut s = Exec::new(&config()).unwrap();
     s.on_market_state(true, 7).unwrap();
     let mut bad = vec![];
     let mut t = target(1);
     t.source_id = "another-account".into();
-    bad.push(t);
-    let mut t = target(1);
-    t.trading_day = "20261116".into();
     bad.push(t);
     let mut t = target(1);
     t.strategies.clear();
@@ -275,16 +255,10 @@ fn target_admission_rejects_wrong_identity_scope_day_lease_and_closed_gates() {
         .insert("SHFE:sn2612".into(), 0);
     bad.push(t);
     let mut t = target(1);
-    t.expires_at_us = NOW;
-    bad.push(t);
-    let mut t = target(1);
-    t.expires_at_us = NOW + 30_000_001;
-    bad.push(t);
-    let mut t = target(1);
     t.target_revision = 0;
     bad.push(t);
     for t in bad {
-        assert!(s.accept(t, context(&c), NOW).is_err());
+        assert!(s.accept(t, context(&c)).is_err());
     }
     assert!(s
         .accept(
@@ -292,8 +266,7 @@ fn target_admission_rejects_wrong_identity_scope_day_lease_and_closed_gates() {
             StrategyContext {
                 core: &c,
                 can_trade: false
-            },
-            NOW
+            }
         )
         .is_err());
     assert!(s.target.is_none());
@@ -302,14 +275,14 @@ fn target_admission_rejects_wrong_identity_scope_day_lease_and_closed_gates() {
 fn identical_targets_are_idempotent_and_revisions_cannot_conflict_or_go_backwards() {
     let c = core(0, 0);
     let mut s = strategy(&c, 1);
-    s.accept(target(1), context(&c), NOW).unwrap();
-    assert!(s.accept(target(2), context(&c), NOW).is_err());
+    s.accept(target(1), context(&c)).unwrap();
+    assert!(s.accept(target(2), context(&c)).is_err());
     let mut next = target(2);
     next.target_revision = 2;
-    assert!(s.accept(next.clone(), context(&c), NOW).is_err());
+    assert!(s.accept(next.clone(), context(&c)).is_err());
     next.batch_id = "batch-02".into();
-    s.accept(next, context(&c), NOW).unwrap();
-    assert!(s.accept(target(1), context(&c), NOW).is_err());
+    s.accept(next, context(&c)).unwrap();
+    assert!(s.accept(target(1), context(&c)).is_err());
 }
 #[test]
 fn roll_uses_exact_target_contracts_and_requires_zero_for_the_held_month() {
@@ -324,10 +297,10 @@ fn roll_uses_exact_target_contracts_and_requires_zero_for_the_held_month() {
     roll.batch_id = "roll".into();
     roll.strategies =
         BTreeMap::from([("cta-a".into(), BTreeMap::from([("SHFE:cu2701".into(), 1)]))]);
-    assert!(s.accept(roll.clone(), context(&c), NOW).is_err());
+    assert!(s.accept(roll.clone(), context(&c)).is_err());
 
     with_market(&mut roll, "SHFE:cu2612", 0);
-    s.accept(roll, context(&c), NOW).unwrap();
+    s.accept(roll, context(&c)).unwrap();
     let (close, _) = request(decide(&mut s, &c, tick(NOW), NOW).remove(0));
     assert_eq!(
         (close.symbol.as_str(), close.side, close.offset),
@@ -372,14 +345,7 @@ fn aggressive_bbo_limit_fak_uses_integer_ticks_and_chunk_bounds_with_frozen_batc
     assert_eq!(i.lots, 100);
     let mut c_for_order = core(0, 0);
     let planned = c_for_order.plan(i).unwrap();
-    assert_eq!(
-        c_for_order
-            .prepare(planned[0], Instant::now())
-            .unwrap()
-            .intent
-            .lots,
-        100
-    );
+    assert_eq!(c_for_order.prepare(planned[0]).unwrap().intent.lots, 100);
     let mut s = strategy(&c, -2);
     let (i, _) = request(decide(&mut s, &c, tick(NOW), NOW).remove(0));
     assert_eq!((i.side, i.price_ticks, i.lots), (Side::Sell, 100, 2));
@@ -392,7 +358,7 @@ fn opposite_gross_inventory_closes_before_new_opening_and_only_factual_fills_adv
     assert_eq!((i.side, i.offset, i.lots), (Side::Buy, Offset::Close, 2));
     let children = c.plan(i).unwrap();
     assert_eq!(children[0].offset, Offset::CloseToday);
-    let p = c.prepare(children[0], Instant::now()).unwrap();
+    let p = c.prepare(children[0]).unwrap();
     assert!(decide(&mut s, &c, tick(NOW + 1_000_000), NOW + 1_000_000).is_empty());
     c.on_fill(&Fill {
         identity: TradeIdentity {
@@ -418,7 +384,7 @@ fn filled_order_report_without_trade_facts_blocks_new_orders_but_not_target_repl
     let mut c = core(0, 0);
     let mut s = strategy(&c, 2);
     let (i, _) = request(decide(&mut s, &c, tick(NOW), NOW).remove(0));
-    let p = c.prepare(i, Instant::now()).unwrap();
+    let p = c.prepare(i).unwrap();
     c.on_order(&OrderUpdate {
         key: p.key,
         symbol: "cu2612".into(),
@@ -444,7 +410,7 @@ fn filled_order_report_without_trade_facts_blocks_new_orders_but_not_target_repl
     let mut t = target(3);
     t.target_revision = 2;
     t.batch_id = "batch-02".into();
-    s.accept(t, context(&c), NOW).unwrap();
+    s.accept(t, context(&c)).unwrap();
     assert!(decide(&mut s, &c, tick(NOW + 1_000_000), NOW + 1_000_000).is_empty());
 }
 #[test]
@@ -457,7 +423,7 @@ fn opposite_strategy_targets_cross_at_the_mid_without_an_order() {
     )])
     .unwrap();
     s.on_market_state(true, 7).unwrap();
-    s.accept(roster(&[("cta-a", 0), ("cta-b", 1)]), context(&c), NOW)
+    s.accept(roster(&[("cta-a", 0), ("cta-b", 1)]), context(&c))
         .unwrap();
     assert!(decide(&mut s, &c, tick(NOW), NOW).is_empty());
     let events = s.take_ledger_events();
@@ -486,7 +452,7 @@ fn cutover_moves_the_unallocated_account_position_to_strategies() {
     let c = core(2, 0);
     let mut s = Exec::new(&config()).unwrap();
     s.on_market_state(true, 7).unwrap();
-    s.accept(roster(&[("cta-a", 2), ("cta-b", 0)]), context(&c), NOW)
+    s.accept(roster(&[("cta-a", 2), ("cta-b", 0)]), context(&c))
         .unwrap();
     assert!(decide(&mut s, &c, tick(NOW), NOW).is_empty());
     match &s.take_ledger_events()[0] {
@@ -502,11 +468,11 @@ fn own_fills_are_attributed_to_strategy_gaps_and_foreign_fills_stay_unallocated(
     let mut c = core(0, 0);
     let mut s = Exec::new(&config()).unwrap();
     s.on_market_state(true, 7).unwrap();
-    s.accept(roster(&[("cta-a", 2), ("cta-b", 1)]), context(&c), NOW)
+    s.accept(roster(&[("cta-a", 2), ("cta-b", 1)]), context(&c))
         .unwrap();
     let (i, _) = request(decide(&mut s, &c, tick(NOW), NOW).remove(0));
     assert_eq!(i.lots, 3);
-    let p = c.prepare(i, Instant::now()).unwrap();
+    let p = c.prepare(i).unwrap();
     let first = fill(&p.key, "t1", Side::Buy, 2);
     assert!(c.on_fill(&first).unwrap());
     s.on_fill(&first, true);
@@ -572,43 +538,61 @@ fn stale_crossed_off_grid_limit_missing_depth_and_foreign_generation_quotes_do_n
     let mut t = tick(NOW);
     t.ask[0] = f64::MAX;
     invalid.push(t);
+    // A quote of another trading day than the account's never trades.
+    invalid.push(tick_on(NOW, b"20261118"));
     for t in invalid {
         let mut s = strategy(&c, 1);
         assert!(decide(&mut s, &c, t, NOW).is_empty());
     }
 }
 #[test]
-fn disconnected_or_expired_targets_need_a_new_batch_and_cannot_silently_resume() {
+fn targets_stand_across_md_reconnects_and_never_expire() {
     let c = core(0, 0);
     let mut s = strategy(&c, 1);
     s.on_market_state(false, 7).unwrap();
+    // Quotes of the old connection are ignored once the feed is down.
+    assert!(decide(&mut s, &c, tick(NOW), NOW).is_empty());
     s.on_market_state(true, 8).unwrap();
-    assert!(s.accept(target(1), context(&c), NOW).is_err());
     let mut t = tick(NOW);
     t.connection_generation = 8;
-    assert!(decide(&mut s, &c, t, NOW).is_empty());
+    assert_eq!(decide(&mut s, &c, t, NOW).len(), 1);
+    // Replaying the standing target is idempotent.
+    assert_eq!(*s.accept(target(1), context(&c)).unwrap(), target(1));
     let mut s = strategy(&c, 1);
-    assert!(decide(&mut s, &c, tick(NOW + 30_000_000), NOW + 30_000_000).is_empty());
+    let days_later = NOW + 3 * 86_400_000_000;
+    assert_eq!(decide(&mut s, &c, tick(days_later), days_later).len(), 1);
 }
 #[test]
-fn rejection_halts_retries_and_even_idempotent_replays_cannot_rearm_it() {
+fn a_rejected_order_is_retried_on_its_contract_after_the_interval() {
+    use crate::core::SingleLoop;
+    use crate::persist::tests::channel;
+    struct Reject;
+    impl Trader for Reject {
+        fn insert(&mut self, _: &PreparedOrder) -> Result<i32> {
+            Ok(-3)
+        }
+        fn cancel(&mut self, _: &PreparedCancel) -> Result<i32> {
+            anyhow::bail!("unexpected cancellation")
+        }
+    }
     let c = core(0, 0);
     let mut s = strategy(&c, 1);
-    s.on_result(
-        &ActionOutcome::Rejected {
-            tag: 1,
-            error: "test rejection".into(),
-        },
-        context(&c),
-    )
-    .unwrap();
-    assert!(decide(&mut s, &c, tick(NOW), NOW).is_empty());
-    assert!(s.accept(target(1), context(&c), NOW).is_err());
-    let mut t = target(1);
-    t.target_revision = 2;
-    t.batch_id = "batch-02".into();
-    s.accept(t, context(&c), NOW).unwrap();
-    assert_eq!(decide(&mut s, &c, tick(NOW), NOW).len(), 1);
+    let mut runtime = SingleLoop {
+        core: c,
+        trader: Reject,
+        execute: true,
+    };
+    let (journal, _records) = channel(vec![]);
+    let action = decide(&mut s, &runtime.core, tick(NOW), NOW).remove(0);
+    let outcome = super::super::strategy::dispatch(&mut runtime, &journal, action, true).unwrap();
+    assert!(
+        matches!(outcome, ActionOutcome::Submitted { receipt, .. } if !receipt.all_submitted_locally)
+    );
+    let early = NOW + 499_999;
+    assert!(decide(&mut s, &runtime.core, tick(early), early).is_empty());
+    let retry = NOW + 500_000;
+    assert_eq!(decide(&mut s, &runtime.core, tick(retry), retry).len(), 1);
+    journal.finish().unwrap();
 }
 #[test]
 fn hedged_inventory_at_the_net_target_is_preserved() {
@@ -626,20 +610,22 @@ fn action_retry_spacing_is_bounded_even_before_local_outcome_callback() {
 }
 
 #[test]
-fn reconnect_requires_a_new_batch_instead_of_reactivating_a_stale_target() {
+fn a_newer_batch_after_reconnect_replaces_the_standing_target() {
     let c = core(0, 0);
     let mut s = strategy(&c, 1);
     s.on_market_state(false, 7).unwrap();
     s.on_market_state(true, 8).unwrap();
-    assert!(s.accept(target(1), context(&c), NOW).is_err());
-    let mut q = tick(NOW);
-    q.connection_generation = 8;
-    assert!(decide(&mut s, &c, q, NOW).is_empty());
-    let mut t = target(1);
+    let mut t = target(2);
     t.target_revision = 2;
     t.batch_id = "batch-02".into();
-    s.accept(t, context(&c), NOW).unwrap();
-    assert_eq!(decide(&mut s, &c, q, NOW).len(), 1);
+    s.accept(t, context(&c)).unwrap();
+    let mut q = tick(NOW);
+    q.connection_generation = 8;
+    let (intent, target) = request(decide(&mut s, &c, q, NOW).remove(0));
+    assert_eq!(
+        (intent.side, intent.lots, target.target_revision),
+        (Side::Buy, 2, 2)
+    );
 }
 
 #[test]
@@ -673,8 +659,7 @@ fn evidence_follows_the_sdk_call_and_a_publish_failure_blocks_later_trading() {
         } else {
             channel(vec![])
         };
-        let result =
-            super::super::strategy::dispatch(&mut runtime, &journal, action, true, Instant::now());
+        let result = super::super::strategy::dispatch(&mut runtime, &journal, action, true);
         // The order is never delayed or withheld for evidence.
         assert_eq!(runtime.trader.calls, 1);
         assert!(runtime
@@ -767,7 +752,7 @@ fn assigned_legacy_position_is_a_priced_cross_and_is_not_crossed_again() {
     );
     // With the target already matching, the first quote needs no cross.
     s.on_market_state(true, 7).unwrap();
-    s.accept(roster(&[("cta-a", 2)]), context(&c), NOW).unwrap();
+    s.accept(roster(&[("cta-a", 2)]), context(&c)).unwrap();
     assert!(decide(&mut s, &c, tick(NOW), NOW).is_empty());
     assert!(s.take_ledger_events().is_empty());
 }

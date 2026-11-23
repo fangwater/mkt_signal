@@ -106,7 +106,6 @@ fn core() -> crate::core::TradingCore {
             max_order_lots: Some(10),
             max_position_lots_per_side: Some(10),
             max_working_lots: Some(10),
-            max_actions_per_second: 10,
             minimum_cash_remaining: 0.0,
             enable_fak_fok: true,
             close_priority: ClosePriority::TodayFirst,
@@ -224,7 +223,7 @@ fn yida_order_and_trade_callbacks_keep_ids_and_float_bits_in_the_trader_log() {
 fn order_lifecycle_is_a_crypto_uniform_order_recorded_once_per_change() {
     let (channel, records) = channel(vec![]);
     let mut core = core();
-    let p = core.prepare(intent(3), std::time::Instant::now()).unwrap();
+    let p = core.prepare(intent(3)).unwrap();
     channel.prepared(core.trading_day(), &p, None).unwrap();
     // An unchanged report is not recorded again.
     channel.orders(&core, &[p.key]).unwrap();
@@ -267,7 +266,7 @@ fn order_lifecycle_is_a_crypto_uniform_order_recorded_once_per_change() {
 fn a_new_fill_is_one_trade_update_plus_per_strategy_uniform_fills() {
     let (channel, records) = channel(vec![]);
     let mut core = core();
-    let p = core.prepare(intent(3), std::time::Instant::now()).unwrap();
+    let p = core.prepare(intent(3)).unwrap();
     channel.prepared(core.trading_day(), &p, None).unwrap();
     let f = fill(&p, "T1", 3);
     assert!(core.on_fill(&f).unwrap());
@@ -371,9 +370,9 @@ fn recovery_rebuilds_ledger_floors_unresolved_orders_and_known_trades_from_the_l
     let dir = absent_database();
     let (channel, records) = channel(vec![]);
     let mut core = core();
-    let open = core.prepare(intent(1), std::time::Instant::now()).unwrap();
+    let open = core.prepare(intent(1)).unwrap();
     channel.prepared(core.trading_day(), &open, None).unwrap();
-    let filled = core.prepare(intent(2), std::time::Instant::now()).unwrap();
+    let filled = core.prepare(intent(2)).unwrap();
     channel.prepared(core.trading_day(), &filled, None).unwrap();
     let f = fill(&filled, "T9", 2);
     assert!(core.on_fill(&f).unwrap());
@@ -460,8 +459,6 @@ fn strategy_outcomes_and_quote_decisions_cross_as_bincode_and_render_operator_js
         source_id: "account".into(),
         batch_id: "batch-7".into(),
         target_revision: 7,
-        trading_day: "20261120".into(),
-        expires_at_us: 9,
         strategies: Default::default(),
     });
     channel

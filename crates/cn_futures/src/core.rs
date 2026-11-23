@@ -2,13 +2,13 @@ use crate::model::*;
 use anyhow::{bail, ensure, Context, Result};
 use serde::Serialize;
 use smallvec::{smallvec, SmallVec};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 mod book;
 use book::*;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Not Send/Sync: only the business-loop thread may own or mutate this state.
 pub struct TradingCore {
@@ -33,7 +33,8 @@ pub struct TradingCore {
     working_lots: i64,
     system_ids: [HashMap<NativeId, OrderId>; VENUE_SLOTS],
     fills: Vec<[HashMap<NativeId, Fill>; 2]>,
-    actions: VecDeque<Instant>,
+    /// Orders whose insert or cancel SDK call had an unknown outcome.
+    unconfirmed: HashMap<OrderKey, (Unconfirmed, Instant)>,
     _single_owner: PhantomData<Rc<()>>,
 }
 
@@ -48,6 +49,23 @@ pub struct CoreView<'a> {
     pub positions: Vec<PositionView<'a>>,
     pub instruments: Vec<&'a Instrument>,
 }
+/// Which SDK call of an order had an unknown outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unconfirmed {
+    Insert,
+    Cancel,
+}
+/// How an order query settled an unconfirmed order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Resolution {
+    pub key: OrderKey,
+    pub call: Unconfirmed,
+    /// `found`: the venue knows the order and its queried state was applied.
+    /// `absent`: the venue never received it; reservations were released.
+    pub outcome: &'static str,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PositionView<'a> {
     pub venue: Venue,
@@ -60,10 +78,6 @@ impl TradingCore {
     pub fn new(limits: RiskLimits, scope: ExecutionScope) -> Result<Self> {
         limits.validate()?;
         scope.validate()?;
-        let capacity = limits.max_actions_per_second.min(INITIAL_ORDER_SLOTS);
-        let mut actions = VecDeque::with_capacity(capacity);
-        actions.resize(capacity, Instant::now());
-        actions.clear();
         Ok(Self {
             limits,
             day: Day::default(),
@@ -85,7 +99,7 @@ impl TradingCore {
             working_lots: 0,
             system_ids: Default::default(),
             fills: Vec::new(),
-            actions,
+            unconfirmed: HashMap::new(),
             _single_owner: PhantomData,
         })
     }
@@ -109,18 +123,6 @@ impl TradingCore {
             self.orders
                 .reserve_session(self.session, self.order_reserve)
                 .context("reserve native reference index")?;
-        }
-        self.reserve_actions(self.order_reserve)?;
-        Ok(())
-    }
-    fn reserve_actions(&mut self, count: usize) -> Result<()> {
-        let count = count.min(self.limits.max_actions_per_second);
-        self.actions
-            .try_reserve(count.saturating_sub(self.actions.len()))
-            .context("reserve native action-rate window")?;
-        if self.actions.is_empty() {
-            self.actions.resize(count, Instant::now());
-            self.actions.clear();
         }
         Ok(())
     }
@@ -356,7 +358,22 @@ impl TradingCore {
     pub fn restore(&mut self, s: Snapshot) -> Result<()> {
         validate_snapshot(&s, &self.scope)?;
         for old in self.orders.values().filter(|o| o.remaining() > 0) {
-            let recovered=s.orders.iter().find(|o| &o.key==old.key || (o.venue==old.request.venue && !old.system_id.is_empty() && &o.system_id==old.system_id))
+            let found = s.orders.iter().find(|o| {
+                &o.key == old.key
+                    || (o.venue == old.request.venue
+                        && !old.system_id.is_empty()
+                        && &o.system_id == old.system_id)
+            });
+            // A complete snapshot without an unconfirmed insert proves the venue never had it.
+            if found.is_none()
+                && self
+                    .unconfirmed
+                    .get(old.key)
+                    .is_some_and(|(call, _)| *call == Unconfirmed::Insert)
+            {
+                continue;
+            }
+            let recovered = found
                 .context("snapshot omits unresolved local order; preserve reservations until a factual outcome is available")?;
             ensure!(
                 recovered.venue == old.request.venue
@@ -400,7 +417,6 @@ impl TradingCore {
         );
         next.cash = s.available_cash;
         next.order_reserve = self.order_reserve;
-        next.reserve_actions(self.order_reserve)?;
         next.orders
             .reserve(
                 s.orders
@@ -562,23 +578,7 @@ impl TradingCore {
         self.positions[symbol.0][side_index(side)] = Some(p);
         Ok(())
     }
-    fn rate_check(&mut self, now: Instant) -> Result<()> {
-        while self
-            .actions
-            .front()
-            .is_some_and(|t| now.saturating_duration_since(*t) >= Duration::from_secs(1))
-        {
-            self.actions.pop_front();
-        }
-        ensure!(
-            self.actions.len() < self.limits.max_actions_per_second,
-            "account action rate limit"
-        );
-        self.actions.push_back(now);
-        Ok(())
-    }
-
-    pub fn prepare(&mut self, intent: Intent, now: Instant) -> Result<PreparedOrder> {
+    pub fn prepare(&mut self, intent: Intent) -> Result<PreparedOrder> {
         if let Some(route) = intent.execution_route {
             route.validate()?;
         }
@@ -740,7 +740,6 @@ impl TradingCore {
             } else {
                 0.0
             };
-        self.rate_check(now)?;
         let key = OrderKey {
             session: self.session,
             order_ref: Reference::decimal(self.next_ref)?,
@@ -798,6 +797,8 @@ impl TradingCore {
         order.status = OrderStatus::Rejected;
         order.cancel_pending = false;
         self.finish_order_change(id, old);
+        let key = *self.orders.view(id).key;
+        self.unconfirmed.remove(&key);
         Ok(())
     }
     fn release_cancelled(&mut self, id: OrderId, total: i32) -> Result<()> {
@@ -937,8 +938,75 @@ impl TradingCore {
             status if !order.status.terminal() => order.status = status,
             _ => {}
         }
+        let settled = order.status.terminal() || !order.cancel_pending;
         self.finish_order_change(id, old);
+        // Any venue report confirms an insert; a cancel is settled once the
+        // order is terminal or the venue refused the cancel.
+        match self.unconfirmed.get(&update.key) {
+            Some((Unconfirmed::Insert, _)) => {
+                self.unconfirmed.remove(&update.key);
+            }
+            Some((Unconfirmed::Cancel, _)) if settled => {
+                self.unconfirmed.remove(&update.key);
+            }
+            _ => {}
+        }
         Ok(())
+    }
+    /// Keeps the order and its reservations; only its contract waits.
+    pub fn mark_unconfirmed(&mut self, key: &OrderKey, call: Unconfirmed, at: Instant) {
+        self.unconfirmed.insert(*key, (call, at));
+    }
+    fn unknown_insert(&mut self, key: &OrderKey) {
+        if self.scope.query_unconfirmed_orders {
+            self.mark_unconfirmed(key, Unconfirmed::Insert, Instant::now());
+        } else {
+            self.block("unknown submission outcome; reconcile before retry");
+        }
+    }
+    /// When the oldest unconfirmed SDK call was made.
+    pub fn oldest_unconfirmed(&self) -> Option<Instant> {
+        self.unconfirmed.values().map(|(_, at)| *at).min()
+    }
+    /// Settles the orders marked at or before `marked_by` with a complete
+    /// order query requested after it (the caller leaves a grace period so the
+    /// SDK call had time to reach the venue): a listed order takes its queried
+    /// state and a listed cancel may be retried; an absent insert never reached
+    /// the venue and is released. Later marks wait for the next query.
+    pub fn resolve_unconfirmed(
+        &mut self,
+        rows: &[OrderUpdate],
+        marked_by: Instant,
+    ) -> Result<Vec<Resolution>> {
+        let pending: Vec<_> = self
+            .unconfirmed
+            .iter()
+            .filter(|(_, (_, at))| *at <= marked_by)
+            .map(|(key, (call, _))| (*key, *call))
+            .collect();
+        let mut resolved = Vec::with_capacity(pending.len());
+        for (key, call) in pending {
+            let outcome = match rows.iter().find(|row| row.key == key) {
+                Some(row) => {
+                    self.on_order(row)?;
+                    if call == Unconfirmed::Cancel {
+                        // The queried state is final for this cancel attempt.
+                        self.cancel_failed(&key);
+                    }
+                    "found"
+                }
+                None if call == Unconfirmed::Insert => {
+                    self.reject(&key)?;
+                    "absent"
+                }
+                None => anyhow::bail!(
+                    "order query omits a venue-acknowledged order; reconcile the account"
+                ),
+            };
+            self.unconfirmed.remove(&key);
+            resolved.push(Resolution { key, call, outcome });
+        }
+        Ok(resolved)
     }
     pub fn on_fill(&mut self, fill: &Fill) -> Result<bool> {
         validate_fill(fill, &self.day, &self.scope)?;
@@ -1037,7 +1105,7 @@ impl TradingCore {
         Ok(true)
     }
 
-    pub fn prepare_cancel(&mut self, key: &OrderKey, now: Instant) -> Result<PreparedCancel> {
+    pub fn prepare_cancel(&mut self, key: &OrderKey) -> Result<PreparedCancel> {
         ensure!(self.connected, "cannot cancel while transport disconnected");
         let order = self.orders.get(key).context("unknown order to cancel")?;
         ensure!(
@@ -1055,7 +1123,6 @@ impl TradingCore {
             system_id: *order.system_id,
             execution_route: order.request.execution_route,
         };
-        self.rate_check(now)?;
         let id = self.orders.id(key).context("order disappeared")?;
         self.orders.slots[id.0].cancel_pending = true;
         Ok(request)
@@ -1074,15 +1141,14 @@ pub struct SingleLoop<T: Trader> {
     pub execute: bool,
 }
 impl<T: Trader> SingleLoop<T> {
-    pub fn submit(&mut self, intent: Intent, now: Instant) -> Result<OrderKey> {
-        self.submit_with(intent, now, |_| Ok(()))
+    pub fn submit(&mut self, intent: Intent) -> Result<OrderKey> {
+        self.submit_with(intent, |_| Ok(()))
     }
     /// `after_native` records the attempted request right after the SDK call,
     /// so evidence publishing never delays the order. Its failure latches a block.
     pub fn submit_with(
         &mut self,
         intent: Intent,
-        now: Instant,
         after_native: impl FnOnce(&PreparedOrder) -> Result<()>,
     ) -> Result<OrderKey> {
         ensure!(self.execute, "read-only runtime: submissions disabled");
@@ -1092,7 +1158,7 @@ impl<T: Trader> SingleLoop<T> {
             "invalid SDK allocated reference"
         );
         self.core.next_ref = reference;
-        let request = self.core.prepare(intent, now)?;
+        let request = self.core.prepare(intent)?;
         let sent = self.trader.insert(&request);
         if after_native(&request).is_err() {
             self.core
@@ -1105,35 +1171,32 @@ impl<T: Trader> SingleLoop<T> {
                 bail!("native local insert rejected: {code}");
             }
             Err(error) => {
-                self.core
-                    .block("unknown submission outcome; reconcile before retry");
+                self.core.unknown_insert(&request.key);
                 Err(error.context("native submission outcome uncertain"))
             }
         }
     }
-    pub fn cancel(&mut self, key: &OrderKey, now: Instant) -> Result<()> {
-        self.cancel_with(key, now, |_| Ok(()))
+    pub fn cancel(&mut self, key: &OrderKey) -> Result<()> {
+        self.cancel_with(key, |_| Ok(()))
     }
     pub fn cancel_with(
         &mut self,
         key: &OrderKey,
-        now: Instant,
         after_native: impl FnOnce(&PreparedCancel) -> Result<()>,
     ) -> Result<()> {
-        self.cancel_with_route(key, None, now, after_native)
+        self.cancel_with_route(key, None, after_native)
     }
     pub fn cancel_with_route(
         &mut self,
         key: &OrderKey,
         route: Option<ExecutionRoute>,
-        now: Instant,
         after_native: impl FnOnce(&PreparedCancel) -> Result<()>,
     ) -> Result<()> {
         ensure!(self.execute, "read-only runtime: cancellations disabled");
         if let Some(route) = route {
             route.validate()?;
         }
-        let mut request = self.core.prepare_cancel(key, now)?;
+        let mut request = self.core.prepare_cancel(key)?;
         if route.is_some() {
             request.execution_route = route;
         }
@@ -1149,7 +1212,12 @@ impl<T: Trader> SingleLoop<T> {
                 bail!("native local cancel rejected: {code}");
             }
             Err(error) => {
-                self.core.block("unknown cancellation outcome; reconcile");
+                if self.core.scope.query_unconfirmed_orders {
+                    self.core
+                        .mark_unconfirmed(key, Unconfirmed::Cancel, Instant::now());
+                } else {
+                    self.core.block("unknown cancellation outcome; reconcile");
+                }
                 Err(error)
             }
         }
@@ -1233,7 +1301,6 @@ impl<T: Trader> SingleLoop<T> {
     pub fn submit_planned_with(
         &mut self,
         intent: Intent,
-        now: Instant,
         mut after_native: impl FnMut(&PreparedOrder) -> Result<()>,
     ) -> Result<SubmitReceipt> {
         ensure!(self.execute, "read-only runtime: submissions disabled");
@@ -1247,7 +1314,7 @@ impl<T: Trader> SingleLoop<T> {
                     "invalid SDK allocated reference"
                 );
                 self.core.next_ref = reference;
-                self.core.prepare(child, now)
+                self.core.prepare(child)
             })();
             match preparation {
                 Ok(p) => prepared.push(p),
@@ -1285,10 +1352,9 @@ impl<T: Trader> SingleLoop<T> {
                         )
                     }
                     Err(e) => {
-                        self.core
-                            .block("unknown submission outcome; reconcile before retry");
+                        self.core.unknown_insert(&p.key);
                         stop = true;
-                        (ChildOutcome::Uncertain, Some(e.to_string()))
+                        (ChildOutcome::Uncertain, Some(format!("{e:#}")))
                     }
                 }
             };

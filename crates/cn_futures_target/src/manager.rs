@@ -1,5 +1,5 @@
 use super::{
-    ingress::{now_us, Service, MAX_WIRE_SIZE},
+    ingress::{Service, MAX_WIRE_SIZE},
     valid_id,
     wire::{
         manager_plans_client::ManagerPlansClient, Admission, PlanStatus, PlanSubscription,
@@ -203,10 +203,7 @@ impl PlanReader {
             let attempt = async {
                 sleep_until(retry_at).await;
                 let plan = pending.as_ref().expect("admission requires a pending plan");
-                if !self.observation && plan.expires_at_us <= now_us() {
-                    return None;
-                }
-                Some(service.submit(plan.clone(), self.observation).await)
+                service.submit(plan.clone(), self.observation).await
             };
             tokio::select! {
                 biased;
@@ -249,13 +246,12 @@ impl PlanReader {
                 }
                 receipt = attempt, if pending.is_some() => {
                     match receipt {
-                        None => pending = None,
-                        Some(receipt) if receipt.admission == Admission::Accepted as i32 => {
+                        receipt if receipt.admission == Admission::Accepted as i32 => {
                             log::info!("Manager target delivered: source={} batch={} revision={} observe_only={}",
                                 receipt.source_id, receipt.batch_id, receipt.target_revision, self.observation);
                             state.admitted = pending.take();
                         }
-                        Some(receipt) => {
+                        receipt => {
                             if rejection.as_ref() != Some(&receipt.reason) {
                                 log::info!("Manager target admission: {}", receipt.reason);
                                 rejection = Some(receipt.reason);

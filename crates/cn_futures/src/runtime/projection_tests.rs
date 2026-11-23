@@ -5,7 +5,6 @@ use crate::{
     persist::tests::{channel, displayed, uniform_orders, Records},
 };
 use std::sync::Arc;
-use std::time::Instant;
 
 fn fixture() -> (PersistChannel, Records, TradingCore) {
     let (journal, records) = channel(vec![]);
@@ -29,7 +28,6 @@ fn fixture() -> (PersistChannel, Records, TradingCore) {
             max_order_lots: Some(10),
             max_position_lots_per_side: Some(20),
             max_working_lots: Some(20),
-            max_actions_per_second: 20,
             minimum_cash_remaining: 0.0,
             enable_fak_fok: true,
             close_priority: ClosePriority::TodayFirst,
@@ -80,8 +78,6 @@ fn unsent_ctp_dispatch_audit_identifies_the_blocking_check_and_target() {
                 source_id: "account".into(),
                 batch_id: "rb-test-batch".into(),
                 target_revision: 3,
-                trading_day: "20261119".into(),
-                expires_at_us: 456,
                 strategies: Default::default(),
             }),
         },
@@ -119,8 +115,8 @@ fn ctp_orders_carry_the_cffex_venue_and_close_effect_into_the_uniform_order() {
     let (journal, records, mut core) = fixture();
     let mut close = intent();
     close.offset = Offset::Open;
-    let a = core.prepare(close, Instant::now()).unwrap();
-    let b = core.prepare(intent(), Instant::now()).unwrap();
+    let a = core.prepare(close).unwrap();
+    let b = core.prepare(intent()).unwrap();
     journal.prepared(core.trading_day(), &a, None).unwrap();
     journal.prepared(core.trading_day(), &b, None).unwrap();
     journal.orders(&core, &[a.key, b.key]).unwrap();
@@ -158,9 +154,7 @@ fn inline_receipts_keep_the_existing_json_array_contract() {
         trader: Accepted,
         execute: true,
     };
-    let receipt = runtime
-        .submit_planned_with(intent(), Instant::now(), |_| Ok(()))
-        .unwrap();
+    let receipt = runtime.submit_planned_with(intent(), |_| Ok(())).unwrap();
     assert!(!receipt.children.spilled());
     let value = serde_json::to_value(receipt).unwrap();
     assert!(value["children"].is_array());

@@ -19,7 +19,6 @@ impl<T: Trader> SingleLoop<T> {
     pub fn submit_batch_with(
         &mut self,
         intents: Vec<Intent>,
-        now: Instant,
         mut after_native: impl FnMut(&PreparedOrder) -> Result<()>,
     ) -> Result<SubmitReceipt> {
         ensure!(self.execute, "read-only runtime: submissions disabled");
@@ -42,7 +41,7 @@ impl<T: Trader> SingleLoop<T> {
                         "invalid SDK allocated reference"
                     );
                     self.core.next_ref = reference;
-                    prepared.push((parent, self.core.prepare(child, now)?));
+                    prepared.push((parent, self.core.prepare(child)?));
                 }
             }
             Ok(())
@@ -108,16 +107,14 @@ impl<T: Trader> SingleLoop<T> {
     pub fn cancel_batch_with(
         &mut self,
         keys: Vec<OrderKey>,
-        now: Instant,
         after_native: impl FnMut(&PreparedCancel) -> Result<()>,
     ) -> Result<BatchCancelReceipt> {
-        self.cancel_batch_with_route(keys, None, now, after_native)
+        self.cancel_batch_with_route(keys, None, after_native)
     }
     pub fn cancel_batch_with_route(
         &mut self,
         keys: Vec<OrderKey>,
         route: Option<ExecutionRoute>,
-        now: Instant,
         mut after_native: impl FnMut(&PreparedCancel) -> Result<()>,
     ) -> Result<BatchCancelReceipt> {
         ensure!(self.execute, "read-only runtime: cancellations disabled");
@@ -131,7 +128,7 @@ impl<T: Trader> SingleLoop<T> {
         );
         let mut requests = vec![];
         for key in &keys {
-            match self.core.prepare_cancel(key, now) {
+            match self.core.prepare_cancel(key) {
                 Ok(mut order) => {
                     if route.is_some() {
                         order.execution_route = route;

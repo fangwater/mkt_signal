@@ -72,7 +72,7 @@ impl Client {
     }
 
     /// Send the exact immutable target. A timeout gives no exchange outcome;
-    /// reconnect and retry the same batch while its original lease is valid.
+    /// reconnect and retry the same batch.
     pub async fn send(&mut self, target: Target, decision_us: u64) -> Result<TargetReceipt> {
         ensure!(
             self.usable,

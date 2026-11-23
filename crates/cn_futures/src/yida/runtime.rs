@@ -334,7 +334,6 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                                     core: &runtime.core,
                                     can_trade,
                                 },
-                                crate::persistence::now_us(),
                             )?;
                             if let Err(error) = journal.target_accepted(&admitted) {
                                 audit_error = Some(error);
@@ -374,7 +373,6 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                                             core: &runtime.core,
                                             can_trade,
                                         },
-                                        crate::persistence::now_us(),
                                     )?;
                                     Ok(
                                         json!({"type":"exec_target_accepted","target":target,"venue_accepted":false}),
@@ -439,11 +437,9 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                                 }
                                 Command::Submit { intent } => {
                                     runtime.trader.ensure_transport_ready()?;
-                                    let receipt = runtime.submit_planned_with(
-                                        intent,
-                                        Instant::now(),
-                                        |p| journal.prepared(day, p, None),
-                                    )?;
+                                    let receipt = runtime.submit_planned_with(intent, |p| {
+                                        journal.prepared(day, p, None)
+                                    })?;
                                     Ok(json!({"type":"submit_receipt","receipt":receipt}))
                                 }
                                 Command::Cancel {
@@ -451,12 +447,9 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                                     execution_route,
                                 } => {
                                     runtime.trader.ensure_transport_ready()?;
-                                    runtime.cancel_with_route(
-                                        &key,
-                                        execution_route,
-                                        Instant::now(),
-                                        |p| journal.prepared_cancel(p),
-                                    )?;
+                                    runtime.cancel_with_route(&key, execution_route, |p| {
+                                        journal.prepared_cancel(p)
+                                    })?;
                                     Ok(json!({"type":"cancel_submitted_locally","key":key}))
                                 }
                                 Command::Connections {} => Ok(
@@ -464,11 +457,9 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                                 ),
                                 Command::SubmitBatch { intents } => {
                                     runtime.trader.ensure_transport_ready()?;
-                                    let receipt = runtime.submit_batch_with(
-                                        intents,
-                                        Instant::now(),
-                                        |p| journal.prepared(day, p, None),
-                                    )?;
+                                    let receipt = runtime.submit_batch_with(intents, |p| {
+                                        journal.prepared(day, p, None)
+                                    })?;
                                     Ok(json!({"type":"submit_receipt","receipt":receipt}))
                                 }
                                 Command::CancelBatch {
@@ -479,7 +470,6 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                                     let receipt = runtime.cancel_batch_with_route(
                                         keys,
                                         execution_route,
-                                        Instant::now(),
                                         |p| journal.prepared_cancel(p),
                                     )?;
                                     Ok(json!({"type":"cancel_batch_receipt","receipt":receipt}))
@@ -554,20 +544,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                                 == checked_l1_drops
                             && !journal.failed()
                             && !runtime.trader.fault.load(Ordering::Acquire);
-                        let result = strategy::dispatch(
-                            &mut runtime,
-                            &journal,
-                            action,
-                            allowed,
-                            Instant::now(),
-                        )?;
-                        taker.on_result(
-                            &result,
-                            StrategyContext {
-                                core: &runtime.core,
-                                can_trade: allowed,
-                            },
-                        )?;
+                        let result = strategy::dispatch(&mut runtime, &journal, action, allowed)?;
                         journal.strategy_result(&result, false)?;
                     }
                 }

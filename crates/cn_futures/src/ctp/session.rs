@@ -46,6 +46,9 @@ pub struct Session {
     last_rule_poll: Instant,
     cash_update: Option<f64>,
     rule_update: Option<Vec<Instrument>>,
+    /// Background order query for unconfirmed orders: requested, then its rows.
+    order_check_requested: bool,
+    order_check: Option<Vec<OrderUpdate>>,
 }
 impl Session {
     pub fn new(config: Config, investor: String, now: Instant) -> Self {
@@ -82,6 +85,8 @@ impl Session {
             last_rule_poll: now,
             cash_update: None,
             rule_update: None,
+            order_check_requested: false,
+            order_check: None,
         }
     }
     pub fn account(&self) -> Option<&AccountSnapshot> {
@@ -152,6 +157,17 @@ impl Session {
     pub fn take_rule_update(&mut self) -> Option<Vec<Instrument>> {
         self.rule_update.take()
     }
+    /// Queues one complete order query ahead of other background queries.
+    pub fn request_order_check(&mut self) {
+        self.order_check_requested = true;
+    }
+    pub fn order_check_pending(&self) -> bool {
+        self.order_check_requested || (self.maintenance && self.next_kind == Some(QUERY_ORDER))
+    }
+    /// Rows of a completed background order query.
+    pub fn take_order_check(&mut self) -> Option<Vec<OrderUpdate>> {
+        self.order_check.take()
+    }
     pub fn request_due(&mut self, now: Instant) -> Result<Option<i32>> {
         if let Some((_, _, sent)) = self.waiting {
             ensure!(
@@ -162,7 +178,12 @@ impl Session {
             return Ok(None);
         }
         if self.ready && self.next_kind.is_none() {
-            if now.saturating_duration_since(self.last_rule_poll) >= RULE_REFRESH_INTERVAL {
+            if self.order_check_requested {
+                self.order_check_requested = false;
+                self.maintenance = true;
+                self.orders.clear();
+                self.next_kind = Some(QUERY_ORDER);
+            } else if now.saturating_duration_since(self.last_rule_poll) >= RULE_REFRESH_INTERVAL {
                 self.maintenance = true;
                 self.next_kind = Some(INSTRUMENT);
                 self.catalogue.clear();
@@ -214,6 +235,8 @@ impl Session {
         self.maintenance = false;
         self.cash_update = None;
         self.rule_update = None;
+        self.order_check_requested = false;
+        self.order_check = None;
         self.previous = None;
         self.passes = 0;
         self.reset_rules();
@@ -279,6 +302,8 @@ impl Session {
             self.maintenance = false;
             self.cash_update = None;
             self.rule_update = None;
+            self.order_check_requested = false;
+            self.order_check = None;
             self.login = None;
             self.account = None;
             self.account_funds = None;
@@ -633,6 +658,7 @@ impl Session {
                     self.cash_update = Some(self.available.context("empty CNY account poll")?);
                     self.last_cash_poll = now;
                 }
+                QUERY_ORDER => self.order_check = Some(std::mem::take(&mut self.orders)),
                 _ => anyhow::bail!("unexpected maintenance request"),
             }
             self.maintenance = false;
