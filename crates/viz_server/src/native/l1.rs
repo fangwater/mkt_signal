@@ -10,8 +10,9 @@ use cn_futures_state::{
     InstrumentKind, InstrumentMark, PositionRow, Snapshot, Text, Venue, MAX_POSITIONS,
 };
 use cn_market_proto::{
-    cn_futures_market_client::CnFuturesMarketClient, get_minute_bars_request::Range, Exchange,
-    GetMinuteBarsRequest, GetMinuteBarsResponse, GetProductMultipliersRequest,
+    cn_futures_market_client::CnFuturesMarketClient, get_minute_bars_request::Range, DataState,
+    Exchange, GetDataStateRequest, GetMinuteBarsRequest, GetMinuteBarsResponse,
+    GetProductMultipliersRequest,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -203,7 +204,8 @@ impl Quotes {
     fn history_request(&mut self) -> Option<(Contract, Text<81>, u32)> {
         let now = Instant::now();
         let ((key, day), history) = self.history.iter_mut().find(|((key, day), history)| {
-            history.mark.is_none()
+            // A previous-day mark keeps being upgraded once the day has a closed minute.
+            history.mark.is_none_or(|mark| mark.trading_day != *day)
                 && history.retry <= now
                 && !self
                     .latest
@@ -330,6 +332,67 @@ fn archived_mark(
     None
 }
 
+/// Last provider-closed book of `day`. A contract without a session yet on `day`
+/// (no night session: the provider answers NotFound) falls back to the provider's
+/// live, then latest, earlier trading day; that mark keeps its own trading day and
+/// is shown as historical.
+async fn archived_book(
+    client: &mut CnFuturesMarketClient<Channel>,
+    exchange: Exchange,
+    venue: Venue,
+    symbol: Text<81>,
+    day: u32,
+) -> std::result::Result<Option<InstrumentMark>, tonic::Status> {
+    let mut queries = vec![day];
+    let mut asked = 0;
+    while let Some(&query) = queries.get(asked) {
+        asked += 1;
+        let response = client
+            .get_minute_bars(GetMinuteBarsRequest {
+                exchange: exchange as i32,
+                contract: symbol.as_str().to_owned(),
+                range: Some(Range::TradingDay(query)),
+                include_empty_minutes: true,
+            })
+            .await;
+        let data = match response {
+            Ok(response) => response.into_inner(),
+            // "no rows in the requested range": the day has no session yet.
+            Err(status) if status.code() == tonic::Code::NotFound => {
+                if query == day {
+                    let state = client
+                        .get_data_state(GetDataStateRequest {
+                            exchange: exchange as i32,
+                        })
+                        .await?
+                        .into_inner();
+                    queries.extend(earlier_days(&state, day));
+                }
+                continue;
+            }
+            Err(status) => return Err(status),
+        };
+        if query == day {
+            if let Some(state) = &data.data_state {
+                queries.extend(earlier_days(state, day));
+            }
+        }
+        if let Some(mark) = archived_mark(data, exchange, venue, symbol, query, now_us()) {
+            return Ok(Some(mark));
+        }
+    }
+    Ok(None)
+}
+
+/// Provider days before `day`, newest first: the in-progress day, then the daily job's.
+fn earlier_days(state: &DataState, day: u32) -> Vec<u32> {
+    let mut days = vec![state.live_trading_day, state.latest_trading_day];
+    days.retain(|d| *d > 0 && *d < day);
+    days.sort_unstable_by(|a, b| b.cmp(a));
+    days.dedup();
+    days
+}
+
 pub fn spawn(config: config::L1, stale_after_ms: u64) -> (SharedQuotes, [JoinHandle<()>; 3]) {
     let quotes = Arc::new(Mutex::new(Quotes::new(stale_after_ms)));
     let (tx, mut rx) = tokio::sync::mpsc::channel(512);
@@ -408,39 +471,32 @@ pub fn spawn(config: config::L1, stale_after_ms: u64) -> (SharedQuotes, [JoinHan
             let Some(exchange) = Exchange::from_str_name(venue.as_str()) else {
                 continue;
             };
-            let response = client
-                .get_minute_bars(GetMinuteBarsRequest {
-                    exchange: exchange as i32,
-                    contract: symbol.as_str().to_owned(),
-                    range: Some(Range::TradingDay(day)),
-                    include_empty_minutes: true,
-                })
-                .await;
-            match response {
-                Ok(response) => {
-                    let mark = archived_mark(
-                        response.into_inner(),
-                        exchange,
-                        venue,
-                        symbol,
-                        day,
-                        now_us(),
+            let mark = match archived_book(&mut client, exchange, venue, symbol, day).await {
+                Ok(mark) => mark,
+                Err(error) => {
+                    log::warn!(
+                        "Viz historical L1 unavailable for {} {}: {}",
+                        venue.as_str(),
+                        symbol.as_str(),
+                        error.code()
                     );
-                    if let Some(history) = book
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .history
-                        .get_mut(&(key, day))
-                    {
-                        history.mark = mark;
-                    }
+                    continue;
                 }
-                Err(error) => log::warn!(
-                    "Viz historical L1 unavailable for {} {}: {}",
-                    venue.as_str(),
-                    symbol.as_str(),
-                    error.code()
-                ),
+            };
+            if let Some(history) = book
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .history
+                .get_mut(&(key, day))
+            {
+                // Never replace a mark with nothing or with an older one.
+                if mark.is_some_and(|new| {
+                    history
+                        .mark
+                        .is_none_or(|old| new.trading_day >= old.trading_day)
+                }) {
+                    history.mark = mark;
+                }
             }
         }
     });
@@ -572,5 +628,65 @@ mod tests {
         quotes.attach(&mut state);
         assert!(state.marks[0].last_price.is_none());
         assert_eq!(state.marks[0].contract_multiple, 10);
+    }
+
+    #[test]
+    fn previous_day_book_values_a_contract_without_a_session_yet_and_keeps_upgrading() {
+        let mut quotes = Quotes::new(15_000);
+        quotes.multipliers.insert((Venue::Czce, "AP".into()), 10);
+        quotes.metadata_us = now_us();
+        let mut state = Snapshot::empty(Adapter::Ctp, &"a".repeat(64)).unwrap();
+        let symbol = Text::new("AP701").unwrap();
+        state.position_ready = true;
+        state.trading_day = Text::new("20261124").unwrap();
+        state.positions = vec![PositionRow {
+            venue: Venue::Czce,
+            symbol,
+            side: Side::Buy,
+            position: Position::default(),
+        }];
+        quotes.attach(&mut state);
+        assert!(state.marks[0].bid_price.is_none());
+        let (key, _, day) = quotes.history_request().unwrap();
+        assert_eq!(day, 20261124);
+        let previous = InstrumentMark {
+            trading_day: 20261123,
+            initial: true,
+            bid_price: Some(9000.0),
+            ask_price: Some(9002.0),
+            ..state.marks[0]
+        };
+        let history = quotes.history.get_mut(&(key, day)).unwrap();
+        history.mark = Some(previous);
+        history.retry = Instant::now();
+        state.marks.clear();
+        quotes.attach(&mut state);
+        assert_eq!(state.marks[0].trading_day, 20261123);
+        assert_eq!(state.marks[0].bid_price, Some(9000.0));
+        assert!(state.marks[0].initial);
+        // The current day's first closed minute replaces the previous-day mark.
+        assert!(quotes.history_request().is_some());
+    }
+
+    #[test]
+    fn fallback_days_are_earlier_provider_days_newest_first() {
+        let state = |live, latest| DataState {
+            live_trading_day: live,
+            latest_trading_day: latest,
+            ..Default::default()
+        };
+        assert_eq!(
+            earlier_days(&state(20261124, 20261123), 20261124),
+            [20261123]
+        );
+        assert_eq!(
+            earlier_days(&state(20261123, 20261120), 20261124),
+            [20261123, 20261120]
+        );
+        assert_eq!(
+            earlier_days(&state(20261123, 20261123), 20261124),
+            [20261123]
+        );
+        assert!(earlier_days(&state(0, 0), 20261124).is_empty());
     }
 }

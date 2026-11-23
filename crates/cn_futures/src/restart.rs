@@ -20,6 +20,9 @@ pub enum ColdRestartRequired {
     /// The venue server restarted; every datum of the old SDK instance is invalid
     /// (Yida `YD_AE_ServerRestarted`).
     ServerRestarted,
+    /// The broker counter answered a bootstrap or control request with CTP error 7
+    /// (「还没有初始化」), e.g. while it re-initialises after the daily close.
+    VenueNotInitialized,
 }
 
 impl ColdRestartRequired {
@@ -33,6 +36,7 @@ impl ColdRestartRequired {
             Self::TransportOrControlTimeout => "transport_or_control_timeout",
             Self::MarketDataTradingDay => "market_data_trading_day",
             Self::ServerRestarted => "server_restarted",
+            Self::VenueNotInitialized => "venue_not_initialized",
         }
     }
 
@@ -47,6 +51,7 @@ impl ColdRestartRequired {
                 "market-data trading day unavailable; cold restart required"
             }
             Self::ServerRestarted => "venue server restarted; cold restart required",
+            Self::VenueNotInitialized => "venue counter not initialized; cold restart required",
         }
     }
 }
@@ -63,6 +68,9 @@ impl std::fmt::Display for ColdRestartRequired {
             }
             Self::ServerRestarted => {
                 "venue server restarted; old SDK data is invalid; retry after SDK restart"
+            }
+            Self::VenueNotInitialized => {
+                "CTP counter not initialized (error 7); retry after SDK restart"
             }
         })
     }

@@ -100,6 +100,14 @@ arbmm `551831fc` 与 Manager `4658e51`：
   Viz `/account-funds/sh_dev_chuangyuan01_ctp` 返回交易日 `20261123` 资金；云端导出器
   `cn_futures_sync` 换装为 CN Manager `9a826b4` 并配置 `account_funds_url`，配置备份在
   `cn_futures_sync/run/backup-broker-equity-20261123T072328Z/`。
+- 21:10 夜盘前补换装：17:23 收盘后 Trader 前置断线重连，`ReqAuthenticate` 返回 7「CTP:还没有初始化」，
+  原代码按普通错误以状态码 1 退出（`Restart=no`），21:00 夜盘未运行（11-20 17:24 同因）。现在该错误按
+  `ColdRestartRequired::VenueNotInitialized` 退出 75，systemd 60 秒后冷启动直至柜台初始化完成。trader.log 新增
+  `trader_connected` / `trader_disconnected`（含原因码）、`trader_bootstrap_step`（认证、登录交易日、结算），
+  `restart_required` 记录请求阶段与柜台错误文本，`runtime_stopped` 增加 `outcome` / `error` / `exit_status`。
+  sh_dev 上 cn_futures 197 项测试通过；ctp-trader `7a476a0a…`，备份在 `data/ops/notinit-restart-20261123T131009Z/`。
+  启动后交易日 `20261124`，ni2701 平仓，其余 10 个合约持仓与 Manager rev 106 目标一致。
+  AP、SM、lc 无夜盘，交易日切换后 CTP 快照无有效价格；21:20 Viz 改为回退上一交易日分钟盘口，AP、SM、lc 恢复估值，见[易达记录](sh_dev_yida_paper.md)。
 
 ## 操作入口
 

@@ -11,6 +11,9 @@ use std::time::{Duration, Instant};
 /// Login/reconciliation always performs a complete pass; intraday contract
 /// rules and rates change rarely, so the background refresh is infrequent to
 /// avoid flooding the callback queue that gates order dispatch.
+/// CTP `ErrorID` 7, 「CTP:还没有初始化」.
+const CTP_NOT_INITIALIZED: i32 = 7;
+
 pub(crate) const RULE_REFRESH_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
 pub struct Session {
@@ -362,10 +365,17 @@ impl Session {
             self.next_send = now + Duration::from_millis(self.config.query_interval_ms.max(2000));
             return Ok(None);
         }
+        // The front accepts the connection while its counter is still initialising
+        // (post-close settlement); only a new SDK session can retry the bootstrap.
+        if e.error == CTP_NOT_INITIALIZED {
+            return Err(ColdRestartRequired::VenueNotInitialized.into());
+        }
         ensure!(
             e.error == 0,
-            "CTP request {id} failed, kind={kind} error_code={}",
-            e.error
+            "CTP request {id} failed, kind={kind}({}) error_code={} message={}",
+            kind_name(kind),
+            e.error,
+            error_text(&e.message)
         );
         ensure!(
             e.kind == kind,

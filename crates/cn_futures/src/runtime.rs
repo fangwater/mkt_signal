@@ -458,12 +458,17 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     Ok(crate::model::DecodedUpdate::None)
                 };
                 if event.kind == ctp::CONNECTED {
+                    journal.record(json!({"type":"trader_connected"}), true)?;
                     transport_online = true;
                     transport_progress = Instant::now();
                     reconcile_after_account_retry = false;
                     runtime.core.connected();
                 }
                 if event.kind == ctp::DISCONNECTED {
+                    journal.record(
+                        json!({"type":"trader_disconnected","reason":event.status}),
+                        true,
+                    )?;
                     transport_online = false;
                     transport_progress = Instant::now();
                     reconcile_after_account_retry = false;
@@ -486,7 +491,30 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     reconcile_after_account_retry = true;
                     journal.record(json!({"type":"account_query_recovery_pending"}), true)?;
                 }
-                if let Some(snapshot) = session.on_event(event.as_ref(), batch_now, &decoded)? {
+                let snapshot = match session.on_event(event.as_ref(), batch_now, &decoded) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        let restart = error.downcast::<ColdRestartRequired>()?;
+                        return Err(journal.restart_required(
+                                &mut runtime.core,
+                                restart,
+                                json!({"request":event.request,"kind":event.kind,"stage":ctp::kind_name(event.kind),"error_code":event.error,"message":ctp::error_text(&event.message)}),
+                            ));
+                    }
+                };
+                if event.error == 0
+                    && event.last != 0
+                    && matches!(
+                        event.kind,
+                        ctp::AUTHENTICATED | ctp::LOGGED_IN | ctp::SETTLEMENT_STATUS | ctp::SETTLED
+                    )
+                {
+                    journal.record(
+                        json!({"type":"trader_bootstrap_step","stage":ctp::kind_name(event.kind),"request":event.request,"trading_day":ctp::text_ref(&event.trading_day).unwrap_or(""),"front":event.front,"session":event.session}),
+                        true,
+                    )?;
+                }
+                if let Some(snapshot) = snapshot {
                     reconcile_after_account_retry = false;
                     // A complete snapshot settles every unconfirmed order.
                     order_check_cutoff = None;
@@ -1109,7 +1137,13 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
         crate::position_ipc::Observation::default(),
     );
     journal.record(
-        serde_json::json!({"type":"runtime_stopped","venue_orders_cancelled":false}),
+        serde_json::json!({
+            "type":"runtime_stopped",
+            "outcome":if outcome.is_ok() { "ok" } else if restart.is_some() { "cold_restart" } else { "failed" },
+            "error":outcome.as_ref().err().map(|error| format!("{error:#}")),
+            "exit_status":outcome.as_ref().err().map(crate::restart::exit_status).unwrap_or(0),
+            "venue_orders_cancelled":false
+        }),
         true,
     )?;
     journal.finish()?;

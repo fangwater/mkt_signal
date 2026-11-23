@@ -261,6 +261,32 @@ pub fn text_ref(bytes: &[u8]) -> Result<&str> {
 pub fn text<const N: usize>(bytes: &[u8]) -> Result<Text<N>> {
     Text::new(text_ref(bytes)?)
 }
+/// Operator-facing name of a CTP callback kind.
+pub fn kind_name(kind: i32) -> &'static str {
+    match kind {
+        CONNECTED => "connected",
+        DISCONNECTED => "disconnected",
+        AUTHENTICATED => "authenticate",
+        LOGGED_IN => "login",
+        SETTLED => "settlement_confirm",
+        INSTRUMENT => "instrument",
+        ACCOUNT => "account",
+        POSITION => "position",
+        ORDER => "order",
+        TRADE => "trade",
+        INSERT_RESPONSE => "insert_response",
+        CANCEL_RESPONSE => "cancel_response",
+        QUERY_ORDER => "query_order",
+        QUERY_TRADE => "query_trade",
+        INSTRUMENT_STATUS => "instrument_status",
+        ERROR => "error",
+        COMMISSION => "commission",
+        MARGIN => "margin",
+        EXCHANGE_MARGIN => "exchange_margin",
+        SETTLEMENT_STATUS => "settlement_status",
+        _ => "unknown",
+    }
+}
 pub fn error_text(bytes: &[u8]) -> String {
     let n = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
     encoding_rs::GBK.decode(&bytes[..n]).0.into_owned()

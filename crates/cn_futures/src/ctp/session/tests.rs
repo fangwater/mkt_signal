@@ -518,3 +518,26 @@ impl Session {
         self.on_event(e, now, &super::super::decode_event(e))
     }
 }
+
+#[test]
+fn counter_not_initialized_during_bootstrap_requires_cold_restart() {
+    let (mut s, mut now) = begin();
+    let (_, mut e) = dispatch(&mut s, &mut now, 1);
+    e.error = 7;
+    let failure = s.on_raw_event(&e, now).unwrap_err();
+    assert!(matches!(
+        failure.downcast_ref::<ColdRestartRequired>(),
+        Some(ColdRestartRequired::VenueNotInitialized)
+    ));
+    assert_eq!(crate::restart::exit_status(&failure), 75);
+}
+
+#[test]
+fn other_bootstrap_errors_still_stop_for_an_operator() {
+    let (mut s, mut now) = begin();
+    let (_, mut e) = dispatch(&mut s, &mut now, 1);
+    e.error = 3;
+    let failure = s.on_raw_event(&e, now).unwrap_err();
+    assert!(failure.downcast_ref::<ColdRestartRequired>().is_none());
+    assert_eq!(crate::restart::exit_status(&failure), 1);
+}

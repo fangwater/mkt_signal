@@ -20,6 +20,13 @@
 `/account-funds/<manager_source_id>`；易达 counter 未配置 `manager_source_id`，该接口对易达返回 404。
 仅重启 Viz，易达 trader／persist PID 不变。
 
+2026-11-23 21:20 换装 Viz `9079af1e…`（备份 `data/ops/prevday-l1-20261123T132002Z/`）：CTP 持仓无当日 L1 时，分钟 K 线兜底
+先查当前交易日；当日尚无已收盘分钟（如 AP、SM 无夜盘）时，改查服务端 `live_trading_day`／`latest_trading_day` 中较早的交易日，
+取最后一档已收盘盘口，标记为该交易日的历史行情；当日出现已收盘分钟后每 60 秒升级。换装后 AP701、SM701 按 20261123 14:59–15:00
+估值。lc2701 当日无行时服务按约定返回 NotFound，首版兜底在该错误上直接退出；21:36 换装 `d8409abc…`：当日查询 NotFound
+时改调 `GetDataState { exchange }` 取更早交易日继续查，只有其他错误码才告警。lc2701 随即按 20261123 14:59–15:00 估值
+（90500／90520），持仓合约估值 11/11。两次均仅重启 Viz，创元 trader PID 不变。
+
 服务由 Ubuntu 用户的 systemd 管理，已开启 user linger，退出 SSH 后继续运行。交易端只在冷启动状态码 75（柜台重启、登录／恢复超时）时由 drop-in `10-cold-restart.conf` 在 60 秒后重启，与创元 CTP 相同；登录／认证错误等其他退出不自动重启，避免重复提交。persist_manager 与 Viz 失败时自动重启。所有启停都通过环境内脚本，不直接操作监管器。
 
 当前执行范围为 `SHFE:rb2701`，单笔和绝对目标上限均为 1 手。Manager 组
