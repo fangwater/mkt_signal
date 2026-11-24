@@ -210,6 +210,19 @@ SSH 临时诊断的 `nofile` 软限制为 1024，直接报 `Too many open files`
 嵌入式持久化测试通过，2 项原有测试保持忽略；本地 runtime 持久化
 调用方静态编译通过。本次没有提交订单或确认结算。
 
+## 逐笔浮盈与独立 Viz（2026-11-24 午休换装）
+
+北京时间 12:20 左右在午休期间换装（arbmm `c8607301` 及其后的 viz 取价修复），staging `staging-bytrade-20261124T041944Z`，
+备份 `data/ops/bytrade-20261124T041944Z/`（旧 ctp-trader、persist_manager、ctp_env.sh、account-observation.bin）。
+换装前 sh_dev 上 `cn_futures` 204 项测试通过，`--check-config` 通过；创元当时有 11 条持仓，Manager rev 189。
+
+- ctp-trader `d4c2cb8c…`：CTP 桥接事件 952 字节，每 5 秒做一次只读持仓查询，发布 `position_costs`；persist_manager `a857fe2f…`。
+- 本环境改用自己的 Viz：`ctp_env.sh install` 新增 `ctp_chuangyuan01-viz.service`，配置 `config/viz.toml` 只保留创元柜台，
+  监听 `0.0.0.0:8812`（公网直连，L1 隧道、`cta_signal_port` 随之迁入）。云端导出器 `cn_futures_sync` 的 `account_funds_url`
+  改为 `http://127.0.0.1:8812`（备份 `cn_futures_sync/run/backup-bytrade-20261124T041944Z/`）。8811 只服务易达。
+- 重启后对账完成：`can_trade=true`，11 条持仓与换装前一致；约 1 分钟后 `position_costs` 11 行，开仓均价与柜台一致。
+  午休时逐笔浮盈合计 −2,705 元，柜台盯市 +3,030 元；差异主要来自昨仓，例如 pg2701 开仓 5416，逐笔 −2,280、盯市 +300。
+
 ## 账户资金与五档快照
 
 CTP 资金来自柜台 CNY 资金查询，展示权益、可用、可取、保证金、冻结、

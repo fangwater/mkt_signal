@@ -16,7 +16,7 @@ namespace {
 static_assert(std::is_standard_layout_v<NfEvent>);
 static_assert(sizeof(TThostFtdcErrorMsgType) <= sizeof(NfHotEvent::message));
 static_assert(sizeof(NfHotEvent) == 328);
-static_assert(sizeof(NfEvent) == 928);
+static_assert(sizeof(NfEvent) == 952);
 static_assert(offsetof(NfEvent, hot) == 0);
 constexpr int invalid = -9901;
 template <size_t N> void copy(char (&out)[N], const char* text) {

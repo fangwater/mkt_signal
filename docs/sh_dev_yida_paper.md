@@ -8,6 +8,10 @@
 
 ## 当前服务
 
+2026-11-24 午休随创元一起换装（staging `staging-bytrade-20261124T041944Z`，备份 `data/ops/bytrade-20261124T041944Z/`）：
+yida-trader `5a8d9011…`（发布 `TotalOpenPrice` 开仓成本）、persist_manager `a857fe2f…`、Viz。8811 的 `viz.toml` 只保留易达柜台，
+去掉 CTP 专用的 L1 隧道和 `cta_signal_port`；创元改用自己环境的 8812 Viz。重启后 30 条持仓恢复，`position_costs` 30 行。
+
 2026-11-18 更新 8811 Viz。资金区展示七项柜台资金指标，持仓展开显示方向、总手数和今昨仓。公网浏览器验证 CTP 资金经 WebSocket 更新。
 
 | 服务 | 配置／入口 | 状态与范围 |

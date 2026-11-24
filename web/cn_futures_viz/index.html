@@ -425,24 +425,27 @@
       const costs=g.costs, mark=g.mark;
       if(!Number(costs?.observed_us)) return {amount:null,reason:'等待柜台持仓查询'};
       if(!mark || !Number.isInteger(mark.contract_multiple) || mark.contract_multiple<=0) return {amount:null,reason:'等待合约资料与 L1 行情'};
-      if(!validPrice(mark.last_price)) return {amount:null,reason:'等待 L1 最新成交价'};
+      // Last trade first; between sessions the CTP fallback mark is a closed minute's book only.
+      const price=validPrice(mark.last_price) ? mark.last_price : hasMid(mark) ? mark.bid_price/2+mark.ask_price/2 : null;
+      const priceLabel=validPrice(mark.last_price) ? 'L1 最新价' : 'L1 买卖一中间价';
+      if(price===null) return {amount:null,reason:'等待 L1 行情'};
       const sides=[];
       for(const s of ['buy','sell']) {
         const lots=sideLots(g,s), row=costs.rows.find(r=>r.venue===g.venue && r.symbol===g.symbol && r.side===s);
         if(!lots && !row) continue;
         if(!row || row.lots!==lots) return {amount:null,reason:'持仓已变化，等待下一次柜台持仓查询'};
-        const value=lots*mark.contract_multiple*mark.last_price;
+        const value=lots*mark.contract_multiple*price;
         sides.push({side:s,amount:s==='buy'?value-row.open_cost:row.open_cost-value,
           openPrice:row.open_cost/(lots*mark.contract_multiple)});
       }
       const amount=sides.reduce((n,x)=>n+x.amount,0);
       if(!Number.isFinite(amount)) return {amount:null,reason:'估值超出数值范围'};
-      return {amount,sides,price:mark.last_price,observedUs:costs.observed_us,historical:valuation(g).historical};
+      return {amount,sides,price,priceLabel,observedUs:costs.observed_us,historical:valuation(g).historical};
     }
     function byTradeCell(g) {
       const v=byTrade(g);
       if(v.amount===null) return `<span title="${escape(v.reason)}">--</span>`;
-      const basis='逐笔浮盈＝L1 最新价 '+v.price+' × 乘数 '+g.mark.contract_multiple+' × 手数 − 柜台开仓成本，空头取反；开仓成本查询于 '+time(v.observedUs)+(v.historical?'；历史行情':'');
+      const basis='逐笔浮盈＝'+v.priceLabel+' '+v.price+' × 乘数 '+g.mark.contract_multiple+' × 手数 − 柜台开仓成本，空头取反；开仓成本查询于 '+time(v.observedUs)+(v.historical?'；历史行情':'');
       return `<span class="${qtyClass(v.amount)}" title="${escape(basis)}">${escape(yuan(v.amount))}</span>`;
     }
     function totalByTrade(groups) {
