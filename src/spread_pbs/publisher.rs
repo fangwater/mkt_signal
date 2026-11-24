@@ -1180,9 +1180,18 @@ impl SpreadPbsPublisherPool {
         venue_slug: &str,
         root: &str,
     ) -> Result<SpreadIncrementalPublisher> {
+        self.incremental_channel_for(venue_slug, root, "incremental")
+    }
+    /// Incremental-format publisher on a non-default channel, e.g.
+    /// `dat_pbs/gate-futures-rpi/incremental_depth_50`.
+    pub fn incremental_channel_for(
+        &self,
+        venue_slug: &str,
+        root: &str,
+        channel: &str,
+    ) -> Result<SpreadIncrementalPublisher> {
         let (publisher, service_name) =
-            self.incremental
-                .publisher_for(venue_slug, root, "incremental")?;
+            self.incremental.publisher_for(venue_slug, root, channel)?;
         Ok(SpreadIncrementalPublisher {
             publisher,
             service_name,

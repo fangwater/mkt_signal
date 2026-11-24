@@ -791,6 +791,74 @@ fn parse_sbe_order_book(raw: &[u8], layout: SbeOrderBookLayout) -> Option<Book> 
     })
 }
 
+/// Futures Order Book V2 frame (`futures.obu` / `futures.rpi_obu`, templateId=3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObuFrame {
+    pub channel: String,
+    /// Stream name, e.g. `rpi_ob.BTC_USDT.50`.
+    pub stream: String,
+    pub depth: u32,
+    /// `first_update_id`/`final_update_id` are Gate `U`/`u`; `prev_seq_id` is `U - 1`.
+    pub book: Book,
+}
+
+/// Split an Order Book V2 stream name (`ob.BTC_USDT.50`, `rpi_ob.BTC_USDT.400`) into
+/// contract and depth.
+pub fn parse_obu_stream(stream: &str) -> Option<(&str, u32)> {
+    let rest = stream
+        .strip_prefix("rpi_ob.")
+        .or_else(|| stream.strip_prefix("ob."))?;
+    let (symbol, depth) = rest.rsplit_once('.')?;
+    if symbol.is_empty() {
+        return None;
+    }
+    Some((symbol, depth.parse().ok()?))
+}
+
+/// Decode a futures Order Book V2 frame. Root layout (blockLength=36):
+/// time@0 e@8 t@9 full@17 firstID@18 lastID@26 pxExp@34 szExp@35, then the
+/// bids group, the asks group, `channel`, and the stream name.
+pub fn parse_futures_sbe_obu(raw: &[u8]) -> Option<ObuFrame> {
+    const ROOT_MIN: usize = 36;
+    let header = sbe_header(raw)?;
+    if header.template_id != SBE_TEMPLATE_ORDER_BOOK_UPDATE {
+        return None;
+    }
+    let body = SBE_HEADER_SIZE;
+    if raw.len() < body + header.block_length || header.block_length < ROOT_MIN {
+        return None;
+    }
+    let timestamp_us = read_i64_le(raw, body + 9)?;
+    let full = *raw.get(body + 17)? == 1;
+    let first_update_id = read_i64_le(raw, body + 18)?;
+    let final_update_id = read_i64_le(raw, body + 26)?;
+    let px_exp = read_i8(raw, body + 34)?;
+    let sz_exp = read_i8(raw, body + 35)?;
+    let (bids, off) = sbe_level_group(raw, body + header.block_length, px_exp, sz_exp)?;
+    let (asks, off) = sbe_level_group(raw, off, px_exp, sz_exp)?;
+    let (channel, off) = sbe_var_string(raw, off)?;
+    let (stream, _) = sbe_var_string(raw, off)?;
+    let (symbol, depth) = parse_obu_stream(&stream)?;
+    let symbol = symbol.to_string();
+    Some(ObuFrame {
+        channel,
+        depth,
+        book: Book {
+            symbol,
+            timestamp_us,
+            seq_id: final_update_id,
+            prev_seq_id: first_update_id.saturating_sub(1),
+            first_update_id,
+            final_update_id,
+            gap_check: false,
+            is_snapshot: full,
+            bids,
+            asks,
+        },
+        stream,
+    })
+}
+
 pub fn parse_sbe_derivatives(raw: &[u8]) -> Vec<Derivative> {
     let Some(header) = sbe_header(raw) else {
         return Vec::new();
@@ -1150,6 +1218,68 @@ mod tests {
         assert!((book.asks[0].price - 101.0).abs() < 1e-9);
         assert!((book.bids[0].price - 100.0).abs() < 1e-9);
         assert!((book.bids[1].amount - 4.0).abs() < 1e-9);
+    }
+
+    fn futures_obu_frame(full: bool, first: i64, last: i64, stream: &str) -> Vec<u8> {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&36u16.to_le_bytes());
+        raw.extend_from_slice(&super::SBE_TEMPLATE_ORDER_BOOK_UPDATE.to_le_bytes());
+        raw.extend_from_slice(&super::SBE_SCHEMA_ID.to_le_bytes());
+        raw.extend_from_slice(&1u16.to_le_bytes());
+        raw.extend_from_slice(&1_700_000_000_000_000i64.to_le_bytes());
+        raw.push(2);
+        raw.extend_from_slice(&1_700_000_000_001_000i64.to_le_bytes());
+        raw.push(u8::from(full));
+        raw.extend_from_slice(&first.to_le_bytes());
+        raw.extend_from_slice(&last.to_le_bytes());
+        raw.push((-1i8) as u8);
+        raw.push(0u8);
+        push_level_group(&mut raw, &[(600_877, 5_872), (600_872, 0)]);
+        push_level_group(&mut raw, &[(600_878, 14_983)]);
+        push_var_string(&mut raw, "futures.rpi_obu");
+        push_var_string(&mut raw, stream);
+        raw
+    }
+
+    #[test]
+    fn parses_futures_sbe_obu_bids_then_asks_with_stream_symbol() {
+        let raw = futures_obu_frame(false, 101, 105, "rpi_ob.BTC_USDT.400");
+        let frame = super::parse_futures_sbe_obu(&raw).expect("obu frame");
+        assert_eq!(frame.channel, "futures.rpi_obu");
+        assert_eq!(frame.stream, "rpi_ob.BTC_USDT.400");
+        assert_eq!(frame.depth, 400);
+        let book = &frame.book;
+        assert_eq!(book.symbol, "BTC_USDT");
+        assert!(!book.is_snapshot);
+        assert_eq!(book.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!((book.first_update_id, book.final_update_id), (101, 105));
+        assert_eq!((book.prev_seq_id, book.seq_id), (100, 105));
+        assert_eq!(book.bids.len(), 2);
+        assert!((book.bids[0].price - 60_087.7).abs() < 1e-6);
+        assert!((book.bids[0].amount - 5_872.0).abs() < 1e-9);
+        assert_eq!(book.bids[1].amount, 0.0, "zero size marks a level removal");
+        assert!((book.asks[0].price - 60_087.8).abs() < 1e-6);
+
+        let snapshot =
+            super::parse_futures_sbe_obu(&futures_obu_frame(true, 1, 9, "ob.ETH_USDT.50"))
+                .expect("snapshot");
+        assert!(snapshot.book.is_snapshot);
+        assert_eq!(
+            (snapshot.book.symbol.as_str(), snapshot.depth),
+            ("ETH_USDT", 50)
+        );
+    }
+
+    #[test]
+    fn rejects_obu_with_wrong_template_or_unknown_stream() {
+        let mut raw = futures_obu_frame(false, 1, 2, "rpi_ob.BTC_USDT.50");
+        raw[2..4].copy_from_slice(&super::SBE_TEMPLATE_BOOK.to_le_bytes());
+        assert!(super::parse_futures_sbe_obu(&raw).is_none());
+        assert!(
+            super::parse_futures_sbe_obu(&futures_obu_frame(false, 1, 2, "BTC_USDT")).is_none()
+        );
+        assert_eq!(super::parse_obu_stream("rpi_ob.BTC_USDT.x"), None);
+        assert_eq!(super::parse_obu_stream("rpi_ob..50"), None);
     }
 
     #[test]

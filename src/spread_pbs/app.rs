@@ -41,6 +41,7 @@ use crate::spread_pbs::ws::{
 use crate::spread_pbs::binance_latency::{BinanceFeedLatency, Channel};
 use crate::spread_pbs::latency::PublicationLatency;
 
+mod gate_rpi;
 mod hyperliquid_shards;
 
 const DEDUP_RESET_INTERVAL_US: i64 = 5 * 60 * 1_000_000;
@@ -756,6 +757,21 @@ impl SpreadPbsApp {
             && !adapter
                 .build_incremental_subscribe(&initial_symbols)
                 .is_empty();
+        let gate_rpi_depths = gate_rpi::depths_from_env()?;
+        let gate_rpi_supported = venue == TradingVenue::GateFutures
+            && market_data_provider == MarketDataProvider::Native
+            && replacement_enabled;
+        let gate_rpi_depths = if gate_rpi_depths.is_empty() || gate_rpi_supported {
+            gate_rpi_depths
+        } else {
+            log::warn!(
+                "spread_pbs[{}] {}={:?} ignored: Gate RPI depth only runs on native gate-futures market-data roles",
+                venue_slug,
+                gate_rpi::ENV_GATE_RPI_DEPTHS,
+                gate_rpi_depths,
+            );
+            Vec::new()
+        };
         let direct_derivatives_enabled = enable_derivatives
             && replacement_enabled
             && direct_derivatives_replacement_enabled(venue, market_data_provider)
@@ -776,6 +792,15 @@ impl SpreadPbsApp {
             env::var(ENV_ENABLE_INCREMENTAL).ok(),
             ENV_ENABLE_DERIVATIVES,
             env::var(ENV_ENABLE_DERIVATIVES).ok(),
+        );
+        log::info!(
+            "spread_pbs[{}] gate_rpi depths={:?} env {}={:?} {}={:?}",
+            venue_slug,
+            gate_rpi_depths,
+            gate_rpi::ENV_GATE_RPI_DEPTHS,
+            env::var(gate_rpi::ENV_GATE_RPI_DEPTHS).ok(),
+            gate_rpi::ENV_GATE_RPI_SYMBOLS,
+            env::var(gate_rpi::ENV_GATE_RPI_SYMBOLS).ok(),
         );
         let initial_subs = if is_binance_futures_market_role {
             Vec::new()
@@ -1133,6 +1158,21 @@ impl SpreadPbsApp {
             derivatives_publisher.clone(),
             state.clone(),
         );
+        let gate_rpi_streams = if gate_rpi_depths.is_empty() {
+            Vec::new()
+        } else {
+            let (legs, streams) = gate_rpi::spawn(
+                &self.publishers,
+                publish_roots.dat_root(),
+                &initial_symbols,
+                &gate_rpi_depths,
+                &primary_local_ip,
+                self.config.data_types.max_levels_per_msg,
+                Duration::from_secs(self.config.restart_duration_secs),
+            )?;
+            direct_extra_legs.extend(legs);
+            streams
+        };
         let funding_task = if market_data_provider == MarketDataProvider::RapidX
             && matches!(
                 venue,
@@ -1305,6 +1345,7 @@ impl SpreadPbsApp {
                     );
                     s.log_and_reset_selected_source_stats(venue_slug);
                     s.publication_latency.log_and_reset(venue_slug);
+                    gate_rpi::log_stats(&gate_rpi_streams);
                 }
                 _ = health_ticker.tick(), if direct_incremental_enabled => {
                     if health_started_at.elapsed() >= INCREMENTAL_HEALTH_STARTUP_GRACE {
