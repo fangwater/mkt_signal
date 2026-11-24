@@ -433,16 +433,16 @@
         if(!row || row.lots!==lots) return {amount:null,reason:'持仓已变化，等待下一次柜台持仓查询'};
         const value=lots*mark.contract_multiple*mark.last_price;
         sides.push({side:s,amount:s==='buy'?value-row.open_cost:row.open_cost-value,
-          openPrice:row.open_cost/(lots*mark.contract_multiple),marked:row.position_profit});
+          openPrice:row.open_cost/(lots*mark.contract_multiple)});
       }
-      const amount=sides.reduce((n,x)=>n+x.amount,0), marked=sides.reduce((n,x)=>n+x.marked,0);
+      const amount=sides.reduce((n,x)=>n+x.amount,0);
       if(!Number.isFinite(amount)) return {amount:null,reason:'估值超出数值范围'};
-      return {amount,sides,marked,price:mark.last_price,observedUs:costs.observed_us,historical:valuation(g).historical};
+      return {amount,sides,price:mark.last_price,observedUs:costs.observed_us,historical:valuation(g).historical};
     }
     function byTradeCell(g) {
       const v=byTrade(g);
       if(v.amount===null) return `<span title="${escape(v.reason)}">--</span>`;
-      const basis='逐笔浮盈＝L1 最新价 '+v.price+' × 乘数 '+g.mark.contract_multiple+' × 手数 − 柜台开仓成本，空头取反；柜台盯市持仓盈亏 '+yuan(v.marked)+'；开仓成本查询于 '+time(v.observedUs)+(v.historical?'；历史行情':'');
+      const basis='逐笔浮盈＝L1 最新价 '+v.price+' × 乘数 '+g.mark.contract_multiple+' × 手数 − 柜台开仓成本，空头取反；开仓成本查询于 '+time(v.observedUs)+(v.historical?'；历史行情':'');
       return `<span class="${qtyClass(v.amount)}" title="${escape(basis)}">${escape(yuan(v.amount))}</span>`;
     }
     function totalByTrade(groups) {
@@ -673,11 +673,11 @@
       const details = g.positions.map(p => {
         const v=p.position, x=pnl.sides?.find(s=>s.side===p.side);
         const money=value=>x?`<span class="${qtyClass(value)}">${escape(yuan(value))}</span>`:`<span title="${escape(pnl.reason||'')}">--</span>`;
-        return `<tr><td>${side(p.side)}</td><td>${fmt(v.today+v.yesterday)}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${x?escape(price.format(x.openPrice)):'--'}</td><td>${money(x?.amount)}</td><td>${money(x?.marked)}</td></tr>`;
+        return `<tr><td>${side(p.side)}</td><td>${fmt(v.today+v.yesterday)}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${x?escape(price.format(x.openPrice)):'--'}</td><td>${money(x?.amount)}</td></tr>`;
       }).join('');
       const v=valuation(g), mark=g.mark;
       const basis=mark?`${mark.kind==='option'?'净权利金市值':'净名义金额'}＝净手数 × 合约乘数 ${fmt(mark.contract_multiple)} × ${v.priceLabel||'L1 估值价'} ${v.price==null?'--':escape(String(v.price))}；行情交易日／时刻 ${escape(v.quoteTime||String(mark.trading_day||'--')+' '+(mark.native_time||'--'))} · ${escape(v.reason)}${v.historical?' · 历史行情':''}。`:'等待合约元数据与 L1 行情';
-      return `<div class="position-detail broker-detail"><div class="valuation-basis">${basis}</div><table aria-label="${escape(g.symbol)} 柜台持仓明细"><thead><tr><th>方向</th><th>持仓 · 手</th><th>今仓 · 手</th><th>昨仓 · 手</th><th title="柜台开仓成本 ÷（手数 × 乘数）">开仓均价</th><th title="L1 最新价对开仓成本，空头取反">逐笔浮盈 · 元</th><th title="柜台 PositionProfit，查询时刻">盯市盈亏 · 元</th></tr></thead><tbody>${details}</tbody></table></div>`;
+      return `<div class="position-detail broker-detail"><div class="valuation-basis">${basis}</div><table aria-label="${escape(g.symbol)} 柜台持仓明细"><thead><tr><th>方向</th><th>持仓 · 手</th><th>今仓 · 手</th><th>昨仓 · 手</th><th title="柜台开仓成本 ÷（手数 × 乘数）">开仓均价</th><th title="L1 最新价对开仓成本，空头取反">逐笔浮盈 · 元</th></tr></thead><tbody>${details}</tbody></table></div>`;
     }
 
     function render() {
