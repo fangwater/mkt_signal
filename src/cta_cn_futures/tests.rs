@@ -1751,7 +1751,7 @@ fn completed_repair_uses_missing_history_and_preserves_good_redis_and_target() {
         )
         .unwrap();
     stream
-        .apply_repair(repair, &main, &mut engine, &mut hours, cutoff)
+        .apply_repair(repair, &main, &mut engine, &mut hours, cutoff, true)
         .unwrap();
     assert!(engine.ledger == ledger);
     assert!(stream.aligned && stream.gap_start.is_none() && stream.gaps.is_empty());
@@ -1915,4 +1915,88 @@ fn quiet_final_second_before_a_break_seals_by_the_venue_clock() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].open_time_ms, end - 60_000);
     assert_eq!(input.overdue_minute(end + 6_000), None);
+}
+
+#[test]
+fn intraday_repair_replays_minutes_closed_while_it_ran_and_rearms_catch_up() {
+    let (_dir, mut cfg, main) = live_fixture();
+    cfg.enabled = false;
+    let market = live_context();
+    let archive_cutoff = night_open() + 239 * 60_000;
+    let gap = night_open() + 86_400_000;
+    let cutoff = gap + 60_000;
+    let ledger = Ledger {
+        contract: "sn2612".into(),
+        last_decision_ms: 123,
+        ..Default::default()
+    };
+    let mut engine = Engine::new(&cfg, ledger.clone()).unwrap();
+    let mut hours = Bars::default();
+    let mut stream = super::Stream {
+        aligned: true,
+        extras: Some(super::extras::Extras::new(&cfg).unwrap()),
+        gaps: vec![(gap, gap)],
+        last_closed: Some(cutoff),
+        ..Default::default()
+    };
+    let row = |offset: i64, i: i64| {
+        let mut row = minute(i);
+        row.open_time_ms = gap + offset * 60_000;
+        row.trading_day = main.trading_day;
+        row
+    };
+    stream.recent.push_back(row(1, 1));
+    // The repair job snapshots the stream here.
+    let point = stream.repair_point();
+    let history = super::history::History {
+        hfq: Some(super::hfq::History {
+            generation: "test".into(),
+            basis_day: main.source_trading_day,
+            multiple: 1.,
+            rows: Vec::new(),
+            cutoff: archive_cutoff,
+        }),
+        minutes: BTreeMap::from([(gap, row(0, 0)), (cutoff, row(1, 1))]),
+        contract: Some(metadata()),
+        session_snapshot: market.snapshot_as_of.clone(),
+        ..Default::default()
+    };
+    let repair = point
+        .rebuild(
+            history,
+            &stream.recent,
+            &cfg,
+            &main,
+            &market,
+            ledger.clone(),
+            cutoff,
+        )
+        .unwrap();
+    // Meanwhile the live feed closed one more minute.
+    stream.input = Some(super::live::Input::new(
+        market.clone(),
+        1.,
+        gap + 3 * 60_000,
+    ));
+    stream.recent.push_back(row(2, 2));
+    stream.last_closed = Some(gap + 2 * 60_000);
+    assert!(
+        stream.same_gaps(&point),
+        "a newer closed minute does not void the repair"
+    );
+    stream
+        .apply_repair(repair, &main, &mut engine, &mut hours, cutoff, true)
+        .unwrap();
+    assert!(engine.ledger == ledger);
+    assert!(stream.gaps.is_empty() && stream.gap_start.is_none());
+    assert_eq!(stream.last_closed, Some(gap + 2 * 60_000));
+    assert!(stream.catch_up_due);
+    let rebuilt = hours.finish(1.).unwrap().unwrap();
+    assert_eq!(
+        rebuilt.minutes, 3,
+        "gap minute, rebuilt minute and replayed live minute"
+    );
+    // A new gap opened during the job voids it.
+    stream.gaps.push((gap + 10 * 60_000, gap + 10 * 60_000));
+    assert!(!stream.same_gaps(&point));
 }

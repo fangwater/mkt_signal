@@ -365,8 +365,11 @@ impl Stream {
                     )?;
             }
             for bar in close_hours(input, hours, &rows)? {
+                // An hour formed after an unrepaired gap is misaligned (it starts
+                // at the first minute after the hole): it must not decide live.
+                let continuous = self.gaps.is_empty() && self.gap_start.is_none();
                 self.closed_hours.push_back(ClosedHour {
-                    live_eligible: dominant_ready && bar.end_ms > input.live_after_ms,
+                    live_eligible: dominant_ready && continuous && bar.end_ms > input.live_after_ms,
                     last_received_us: input.last_received_us,
                     bar,
                 });
@@ -495,6 +498,7 @@ impl Stream {
         engine: &mut engine::Engine,
         hours: &mut engine::Bars,
         cutoff: i64,
+        dominant_ready: bool,
     ) -> Result<()> {
         let replacement = repair.rebuilt;
         ensure!(
@@ -507,22 +511,53 @@ impl Stream {
                         .ledgers(),
             "historical repair would replace the current target ledger"
         );
+        // Intraday, live minutes keep closing while the rebuild runs: replay
+        // every one after the rebuilt history so the hour stays aligned.
+        let newer: Vec<_> = self
+            .recent
+            .iter()
+            .filter(|row| {
+                repair
+                    .last_closed
+                    .is_none_or(|last| row.open_time_ms > last)
+            })
+            .cloned()
+            .collect();
+        ensure!(
+            newer.is_empty() || !self.aligned || self.input.is_some(),
+            "live input is re-initialising; retry the repair"
+        );
         *engine = replacement.engine;
         *hours = replacement.hours;
         self.closed_hours.clear();
         self.extras = Some(replacement.extras);
-        self.last_closed = self.last_closed.max(repair.last_closed);
+        self.last_closed = repair.last_closed.or(self.last_closed);
         self.gaps.clear();
         if self.gap_start.is_some_and(|start| start <= cutoff) {
             self.gap_start = None;
         }
         self.recent.clear();
+        let replayed = newer.len();
+        if self.aligned && !newer.is_empty() {
+            self.accept(newer, hours, main, dominant_ready)?;
+        }
+        // A bar closed inside the repaired span never decided: decide the
+        // newest one once the live feed is fresh (see `Engine::catch_up`).
+        self.catch_up_due = true;
         println!(
             "{}",
             json!({"type":"redis_gap_repaired","contract":main.contract,
-            "trading_day":main.trading_day,"through_ms":cutoff,"positions_preserved":true})
+            "trading_day":main.trading_day,"through_ms":cutoff,"replayed_live_minutes":replayed,
+            "positions_preserved":true})
         );
         Ok(())
+    }
+    /// Repairs stay valid while no new gap opened since the job started;
+    /// newly closed live minutes are replayed on adoption.
+    fn same_gaps(&self, point: &RepairPoint) -> bool {
+        self.gap_start == point.gap_start
+            && self.gaps == point.gaps
+            && self.last_closed >= point.last_closed
     }
 }
 
@@ -1092,7 +1127,10 @@ async fn run_worker(worker: Worker) -> Result<()> {
         let off_session = market_context
             .as_ref()
             .is_some_and(|market| !market.allows(now_ms));
-        if !off_session || !stream.aligned {
+        // Market Replay (MDL plus the ZMQ minute cache) usually completes a
+        // live gap within a minute, so repair inside sessions as well.
+        let _ = off_session;
+        if !stream.aligned {
             if let Some(job) = repair_job.take() {
                 job.task.abort();
             }
@@ -1109,14 +1147,19 @@ async fn run_worker(worker: Worker) -> Result<()> {
                     task,
                 } = repair_job.take().expect("ready repair job");
                 if contract == current.contract
-                    && point == stream.repair_point()
+                    && stream.same_gaps(&point)
                     && config == serde_json::to_vec(&cfg)?
-                    && !market.allows(chrono::Utc::now().timestamp_millis())
                 {
+                    let dominant_ready = health.dominant.is_none();
                     let result = match task.await {
-                        Ok(Ok(repair)) => {
-                            stream.apply_repair(repair, &current, &mut engine, &mut hours, cutoff)
-                        }
+                        Ok(Ok(repair)) => stream.apply_repair(
+                            repair,
+                            &current,
+                            &mut engine,
+                            &mut hours,
+                            cutoff,
+                            dominant_ready,
+                        ),
                         Ok(Err(error)) => Err(error),
                         Err(error) => Err(error.into()),
                     };
