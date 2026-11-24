@@ -484,7 +484,8 @@ fn partial_first_minute_and_stale_source_cannot_become_closed_minutes() {
     let (mut input, rows) =
         super::live::Input::from_quotes(live_context(), 1., raw, &main).unwrap();
     assert!(rows.is_empty()); // 21:00 was partial; 21:01 is still in progress.
-    assert!(input.clock(start + 600_000, &main).unwrap().is_empty());
+                              // A stale source has no venue clock either: nothing closes by time.
+    assert!(input.clock(start + 600_000, 0, &main).unwrap().is_empty());
     let rows = input.observe(quote(start + 120_000, 103), &main).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].open_time_ms, start + 60_000);
@@ -1812,4 +1813,106 @@ fn catch_up_decides_the_newest_warm_up_bar_once_like_a_live_close() {
     }
     assert!(decided.observe(&hour(200), "sn2612", 1., true).unwrap());
     assert_eq!(decided.catch_up(20261124).unwrap(), None);
+}
+
+#[test]
+fn quiet_dominant_minute_seals_by_the_venue_clock_instead_of_a_gap() {
+    // 2026-11-24 j2701: the last 09:18 snapshot at :59.335, the next at
+    // 09:19:06.085; the 5 s overdue rule declared 09:18 missing at 09:19:05.
+    let (_dir, _cfg, main) = live_fixture();
+    let start = night_open();
+    let mut input = super::live::Input::new(live_context(), 1., start - 1000);
+    input.observe(quote(start - 1000, 100), &main).unwrap();
+    let mut volume = 100;
+    let mut rows = Vec::new();
+    for slot in 0..=237 {
+        volume += 1;
+        rows.extend(
+            input
+                .observe(quote(start + slot * 250, volume), &main)
+                .unwrap(),
+        );
+    }
+    assert!(rows.is_empty(), "21:00 is still open at :59.25");
+    let now = start + 65_000;
+    // The venue feed has not yet passed the minute end plus jitter: unsure.
+    assert!(input.clock(now, start + 60_500, &main).unwrap().is_empty());
+    // The rest of the venue has moved on: the dominant was only quiet.
+    let rows = input.clock(now, start + 64_000, &main).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].open_time_ms, start);
+    assert_eq!(rows[0].volume_lots, 238.);
+    assert_eq!(input.overdue_minute(now), None, "no false gap");
+    // Its next own snapshot continues normally into 21:01.
+    assert!(input
+        .observe(quote(start + 66_085, volume + 1), &main)
+        .unwrap()
+        .is_empty());
+    // A snapshot of the sealed minute arriving afterwards is a source anomaly.
+    let mut late = super::live::Input::new(live_context(), 1., start - 1000);
+    late.observe(quote(start - 1000, 100), &main).unwrap();
+    late.observe(quote(start + 59_000, 101), &main).unwrap();
+    assert_eq!(late.clock(now, start + 64_000, &main).unwrap().len(), 1);
+    assert!(late.observe(quote(start + 59_500, 102), &main).is_err());
+}
+
+#[test]
+fn venue_clock_never_seals_a_minute_the_dominant_has_not_started() {
+    let (_dir, _cfg, main) = live_fixture();
+    let start = night_open();
+    let mut input = super::live::Input::new(live_context(), 1., start - 1000);
+    input.observe(quote(start - 1000, 100), &main).unwrap();
+    input.observe(quote(start + 30_000, 101), &main).unwrap();
+    // Venue is three minutes ahead: only 21:00 (which has snapshots) closes;
+    // the wholly silent 21:01 and 21:02 remain for the gap/repair path.
+    let rows = input
+        .clock(start + 185_000, start + 184_000, &main)
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].open_time_ms, start);
+    assert_eq!(input.overdue_minute(start + 185_000), Some(start + 60_000));
+}
+
+#[test]
+fn quiet_final_second_before_a_break_seals_by_the_venue_clock() {
+    // 2026-11-24 PF701: last 11:29 snapshot at :58.500 before the 11:30 break.
+    let context = session_context(&[
+        (9 * 3600, 10 * 3600 + 900),
+        (10 * 3600 + 1800, 11 * 3600 + 1800),
+    ]);
+    let main = Dominant {
+        contract: "sn2612".into(),
+        trading_day: 20261124,
+        source_trading_day: 20261123,
+        scheduled_next: "sn2612".into(),
+        secondary: None,
+        secondary_next: None,
+    };
+    let start = shanghai_ms("2026-11-24T11:28:00");
+    let mut input = super::live::Input::new(context, 1., start);
+    let mut volume = 100;
+    // 250 ms snapshots through 11:29:58.500 only.
+    for slot in 1..=474 {
+        volume += 1;
+        let super::live::Event::Quote(mut q) = quote(start + slot * 250, volume) else {
+            unreachable!()
+        };
+        q.trading_day = 20261124;
+        q.action_day = 20261124;
+        input.observe(super::live::Event::Quote(q), &main).unwrap();
+    }
+    let end = shanghai_ms("2026-11-24T11:30:00");
+    // Before the grace, or with the whole venue quiet too, nothing is proven.
+    assert!(input
+        .clock(end + 1_000, end - 250, &main)
+        .unwrap()
+        .is_empty());
+    assert!(input
+        .clock(end + 2_500, end - 1_500, &main)
+        .unwrap()
+        .is_empty());
+    let rows = input.clock(end + 2_500, end - 250, &main).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].open_time_ms, end - 60_000);
+    assert_eq!(input.overdue_minute(end + 6_000), None);
 }

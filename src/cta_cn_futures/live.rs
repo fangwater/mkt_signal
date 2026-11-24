@@ -14,8 +14,41 @@ use cn_market_proto::{
     Book5, BookLevel, GetSizeThresholdsResponse, GetTradingSessionsResponse, MinuteBar,
     SessionWindow, SizeThreshold,
 };
-use std::{collections::BTreeMap, net::SocketAddrV4, time::Duration};
+use std::{
+    collections::BTreeMap,
+    net::SocketAddrV4,
+    sync::{
+        atomic::{AtomicI64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
+/// Newest native exchange time (ms) seen on the ingress per venue, across
+/// every contract of that venue's L2 channel. Each venue's delivery is
+/// ordered and a quote is queued to its product before the clock moves, so a
+/// product that reads the clock and then drains its queue holds every own
+/// snapshot stamped before that time.
+pub struct VenueClocks(Vec<(String, AtomicI64)>);
+impl VenueClocks {
+    fn new<'a>(venues: impl Iterator<Item = &'a str>) -> Self {
+        let mut names: Vec<String> = venues.map(str::to_owned).collect();
+        names.sort();
+        names.dedup();
+        Self(names.into_iter().map(|v| (v, AtomicI64::new(0))).collect())
+    }
+    pub fn get(&self, venue: &str) -> i64 {
+        self.0
+            .iter()
+            .find(|(name, _)| name == venue)
+            .map_or(0, |(_, clock)| clock.load(Ordering::Acquire))
+    }
+    fn advance(&self, q: &MarketDataMsg) {
+        if let Some((_, clock)) = self.0.iter().find(|(name, _)| q.venue() == name.as_bytes()) {
+            clock.fetch_max(q.exchange_ts_us / 1000, Ordering::Release);
+        }
+    }
+}
 #[derive(Clone)]
 pub enum Event {
     Reset,
@@ -23,8 +56,8 @@ pub enum Event {
 }
 pub fn capture<'a>(
     endpoint: SocketAddrV4,
-    configs: impl Iterator<Item = &'a Config>,
-) -> Result<Vec<crossbeam_channel::Receiver<Event>>> {
+    configs: impl Iterator<Item = &'a Config> + Clone,
+) -> Result<(Vec<crossbeam_channel::Receiver<Event>>, Arc<VenueClocks>)> {
     struct Product {
         venue: String,
         prefix: String,
@@ -33,6 +66,10 @@ pub fn capture<'a>(
         lost: bool,
     }
 
+    let clocks = Arc::new(VenueClocks::new(
+        configs.clone().map(|cfg| cfg.exchange.as_str()),
+    ));
+    let venue_clocks = clocks.clone();
     let mut receivers = Vec::new();
     let mut products: Vec<_> = configs
         .map(|cfg| {
@@ -93,6 +130,8 @@ pub fn capture<'a>(
                                 product.lost = true;
                             }
                         }
+                        // Only after the quote is queued: see `VenueClocks`.
+                        venue_clocks.advance(&q);
                     } else {
                         std::thread::sleep(Duration::from_millis(1));
                     }
@@ -106,7 +145,7 @@ pub fn capture<'a>(
                 }
             }
         })?;
-    Ok(receivers)
+    Ok((receivers, clocks))
 }
 
 /// All market parameters come from the dedicated gRPC methods, once per catch-up.
@@ -243,6 +282,8 @@ fn trading_day_end_ms(day: u32) -> Option<i64> {
 /// A bar sealed from both contracts' final snapshot slots closes up to one
 /// snapshot interval before its end on the wall clock; still treat it as live.
 pub const SEAL_LEAD_MS: i64 = 2_000;
+/// Cross-contract timestamp jitter allowed inside one venue's ordered feed.
+const VENUE_GRACE_MS: i64 = 1_000;
 /// Exchange-clock evidence from one contract's own snapshot cadence.
 #[derive(Clone, Copy, Default)]
 struct Witness {
@@ -528,16 +569,52 @@ impl Input {
         }
         Ok(out)
     }
-    pub fn clock(&mut self, now_ms: i64, main: &Dominant) -> Result<Vec<MinuteBar>> {
+    /// Wall/venue clocks for minutes the dominant itself cannot seal: session
+    /// tails, and quiet dominants once the whole venue has moved on.
+    pub fn clock(&mut self, now_ms: i64, venue_ms: i64, main: &Dominant) -> Result<Vec<MinuteBar>> {
+        let mut rows = self.sealed_by_venue(venue_ms, main)?;
+        rows.extend(self.session_tail(now_ms, venue_ms, main)?);
+        Ok(rows)
+    }
+    /// The exchange pushes no unchanged snapshot, so a liquid dominant can be
+    /// silent for seconds across a minute end (j2701 had none from 09:18:59.3
+    /// to 09:19:06.1 on 2026-11-24). Once the venue's ordered feed is
+    /// `VENUE_GRACE_MS` past the end of the dominant's current minute, no
+    /// snapshot of that minute can still arrive: seal it from what arrived.
+    fn sealed_by_venue(&mut self, venue_ms: i64, main: &Dominant) -> Result<Vec<MinuteBar>> {
+        if self.last_quote_ms == 0 {
+            return Ok(Vec::new());
+        }
+        // Never past the dominant's own current minute: a whole silent minute
+        // has no snapshot to build from and stays a gap for repair.
+        let before = ((venue_ms - VENUE_GRACE_MS).div_euclid(60_000) * 60_000)
+            .min((self.last_quote_ms.div_euclid(60_000) + 1) * 60_000);
+        if before <= self.processed_minute_ms + 60_000 {
+            return Ok(Vec::new());
+        }
+        let rows = self.emit(before, main, "venue_clock")?;
+        if !rows.is_empty() {
+            self.witness_sealed_ms = self.witness_sealed_ms.max(before);
+        }
+        Ok(rows)
+    }
+    /// Session tails have no next quote. The dominant's own final second can
+    /// be quiet (PF701 had none after 11:29:58.5 before the 11:30 break on
+    /// 2026-11-24), so the venue's ordered feed proves the tail instead: some
+    /// contract of the venue reached the final second, the wall clock is a
+    /// short grace past the end, and the venue was live within 5 s.
+    fn session_tail(
+        &mut self,
+        now_ms: i64,
+        venue_ms: i64,
+        main: &Dominant,
+    ) -> Result<Vec<MinuteBar>> {
         let end = (self.last_quote_ms.div_euclid(60_000) + 1) * 60_000;
-        // Session tails may have no next quote. Only close after a short grace
-        // period, with a fresh final-second snapshot and an already drained queue.
-        if !self.context.ends_after(end - 60_000)
-            || self.last_quote_ms < end - 1000
+        if self.last_quote_ms == 0
+            || !self.context.ends_after(end - 60_000)
+            || venue_ms < end - 1000
             || now_ms < end + 2000
-            || now_ms - self.last_quote_ms > 5000
-            || (chrono::Utc::now().timestamp_micros() as u64).saturating_sub(self.last_received_us)
-                > 5_000_000
+            || now_ms - venue_ms > 5000
         {
             return Ok(Vec::new());
         }

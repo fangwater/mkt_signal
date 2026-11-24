@@ -717,7 +717,8 @@ pub async fn run() -> Result<()> {
     let mut tasks = tokio::task::JoinSet::new();
     let mut reports = BTreeMap::new();
     let mut app = Router::new();
-    let inputs = live::capture(root.redis_endpoint, configs.iter().map(|(_, cfg)| cfg))?;
+    let (inputs, venue_clocks) =
+        live::capture(root.redis_endpoint, configs.iter().map(|(_, cfg)| cfg))?;
     let mut workers = Vec::new();
     for ((path, cfg), rx) in configs.into_iter().zip(inputs) {
         std::fs::create_dir_all(cfg.state_directory())?;
@@ -768,6 +769,7 @@ pub async fn run() -> Result<()> {
             catalog,
             config_rx,
             publisher,
+            venue_clocks: venue_clocks.clone(),
         };
         workers.push(worker);
     }
@@ -807,6 +809,7 @@ struct Worker {
     catalog: Report,
     config_rx: tokio::sync::mpsc::Receiver<panel::Mutation>,
     publisher: std::result::Result<Option<publication::Publisher>, String>,
+    venue_clocks: Arc<live::VenueClocks>,
 }
 
 fn publication_status(
@@ -835,6 +838,7 @@ async fn run_worker(worker: Worker) -> Result<()> {
         catalog,
         mut config_rx,
         mut publisher,
+        venue_clocks,
     } = worker;
     let mut current = history::dominant(&cfg)
         .await
@@ -884,6 +888,9 @@ async fn run_worker(worker: Worker) -> Result<()> {
             .extras
             .as_ref()
             .and_then(extras::Extras::last_live_decision);
+        // Read the venue clock before draining: every own snapshot stamped
+        // before it is then already in this queue (see `live::VenueClocks`).
+        let venue_ms = venue_clocks.get(&cfg.exchange);
         // Drain all events accumulated during the preceding network request,
         // including reset markers, before closing bars or attempting a handoff.
         loop {
@@ -957,7 +964,7 @@ async fn run_worker(worker: Worker) -> Result<()> {
             }
         }
         if let Some(input) = stream.input.as_mut() {
-            let rows = input.clock(chrono::Utc::now().timestamp_millis(), &current);
+            let rows = input.clock(chrono::Utc::now().timestamp_millis(), venue_ms, &current);
             let dominant_ready = health.dominant.is_none();
             if let Err(e) = rows.and_then(|rows| {
                 stream.accept(rows, &mut hours, &current, dominant_ready)?;
