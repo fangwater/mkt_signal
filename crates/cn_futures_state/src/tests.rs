@@ -446,3 +446,38 @@ fn native_marks_are_validated_without_guessing_prices_or_multipliers() {
     s.marks.push(mark);
     assert!(s.validate().is_err());
 }
+
+#[test]
+fn position_costs_round_trip_and_reject_invalid_rows() {
+    let mut s = sample();
+    let row = PositionCost {
+        venue: Venue::Cffex,
+        symbol: Text::new("IC2612").unwrap(),
+        side: Side::Buy,
+        lots: 1,
+        open_cost: 1_200_000.0,
+        position_cost: 1_200_000.0,
+        position_profit: -400.0,
+    };
+    s.position_costs.observed_us = s.observed_us - 1;
+    s.position_costs.rows.push(row);
+    s.validate().unwrap();
+    let frame = bincode::serialize(&s).unwrap();
+    let decoded = transport::decode(&frame).unwrap().position_costs;
+    assert_eq!(decoded.observed_us, s.position_costs.observed_us);
+    assert_eq!(decoded.rows[0].open_cost, 1_200_000.0);
+    assert_eq!(decoded.rows[0].lots, 1);
+
+    let mut future = s.clone();
+    future.position_costs.observed_us = s.observed_us + 1;
+    assert!(future.validate().is_err(), "query newer than capture");
+    let mut duplicate = s.clone();
+    duplicate.position_costs.rows.push(row);
+    assert!(duplicate.validate().is_err());
+    let mut nan = s.clone();
+    nan.position_costs.rows[0].open_cost = f64::NAN;
+    assert!(nan.validate().is_err());
+    let mut untimed = s.clone();
+    untimed.position_costs.observed_us = 0;
+    assert!(untimed.validate().is_err(), "rows require a query time");
+}

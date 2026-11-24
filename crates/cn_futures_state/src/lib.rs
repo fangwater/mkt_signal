@@ -172,6 +172,58 @@ impl AccountFunds {
     }
 }
 
+/// One broker position side summed over its date rows, as of a background
+/// query. Display-only valuation inputs; never a trading or Manager fact.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub struct PositionCost {
+    pub venue: Venue,
+    pub symbol: Text<81>,
+    pub side: Side,
+    /// Broker lots at query time; the costs below cover exactly these lots.
+    pub lots: i32,
+    /// CTP `OpenCost`: open price x multiplier x lots, the by-trade basis.
+    pub open_cost: f64,
+    /// CTP `PositionCost`: history lots at the previous settlement price.
+    pub position_cost: f64,
+    /// CTP `PositionProfit`: the counter's mark-to-market floating P&L.
+    pub position_profit: f64,
+}
+
+/// Last complete background position query; `observed_us == 0` means none.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct PositionCosts {
+    pub observed_us: u64,
+    pub rows: Vec<PositionCost>,
+}
+impl PositionCosts {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.observed_us > 0 || self.rows.is_empty(),
+            "position costs without a query time"
+        );
+        ensure!(
+            self.rows.len() <= MAX_POSITIONS,
+            "native position cost capacity exceeded"
+        );
+        let mut keys = std::collections::HashSet::new();
+        for row in &self.rows {
+            ensure!(
+                !row.symbol.as_str().is_empty()
+                    && row.lots > 0
+                    && keys.insert((row.venue, row.symbol.as_str(), row.side)),
+                "invalid/duplicate native position cost identity"
+            );
+            ensure!(
+                [row.open_cost, row.position_cost, row.position_profit]
+                    .iter()
+                    .all(|value| value.is_finite()),
+                "nonfinite native position cost"
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Snapshot {
     pub publisher_epoch: u64,
@@ -197,6 +249,8 @@ pub struct Snapshot {
     pub marks: Vec<InstrumentMark>,
     pub l1_connected: bool,
     pub l1_dropped: u64,
+    /// Display-only open costs from the broker's background position query.
+    pub position_costs: PositionCosts,
 }
 impl Snapshot {
     pub fn empty(adapter: Adapter, account_hash: &str) -> Result<Self> {
@@ -222,6 +276,10 @@ impl Snapshot {
             marks: Vec::with_capacity(MAX_POSITIONS),
             l1_connected: false,
             l1_dropped: 0,
+            position_costs: PositionCosts {
+                observed_us: 0,
+                rows: Vec::with_capacity(MAX_POSITIONS),
+            },
         })
     }
     pub fn validate(&self) -> Result<()> {
@@ -279,6 +337,11 @@ impl Snapshot {
         ensure!(
             self.marks.len() <= MAX_POSITIONS,
             "native mark capacity exceeded"
+        );
+        self.position_costs.validate()?;
+        ensure!(
+            self.position_costs.observed_us <= self.observed_us,
+            "position cost query is newer than capture"
         );
         let mut marks = std::collections::HashSet::new();
         for mark in &self.marks {

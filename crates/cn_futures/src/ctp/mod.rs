@@ -220,6 +220,8 @@ pub struct RawEvent {
     pub commission_rates: [f64; 6],
     pub margin_rates: [f64; 4],
     pub account_values: [f64; 44],
+    /// Position rows only: CTP OpenCost, PositionCost and PositionProfit.
+    pub position_values: [f64; 3],
     pub product: [u8; 81],
     pub max_order_ref: [u8; 13],
     /// Explicit C tail padding; never read.
@@ -246,7 +248,7 @@ impl Default for RawEvent {
 // Current Linux x86-64 bridge ABI; compile-time checks do not load or run an SDK.
 const _: () = {
     assert!(std::mem::size_of::<HotEvent>() == 328);
-    assert!(std::mem::size_of::<RawEvent>() == 928);
+    assert!(std::mem::size_of::<RawEvent>() == 952);
 };
 
 pub fn text_ref(bytes: &[u8]) -> Result<&str> {
@@ -394,7 +396,7 @@ impl RawEvent {
             "system_id":lossy(&self.system_id),"trade_id":lossy(&self.trade_id),"trading_day":lossy(&self.trading_day),"volume":self.volume,"traded":self.traded,
             "remaining":self.remaining,"today":self.today,"yesterday":self.yesterday,"direction":self.direction,"offset":self.offset,"hedge":self.hedge,
             "position_direction":self.position_direction,"position_date":self.position_date,"status":self.status,"submit_status":self.submit_status,
-            "price":self.price,"price_tick":self.price_tick,"metadata":{"contract_multiple":self.contract_multiple,"expiry_date":self.expiry,"commission_rates":self.commission_rates,"margin_rates":self.margin_rates,"margin_is_relative":self.relative,"account_values":self.account_values.as_slice()},"available":self.available,"active":self.active,"product_class":self.product_class,
+            "price":self.price,"price_tick":self.price_tick,"metadata":{"contract_multiple":self.contract_multiple,"expiry_date":self.expiry,"commission_rates":self.commission_rates,"margin_rates":self.margin_rates,"margin_is_relative":self.relative,"account_values":self.account_values.as_slice(),"position_values":self.position_values.as_slice()},"available":self.available,"active":self.active,"product_class":self.product_class,
             "minimum":self.minimum,"maximum":self.maximum,"time_condition":self.time_condition,"volume_condition":self.volume_condition,"message":error_text(&self.message)})
     }
 }

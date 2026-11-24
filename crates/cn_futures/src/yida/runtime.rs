@@ -135,6 +135,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
         true,
         crate::position_ipc::Observation {
             account: None,
+            position_costs: None,
             marks: market.marks(),
             connected: runtime.trader.l1_connected.load(Ordering::Acquire),
             dropped: runtime.trader.l1_dropped.load(Ordering::Relaxed),
@@ -562,6 +563,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                 false,
                 crate::position_ipc::Observation {
                     account: None,
+                    position_costs: None,
                     marks: market.marks(),
                     connected: runtime.trader.l1_connected.load(Ordering::Acquire),
                     dropped: runtime.trader.l1_dropped.load(Ordering::Relaxed),
@@ -631,6 +633,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
         true,
         crate::position_ipc::Observation {
             account: None,
+            position_costs: None,
             marks: market.marks(),
             connected: false,
             dropped: 0,

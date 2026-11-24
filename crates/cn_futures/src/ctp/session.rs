@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 const CTP_NOT_INITIALIZED: i32 = 7;
 
 pub(crate) const RULE_REFRESH_INTERVAL: Duration = Duration::from_secs(30 * 60);
+/// Background position query for display-only by-trade valuation.
+pub(crate) const COST_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 pub struct Session {
     config: Config,
@@ -52,6 +54,12 @@ pub struct Session {
     /// Background order query for unconfirmed orders: requested, then its rows.
     order_check_requested: bool,
     order_check: Option<Vec<OrderUpdate>>,
+    /// Display-only open costs: rows of the in-flight background position
+    /// query, whether they all decoded, and the last complete result.
+    cost_rows: HashMap<(Venue, Symbol, Side), cn_futures_state::PositionCost>,
+    cost_rows_valid: bool,
+    position_costs: Option<cn_futures_state::PositionCosts>,
+    last_cost_poll: Instant,
 }
 impl Session {
     pub fn new(config: Config, investor: String, now: Instant) -> Self {
@@ -90,6 +98,10 @@ impl Session {
             rule_update: None,
             order_check_requested: false,
             order_check: None,
+            cost_rows: HashMap::new(),
+            cost_rows_valid: true,
+            position_costs: None,
+            last_cost_poll: now,
         }
     }
     pub fn account(&self) -> Option<&AccountSnapshot> {
@@ -97,6 +109,9 @@ impl Session {
     }
     pub fn account_funds(&self) -> Option<&cn_futures_state::AccountFunds> {
         self.account_funds.as_ref()
+    }
+    pub fn position_costs(&self) -> Option<&cn_futures_state::PositionCosts> {
+        self.position_costs.as_ref()
     }
     pub fn retries_account_query(&self, request: i32, error: i32) -> bool {
         error == 90
@@ -203,6 +218,12 @@ impl Session {
                         .clone(),
                 );
                 self.next_kind = Some(COMMISSION);
+            } else if now.saturating_duration_since(self.last_cost_poll) >= COST_POLL_INTERVAL {
+                // Display-only valuation yields to every trading prerequisite.
+                self.maintenance = true;
+                self.next_kind = Some(POSITION);
+                self.cost_rows.clear();
+                self.cost_rows_valid = true;
             }
         }
         Ok(if now >= self.next_send {
@@ -285,6 +306,78 @@ impl Session {
         self.trades.clear();
         self.positions.clear();
     }
+    /// Sums one background position row into its venue/symbol/side.
+    fn cost_row(&mut self, e: &super::ingress::EventRef<'_>) -> Result<()> {
+        if e.present == 0 || e.volume == 0 || !self.owns(e)? {
+            return Ok(());
+        }
+        ensure!(e.volume > 0, "invalid CTP position volume");
+        ensure!(
+            e.hedge == i32::from(b'1'),
+            "non-speculative position has no separate valuation"
+        );
+        let control = e.control()?;
+        let side = match control.position_direction {
+            50 => Side::Buy,
+            51 => Side::Sell,
+            _ => anyhow::bail!("unsupported CTP position direction"),
+        };
+        let [open_cost, position_cost, position_profit] = control.position_values;
+        ensure!(
+            [open_cost, position_cost, position_profit]
+                .iter()
+                .all(|value| value.is_finite()),
+            "nonfinite CTP position cost"
+        );
+        let venue = Venue::parse(text_ref(&e.exchange)?)?;
+        let symbol: Symbol = text(&e.symbol)?;
+        let row =
+            self.cost_rows
+                .entry((venue, symbol, side))
+                .or_insert(cn_futures_state::PositionCost {
+                    venue,
+                    symbol,
+                    side,
+                    lots: 0,
+                    open_cost: 0.0,
+                    position_cost: 0.0,
+                    position_profit: 0.0,
+                });
+        row.lots = row
+            .lots
+            .checked_add(e.volume)
+            .context("position sum overflow")?;
+        row.open_cost += open_cost;
+        row.position_cost += position_cost;
+        row.position_profit += position_profit;
+        Ok(())
+    }
+    /// Publishes a fully decoded query; a partial one keeps the last result.
+    fn finish_cost_poll(&mut self, now: Instant) {
+        if self.cost_rows_valid {
+            let mut rows: Vec<_> = self.cost_rows.drain().map(|(_, row)| row).collect();
+            rows.sort_by_key(|row| {
+                (
+                    row.venue.as_str(),
+                    row.symbol,
+                    match row.side {
+                        Side::Buy => 0,
+                        Side::Sell => 1,
+                    },
+                )
+            });
+            self.position_costs = Some(cn_futures_state::PositionCosts {
+                observed_us: crate::persistence::now_us(),
+                rows,
+            });
+        }
+        self.cost_rows.clear();
+        self.cost_rows_valid = true;
+        self.waiting = None;
+        self.last_cost_poll = now;
+        self.maintenance = false;
+        self.next_kind = None;
+    }
     fn owns(&self, e: &HotEvent) -> Result<bool> {
         if text_ref(&e.investor)? != self.investor {
             return Ok(false);
@@ -310,6 +403,7 @@ impl Session {
             self.login = None;
             self.account = None;
             self.account_funds = None;
+            self.position_costs = None;
             self.account_not_ready_retries = 0;
             self.settlement_confirmed = false;
             self.reset_rules();
@@ -332,6 +426,7 @@ impl Session {
             self.login = None;
             self.account = None;
             self.account_funds = None;
+            self.position_costs = None;
             self.settlement_confirmed = false;
             self.reset_rules();
             return Ok(None);
@@ -369,6 +464,17 @@ impl Session {
         // (post-close settlement); only a new SDK session can retry the bootstrap.
         if e.error == CTP_NOT_INITIALIZED {
             return Err(ColdRestartRequired::VenueNotInitialized.into());
+        }
+        // Display-only valuation never stops the trading session.
+        if kind == POSITION && self.maintenance && e.error != 0 {
+            log::warn!(
+                "CTP position cost query failed: error_code={} message={}",
+                e.error,
+                error_text(&e.message)
+            );
+            self.cost_rows_valid = false;
+            self.finish_cost_poll(now);
+            return Ok(None);
         }
         ensure!(
             e.error == 0,
@@ -566,6 +672,14 @@ impl Session {
                         .context("missing decoded CTP fill")?,
                 );
             }
+            POSITION if self.maintenance => {
+                if let Err(error) = self.cost_row(&e) {
+                    if self.cost_rows_valid {
+                        log::warn!("CTP position cost row unavailable: {error:#}");
+                    }
+                    self.cost_rows_valid = false;
+                }
+            }
             POSITION if e.present != 0 && self.owns(&e)? && e.volume != 0 => {
                 ensure!(
                     e.hedge == i32::from(b'1'),
@@ -674,6 +788,10 @@ impl Session {
                     self.last_cash_poll = now;
                 }
                 QUERY_ORDER => self.order_check = Some(std::mem::take(&mut self.orders)),
+                POSITION => {
+                    self.finish_cost_poll(now);
+                    return Ok(None);
+                }
                 _ => anyhow::bail!("unexpected maintenance request"),
             }
             self.maintenance = false;
@@ -767,6 +885,7 @@ impl Session {
                     self.next_kind = None;
                     self.last_cash_poll = now;
                     self.last_rule_poll = now;
+                    self.last_cost_poll = now;
                     return Ok(Some(Snapshot {
                         trading_day: day,
                         session: session_key(front, session),

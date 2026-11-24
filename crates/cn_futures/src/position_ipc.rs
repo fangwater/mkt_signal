@@ -6,6 +6,7 @@ use cn_futures_state::{publisher::Producer, RuntimeStatus};
 #[derive(Default)]
 pub struct Observation<'a> {
     pub account: Option<&'a cn_futures_state::AccountFunds>,
+    pub position_costs: Option<&'a cn_futures_state::PositionCosts>,
     pub marks: &'a [cn_futures_state::InstrumentMark],
     pub connected: bool,
     pub dropped: u64,
@@ -29,6 +30,10 @@ pub(crate) fn publish(
                     snapshot.reason = cn_futures_state::Text::new(reason)?;
                 }
                 snapshot.account = observation.account.copied();
+                if let Some(costs) = observation.position_costs {
+                    snapshot.position_costs.observed_us = costs.observed_us;
+                    snapshot.position_costs.rows.extend_from_slice(&costs.rows);
+                }
                 snapshot.marks.extend_from_slice(observation.marks);
                 snapshot.l1_connected = observation.connected;
                 snapshot.l1_dropped = observation.dropped;

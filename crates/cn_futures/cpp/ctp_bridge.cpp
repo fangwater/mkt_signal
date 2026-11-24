@@ -127,7 +127,7 @@ public:
     }
     void OnRspQryInvestorPosition(CThostFtdcInvestorPositionField* p, CThostFtdcRspInfoField* i, int r, bool l) override {
         NfEvent e{}; e.hot.kind = 8;
-        if (p) { e.hot.present = 1; field(e.hot.symbol, p->InstrumentID); field(e.hot.exchange, p->ExchangeID); field(e.hot.investor, p->InvestorID); field(e.hot.trading_day, p->TradingDay); e.hot.volume = p->Position; e.today = p->TodayPosition; e.yesterday = p->YdPosition; e.hot.hedge = p->HedgeFlag; e.position_direction = p->PosiDirection; e.position_date = p->PositionDate; }
+        if (p) { e.hot.present = 1; field(e.hot.symbol, p->InstrumentID); field(e.hot.exchange, p->ExchangeID); field(e.hot.investor, p->InvestorID); field(e.hot.trading_day, p->TradingDay); e.hot.volume = p->Position; e.today = p->TodayPosition; e.yesterday = p->YdPosition; e.hot.hedge = p->HedgeFlag; e.position_direction = p->PosiDirection; e.position_date = p->PositionDate; e.position_values[0] = p->OpenCost; e.position_values[1] = p->PositionCost; e.position_values[2] = p->PositionProfit; }
         send(e, i, r, l);
     }
     void OnRtnOrder(CThostFtdcOrderField* p) override { NfHotEvent e{}; e.kind = 9; order(e, p); send(e); }

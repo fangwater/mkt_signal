@@ -1051,6 +1051,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                 false,
                 crate::position_ipc::Observation {
                     account: session.account_funds(),
+                    position_costs: session.position_costs(),
                     reason: (runtime.core.is_ready()
                         && feed.as_ref().is_some_and(|md| md.waiting_for_front()))
                     .then_some(WAITING_FOR_MD),

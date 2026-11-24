@@ -52,6 +52,8 @@ struct NfEvent {
     double commission_rates[6];
     double margin_rates[4];
     double account_values[44];
+    // Position rows only: OpenCost, PositionCost, PositionProfit.
+    double position_values[3];
     char product[81];
     char max_order_ref[13];
 };

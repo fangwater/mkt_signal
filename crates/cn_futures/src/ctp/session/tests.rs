@@ -541,3 +541,109 @@ fn other_bootstrap_errors_still_stop_for_an_operator() {
     assert!(failure.downcast_ref::<ColdRestartRequired>().is_none());
     assert_eq!(crate::restart::exit_status(&failure), 1);
 }
+
+fn ready_session() -> (Session, Instant) {
+    let (mut s, mut now) = begin();
+    for id in 1..=20 {
+        let (_, e) = dispatch(&mut s, &mut now, id);
+        if s.on_raw_event(&e, now).unwrap().is_some() {
+            break;
+        }
+    }
+    assert!(s.ready());
+    (s, now)
+}
+
+#[test]
+fn background_position_query_sums_open_costs_by_side_without_reconciliation() {
+    let (mut s, mut now) = ready_session();
+    assert!(s.position_costs().is_none());
+    now += COST_POLL_INTERVAL + Duration::from_secs(1);
+    assert_eq!(s.request_due(now).unwrap(), Some(ACCOUNT));
+    s.sent(ACCOUNT, 300, 0, now).unwrap();
+    s.on_raw_event(&response(ACCOUNT, 300), now).unwrap();
+    now += Duration::from_secs(2);
+    assert_eq!(s.request_due(now).unwrap(), Some(POSITION));
+    s.sent(POSITION, 301, 0, now).unwrap();
+    let mut today = response(POSITION, 301);
+    today.last = 0;
+    today.volume = 1;
+    today.position_values = [1_200_000.0, 1_200_000.0, 600.0];
+    let mut history = response(POSITION, 301);
+    history.last = 0;
+    history.position_date = 50;
+    history.volume = 2;
+    history.position_values = [2_300_000.0, 2_350_000.0, -900.0];
+    let mut short = response(POSITION, 301);
+    short.position_direction = 51;
+    short.volume = 1;
+    short.position_values = [1_190_000.0, 1_190_000.0, -300.0];
+    for row in [&today, &history, &short] {
+        assert!(s.on_raw_event(row, now).unwrap().is_none());
+    }
+    assert!(s.ready(), "a valuation query is not a reconciliation pass");
+    let costs = s.position_costs().unwrap();
+    assert!(costs.observed_us > 0);
+    costs.validate().unwrap();
+    assert_eq!(costs.rows.len(), 2);
+    let long = &costs.rows[0];
+    assert_eq!((long.side, long.lots), (Side::Buy, 3));
+    assert_eq!(long.open_cost, 3_500_000.0);
+    assert_eq!(long.position_cost, 3_550_000.0);
+    assert_eq!(long.position_profit, -300.0);
+    assert_eq!((costs.rows[1].side, costs.rows[1].lots), (Side::Sell, 1));
+    assert_eq!(
+        s.request_due(now + Duration::from_secs(1)).unwrap(),
+        None,
+        "the next valuation waits for its interval"
+    );
+}
+
+#[test]
+fn failed_or_undecodable_position_query_keeps_session_and_previous_costs() {
+    let (mut s, mut now) = ready_session();
+    now += COST_POLL_INTERVAL + Duration::from_secs(1);
+    let kind = s.request_due(now).unwrap().unwrap();
+    s.sent(kind, 400, 0, now).unwrap();
+    s.on_raw_event(&response(ACCOUNT, 400), now).unwrap();
+    now += Duration::from_secs(2);
+    assert_eq!(s.request_due(now).unwrap(), Some(POSITION));
+    s.sent(POSITION, 401, 0, now).unwrap();
+    let mut row = response(POSITION, 401);
+    row.position_values = [3_000_000.0, 3_000_000.0, 0.0];
+    s.on_raw_event(&row, now).unwrap();
+    let previous = s.position_costs().unwrap().clone();
+
+    now += COST_POLL_INTERVAL + Duration::from_secs(1);
+    let kind = s.request_due(now).unwrap().unwrap();
+    s.sent(kind, 402, 0, now).unwrap();
+    s.on_raw_event(&response(ACCOUNT, 402), now).unwrap();
+    now += Duration::from_secs(2);
+    let kind = s.request_due(now).unwrap().unwrap();
+    s.sent(kind, 403, 0, now).unwrap();
+    let mut broken = response(POSITION, 403);
+    broken.position_values[0] = f64::NAN;
+    s.on_raw_event(&broken, now).unwrap();
+    assert!(s.ready());
+    assert_eq!(
+        s.position_costs().unwrap().observed_us,
+        previous.observed_us
+    );
+
+    now += COST_POLL_INTERVAL + Duration::from_secs(1);
+    let kind = s.request_due(now).unwrap().unwrap();
+    s.sent(kind, 404, 0, now).unwrap();
+    s.on_raw_event(&response(ACCOUNT, 404), now).unwrap();
+    now += Duration::from_secs(2);
+    let kind = s.request_due(now).unwrap().unwrap();
+    s.sent(kind, 405, 0, now).unwrap();
+    let mut error = response(ERROR, 405);
+    error.error = 3;
+    s.on_raw_event(&error, now).unwrap();
+    assert!(s.ready());
+    assert_eq!(
+        s.position_costs().unwrap().observed_us,
+        previous.observed_us
+    );
+    assert_eq!(s.request_due(now + Duration::from_secs(1)).unwrap(), None);
+}

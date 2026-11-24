@@ -58,12 +58,16 @@ impl Producer {
         let snapshot = &mut self.snapshot;
         snapshot.positions.clear();
         snapshot.marks.clear();
+        snapshot.position_costs.observed_us = 0;
+        snapshot.position_costs.rows.clear();
         snapshot.publisher_epoch = self.epoch;
         snapshot.sequence = self.sequence;
         snapshot.observed_us = now_us();
         if let Err(error) = fill(snapshot) {
             snapshot.positions.clear();
             snapshot.marks.clear();
+            snapshot.position_costs.observed_us = 0;
+            snapshot.position_costs.rows.clear();
             snapshot.position_ready = false;
             snapshot.ready = false;
             snapshot.can_trade = false;

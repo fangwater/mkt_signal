@@ -205,13 +205,13 @@
       .account-band.stale strong { color:var(--amber); }
       @media (min-width:981px) {
         .account-band { grid-template-columns: repeat(12, minmax(0, 1fr)); }
-        .account-band .metric { grid-column:span 4; }
-        .account-band .metric:nth-child(-n+4) { grid-column:span 3; border-bottom:1px solid var(--line); }
-        .account-band .metric:nth-child(4) { border-right:0; }
+        .account-band .metric { grid-column:span 3; }
+        .account-band .metric:nth-child(-n+4) { border-bottom:1px solid var(--line); }
+        .account-band .metric:nth-child(4n) { border-right:0; }
       }
       @media (max-width:980px) {
         .account-band .metric { border-bottom:1px solid var(--line); }
-        .account-band .metric:last-child { grid-column:1 / -1; border-bottom:0; }
+        .account-band .metric:nth-last-child(-n+2) { border-bottom:0; }
       }
       .quote-status { color:var(--muted); font-size:12px; }
       .quote-status.stale { color:var(--amber); }
@@ -248,7 +248,8 @@
         <div class="metric"><label>可用资金</label><strong id="account-available">--</strong></div>
         <div class="metric"><label>可取资金</label><strong id="account-withdrawable">--</strong></div>
         <div class="metric"><label>占用保证金</label><strong id="account-margin">--</strong></div>
-        <div class="metric"><label>持仓盈亏</label><strong id="account-position-profit">--</strong></div>
+        <div class="metric"><label title="柜台 PositionProfit：昨仓按昨结算价、今仓按开仓价">持仓盈亏 · 盯市</label><strong id="account-position-profit">--</strong></div>
+        <div class="metric"><label title="各合约（L1 最新价 × 乘数 × 手数 − 柜台开仓成本）之和，空头取反；不含手续费">逐笔浮盈 · 累计</label><strong id="account-by-trade">--</strong></div>
         <div class="metric"><label>平仓盈亏</label><strong id="account-close-profit">--</strong></div>
         <div class="metric"><label>当日手续费</label><strong id="account-commission">--</strong></div>
       </div>
@@ -418,6 +419,38 @@
       const total=values.reduce((n,v)=>n+v.amount,0);
       return Number.isFinite(total)?total:null;
     }
+    const sideLots = (g,s) => g.positions.filter(p=>p.side===s).reduce((n,p)=>n+p.position.today+p.position.yesterday,0);
+    // By-trade floating P&L: the counter's open cost of exactly the live lots against the L1 last price.
+    function byTrade(g) {
+      const costs=g.costs, mark=g.mark;
+      if(!Number(costs?.observed_us)) return {amount:null,reason:'等待柜台持仓查询'};
+      if(!mark || !Number.isInteger(mark.contract_multiple) || mark.contract_multiple<=0) return {amount:null,reason:'等待合约资料与 L1 行情'};
+      if(!validPrice(mark.last_price)) return {amount:null,reason:'等待 L1 最新成交价'};
+      const sides=[];
+      for(const s of ['buy','sell']) {
+        const lots=sideLots(g,s), row=costs.rows.find(r=>r.venue===g.venue && r.symbol===g.symbol && r.side===s);
+        if(!lots && !row) continue;
+        if(!row || row.lots!==lots) return {amount:null,reason:'持仓已变化，等待下一次柜台持仓查询'};
+        const value=lots*mark.contract_multiple*mark.last_price;
+        sides.push({side:s,amount:s==='buy'?value-row.open_cost:row.open_cost-value,
+          openPrice:row.open_cost/(lots*mark.contract_multiple),marked:row.position_profit});
+      }
+      const amount=sides.reduce((n,x)=>n+x.amount,0), marked=sides.reduce((n,x)=>n+x.marked,0);
+      if(!Number.isFinite(amount)) return {amount:null,reason:'估值超出数值范围'};
+      return {amount,sides,marked,price:mark.last_price,observedUs:costs.observed_us,historical:valuation(g).historical};
+    }
+    function byTradeCell(g) {
+      const v=byTrade(g);
+      if(v.amount===null) return `<span title="${escape(v.reason)}">--</span>`;
+      const basis='逐笔浮盈＝L1 最新价 '+v.price+' × 乘数 '+g.mark.contract_multiple+' × 手数 − 柜台开仓成本，空头取反；柜台盯市持仓盈亏 '+yuan(v.marked)+'；开仓成本查询于 '+time(v.observedUs)+(v.historical?'；历史行情':'');
+      return `<span class="${qtyClass(v.amount)}" title="${escape(basis)}">${escape(yuan(v.amount))}</span>`;
+    }
+    function totalByTrade(groups) {
+      const values=groups.map(byTrade);
+      if(values.some(v=>v.amount===null)) return null;
+      const total=values.reduce((n,v)=>n+v.amount,0);
+      return Number.isFinite(total)?total:null;
+    }
     const activeStrategy = row => row.attributed_lots !== 0 || row.signal_target_lots !== 0;
     function positionView(source) {
       const live=source.entry, saved=source.saved_entry;
@@ -439,7 +472,7 @@
           const key = JSON.stringify([source.source_id, venue, symbol]);
           if (!groups.has(key)) groups.set(key, {key,source,symbol,venue,positions:[],mark:marks.get(marketKey(venue,symbol)),
             tradingDay:snapshot?.trading_day,observedUs:snapshot?.observed_us,positionReady:snapshot?.position_ready,
-            historical:snapshot?.historical,l1Connected:snapshot?.l1_connected,long:0,short:0});
+            historical:snapshot?.historical,l1Connected:snapshot?.l1_connected,costs:snapshot?.position_costs,long:0,short:0});
           return groups.get(key);
         };
         for (const p of snapshot?.positions || []) {
@@ -555,6 +588,9 @@
         const historical=groups.filter(g=>g.mark?.kind===kind).some(g=>valuation(g).historical);
         $(id).title=amount===null?'估值资料不完整；查看各合约缺失原因':historical?'含历史行情估值；展开合约查看行情交易日和时刻':'L1 行情估值';
       }
+      const byTradeTotal=known?totalByTrade(groups):null;
+      $('account-by-trade').textContent=byTradeTotal===null?'--':yuan(byTradeTotal);
+      $('account-by-trade').title=byTradeTotal===null?'开仓成本或行情不完整；查看各合约缺失原因':groups.some(g=>byTrade(g).historical)?'含历史行情估值':'随 L1 最新价更新；开仓成本每 5 秒查询';
       $('valuation-coverage').textContent=known?groups.filter(g=>valuation(g).amount!==null).length+' / '+groups.length:'--';
       const priced=groups.map(valuation).filter(v=>v.amount!==null), historical=priced.some(v=>v.historical);
       const quoteDays=[...new Set(groups.filter(g=>g.mark?.trading_day).map(g=>String(g.mark.trading_day)))].sort();
@@ -587,14 +623,14 @@
       $('position-note').textContent = ready ? (observation.historical
         ? observation.label+' · '+time(observation.observed_us,true) : '') : "等待柜台持仓恢复";
       const strategyColumn = state.strategy ? '<th>净目标 · 手</th>' : '';
-      const columns = state.strategy ? 6 : 5;
-      $('position-head').innerHTML = `<tr><th>合约</th><th>柜台净仓 · 手</th>${strategyColumn}<th>净金额 · 元</th><th>状态</th><th>更新时间</th></tr>`;
+      const columns = state.strategy ? 7 : 6;
+      $('position-head').innerHTML = `<tr><th>合约</th><th>柜台净仓 · 手</th>${strategyColumn}<th>净金额 · 元</th><th>逐笔浮盈 · 元</th><th>状态</th><th>更新时间</th></tr>`;
       const content = groups.map((g,index) => {
         const open=detailOpen(g);
         const net=g.positionReady ? g.long-g.short : null;
         const target=g.attribution?.target_lots, phase=status(g.source);
         const targetCell=state.strategy ? `<td class="${qtyClass(target)}">${signed(target)}</td>` : '';
-        let html = `<tr class="aggregate-row ${g.historical||phase!=='observing'?'retained':''}" data-symbol="${escape(g.symbol)}"><td><span class="group-label"><button class="group-toggle" data-group="${index}" aria-expanded="${open}" aria-label="${open?'收起':'展开'} ${escape(g.symbol)}"></button>${contractLabel(g)}</span></td><td class="${qtyClass(net)}">${signed(net)}</td>${targetCell}<td class="net-amount">${net===null?'--':amountCell(g)}</td><td>${badge(phase)}</td><td>${time(g.observedUs)}</td></tr>`;
+        let html = `<tr class="aggregate-row ${g.historical||phase!=='observing'?'retained':''}" data-symbol="${escape(g.symbol)}"><td><span class="group-label"><button class="group-toggle" data-group="${index}" aria-expanded="${open}" aria-label="${open?'收起':'展开'} ${escape(g.symbol)}"></button>${contractLabel(g)}</span></td><td class="${qtyClass(net)}">${signed(net)}</td>${targetCell}<td class="net-amount">${net===null?'--':amountCell(g)}</td><td class="net-amount">${net===null?'--':byTradeCell(g)}</td><td>${badge(phase)}</td><td>${time(g.observedUs)}</td></tr>`;
         if (open) {
           const detail = g.attribution ? strategyDetails(g, phase==='observing' && !g.historical ? net : null) : state.strategy
             ? `<h3 class="strategy-heading">策略归因</h3><div class="position-detail strategy-message meta">${strategyMessage()}</div>` : '';
@@ -633,13 +669,15 @@
       return `${heading}<div class="position-detail strategy-detail"><table aria-label="${escape(g.symbol)} 因子信号"><thead><tr><th>因子</th><th>信号方向</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     }
     function brokerDetails(g) {
+      const pnl=byTrade(g), price=new Intl.NumberFormat("zh-CN",{maximumFractionDigits:4});
       const details = g.positions.map(p => {
-        const v=p.position;
-        return `<tr><td>${side(p.side)}</td><td>${fmt(v.today+v.yesterday)}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td></tr>`;
+        const v=p.position, x=pnl.sides?.find(s=>s.side===p.side);
+        const money=value=>x?`<span class="${qtyClass(value)}">${escape(yuan(value))}</span>`:`<span title="${escape(pnl.reason||'')}">--</span>`;
+        return `<tr><td>${side(p.side)}</td><td>${fmt(v.today+v.yesterday)}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${x?escape(price.format(x.openPrice)):'--'}</td><td>${money(x?.amount)}</td><td>${money(x?.marked)}</td></tr>`;
       }).join('');
       const v=valuation(g), mark=g.mark;
       const basis=mark?`${mark.kind==='option'?'净权利金市值':'净名义金额'}＝净手数 × 合约乘数 ${fmt(mark.contract_multiple)} × ${v.priceLabel||'L1 估值价'} ${v.price==null?'--':escape(String(v.price))}；行情交易日／时刻 ${escape(v.quoteTime||String(mark.trading_day||'--')+' '+(mark.native_time||'--'))} · ${escape(v.reason)}${v.historical?' · 历史行情':''}。`:'等待合约元数据与 L1 行情';
-      return `<div class="position-detail broker-detail"><div class="valuation-basis">${basis}</div><table aria-label="${escape(g.symbol)} 柜台持仓明细"><thead><tr><th>方向</th><th>持仓 · 手</th><th>今仓 · 手</th><th>昨仓 · 手</th></tr></thead><tbody>${details}</tbody></table></div>`;
+      return `<div class="position-detail broker-detail"><div class="valuation-basis">${basis}</div><table aria-label="${escape(g.symbol)} 柜台持仓明细"><thead><tr><th>方向</th><th>持仓 · 手</th><th>今仓 · 手</th><th>昨仓 · 手</th><th title="柜台开仓成本 ÷（手数 × 乘数）">开仓均价</th><th title="L1 最新价对开仓成本，空头取反">逐笔浮盈 · 元</th><th title="柜台 PositionProfit，查询时刻">盯市盈亏 · 元</th></tr></thead><tbody>${details}</tbody></table></div>`;
     }
 
     function render() {
