@@ -1,6 +1,10 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新于 2026-11-24 06:01 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新于 2026-11-24 06:13 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-24 06:12 UTC，JP `binance_exec_sbh12` 启用实盘，继续使用
+`172.31.35.229/172.31.35.230`。启用时与 `binance_exec_sbh11` 的 `trade_engine.toml`
+逐字节一致，账户模式和启动后仓位核验见 [隔离核心分配登记](core_allocation.md)。
 
 2026-11-24，JP 新增 Binance USD-M `binance_exec_sbh12`，与 `binance_exec_sbh11`
 共用本地出口 `172.31.35.229/172.31.35.230`。绑定两个地址的币安只读签名请求均成功，
