@@ -568,9 +568,11 @@
     }
     function selectedSources() {
       const sources=[...state.sources.values()];
-      const selected=state.preferredSource
-        ? state.sources.get(state.preferredSource)
-        : sources.find(s=>s.adapter==='ctp') ?? sources[0];
+      const fallback=sources.find(s=>s.adapter==='ctp') ?? sources[0];
+      // Each account has its own Viz: a link naming another account still shows this one.
+      const preferred=state.preferredSource && state.sources.get(state.preferredSource);
+      state.missingSource=state.preferredSource && !preferred && fallback ? state.preferredSource : null;
+      const selected=preferred || fallback;
       const tabs=sources.map(s=>`<button type="button" role="tab" data-source="${escape(s.source_id)}" aria-selected="${s===selected}">${adapterName(s)}</button>`).join('');
       if ($('source-tabs').innerHTML!==tabs) $('source-tabs').innerHTML=tabs;
       $('source-tabs').hidden=sources.length<=1;
@@ -615,6 +617,7 @@
           ? '柜台进程已退出，恢复后需重新对账' : s.entry?.reason;
         return [s.error,reason,phase==='stale'?'持仓心跳过期，保留最后已知仓位':null].filter(Boolean).map(detail=>adapterName(s)+'：'+detail);
       });
+      if (state.missingSource) problems.unshift(`链接指定的柜台 ${state.missingSource} 不在本页；每个账户有独立的 Viz，当前显示 ${sources[0]?.label ?? '本页柜台'}`);
       $('notice').hidden=!problems.length; $('notice').textContent=problems.join(' · '); $('notice').className='meta stale';
     }
     function renderPositions(sources, groups) {
