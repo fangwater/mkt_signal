@@ -173,6 +173,9 @@ struct Stream {
     recent: VecDeque<cn_market_proto::MinuteBar>,
     gap_start: Option<i64>,
     gaps: Vec<(i64, i64)>,
+    /// Set by each live alignment; cleared once the first fresh live input
+    /// lets the newest undecided bar decide (see `Engine::catch_up`).
+    catch_up_due: bool,
 }
 impl Stream {
     fn phase<'a>(
@@ -277,6 +280,7 @@ impl Stream {
     }
     fn activate(&mut self) {
         self.aligned = true;
+        self.catch_up_due = true;
         self.minutes = Vec::new();
         self.pending = recovery::Buffer::default();
         if let Some(input) = self.input.as_mut() {
@@ -994,6 +998,27 @@ async fn run_worker(worker: Worker) -> Result<()> {
             load_start = history_begin(&cfg);
             loaded = false;
             next_fetch = tokio::time::Instant::now();
+        }
+        // The newest warm-up bar decides once the live feed is fresh, with the
+        // active trading day, exactly as an always-running process would have.
+        if stream.catch_up_due && stream.ready() && health.error().is_none() {
+            stream.catch_up_due = false;
+            let hourly = engine.catch_up(current.trading_day)?;
+            let minutes = stream
+                .extras
+                .as_mut()
+                .context("missing minute frequency states")?
+                .catch_up(current.trading_day)?;
+            if hourly.is_some() || !minutes.is_empty() {
+                // Publish now: the decision is fresh even though its bar is not.
+                saved_decision = Some((chrono::Utc::now().timestamp_millis(), current.trading_day));
+                println!(
+                    "{}",
+                    json!({"type":"catch_up_decision","contract":current.contract,
+                    "trading_day":current.trading_day,"hour_bar_end_ms":hourly,
+                    "frequencies":minutes,"targets":engine.targets()})
+                );
+            }
         }
         // Persist every new factual decision before any await or factor rebuild.
         if engine.ledger.last_decision_ms != decision_before {

@@ -1758,3 +1758,58 @@ fn completed_repair_uses_missing_history_and_preserves_good_redis_and_target() {
     assert_eq!(rebuilt.minutes, 2);
     assert_eq!(rebuilt.trade[3], trusted.close);
 }
+
+#[test]
+fn catch_up_decides_the_newest_warm_up_bar_once_like_a_live_close() {
+    let mut cfg: Config =
+        serde_json::from_str(include_str!("../../config/cta_cn_futures_01.json")).unwrap();
+    let publication = cfg.publication.as_mut().unwrap();
+    publication.products.clear();
+    publication.retire_hourly_factor_members = false;
+    cfg.rules.retain(|rule| rule.factor == "td_pr_012");
+    cfg.validate().unwrap();
+    let ledger = Ledger {
+        contract: "sn2612".into(),
+        ..Ledger::default()
+    };
+    // Reference: the same final bar decided live by an always-running process.
+    let mut live = Engine::new(&cfg, ledger.clone()).unwrap();
+    for i in 0..200 {
+        live.observe(&hour(i), "sn2612", 1., false).unwrap();
+    }
+    assert!(live.observe(&hour(200), "sn2612", 1., true).unwrap());
+
+    let mut warmed = Engine::new(&cfg, ledger.clone()).unwrap();
+    for i in 0..201 {
+        warmed.observe(&hour(i), "sn2612", 1., false).unwrap();
+    }
+    assert!(warmed.ready());
+    assert!(warmed.ledger == ledger, "warm-up alone never decides");
+    let end = warmed.last_end_ms;
+    assert_eq!(warmed.catch_up(20261124).unwrap(), Some(end));
+    assert!(
+        warmed.ledger == live.ledger,
+        "same decision as the live close"
+    );
+    assert_eq!(warmed.last_decision_day, Some(20261124));
+    assert_eq!(warmed.targets(), live.targets());
+    for state in &warmed.latest {
+        let key = state.id.as_deref().unwrap_or(&state.factor);
+        assert_eq!(state.flag, *warmed.ledger.flags.get(key).unwrap_or(&0));
+    }
+    assert_eq!(warmed.catch_up(20261124).unwrap(), None, "once only");
+
+    // A bar that already decided live, or an older decision clock, never repeats.
+    let mut restarted = Engine::new(&cfg, live.ledger.clone()).unwrap();
+    for i in 0..201 {
+        restarted.observe(&hour(i), "sn2612", 1., false).unwrap();
+    }
+    assert_eq!(restarted.catch_up(20261124).unwrap(), None);
+    assert!(restarted.ledger == live.ledger);
+    let mut decided = Engine::new(&cfg, ledger).unwrap();
+    for i in 0..200 {
+        decided.observe(&hour(i), "sn2612", 1., false).unwrap();
+    }
+    assert!(decided.observe(&hour(200), "sn2612", 1., true).unwrap());
+    assert_eq!(decided.catch_up(20261124).unwrap(), None);
+}

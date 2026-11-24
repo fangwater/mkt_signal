@@ -305,6 +305,7 @@ impl Ledger {
     }
 }
 
+#[derive(Clone)]
 struct ObservedRule {
     rule: Rule,
     field: Field,
@@ -339,6 +340,16 @@ pub struct Engine {
     pub last_end_ms: i64,
     pub hours: usize,
     observations: VecDeque<(Bar, String, f64)>,
+    /// Inputs of the newest fully ready bar that did not decide (warm-up or
+    /// stale); `catch_up` decides it once if nothing newer has.
+    undecided: Option<Undecided>,
+}
+#[derive(Clone)]
+struct Undecided {
+    points: Vec<ObservedRule>,
+    nq: BTreeMap<String, Field>,
+    end_ms: i64,
+    contract: String,
 }
 impl Engine {
     pub fn new(cfg: &Config, ledger: Ledger) -> Result<Self> {
@@ -401,6 +412,7 @@ impl Engine {
             last_end_ms: 0,
             hours: 0,
             observations: VecDeque::new(),
+            undecided: None,
         })
     }
     pub fn reconfigure(&self, cfg: &Config) -> Result<Self> {
@@ -517,26 +529,16 @@ impl Engine {
         let publish =
             self.cfg.enabled && live && all_ready && hour.end_ms > self.ledger.last_decision_ms;
         if publish {
-            let (direction, flags) = self.decide(&points, &nq, hour.end_ms)?;
-            if self.ledger.contract != contract {
-                if !self.ledger.contract.is_empty()
-                    && !self
-                        .ledger
-                        .retired_contracts
-                        .contains(&self.ledger.contract)
-                {
-                    self.ledger
-                        .retired_contracts
-                        .push(self.ledger.contract.clone());
-                }
-                self.ledger.contract = contract.into();
-            }
-            self.ledger.flags = flags;
-            self.ledger.lots_per_rule = 1;
-            self.ledger.position_algorithm = self.cfg.position_algorithm;
-            self.ledger.target_direction = Some(direction);
-            self.ledger.last_decision_ms = hour.end_ms;
+            self.commit(&points, &nq, hour.end_ms, contract)?;
             self.last_decision_day = Some(hour.trading_day);
+            self.undecided = None;
+        } else {
+            self.undecided = (self.cfg.enabled && all_ready).then(|| Undecided {
+                points: points.clone(),
+                nq: nq.clone(),
+                end_ms: hour.end_ms,
+                contract: contract.into(),
+            });
         }
         self.latest = points
             .into_iter()
@@ -564,6 +566,60 @@ impl Engine {
             self.observations.pop_front();
         }
         Ok(publish)
+    }
+    /// Applies one decision to the factual ledger.
+    fn commit(
+        &mut self,
+        points: &[ObservedRule],
+        nq: &BTreeMap<String, Field>,
+        end_ms: i64,
+        contract: &str,
+    ) -> Result<()> {
+        let (direction, flags) = self.decide(points, nq, end_ms)?;
+        if self.ledger.contract != contract {
+            if !self.ledger.contract.is_empty()
+                && !self
+                    .ledger
+                    .retired_contracts
+                    .contains(&self.ledger.contract)
+            {
+                self.ledger
+                    .retired_contracts
+                    .push(self.ledger.contract.clone());
+            }
+            self.ledger.contract = contract.into();
+        }
+        self.ledger.flags = flags;
+        self.ledger.lots_per_rule = 1;
+        self.ledger.position_algorithm = self.cfg.position_algorithm;
+        self.ledger.target_direction = Some(direction);
+        self.ledger.last_decision_ms = end_ms;
+        Ok(())
+    }
+    /// Decides the newest closed bar once when it never decided live, e.g. the
+    /// session's final bar loaded during a warm-up after the close. A process
+    /// running through that close would have published the same standing
+    /// target, so both paths execute it at the next open. Only the newest bar
+    /// qualifies, and only if no later bar has decided. `trading_day` is the
+    /// active native day the target is published and executed in.
+    pub fn catch_up(&mut self, trading_day: u32) -> Result<Option<i64>> {
+        let Some(bar) = self.undecided.take() else {
+            return Ok(None);
+        };
+        if !self.cfg.enabled
+            || bar.end_ms != self.last_end_ms
+            || bar.end_ms <= self.ledger.last_decision_ms
+        {
+            return Ok(None);
+        }
+        self.commit(&bar.points, &bar.nq, bar.end_ms, &bar.contract)?;
+        self.last_decision_day = Some(trading_day);
+        for state in &mut self.latest {
+            let key = state.id.as_deref().unwrap_or(&state.factor);
+            state.flag = *self.ledger.flags.get(key).unwrap_or(&0);
+            state.target_lots = i32::from(state.flag);
+        }
+        Ok(Some(bar.end_ms))
     }
     fn decide(
         &self,

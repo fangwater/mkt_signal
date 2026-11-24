@@ -35,6 +35,18 @@ impl Extras {
         }
     }
 
+    /// Same once-only catch-up as the hourly engine, per healthy frequency.
+    pub(super) fn catch_up(&mut self, trading_day: u32) -> Result<Vec<(&'static str, i64)>> {
+        let mut decided = Vec::new();
+        for (interval, slot) in &mut self.slots {
+            if slot.error.is_none() {
+                if let Some(end_ms) = slot.engine.catch_up(trading_day)? {
+                    decided.push((interval.name(), end_ms));
+                }
+            }
+        }
+        Ok(decided)
+    }
     pub(super) fn last_live_decision(&self) -> Option<(i64, u32)> {
         self.slots
             .values()
