@@ -1,6 +1,10 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新于 2026-11-18 09:25 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新于 2026-11-24 06:01 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-24，JP 新增 Binance USD-M `binance_exec_sbh12`，与 `binance_exec_sbh11`
+共用本地出口 `172.31.35.229/172.31.35.230`。绑定两个地址的币安只读签名请求均成功，
+Manager 的 Kline 和 funding 出口排除配置纳入该环境。账户监控已上线，交易进程未启动。
 
 2026-11-18 09:20 UTC，JP 跨所账户启用 Spread01 和 Spread02。OKX `okex_exec_trade01`
 从 `172.31.35.229/172.31.35.230` 执行，Binance `binance_exec_spread01` 从
@@ -1140,8 +1144,8 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 | 私网 IP | 公网 IP | 状态 | 当前用途 |
 | --- | --- | --- | --- |
 | `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；RX01/03分别接Exec06/07，Exec02–04的首地址；新 `binance_exec_spread01` 为81857独立只读环境。旧trade08/RX02停止，IOTA尾仓未动；trade05已归档 |
-| `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_exec_trade01 local_ips[0]`；不同子账户 `okex_mm_83777`、`binance_exec_sbh11 local_ips[0]` 共用 |
-| `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_exec_trade01 local_ips[1]`；不同子账户 `okex_mm_83777`、`binance_exec_sbh11 local_ips[1]` 共用 |
+| `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_exec_trade01 local_ips[0]`；不同子账户 `okex_mm_83777`、`binance_exec_sbh11 local_ips[0]`、`binance_exec_sbh12 local_ips[0]` 共用 |
+| `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_exec_trade01 local_ips[1]`；不同子账户 `okex_mm_83777`、`binance_exec_sbh11 local_ips[1]`、`binance_exec_sbh12 local_ips[1]` 共用 |
 | `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb02`–`04`、`gate_fr_arb01`/`03`/`04`/`05`（01/03/04于11-12恢复含signal的全部服务，05继续停止）、`bitget_fr_arb01`/`02`/`03`；Bitget 01于11-12发布，02/03保持原版运行 |
 | `172.31.35.232` | `54.238.97.67` | 已使用 | `gate_fr_arb02`（11-12恢复含signal的全部服务）、`bybit_fr_arb01` `local_ips[0]` |
 | `172.31.35.233` | `54.64.165.84` | 已使用 | `gate_fr_arb02`（11-12恢复含signal的全部服务）、`bybit_fr_arb01` `local_ips[1]` |
