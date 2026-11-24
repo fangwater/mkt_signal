@@ -757,20 +757,22 @@ impl SpreadPbsApp {
             && !adapter
                 .build_incremental_subscribe(&initial_symbols)
                 .is_empty();
-        let gate_rpi_depths = gate_rpi::depths_from_env()?;
-        let gate_rpi_supported = venue == TradingVenue::GateFutures
-            && market_data_provider == MarketDataProvider::Native
-            && replacement_enabled;
-        let gate_rpi_depths = if gate_rpi_depths.is_empty() || gate_rpi_supported {
-            gate_rpi_depths
-        } else {
-            log::warn!(
-                "spread_pbs[{}] {}={:?} ignored: Gate RPI depth only runs on native gate-futures market-data roles",
-                venue_slug,
-                gate_rpi::ENV_GATE_RPI_DEPTHS,
-                gate_rpi_depths,
-            );
-            Vec::new()
+        let gate_rpi_market = gate_rpi::RpiMarket::for_venue(venue)
+            .filter(|_| market_data_provider == MarketDataProvider::Native && replacement_enabled);
+        let (gate_rpi_depths, gate_rpi_env) = match gate_rpi_market {
+            Some(market) => gate_rpi::depths_from_env(market)?,
+            None => {
+                if let Some(requested) = gate_rpi::any_depths_requested() {
+                    if venue_slug.starts_with("gate-") {
+                        log::warn!(
+                            "spread_pbs[{}] {} ignored: Gate RPI depth only runs on native gate-futures/gate-margin market-data roles",
+                            venue_slug,
+                            requested,
+                        );
+                    }
+                }
+                (Vec::new(), None)
+            }
         };
         let direct_derivatives_enabled = enable_derivatives
             && replacement_enabled
@@ -793,15 +795,14 @@ impl SpreadPbsApp {
             ENV_ENABLE_DERIVATIVES,
             env::var(ENV_ENABLE_DERIVATIVES).ok(),
         );
-        log::info!(
-            "spread_pbs[{}] gate_rpi depths={:?} env {}={:?} {}={:?}",
-            venue_slug,
-            gate_rpi_depths,
-            gate_rpi::ENV_GATE_RPI_DEPTHS,
-            env::var(gate_rpi::ENV_GATE_RPI_DEPTHS).ok(),
-            gate_rpi::ENV_GATE_RPI_SYMBOLS,
-            env::var(gate_rpi::ENV_GATE_RPI_SYMBOLS).ok(),
-        );
+        if gate_rpi_market.is_some() {
+            log::info!(
+                "spread_pbs[{}] gate_rpi depths={:?} env={:?}",
+                venue_slug,
+                gate_rpi_depths,
+                gate_rpi_env,
+            );
+        }
         let initial_subs = if is_binance_futures_market_role {
             Vec::new()
         } else {
@@ -1158,20 +1159,22 @@ impl SpreadPbsApp {
             derivatives_publisher.clone(),
             state.clone(),
         );
-        let gate_rpi_streams = if gate_rpi_depths.is_empty() {
-            Vec::new()
-        } else {
-            let (legs, streams) = gate_rpi::spawn(
-                &self.publishers,
-                publish_roots.dat_root(),
-                &initial_symbols,
-                &gate_rpi_depths,
-                &primary_local_ip,
-                self.config.data_types.max_levels_per_msg,
-                Duration::from_secs(self.config.restart_duration_secs),
-            )?;
-            direct_extra_legs.extend(legs);
-            streams
+        let gate_rpi_streams = match gate_rpi_market {
+            Some(market) if !gate_rpi_depths.is_empty() => {
+                let (legs, streams) = gate_rpi::spawn(
+                    market,
+                    &self.publishers,
+                    publish_roots.dat_root(),
+                    &initial_symbols,
+                    &gate_rpi_depths,
+                    &primary_local_ip,
+                    self.config.data_types.max_levels_per_msg,
+                    Duration::from_secs(self.config.restart_duration_secs),
+                )?;
+                direct_extra_legs.extend(legs);
+                streams
+            }
+            _ => Vec::new(),
         };
         let funding_task = if market_data_provider == MarketDataProvider::RapidX
             && matches!(

@@ -1,4 +1,6 @@
-//! Gate USDT futures RPI order book (`futures.rpi_obu`) → `dat_pbs/gate-futures-rpi/incremental_depth_{50,400}`.
+//! Gate RPI order book (`futures.rpi_obu` / `spot.rpi_obu`) →
+//! `dat_pbs/gate-futures-rpi/incremental_depth_{50,400}` (USDT futures) and
+//! `dat_pbs/gate-margin-rpi/incremental_depth_{50,400}` (spot).
 //!
 //! The RPI book is the normal book plus RPI maker orders, which only RPI-enabled
 //! takers can fill. Gate pushes it only as Order Book V2 snapshots and deltas over
@@ -8,18 +10,18 @@
 //!
 //! Disabled unless `SPREAD_PBS_GATE_RPI_DEPTHS` lists depths (`50`, `400` or `50,400`).
 //! `SPREAD_PBS_GATE_RPI_SYMBOLS` optionally restricts the contracts (default: all
-//! spread_pbs symbols).
+//! spread_pbs symbols). `SPREAD_PBS_GATE_RPI_{FUTURES,SPOT}_{DEPTHS,SYMBOLS}` override
+//! the shared value for one market, e.g. to enable only futures in a `gate-both` process.
 
 use super::*;
+use crate::spread_pbs::adapter::KeepaliveSpec;
 use crate::spread_pbs::adapter::SubscriptionAckPolicy;
-use crate::spread_pbs::gate_sbe::GateSbeAdapter;
+use crate::spread_pbs::gate_sbe::{GateSbeAdapter, GateSpotSbeAdapter};
 use mkt_parsers::gate as gate_codec;
 use std::cell::Cell;
 
 pub(super) const ENV_GATE_RPI_DEPTHS: &str = "SPREAD_PBS_GATE_RPI_DEPTHS";
 pub(super) const ENV_GATE_RPI_SYMBOLS: &str = "SPREAD_PBS_GATE_RPI_SYMBOLS";
-const RPI_VENUE_SLUG: &str = "gate-futures-rpi";
-const RPI_CHANNEL: &str = "futures.rpi_obu";
 /// Gate only accepts 50 (20ms) and 400 (100ms). Other depths are acknowledged but never pushed.
 const SUPPORTED_DEPTHS: [u32; 2] = [50, 400];
 const RPI_SUBSCRIBE_CHUNK: usize = 100;
@@ -30,7 +32,88 @@ const MAX_LEVELS_PER_MSG_CAP: usize = 100;
 /// silent this long, Gate may have reset its ids; accept the snapshot as a new baseline.
 const STALE_SNAPSHOT_RESET_AFTER: Duration = Duration::from_secs(5);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RpiMarket {
+    Futures,
+    Spot,
+}
+
+impl RpiMarket {
+    pub(super) fn for_venue(venue: TradingVenue) -> Option<Self> {
+        match venue {
+            TradingVenue::GateFutures => Some(Self::Futures),
+            TradingVenue::GateMargin => Some(Self::Spot),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Futures => "futures",
+            Self::Spot => "spot",
+        }
+    }
+
+    fn venue_slug(self) -> &'static str {
+        match self {
+            Self::Futures => "gate-futures-rpi",
+            Self::Spot => "gate-margin-rpi",
+        }
+    }
+
+    fn channel(self) -> &'static str {
+        match self {
+            Self::Futures => "futures.rpi_obu",
+            Self::Spot => "spot.rpi_obu",
+        }
+    }
+
+    /// Same SBE endpoints (schemaId=1) and keepalive as the main Gate adapters.
+    fn ws_url(self) -> String {
+        match self {
+            Self::Futures => GateSbeAdapter::new().ws_url(),
+            Self::Spot => GateSpotSbeAdapter::new().ws_url(),
+        }
+    }
+
+    fn keepalive(self) -> Option<KeepaliveSpec> {
+        match self {
+            Self::Futures => GateSbeAdapter::new().keepalive(),
+            Self::Spot => GateSpotSbeAdapter::new().keepalive(),
+        }
+    }
+
+    fn pong_channel(self) -> &'static str {
+        match self {
+            Self::Futures => "\"futures.pong\"",
+            Self::Spot => "\"spot.pong\"",
+        }
+    }
+
+    fn env_override(self, shared: &str) -> String {
+        shared.replacen(
+            "SPREAD_PBS_GATE_RPI_",
+            &format!("SPREAD_PBS_GATE_RPI_{}_", self.label().to_ascii_uppercase()),
+            1,
+        )
+    }
+
+    /// Market-specific env var if set, else the shared one.
+    fn env_value(self, shared: &str) -> Option<(String, String)> {
+        let specific = self.env_override(shared);
+        env::var(&specific)
+            .ok()
+            .map(|value| (specific, value))
+            .or_else(|| {
+                env::var(shared)
+                    .ok()
+                    .map(|value| (shared.to_string(), value))
+            })
+    }
+}
+
 pub(super) struct RpiStream {
+    market: RpiMarket,
     depth: u32,
     service_name: String,
     state: Rc<RefCell<SharedState>>,
@@ -38,21 +121,31 @@ pub(super) struct RpiStream {
     stale_snapshot_resets: Rc<Cell<u64>>,
 }
 
-pub(super) fn depths_from_env() -> Result<Vec<u32>> {
-    match env::var(ENV_GATE_RPI_DEPTHS) {
-        Ok(raw) => parse_depths(&raw),
-        Err(_) => Ok(Vec::new()),
+/// Requested depths for a market and the env var they came from (for logging).
+pub(super) fn depths_from_env(market: RpiMarket) -> Result<(Vec<u32>, Option<String>)> {
+    match market.env_value(ENV_GATE_RPI_DEPTHS) {
+        Some((name, raw)) => Ok((parse_depths(&name, &raw)?, Some(format!("{name}={raw}")))),
+        None => Ok((Vec::new(), None)),
     }
 }
 
-fn parse_depths(raw: &str) -> Result<Vec<u32>> {
+/// Depths requested by any Gate RPI env var, used to warn on non-Gate venues.
+pub(super) fn any_depths_requested() -> Option<String> {
+    [RpiMarket::Futures, RpiMarket::Spot]
+        .into_iter()
+        .filter_map(|market| market.env_value(ENV_GATE_RPI_DEPTHS))
+        .find(|(_, raw)| !raw.trim().is_empty())
+        .map(|(name, raw)| format!("{name}={raw}"))
+}
+
+fn parse_depths(env_name: &str, raw: &str) -> Result<Vec<u32>> {
     let mut depths = Vec::new();
     for item in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         let depth: u32 = item
             .parse()
-            .with_context(|| format!("{ENV_GATE_RPI_DEPTHS}: invalid depth {item:?}"))?;
+            .with_context(|| format!("{env_name}: invalid depth {item:?}"))?;
         if !SUPPORTED_DEPTHS.contains(&depth) {
-            bail!("{ENV_GATE_RPI_DEPTHS}: depth {depth} not supported by Gate (use 50 and/or 400)");
+            bail!("{env_name}: depth {depth} not supported by Gate (use 50 and/or 400)");
         }
         if !depths.contains(&depth) {
             depths.push(depth);
@@ -62,9 +155,11 @@ fn parse_depths(raw: &str) -> Result<Vec<u32>> {
     Ok(depths)
 }
 
-fn symbols_from_env(default: &[String]) -> Vec<String> {
-    let raw = env::var(ENV_GATE_RPI_SYMBOLS).unwrap_or_default();
-    parse_symbols(&raw).unwrap_or_else(|| default.to_vec())
+fn symbols_from_env(market: RpiMarket, default: &[String]) -> Vec<String> {
+    market
+        .env_value(ENV_GATE_RPI_SYMBOLS)
+        .and_then(|(_, raw)| parse_symbols(&raw))
+        .unwrap_or_else(|| default.to_vec())
 }
 
 fn parse_symbols(raw: &str) -> Option<Vec<String>> {
@@ -82,7 +177,7 @@ fn channel_name(depth: u32) -> String {
     format!("incremental_depth_{depth}")
 }
 
-fn build_subscribe(symbols: &[String], depth: u32) -> Vec<serde_json::Value> {
+fn build_subscribe(market: RpiMarket, symbols: &[String], depth: u32) -> Vec<serde_json::Value> {
     symbols
         .chunks(RPI_SUBSCRIBE_CHUNK)
         .map(|chunk| {
@@ -92,7 +187,7 @@ fn build_subscribe(symbols: &[String], depth: u32) -> Vec<serde_json::Value> {
                 .collect();
             serde_json::json!({
                 "time": get_timestamp_us() / 1_000_000,
-                "channel": RPI_CHANNEL,
+                "channel": market.channel(),
                 "event": "subscribe",
                 "payload": streams,
             })
@@ -192,17 +287,19 @@ fn dedup_policy_for(
     }
 }
 
-/// Subscribe acks are consumed by the ws loop and `futures.pong` answers our own
+/// Subscribe acks are consumed by the ws loop and `*.pong` answers our own
 /// keepalive; anything else (e.g. `futures.system` notices) is worth a warning.
-fn log_text_notice(label: &str, raw: &[u8]) {
+fn log_text_notice(market: RpiMarket, label: &str, raw: &[u8]) {
     let text = String::from_utf8_lossy(&raw[..raw.len().min(512)]);
-    if text.contains("\"futures.pong\"") {
+    if text.contains(market.pong_channel()) {
         return;
     }
     log::warn!("spread_pbs ws[{label}] gate rpi unexpected text frame: {text}");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_handler(
+    market: RpiMarket,
     label: String,
     depth: u32,
     publisher: Rc<SpreadIncrementalPublisher>,
@@ -214,13 +311,13 @@ fn make_handler(
     let continuity = RefCell::new(LegContinuity::default());
     Rc::new(move |_recv_us: i64, raw: &[u8]| {
         if looks_like_json(raw) {
-            log_text_notice(&label, raw);
+            log_text_notice(market, &label, raw);
             return Ok(());
         }
-        let Some(frame) = gate_codec::parse_futures_sbe_obu(raw) else {
+        let Some(frame) = gate_codec::parse_sbe_obu(raw) else {
             return Ok(());
         };
-        if frame.channel != RPI_CHANNEL || frame.depth != depth {
+        if frame.channel != market.channel() || frame.depth != depth {
             return Ok(());
         }
         let verdict = continuity.borrow_mut().check(&frame.book);
@@ -270,6 +367,7 @@ fn make_handler(
 /// Spawn A/B legs per subscribe batch for every requested depth.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn(
+    market: RpiMarket,
     publishers: &SpreadPbsPublisherPool,
     dat_root: &str,
     default_symbols: &[String],
@@ -278,20 +376,20 @@ pub(super) fn spawn(
     max_levels_per_msg: Option<usize>,
     restart_duration: Duration,
 ) -> Result<(Vec<WsLeg>, Vec<RpiStream>)> {
-    let symbols = symbols_from_env(default_symbols);
+    let symbols = symbols_from_env(market, default_symbols);
     let max_levels = max_levels_per_msg
         .filter(|max| *max > 0)
         .unwrap_or(MAX_LEVELS_PER_MSG_CAP)
         .min(MAX_LEVELS_PER_MSG_CAP);
-    let gate = GateSbeAdapter::new();
+    let slug = market.venue_slug();
     let mut legs = Vec::new();
     let mut streams = Vec::new();
     for &depth in depths {
         let channel = channel_name(depth);
         let publisher = Rc::new(
             publishers
-                .incremental_channel_for(RPI_VENUE_SLUG, dat_root, &channel)
-                .with_context(|| format!("create gate rpi publisher {RPI_VENUE_SLUG}/{channel}"))?,
+                .incremental_channel_for(slug, dat_root, &channel)
+                .with_context(|| format!("create gate rpi publisher {slug}/{channel}"))?,
         );
         publisher
             .seed_symbols(&symbols)
@@ -299,9 +397,10 @@ pub(super) fn spawn(
         let state = Rc::new(RefCell::new(new_state(&symbols)));
         let gap_reconnects = Rc::new(Cell::new(0));
         let stale_snapshot_resets = Rc::new(Cell::new(0));
-        let subscribe_msgs = build_subscribe(&symbols, depth);
+        let subscribe_msgs = build_subscribe(market, &symbols, depth);
         log::info!(
-            "spread_pbs gate rpi depth={} service={} symbols={} batches={} max_levels_per_msg={}",
+            "spread_pbs gate rpi market={} depth={} service={} symbols={} batches={} max_levels_per_msg={}",
+            market.label(),
             depth,
             publisher.service_name(),
             symbols.len(),
@@ -310,8 +409,12 @@ pub(super) fn spawn(
         );
         for (batch_index, subscribe_msg) in subscribe_msgs.into_iter().enumerate() {
             for (replica_index, replica) in ["a", "b"].into_iter().enumerate() {
-                let label = format!("gate-rpi-{depth}-{batch_index}-{replica}");
+                let label = format!(
+                    "gate-rpi-{}-{depth}-{batch_index}-{replica}",
+                    market.label()
+                );
                 let handler = make_handler(
+                    market,
                     label.clone(),
                     depth,
                     publisher.clone(),
@@ -326,7 +429,7 @@ pub(super) fn spawn(
                     restart_duration / 2
                 };
                 let (tx, rx) = watch::channel(false);
-                let url = gate.ws_url();
+                let url = market.ws_url();
                 let handle = tokio::task::spawn_local(run_public_ws_with_ack_policy(
                     WsLoopParams {
                         label: label.clone(),
@@ -335,7 +438,7 @@ pub(super) fn spawn(
                         remote_ip: None,
                         headers: Vec::new(),
                         subscribe_msgs: vec![subscribe_msg.clone()],
-                        keepalive: gate.keepalive(),
+                        keepalive: market.keepalive(),
                         parse_okex_notices: false,
                         business_idle_timeout: Some(WS_BUSINESS_IDLE_TIMEOUT),
                         rolling_restart: Some(RollingRestartSpec {
@@ -358,6 +461,7 @@ pub(super) fn spawn(
             }
         }
         streams.push(RpiStream {
+            market,
             depth,
             service_name: publisher.service_name().to_string(),
             state,
@@ -372,8 +476,9 @@ pub(super) fn log_stats(streams: &[RpiStream]) {
     for stream in streams {
         let s = stream.state.borrow();
         log::info!(
-            "spread_pbs[{}] gate rpi depth={} stats incremental_published={} incremental_dropped_by_seq={} symbols_seen={} gap_reconnects={} stale_snapshot_resets={}",
+            "spread_pbs[{}] gate rpi market={} depth={} stats incremental_published={} incremental_dropped_by_seq={} symbols_seen={} gap_reconnects={} stale_snapshot_resets={}",
             stream.service_name,
+            stream.market.label(),
             stream.depth,
             s.incremental_published,
             s.incremental_dropped_by_seq,
@@ -411,12 +516,13 @@ mod tests {
 
     #[test]
     fn depths_default_off_and_only_accept_gate_supported_levels() {
-        assert!(parse_depths("").unwrap().is_empty());
-        assert!(parse_depths(" , ").unwrap().is_empty());
-        assert_eq!(parse_depths("400, 50,50").unwrap(), vec![50, 400]);
-        assert!(parse_depths("1").is_err());
-        assert!(parse_depths("20").is_err());
-        assert!(parse_depths("abc").is_err());
+        let env = ENV_GATE_RPI_DEPTHS;
+        assert!(parse_depths(env, "").unwrap().is_empty());
+        assert!(parse_depths(env, " , ").unwrap().is_empty());
+        assert_eq!(parse_depths(env, "400, 50,50").unwrap(), vec![50, 400]);
+        assert!(parse_depths(env, "1").is_err());
+        assert!(parse_depths(env, "20").is_err());
+        assert!(parse_depths(env, "abc").is_err());
     }
 
     #[test]
@@ -431,15 +537,45 @@ mod tests {
     #[test]
     fn subscribe_batches_rpi_streams_and_names_depth_channels() {
         let symbols: Vec<String> = (0..150).map(|i| format!("S{i}_USDT")).collect();
-        let msgs = build_subscribe(&symbols, 400);
+        let msgs = build_subscribe(RpiMarket::Futures, &symbols, 400);
         assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0]["channel"], RPI_CHANNEL);
+        assert_eq!(msgs[0]["channel"], "futures.rpi_obu");
         assert_eq!(msgs[0]["event"], "subscribe");
         assert_eq!(msgs[0]["payload"].as_array().unwrap().len(), 100);
         assert_eq!(msgs[0]["payload"][0], "rpi_ob.S0_USDT.400");
         assert_eq!(msgs[1]["payload"].as_array().unwrap().len(), 50);
         assert_eq!(channel_name(50), "incremental_depth_50");
         assert_eq!(channel_name(400), "incremental_depth_400");
+
+        let spot = build_subscribe(RpiMarket::Spot, &symbols[..1], 50);
+        assert_eq!(spot[0]["channel"], "spot.rpi_obu");
+        assert_eq!(spot[0]["payload"][0], "rpi_ob.S0_USDT.50");
+    }
+
+    #[test]
+    fn markets_map_gate_venues_to_rpi_services_and_endpoints() {
+        assert_eq!(
+            RpiMarket::for_venue(TradingVenue::GateFutures),
+            Some(RpiMarket::Futures)
+        );
+        assert_eq!(
+            RpiMarket::for_venue(TradingVenue::GateMargin),
+            Some(RpiMarket::Spot)
+        );
+        assert_eq!(RpiMarket::for_venue(TradingVenue::BinanceFutures), None);
+        assert_eq!(RpiMarket::Futures.venue_slug(), "gate-futures-rpi");
+        assert_eq!(RpiMarket::Spot.venue_slug(), "gate-margin-rpi");
+        assert!(RpiMarket::Futures.ws_url().contains("fx-ws.gateio.ws"));
+        assert!(RpiMarket::Spot.ws_url().contains("/spot/sbe"));
+        assert!(RpiMarket::Spot.ws_url().contains("sbe_schema_id=1"));
+        assert_eq!(
+            RpiMarket::Spot.env_override(ENV_GATE_RPI_DEPTHS),
+            "SPREAD_PBS_GATE_RPI_SPOT_DEPTHS"
+        );
+        assert_eq!(
+            RpiMarket::Futures.env_override(ENV_GATE_RPI_SYMBOLS),
+            "SPREAD_PBS_GATE_RPI_FUTURES_SYMBOLS"
+        );
     }
 
     #[test]
