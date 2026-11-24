@@ -93,7 +93,12 @@ impl Config {
                 "L1 ports cannot be zero"
             );
         }
-        ensure!(!self.counters.is_empty(), "configure at least one counter");
+        // Like its Exec, every live account environment runs its own Viz, so
+        // one account's frame or binary change never couples another's deploy.
+        ensure!(
+            self.counters.len() == 1,
+            "configure exactly one counter; run a separate Viz per account environment"
+        );
         ensure!(
             (100..=3_600_000).contains(&self.stale_after_ms),
             "invalid stale_after_ms"

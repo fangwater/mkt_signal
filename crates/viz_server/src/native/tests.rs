@@ -242,7 +242,12 @@ fn native_config_has_one_ipc_contract_and_safe_ws_path() {
         assert!(cfg.validate().is_err(), "{path}");
     }
     cfg.http.ws_path = "/ws".into();
-    cfg.counters.push(cfg.counters[0].clone());
+    let mut other = cfg.counters[0].clone();
+    other.id = "other".into();
+    other.position_namespace = "other".into();
+    cfg.counters.push(other);
+    assert!(cfg.validate().is_err(), "one Viz per account environment");
+    cfg.counters.clear();
     assert!(cfg.validate().is_err());
     let text = include_str!("../../../../config/cn_futures_viz.example.toml")
         .replace("<64-character account hash>", &"a".repeat(64));
@@ -419,7 +424,7 @@ async fn strategy_positions_forward_only_the_session_to_the_pinned_manager_sourc
         manager_port,
         cta_signal_port: Some(manager_port),
         l1: None,
-        counters: vec![ctp, source("paper")],
+        counters: vec![ctp],
     };
     let app = server::router(
         &cfg.http,

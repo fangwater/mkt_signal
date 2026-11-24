@@ -14,7 +14,13 @@ target/release/cn-futures-viz --config config/cn_futures_viz.toml --check-config
 target/release/cn-futures-viz --config config/cn_futures_viz.toml
 ```
 
-默认监听 `127.0.0.1:8811`。`--check-config` 只解析配置，不打开 IPC 或 SDK。用户指定 CTP 外部部署／执行主机为 `sh_dev`（`ssh sh_dev`）；本机和所有内网机器仅允许 CTP 编辑及编译，不运行 CTP SDK。当前公网 Viz 同时配置易达 paper 和 [CTP 只读环境](sh_dev_ctp.md)，使用独立 IPC namespace。页面默认选择 CTP，账户入口通过 `?source=<柜台 ID>` 预选对应柜台。切换标签会更新地址，便于刷新后继续查看同一账户。
+默认监听 `127.0.0.1:8811`。`--check-config` 只解析配置，不打开 IPC 或 SDK。用户指定 CTP 外部部署／执行主机为 `sh_dev`（`ssh sh_dev`）；本机和所有内网机器仅允许 CTP 编辑及编译，不运行 CTP SDK。**每个实盘／仿真账户环境运行自己的 Viz**，与该环境的 Exec、persist_manager 并列，配置中只能有一个 `[[counters]]`（多于一个时 `--check-config` 报错）。
+这样一个账户的帧格式或二进制变更只需替换该环境自己的三个进程，不牵连其他账户。易达环境由 `scripts/yida_paper_env.py` 的 `viz` 组件管理；
+CTP 环境由 `scripts/ctp_env.sh` 管理：`install` 同时安装 `<环境>-viz.service`，`start|stop [all|trader|viz]` 可单独启停 Viz，
+Viz 读取环境内 `config/viz.toml`，不加载 `env.sh` 凭据。各环境的 Viz 使用不同端口；`/account-funds/<manager_source_id>` 的消费方需指向该账户自己的 Viz。
+
+2026-11-24 之前，`sh_dev` 的 8811 Viz 同时配置易达 paper 和 [CTP 只读环境](sh_dev_ctp.md)。改为每个环境独立部署前，须先从 8811 的配置中移除 CTP 柜台，
+并在创元 CTP 环境内配置并启动它自己的 Viz，新版 Viz 才能通过配置校验。
 
 交易配置的根级：
 
@@ -110,8 +116,8 @@ CTP 按相关联的成功资金查询更新；易达未提供对应账户资金�
   按日期行保存，汇总后发布。该事件不进入会话、核心或 trader.log。任一行无法解码时，
   不再发布开仓成本，直到下一个 SDK 会话；`PositionCost` 恒为 0。
 - 该变更修改了 CTP 桥接事件布局（`RawEvent` 928→952 字节）、易达桥接事件布局（尾部增加两个 double）
-  和持仓 IPC bincode 帧。CTP/易达 Exec、`persist_manager`（`cn_native_persist` 解码两种控制事件）
-  与 Viz 必须同时替换。旧检查点无法解码时只告警，并等待新的实时快照。
+  和持仓 IPC bincode 帧。每个账户环境须同时替换自己的 Exec、`persist_manager`
+  （`cn_native_persist` 解码控制事件）与 Viz；不同账户环境互不影响。旧检查点无法解码时只告警，并等待新的实时快照。
 
 2026-11-16 发布后的连接异常期间，柜台前置拒绝连接，CTP 面板因缺少新账户快照显示未同步和未知资金。账户恢复记录见 [sh_dev 创元 CTP](sh_dev_ctp.md)。
 

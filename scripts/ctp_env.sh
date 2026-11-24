@@ -7,6 +7,9 @@ cd "$BASE_DIR"
 environment="${BASE_DIR##*/}"
 unit="$environment-trader.service"
 persist_unit="$environment-persist.service"
+# Like its Exec, every live account environment runs its own Viz (one counter).
+viz_unit="$environment-viz.service"
+viz_config="$BASE_DIR/config/viz.toml"
 # Exec and persist_manager share one iceoryx namespace (also the state IPC).
 export IPC_NAMESPACE="$environment"
 fifo="$BASE_DIR/run/commands.fifo"
@@ -46,7 +49,41 @@ PY
     esac
 }
 
-[[ $# == 1 ]] || fail "Usage: $0 {install|start|stop|status|state|run|persist}"
+usage="Usage: $0 {install|status|state|run|persist|viz} | {start|stop} [all|trader|viz]"
+[[ $# == 1 || ( $# == 2 && ( "$1" == start || "$1" == stop ) ) ]] || fail "$usage"
+component="${2:-all}"
+case "$component" in
+    all|trader|viz) ;;
+    *) fail "$usage" ;;
+esac
+
+start_trader() {
+    select_mode
+    "$BASE_DIR/bin/ctp-trader" "${args[@]}" --check-config
+    # persist_manager first: Exec publishes without waiting for anyone.
+    systemctl --user start "$persist_unit"
+    sleep 2
+    systemctl --user is-active --quiet "$persist_unit" || fail 'persist_manager failed to start'
+    systemctl --user start "$unit"
+}
+
+stop_trader() {
+    mkdir -p "$BASE_DIR/data/stops"
+    archive="$(mktemp -d "$BASE_DIR/data/stops/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
+    if [[ -f logs/trader.log ]]; then
+        cp -p -- logs/trader.log "$archive/"
+    fi
+    # systemd delivers SIGTERM; the Rust runtime drains and closes its writer.
+    systemctl --user stop "$unit"
+    # After the trader has drained, let persist_manager write the tail.
+    sleep 2
+    systemctl --user stop "$persist_unit"
+}
+
+check_viz() {
+    "$BASE_DIR/bin/cn-futures-viz" --config "$viz_config" --check-config
+}
+
 case "$1" in
     install)
         [[ "$environment" =~ ^[a-zA-Z0-9_-]+$ && "$BASE_DIR" =~ ^[/a-zA-Z0-9_.-]+$ ]] || fail 'unsupported environment path'
@@ -109,6 +146,36 @@ UNIT
         else
             mv -- "$persist_candidate" "$systemd_dir/$persist_unit"
         fi
+        viz_candidate="$(mktemp "$systemd_dir/.ctp-viz.XXXXXX")"
+        cat > "$viz_candidate" <<UNIT
+[Unit]
+Description=$environment read-only account Viz (this environment's counter only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$BASE_DIR
+ExecStart=/usr/bin/bash $BASE_DIR/scripts/ctp_env.sh viz
+CPUAffinity=3
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=35
+KillMode=control-group
+UMask=0077
+LimitNOFILE=65536
+StandardOutput=append:$BASE_DIR/logs/viz.log
+StandardError=append:$BASE_DIR/logs/viz.log
+
+[Install]
+WantedBy=default.target
+UNIT
+        if [[ -e "$systemd_dir/$viz_unit" ]]; then
+            cmp -s "$viz_candidate" "$systemd_dir/$viz_unit" || fail 'existing Viz unit differs; preserve operator configuration'
+            rm -f -- "$viz_candidate"
+        else
+            mv -- "$viz_candidate" "$systemd_dir/$viz_unit"
+        fi
         # Shared with the Yida environment: only cn_futures::restart exit 75 restarts.
         retry_config="$systemd_dir/$unit.d/10-cold-restart.conf"
         cat > "$retry_candidate" <<'EOF'
@@ -123,31 +190,20 @@ EOF
             mv -- "$retry_candidate" "$retry_config"
         fi
         systemctl --user daemon-reload
-        systemctl --user enable "$persist_unit" "$unit"
+        systemctl --user enable "$persist_unit" "$unit" "$viz_unit"
         ;;
     start)
-        select_mode
-        "$BASE_DIR/bin/ctp-trader" "${args[@]}" --check-config
-        # persist_manager first: Exec publishes without waiting for anyone.
-        systemctl --user start "$persist_unit"
-        sleep 2
-        systemctl --user is-active --quiet "$persist_unit" || fail 'persist_manager failed to start'
-        systemctl --user start "$unit"
+        # Validate the Viz config before touching the trader stack.
+        [[ "$component" == trader ]] || check_viz
+        [[ "$component" == viz ]] || start_trader
+        [[ "$component" == trader ]] || systemctl --user start "$viz_unit"
         ;;
     stop)
-        mkdir -p "$BASE_DIR/data/stops"
-        archive="$(mktemp -d "$BASE_DIR/data/stops/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
-        if [[ -f logs/trader.log ]]; then
-            cp -p -- logs/trader.log "$archive/"
-        fi
-        # systemd delivers SIGTERM; the Rust runtime drains and closes its writer.
-        systemctl --user stop "$unit"
-        # After the trader has drained, let persist_manager write the tail.
-        sleep 2
-        systemctl --user stop "$persist_unit"
+        [[ "$component" == viz ]] || stop_trader
+        [[ "$component" == trader ]] || systemctl --user stop "$viz_unit"
         ;;
     status)
-        systemctl --user show "$persist_unit" "$unit" --property=Id,ActiveState,SubState,MainPID,ExecMainStatus
+        systemctl --user show "$persist_unit" "$unit" "$viz_unit" --property=Id,ActiveState,SubState,MainPID,ExecMainStatus
         ;;
     state)
         check_fifo
@@ -168,5 +224,10 @@ EOF
         export RUST_LOG="${RUST_LOG:-info}"
         exec "$BASE_DIR/bin/persist_manager" --core 3
         ;;
-    *) fail "Usage: $0 {install|start|stop|status|state|run|persist}" ;;
+    viz)
+        # SDK-free and credential-free: env.sh is never sourced here.
+        export RUST_LOG="${RUST_LOG:-info}"
+        exec "$BASE_DIR/bin/cn-futures-viz" --config "$viz_config"
+        ;;
+    *) fail "$usage" ;;
 esac
