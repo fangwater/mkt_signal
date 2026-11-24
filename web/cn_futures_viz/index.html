@@ -590,7 +590,7 @@
       }
       const byTradeTotal=known?totalByTrade(groups):null;
       $('account-by-trade').textContent=byTradeTotal===null?'--':yuan(byTradeTotal);
-      $('account-by-trade').title=byTradeTotal===null?'开仓成本或行情不完整；查看各合约缺失原因':groups.some(g=>byTrade(g).historical)?'含历史行情估值':'随 L1 最新价更新；开仓成本每 5 秒查询';
+      $('account-by-trade').title=byTradeTotal===null?'开仓成本或行情不完整；查看各合约缺失原因':groups.some(g=>byTrade(g).historical)?'含历史行情估值':'随 L1 最新价更新；开仓成本来自柜台持仓';
       $('valuation-coverage').textContent=known?groups.filter(g=>valuation(g).amount!==null).length+' / '+groups.length:'--';
       const priced=groups.map(valuation).filter(v=>v.amount!==null), historical=priced.some(v=>v.historical);
       const quoteDays=[...new Set(groups.filter(g=>g.mark?.trading_day).map(g=>String(g.mark.trading_day)))].sort();

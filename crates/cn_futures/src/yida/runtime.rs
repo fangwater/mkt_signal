@@ -88,6 +88,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
     };
     let mut session = Session::default();
     let mut market = observation::MarketBook::default();
+    let mut position_costs = observation::PositionCostBook::default();
     let mut input = input_commands()?;
     let mut exec = config
         .exec
@@ -178,6 +179,14 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                 work = true;
                 let e = received.event;
                 journal.yida_event(&e, received.received_us, false)?;
+                // Display-only valuation rows never reach the session or core.
+                if e.kind == POSITION_COST {
+                    position_costs.observe(&e, received.received_us);
+                    continue;
+                }
+                if matches!(e.kind, CONNECTED | DISCONNECTED) {
+                    position_costs.clear();
+                }
                 if e.kind == CONNECTED {
                     if let Some(taker) = &mut exec {
                         taker.on_market_state(false, 0)?;
@@ -563,7 +572,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                 false,
                 crate::position_ipc::Observation {
                     account: None,
-                    position_costs: None,
+                    position_costs: position_costs.costs(),
                     marks: market.marks(),
                     connected: runtime.trader.l1_connected.load(Ordering::Acquire),
                     dropped: runtime.trader.l1_dropped.load(Ordering::Relaxed),

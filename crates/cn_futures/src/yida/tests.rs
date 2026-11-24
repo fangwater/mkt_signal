@@ -1180,3 +1180,49 @@ fn read_only_l1_is_explicit_and_does_not_expand_the_trading_allowlist() {
     .unwrap();
     assert_eq!(c.symbols.len(), count);
 }
+
+fn cost_row(date: i32, direction: i32, lots: i32, total_open_price: f64) -> RawEvent {
+    let mut e = row(POSITION_COST, "SHFE", "cu2612");
+    e.date = date;
+    e.position_direction = direction;
+    e.lots = lots;
+    e.contract_multiple = 5;
+    e.total_open_price = total_open_price;
+    e.position_profit = 10.0;
+    e
+}
+
+#[test]
+fn native_position_costs_sum_date_rows_in_money_and_drop_closed_rows() {
+    let mut book = observation::PositionCostBook::default();
+    assert!(book.costs().is_none());
+    book.observe(&cost_row(1, 2, 1, 80_000.0), 10);
+    book.observe(&cost_row(2, 2, 2, 158_000.0), 11);
+    book.observe(&cost_row(1, 3, 1, 81_000.0), 12);
+    let costs = book.costs().unwrap().clone();
+    costs.validate().unwrap();
+    assert_eq!(costs.observed_us, 12);
+    assert_eq!(costs.rows.len(), 2);
+    assert_eq!((costs.rows[0].side, costs.rows[0].lots), (Side::Buy, 3));
+    assert_eq!(costs.rows[0].open_cost, (80_000.0 + 158_000.0) * 5.0);
+    assert_eq!(costs.rows[0].position_profit, 20.0);
+    assert_eq!((costs.rows[1].side, costs.rows[1].lots), (Side::Sell, 1));
+
+    book.observe(&cost_row(1, 3, 0, 0.0), 13);
+    book.observe(&cost_row(1, 2, 0, 0.0), 14);
+    let costs = book.costs().unwrap();
+    assert_eq!(costs.rows.len(), 1);
+    assert_eq!(costs.rows[0].lots, 2);
+    assert_eq!(costs.rows[0].open_cost, 158_000.0 * 5.0);
+
+    let mut broken = cost_row(1, 2, 1, f64::NAN);
+    book.observe(&broken, 15);
+    assert!(book.costs().is_none(), "an undecodable row withholds costs");
+    broken.total_open_price = 1.0;
+    book.observe(&broken, 16);
+    assert!(book.costs().is_none(), "until the next SDK session");
+    book.clear();
+    assert!(book.costs().is_none());
+    book.observe(&cost_row(1, 2, 1, 80_000.0), 17);
+    assert_eq!(book.costs().unwrap().rows[0].lots, 1);
+}

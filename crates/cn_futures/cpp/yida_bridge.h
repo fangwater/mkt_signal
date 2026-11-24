@@ -26,6 +26,8 @@ struct CnYidaEvent {
     char connection_info[28], insert_flow[32], cancel_flow[32];
     char underlying[64], underlying_exchange[12];
     CnYidaAccount account;
+    // PositionCost rows only: TotalOpenPrice (sum of FIFO open prices, not money) and PositionProfit.
+    double total_open_price, position_profit;
 };
 struct CnYidaOrderRequest {
     char exchange[12], symbol[64];

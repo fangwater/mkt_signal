@@ -225,3 +225,118 @@ mod tests {
         assert_eq!(book.marks().len(), 1);
     }
 }
+
+/// Venue, symbol, side and native position date of one row.
+type CostKey = (Venue, Text<81>, cn_futures_state::Side, i32);
+/// Lots, open cost in money and native position profit of one row.
+type CostRow = (i32, f64, f64);
+
+/// Display-only native open costs from `POSITION_COST` rows, kept per
+/// position-date row and summed per venue/symbol/side when published.
+/// Never feeds positions, risk or orders.
+#[derive(Default)]
+pub struct PositionCostBook {
+    rows: HashMap<CostKey, CostRow>,
+    published: cn_futures_state::PositionCosts,
+    observed_us: u64,
+    dirty: bool,
+    invalid: bool,
+}
+impl PositionCostBook {
+    /// A new SDK session replays every row; nothing older survives it.
+    pub fn clear(&mut self) {
+        self.rows.clear();
+        self.published.rows.clear();
+        self.published.observed_us = 0;
+        self.observed_us = 0;
+        self.dirty = false;
+        self.invalid = false;
+    }
+    /// An undecodable row withholds costs until the next SDK session.
+    pub fn observe(&mut self, e: &super::RawEvent, now_us: u64) {
+        if let Err(error) = self.apply(e, now_us) {
+            if !self.invalid {
+                log::warn!("Yida position cost unavailable: {error:#}");
+            }
+            self.invalid = true;
+        }
+    }
+    fn apply(&mut self, e: &super::RawEvent, now_us: u64) -> Result<()> {
+        use cn_futures_state::Side;
+        let venue = e.venue()?;
+        let symbol: Text<81> = super::text(&e.symbol)?;
+        let side = match e.position_direction {
+            2 => Side::Buy,
+            3 => Side::Sell,
+            _ => anyhow::bail!("invalid native position direction"),
+        };
+        ensure!(
+            e.hedge == 1 && matches!(e.date, 1 | 2) && e.lots >= 0 && e.contract_multiple > 0,
+            "unsupported native position cost row"
+        );
+        let open_cost = e.total_open_price * f64::from(e.contract_multiple);
+        ensure!(
+            open_cost.is_finite() && e.position_profit.is_finite(),
+            "nonfinite native position cost"
+        );
+        let key = (venue, symbol, side, e.date);
+        if e.lots == 0 {
+            self.rows.remove(&key);
+        } else {
+            self.rows
+                .insert(key, (e.lots, open_cost, e.position_profit));
+        }
+        self.observed_us = now_us;
+        self.dirty = true;
+        Ok(())
+    }
+    /// Rebuilds the published sums in place after a change; reuses capacity.
+    pub fn costs(&mut self) -> Option<&cn_futures_state::PositionCosts> {
+        if self.invalid || self.observed_us == 0 {
+            return None;
+        }
+        if self.dirty {
+            let rows = &mut self.published.rows;
+            rows.clear();
+            for ((venue, symbol, side, _), (lots, open_cost, profit)) in &self.rows {
+                if let Some(row) = rows
+                    .iter_mut()
+                    .find(|r| r.venue == *venue && r.symbol == *symbol && r.side == *side)
+                {
+                    row.lots += lots;
+                    row.open_cost += open_cost;
+                    row.position_profit += profit;
+                    continue;
+                }
+                if rows.len() >= MAX_POSITIONS {
+                    self.invalid = true;
+                    return None;
+                }
+                rows.push(cn_futures_state::PositionCost {
+                    venue: *venue,
+                    symbol: *symbol,
+                    side: *side,
+                    lots: *lots,
+                    open_cost: *open_cost,
+                    position_cost: 0.0,
+                    position_profit: *profit,
+                });
+            }
+            rows.sort_by(|a, b| {
+                (
+                    a.venue.as_str(),
+                    a.symbol.as_str(),
+                    a.side == cn_futures_state::Side::Sell,
+                )
+                    .cmp(&(
+                        b.venue.as_str(),
+                        b.symbol.as_str(),
+                        b.side == cn_futures_state::Side::Sell,
+                    ))
+            });
+            self.published.observed_us = self.observed_us;
+            self.dirty = false;
+        }
+        Some(&self.published)
+    }
+}

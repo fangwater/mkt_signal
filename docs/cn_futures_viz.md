@@ -102,10 +102,16 @@ CTP 按相关联的成功资金查询更新；易达未提供对应账户资金�
 - Viz 计算公式：多头为 `L1 最新价 × 乘数 × 手数 − OpenCost`，空头取反；不含手续费。
   若查询时的手数与当前柜台持仓不同（期间有成交），显示 `--`，直到下一次查询。
   合约行有「逐笔浮盈 · 元」列；「柜台明细」并列显示开仓均价、逐笔浮盈和柜台盯市盈亏；
-  资金栏的累计值为全部持仓合约之和，任一合约缺数据时显示 `--`。易达不提供该数据。
-- 该变更修改了 CTP 桥接事件布局（`RawEvent` 928→952 字节）和持仓 IPC bincode 帧。
-  CTP Exec、`persist_manager`（`cn_native_persist` 解码 CTP 控制事件）与 Viz 必须同时替换。
-  旧检查点无法解码时只告警，并等待新的实时快照。
+  资金栏的累计值为全部持仓合约之和，任一合约缺数据时显示 `--`。
+- 易达不查柜台，桥接读取扩展 API 本地维护的 `YDExtendedPosition`：在 caught-up 快照和每次
+  `notifyExtendedPosition` 时，发送 `POSITION_COST` 事件（kind 20）。事件携带按先开先平维护的
+  `TotalOpenPrice`（开仓价之和）和 `PositionProfit`。编程指南 §3.2.3.8 说明日初持仓自带「日初开仓均价」，
+  因此昨仓也按原始开仓价计算，而非昨结算价。Rust 用 `TotalOpenPrice × 乘数` 得到开仓成本，
+  按日期行保存，汇总后发布。该事件不进入会话、核心或 trader.log。任一行无法解码时，
+  不再发布开仓成本，直到下一个 SDK 会话；`PositionCost` 恒为 0。
+- 该变更修改了 CTP 桥接事件布局（`RawEvent` 928→952 字节）、易达桥接事件布局（尾部增加两个 double）
+  和持仓 IPC bincode 帧。CTP/易达 Exec、`persist_manager`（`cn_native_persist` 解码两种控制事件）
+  与 Viz 必须同时替换。旧检查点无法解码时只告警，并等待新的实时快照。
 
 2026-11-16 发布后的连接异常期间，柜台前置拒绝连接，CTP 面板因缺少新账户快照显示未同步和未知资金。账户恢复记录见 [sh_dev 创元 CTP](sh_dev_ctp.md)。
 

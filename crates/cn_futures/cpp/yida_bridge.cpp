@@ -26,9 +26,10 @@ constexpr int market_price_unavailable = 9903; // Missing native daily price-lim
 // Event IDs are bridge-owned, vendor integer constants remain unchanged in the fields.
 enum { Connected=1, Disconnected, ReadyLogin, Login, Init, Begin, Instrument, Account,
        Position, Order, Trade, End, FailedCancel, Invalidated, Segment, Fatal, Transport, Connection,
-       ServerRestarted };
+       ServerRestarted, PositionCost };
 static_assert(std::is_standard_layout_v<CnYidaEvent>);
 static_assert(ServerRestarted==19, "event kinds are shared with Rust yida::SERVER_RESTARTED");
+static_assert(PositionCost==20, "event kinds are shared with Rust yida::POSITION_COST");
 static_assert(std::is_standard_layout_v<CnYidaAccount>);
 // Pin the production headers as well as the loaded library. In 1.502.55 the
 // long instrument ID moved and account/position fields shifted in place.
@@ -257,6 +258,18 @@ public:
             if(r<YD_TR_Allow || r>YD_TR_Forbidden) throw std::runtime_error("invalid native permission value");
         return std::max({a->TradingRight, x->TradingRight, p->TradingRight, n->TradingRight});
     }
+    // Display-only open cost of one native position row; never fatal to the session.
+    void position_cost(const YDExtendedPosition* p) noexcept {
+        try {
+            if (!p || !p->m_pAccountInstrumentInfo || !mine(p->m_pAccountInstrumentInfo->m_pAccount)) return;
+            const auto* i=p->m_pAccountInstrumentInfo->m_pInstrument;
+            if (!i || !i->m_pExchange) return;
+            CnYidaEvent e{}; e.kind=PositionCost; base(e,i);
+            e.date=p->PositionDate; e.position_direction=p->PositionDirection; e.hedge=p->HedgeFlag;
+            e.lots=p->Position; e.total_open_price=p->TotalOpenPrice; e.position_profit=p->PositionProfit;
+            send(e);
+        } catch (...) {}
+    }
     void snapshot() {
         // Called on the vendor's caught-up notification thread, never by the business
         // loop concurrently with live state reads. Live interleaving is rejected in Rust.
@@ -287,7 +300,7 @@ public:
             CnYidaEvent e{}; e.kind=Position; base(e,p->m_pAccountInstrumentInfo->m_pInstrument);
             if (p->ExecFrozen) throw std::runtime_error("unsupported execution frozen position");
             e.date=p->PositionDate; e.position_direction=p->PositionDirection; e.hedge=p->HedgeFlag;
-            e.lots=p->Position; e.frozen=p->CloseFrozen; send(e);
+            e.lots=p->Position; e.frozen=p->CloseFrozen; send(e); position_cost(p);
             if (p->Position || p->CloseFrozen) observe(p->m_pAccountInstrumentInfo->m_pInstrument);
         }
         YDOrderFilter of{}; of.StartTime=of.EndTime=-1; of.YDOrderFlags=-1;
@@ -442,6 +455,7 @@ public:
     void notifyResponse(int error,int type,int request) override {
         if(error) { CnYidaEvent e{}; e.kind=Fatal; e.error=error; e.status=type; e.reference=request; send(e); }
     }
+    void notifyExtendedPosition(const YDExtendedPosition* p) override { if (initialized && logged_in && !destroying) position_cost(p); }
     void notifyExtendedAccount(const YDExtendedAccount*) override { guarded([&] { if (initialized && logged_in && !destroying) account(); }); }
     void notifyTradingSegment(const YDExchange* x,int time) override { guarded([&] { CnYidaEvent e{}; e.kind=Segment; if(x) field(e.exchange,x->ExchangeID); e.native_time=time; send(e); }); }
 };

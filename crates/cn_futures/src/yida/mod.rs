@@ -31,6 +31,8 @@ pub const TRANSPORT: i32 = 17;
 pub const CONNECTION: i32 = 18;
 /// `YD_AE_ServerRestarted`: the SDK instance is being destroyed; cold restart.
 pub const SERVER_RESTARTED: i32 = 19;
+/// Display-only native open cost of one position row; never a session fact.
+pub const POSITION_COST: i32 = 20;
 pub const SDK_REFERENCE: &str = "1.502.55.35";
 
 pub fn scope() -> ExecutionScope {
@@ -241,6 +243,15 @@ pub struct RawEvent {
     pub reserved: [u8; 4],
     #[serde(skip_serializing_if = "RawAccount::is_absent")]
     pub account: RawAccount,
+    /// `POSITION_COST` rows only: native TotalOpenPrice (price sum, not money).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub total_open_price: f64,
+    /// `POSITION_COST` rows only: native PositionProfit.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub position_profit: f64,
+}
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
 }
 fn serialize_bytes<S: serde::Serializer>(
     bytes: &[u8; 64],
