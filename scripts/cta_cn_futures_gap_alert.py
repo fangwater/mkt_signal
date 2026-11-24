@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Send DingTalk notices for domestic CTA Redis minute gaps."""
+"""Send DingTalk notices for domestic CTA Redis minute gaps that stay unrepaired.
+
+Gaps are routine (a restart's partial first minute, a quiet feed); the CTA
+repairs them inside the session from Market Replay. A gap is announced only
+when the CTA still reports it unrepaired after the grace period. Gaps the CTA
+has repaired are closed silently.
+"""
 
 import argparse
 from datetime import datetime, timedelta, timezone
@@ -22,11 +28,23 @@ CREATE TABLE IF NOT EXISTS gaps (
     trading_day INTEGER, contract TEXT COLLATE NOCASE, start_ms INTEGER,
     sent INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (trading_day, contract, start_ms)
 );
+-- sent: 0 pending, 1 announced, 2 repaired before the grace period (silent).
 CREATE TABLE IF NOT EXISTS delivery (
     id INTEGER PRIMARY KEY, attempts INTEGER NOT NULL, retry_at INTEGER NOT NULL
 );
 """
 SHANGHAI = timezone(timedelta(hours=8))
+# Announce only gaps the CTA still reports after this long; when its state is
+# unreadable, wait longer before assuming the gap is real.
+GRACE_SECONDS = 600
+UNKNOWN_GRACE_SECONDS = 1800
+
+
+def migrate(db):
+    columns = {row[1] for row in db.execute("PRAGMA table_info(gaps)")}
+    if "seen_at" not in columns:
+        # Rows from before this column were already handled under the old rule.
+        db.execute("ALTER TABLE gaps ADD COLUMN seen_at INTEGER NOT NULL DEFAULT 0")
 
 
 def record(db, day, contract, start_ms):
@@ -34,8 +52,8 @@ def record(db, day, contract, start_ms):
             and isinstance(contract, str) and re.fullmatch(r"[A-Za-z0-9]{1,32}", contract)
             and type(start_ms) is int and 0 < start_ms < 253402214400000):
         db.execute(
-            "INSERT OR IGNORE INTO gaps (trading_day, contract, start_ms) VALUES (?, ?, ?)",
-            (day, contract, start_ms),
+            "INSERT OR IGNORE INTO gaps (trading_day, contract, start_ms, seen_at) VALUES (?, ?, ?, ?)",
+            (day, contract, start_ms, int(time.time())),
         )
 
 
@@ -73,7 +91,7 @@ def ingest_logs(db, directory, bootstrap):
             db.execute("INSERT OR REPLACE INTO cursors VALUES (?, ?, ?)", (*key, offset))
 
 
-def seed_current_gaps(db, environment):
+def read_state(environment):
     config = json.loads((environment / "config/cta_cn_futures.json").read_text())
     port = int(config["bind"].rsplit(":", 1)[1])
     opener = build_opener(ProxyHandler({}))
@@ -81,9 +99,51 @@ def seed_current_gaps(db, environment):
         state = json.load(response)
     if state.get("name") != config["name"]:
         raise ValueError("CTA status belongs to another instance")
-    for report in (state, *state.get("products", {}).values()):
+    return state
+
+
+def reports(state):
+    return (state, *state.get("products", {}).values())
+
+
+def seed_current_gaps(db, environment):
+    for report in reports(read_state(environment)):
         dominant = report.get("dominant") or {}
         record(db, dominant.get("trading_day"), dominant.get("contract"), report.get("redis_gap_since_ms"))
+
+
+def unrepaired_since(environment):
+    """Contract -> earliest gap start the CTA still reports, or None when the
+    contract is clean; None overall when the state cannot be read."""
+    try:
+        state = read_state(environment)
+    except (OSError, ValueError, KeyError):
+        return None
+    result = {}
+    for report in reports(state):
+        contract = (report.get("dominant") or {}).get("contract")
+        if isinstance(contract, str):
+            result[contract.lower()] = report.get("redis_gap_since_ms")
+    return result
+
+
+def settle(db, current, now, grace=GRACE_SECONDS, unknown_grace=UNKNOWN_GRACE_SECONDS):
+    """Close repaired gaps silently; return the pending ones now due."""
+    due = []
+    for day, contract, start, seen in db.execute(
+        "SELECT trading_day, contract, start_ms, seen_at FROM gaps WHERE sent = 0"
+    ).fetchall():
+        known = current is not None and contract.lower() in current
+        if known:
+            since = current[contract.lower()]
+            if since is None or since > start:
+                db.execute("UPDATE gaps SET sent = 2 WHERE trading_day = ? AND contract = ? AND start_ms = ?",
+                           (day, contract, start))
+                continue
+        if now - seen >= (grace if known else unknown_grace):
+            due.append((day, contract, start))
+    due.sort(key=lambda gap: (gap[0], gap[2], gap[1]))
+    return due[:40]
 
 
 def message(name, gaps):
@@ -92,16 +152,16 @@ def message(name, gaps):
         start_time = datetime.fromtimestamp(start / 1000, SHANGHAI)
         contracts = "、".join(row[1] for row in rows)
         lines.append(f"{start_time:%Y-%m-%d %H:%M} 北京时间（交易日 {day}） {contracts}")
-    lines.append("盘中使用后续完整 Redis 分钟继续计算信号。休市后等待 Market Replay 回补并重算。")
+    lines.append(f"已超过 {GRACE_SECONDS // 60} 分钟仍未由 Market Replay 回补；修复前受影响的小时 bar 不做实时决策，已发布目标保持不变。")
     return "\n".join(lines) + "\n"
 
 
-def deliver(db, name, sender, dry_run):
+def deliver(db, name, sender, dry_run, environment):
     attempts, retry_at = db.execute("SELECT attempts, retry_at FROM delivery WHERE id = 1").fetchone()
+    with db:
+        gaps = settle(db, unrepaired_since(environment), int(time.time()))
     if retry_at > time.time():
         return
-    gaps = db.execute("""SELECT trading_day, contract, start_ms FROM gaps WHERE sent = 0
-                         ORDER BY trading_day, start_ms, contract LIMIT 40""").fetchall()
     if not gaps:
         return
     notice = message(name, gaps)
@@ -142,6 +202,7 @@ def main():
     store = ":memory:" if args.dry_run else environment / "data/redis-gap-alert.sqlite3"
     db = sqlite3.connect(store)
     db.executescript(SCHEMA)
+    migrate(db)
     # Commit the cursor and queued events together before attempting delivery.
     with db:
         bootstrap = db.execute("SELECT 1 FROM delivery").fetchone() is None
@@ -149,7 +210,7 @@ def main():
         if bootstrap:
             seed_current_gaps(db, environment)
             db.execute("INSERT INTO delivery VALUES (1, 0, 0)")
-    deliver(db, environment.name, args.sender, args.dry_run)
+    deliver(db, environment.name, args.sender, args.dry_run, environment)
     db.close()
 
 

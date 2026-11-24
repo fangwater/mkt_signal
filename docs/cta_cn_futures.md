@@ -141,6 +141,9 @@ AG 6、HC 5、NI 6、RB 6、SP 6、SS 4），从空账本启动，发往易达�
 `redis_minute_gap` 事件。缺口按交易日、合约和起始分钟去重，同一批缺口合并发送。
 本地 `data/redis-gap-alert.sqlite3` 保存读取位置和通知回执。钉钉确认接收后记录已发送，
 发送失败保留记录并退避重试。
+2026-11-24 起只报**未修复**的缺口。重启后残缺的首分钟、主力行情静默等缺口属于常态，CTA 会在盘中从
+Market Replay 回补。脚本记录缺口后不立即发送：CTA `/state` 显示该合约已无缺口（`redis_gap_since_ms`
+为空或晚于该缺口）时，静默关闭；10 分钟后仍未修复才发钉钉。`/state` 读不到时，30 分钟后再保守发送。
 
 将 `scripts/cta_cn_futures_gap_alert.py` 安装到 CTA 环境的 `scripts/`，将
 `scripts/systemd/cta-cn-futures-gap-alert@.{service,timer}` 安装到用户 systemd 目录。
