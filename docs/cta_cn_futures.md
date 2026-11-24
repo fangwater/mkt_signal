@@ -31,6 +31,17 @@ PM2 管理。01 的小时配置共覆盖 23 个品种、196 条规则：
 因子替换前用候选配置通过环境本地 `preflight`；仅替换规则，不修改开平阈值、
 手数或事实仓位。历史预热不产生目标；接上实时行情后，最新一根未决策的 bar 补做一次决策（见「Manager 发布」），之后按实时 bar 更新。
 
+## 02：易达仿真镜像（2026-11-24）
+
+`cta-cn_futures-02` 位于 `/home/fanghaizhou/cta-cn_futures-02`，HTTP `127.0.0.1:19402`。它复制 01 中上期所品种的 1h 规则（SN 14 条，
+AG 6、HC 5、NI 6、RB 6、SP 6、SS 4），从空账本启动，发往易达官方仿真 `sh_dev_yida_paper01`。
+策略组为 `cn-futures-02`（SN）和 `cn-futures-02-<品种>`，成员为 `<组>-1h`。各组令牌在 02 环境的 `env.sh` 中，
+变量名为 `CN_CTA_02_PUBLISH_TOKEN[_品种]`。Manager 登记用 `~/.config/cn-futures-cta-manager/admin-login.env` 会话，
+通过 `extend-scope` 完成（revision 8，原 `yida-paper01-rb` 组和 Exec 账本不变），收据在 `data/ops/yida-cta02/`（Git 忽略）。
+易达执行白名单扩至 sn2701、ag2702、hc2701、ni2701、rb2701、sp2701、ss2701，单笔和绝对目标仍为 1 手。
+国际铜 BC 未纳入：仿真账户 bc2612 有 5 手历史多仓，纳入后 Exec 会按目标平掉。
+预检全部规则就绪。下一时段行情接续后，最新一根 bar 补做决策并立即发布。
+
 ## Manager 发布与策略归因
 
 `01 / 02` 各自使用环境目录、配置、数据目录、HTTP 端口和进程名。生命周期脚本从配置读取实例名并核对目录，禁止用 `01` 的目录启动 `02`。`config/cta_cn_futures_01.json` 维护锡规则与 `additional_products`；`config/cta_cn_futures_02.json` 是关闭、空规则的独立实例模板。
