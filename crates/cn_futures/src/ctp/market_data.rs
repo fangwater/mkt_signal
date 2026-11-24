@@ -347,7 +347,12 @@ impl Session {
         &mut self,
         contracts: &[(Venue, &str)],
     ) -> Result<Vec<Subscription>> {
-        ensure!(self.ready(), "MD subscription acknowledgement pending");
+        // Offline, logging in or awaiting acks: add nothing. Reconnection resets
+        // the set to the baseline and the standing-target request retries every
+        // second, so an MD outage must not stop the runtime.
+        if !self.ready() {
+            return Ok(Vec::new());
+        }
         let mut missing = HashMap::new();
         for &(venue, symbol) in contracts {
             if let Some(existing) = self.allowed.get(symbol).or_else(|| missing.get(symbol)) {
@@ -521,6 +526,25 @@ mod tests {
         assert!(!s.ready());
         s.subscribed(&ack).unwrap();
         assert!(s.ready());
+    }
+    #[test]
+    fn contracts_wait_while_md_is_offline_or_unacknowledged() {
+        let mut c = config();
+        c.symbols.clear();
+        let mut s = Session::new(&c);
+        let contracts = [(Venue::Shfe, "sn2612")];
+        assert!(s.add_contracts(&contracts).unwrap().is_empty());
+        s.connected(1).unwrap();
+        assert!(s.add_contracts(&contracts).unwrap().is_empty());
+        s.login(&login(1)).unwrap();
+        assert_eq!(s.add_contracts(&contracts).unwrap().len(), 1);
+        assert!(s
+            .add_contracts(&[(Venue::Shfe, "rb2701")])
+            .unwrap()
+            .is_empty());
+        s.disconnect();
+        assert!(s.add_contracts(&contracts).unwrap().is_empty());
+        assert!(!s.ready());
     }
     #[test]
     fn zero_id_login_requires_pending_connection_and_fresh_subscriptions() {

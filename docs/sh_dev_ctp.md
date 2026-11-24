@@ -223,6 +223,17 @@ SSH 临时诊断的 `nofile` 软限制为 1024，直接报 `Too many open files`
 - 重启后对账完成：`can_trade=true`，11 条持仓与换装前一致；约 1 分钟后 `position_costs` 11 行，开仓均价与柜台一致。
   午休时逐笔浮盈合计 −2,705 元，柜台盯市 +3,030 元；差异主要来自昨仓，例如 pg2701 开仓 5416，逐笔 −2,280、盯市 +300。
 
+## 收盘断线后 MD 未就绪退出（2026-11-24 夜盘前修复）
+
+17:24 日盘收盘断线后两次 `ReqAuthenticate` 返回 7，按 75 冷启动；17:26 第三次启动登录成功（交易日 `20261125`）、
+对账完成，随后前置断开 MD。常驻目标每秒补请求合约规则和行情，`request_ctp_target` 只看账户就绪就调用
+`subscribe_contracts`，MD 离线时 `ensure!(ready)` 报 `MD subscription acknowledgement pending`，以状态码 1 退出
+（`Restart=no`），21:00 夜盘未运行。现在 MD 离线、登录中或订阅回执未齐时补订阅不做任何事，重连后行情订阅恢复为基线、
+由每秒请求重新补齐；手工下单的 `prepare_ctp_contracts` 仍按未就绪拒绝。
+
+21:18 换装 ctp-trader `e0f1b753…`（备份与故障日志在 `data/ops/mdoffline-20261124T131655Z/`），换装前 sh_dev 上 `cn_futures`
+205 项测试通过。重启后交易日 `20261125`、对账完成；pg2701 卖开 1 手 5328 成交，11 个合约与 Manager rev 226 目标一致。
+
 ## 账户资金与五档快照
 
 CTP 资金来自柜台 CNY 资金查询，展示权益、可用、可取、保证金、冻结、
