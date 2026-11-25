@@ -1,6 +1,6 @@
 # sh_dev 创元 CTP
 
-最后更新：2026-11-23
+最后更新：2026-11-25
 
 部署主机为用户指定的腾讯云 CVM `ssh sh_dev`，独立环境为
 `/home/ubuntu/ctp_chuangyuan01`。使用上期技术官方 CTP 6.7.11，
@@ -108,6 +108,31 @@ arbmm `551831fc` 与 Manager `4658e51`：
   sh_dev 上 cn_futures 197 项测试通过；ctp-trader `7a476a0a…`，备份在 `data/ops/notinit-restart-20261123T131009Z/`。
   启动后交易日 `20261124`，ni2701 平仓，其余 10 个合约持仓与 Manager rev 106 目标一致。
   AP、SM、lc 无夜盘，交易日切换后 CTP 快照无有效价格；21:20 Viz 改为回退上一交易日分钟盘口，AP、SM、lc 恢复估值，见[易达记录](sh_dev_yida_paper.md)。
+
+## 解除全部策略绑定（2026-11-25 夜盘）
+
+用户要求解除 sh_dev 全部策略绑定并平掉创元旧仓。原先国内 Manager 只能增加组和成员，Exec 不平目标外持仓，
+两者与 crypto 不一致，本次一并修复：
+
+- Exec（arbmm `f1fe0fa5`）：目标未列出、但账户有净持仓／未完成委托／策略归属的合约按隐式零目标执行（同 crypto
+  `SYSTEM_POSITION_CLOSE`），接纳时与每秒刷新时纳入；空名单目标合法，即全部平仓。易达同版本。
+- CN Manager（`e9d408f`）：两步退役 `netting/stop`（停止并清仓，目标强制为 0 并立即下发计划）与 `netting/retire`
+  （删除配置，仅限已停止且 Exec 账本为 0 的策略；组空则删组并撤销发布令牌）。国内账户绑定页开放两个按钮。
+  线上库先执行 `scripts/apply_native_netting_retirement_schema.sql`，执行前 netting 表备份在
+  Manager `run/cn-futures/migration/retire-20261125T135013Z/`。
+- 发布端：Manager 已删除的策略不再发布，不再整组停发。
+
+17:25 收盘后冷启动时成交查询返回错误 90「查询未就绪，请稍后重试」，原代码只对资金查询重试，以状态码 1 退出，
+今晚夜盘未运行。修复（`65252002`）：其他查询的错误 90 按冷启动 75 退出。
+
+21:50 起：换装前 sh_dev 上 cn_futures 204 项测试通过。Manager 先对两个账户全部 29 个策略执行 stop（创元 rev 367、
+易达 rev 26），再换装 ctp-trader `11476985…`、yida-trader `d4f337c4…`（备份 `data/ops/retire-20261125T135134Z/`、
+易达 `data/ops/retire-20261125T135447Z/`）后启动，两者以全零目标恢复。创元夜盘平掉 pg、hc、rb、sp，随后删除 12 个
+已平策略（rev 379）；易达 9 个策略全部删除，名单为空（rev 35）。
+
+待处理：创元 IC、IM、AP、SM、lc、SA、FG、TA 各组仍持仓，目标常驻为 0，下一日盘开盘后平掉，再对这 8 组执行 retire。
+郑商所合约夜盘从未出现执行决策（11-24、11-25 均如此），夜盘郑商所行情未送达 Exec，原因待查。易达账户在 Manager 范围外
+的 10 个期货与 20 个期权旧仓不在 L1 订阅内，Exec 无行情，不会平。
 
 ## 操作入口
 
