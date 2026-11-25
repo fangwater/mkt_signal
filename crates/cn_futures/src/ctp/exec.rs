@@ -433,7 +433,7 @@ impl Exec {
         )?;
         if let Some(scope) = &self.fixed_scope {
             ensure!(
-                target.markets().eq(scope.contracts.iter()),
+                target.strategies.is_empty() || target.markets().eq(scope.contracts.iter()),
                 "exec requires the complete fixed native contract vector including zeros"
             );
             ensure!(
@@ -456,16 +456,7 @@ impl Exec {
         }
         // Like crypto targets, a new target replaces the old one at any time; an
         // in-flight FAK's late fills are attributed against the new strategy gaps.
-        if self.fixed_scope.is_none() {
-            for contract in &self.contracts {
-                ensure!(
-                    target.contains(&contract.market)
-                        || !needs_contract(context.core, contract.venue, &contract.symbol, 0),
-                    "exec target omits held contract {}; send an explicit zero",
-                    contract.market
-                );
-            }
-        }
+        // Held contracts the target omits are flattened (see `refresh_scope`).
         let mut previous: HashMap<Market, (Algo, i64)> = self
             .contracts
             .drain(..)
@@ -508,7 +499,88 @@ impl Exec {
         self.index = index;
         let target = Arc::new(target);
         self.target = Some(target.clone());
+        self.add_implicit(context.core, previous);
         Ok(target)
+    }
+
+    /// Contracts outside `target` that Exec must still work: a nonzero account
+    /// net, a working order or a named strategy's attribution. Their implicit
+    /// target is zero, like crypto `SYSTEM_POSITION_CLOSE`: residual and
+    /// retired-strategy holdings are closed and attributed like any other fill.
+    pub fn implicit_contracts(
+        &self,
+        target: &Target,
+        core: &crate::core::TradingCore,
+    ) -> Vec<(Venue, Symbol)> {
+        let held = core.active_contracts();
+        let attributed = self.ledger.markets().filter_map(|market| {
+            Some((
+                venue_of(market).ok()?,
+                Symbol::new(symbol_of(market).ok()?).ok()?,
+            ))
+        });
+        let mut found: Vec<(Venue, Symbol)> = Vec::new();
+        for (venue, symbol) in held.chain(attributed) {
+            if !found.contains(&(venue, symbol))
+                && !target.contains(&format!("{}:{symbol}", venue.as_str()))
+            {
+                found.push((venue, symbol));
+            }
+        }
+        found
+    }
+
+    /// Adds every implicit zero-target contract of the standing target that is
+    /// not tracked yet. Runs at admission and once a second, never per quote;
+    /// a contract leaves only when a newer target is admitted and it is flat.
+    pub fn refresh_scope(&mut self, core: &crate::core::TradingCore) {
+        self.add_implicit(core, HashMap::new());
+    }
+
+    /// `previous` keeps the algorithm (and its reject backoff) of contracts the
+    /// newly admitted target dropped.
+    fn add_implicit(
+        &mut self,
+        core: &crate::core::TradingCore,
+        mut previous: HashMap<Market, (Algo, i64)>,
+    ) {
+        let Some(target) = self.target.clone() else {
+            return;
+        };
+        for (venue, symbol) in self.implicit_contracts(&target, core) {
+            if self.contract(venue, &symbol).is_some() {
+                continue;
+            }
+            let Ok(market) = Market::format(format_args!("{}:{symbol}", venue.as_str())) else {
+                continue;
+            };
+            let algo = match previous.remove(&market) {
+                Some((algo, 0)) => algo,
+                kept => {
+                    let mut algo = kept.map(|(algo, _)| algo).unwrap_or_else(|| {
+                        Algo::new(
+                            &self.settings.algo(),
+                            self.settings.retry_interval_ms * 1000,
+                        )
+                    });
+                    algo.on_target();
+                    algo
+                }
+            };
+            self.index
+                .entry(venue)
+                .or_default()
+                .insert(symbol, self.contracts.len());
+            self.contracts.push(Contract {
+                venue,
+                symbol,
+                targets: Vec::new(),
+                net: 0,
+                market,
+                algo,
+                wait: "",
+            });
+        }
     }
     fn decide(
         &mut self,
@@ -793,6 +865,16 @@ impl Strategy for Exec {
     }
     fn attributes(&self, market: &str) -> bool {
         Exec::attributes(self, market)
+    }
+    fn implicit_contracts(
+        &self,
+        target: &Target,
+        core: &crate::core::TradingCore,
+    ) -> Vec<(Venue, Symbol)> {
+        Exec::implicit_contracts(self, target, core)
+    }
+    fn refresh_scope(&mut self, core: &crate::core::TradingCore) {
+        Exec::refresh_scope(self, core)
     }
     fn assign_position(
         &mut self,

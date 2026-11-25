@@ -90,16 +90,20 @@ impl TryFrom<wire::PositionTarget> for Target {
 
 impl Target {
     /// Identity, complete identical contract vectors and representable net lots.
+    /// An empty roster is valid: every strategy is retired and the account
+    /// target is flat, like crypto `SYSTEM_POSITION_CLOSE` for all holdings.
     pub fn validate_shape(&self) -> Result<()> {
         ensure!(
             valid_id(&self.source_id) && valid_id(&self.batch_id),
             "invalid source or batch id"
         );
         ensure!(
-            (1..=MAX_STRATEGIES).contains(&self.strategies.len()),
+            self.strategies.len() <= MAX_STRATEGIES,
             "invalid target strategy count"
         );
-        let first = self.strategies.values().next().context("empty roster")?;
+        let Some(first) = self.strategies.values().next() else {
+            return Ok(());
+        };
         ensure!(
             (1..=MAX_CONTRACTS).contains(&first.len()),
             "invalid target contract count"

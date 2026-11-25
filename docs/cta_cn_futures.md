@@ -86,7 +86,9 @@ AG 6、HC 5、NI 6、RB 6、SP 6、SS 4），从空账本启动，发往易达�
 
 `manager_url` 使用部署网关实际地址，不包含凭据；组级发布令牌只从环境变量读入，不进入配置面板、状态、出站日志或 outbox。先在 Manager 创建子策略、核对账户事实持仓并初始化 `strategy_groups`，再通过原会话授权的 `POST /api/native/sources/{id}/netting/publish-token` 为该组生成令牌。每个发布组使用独立令牌，令牌绑定对应源账户和组名。
 
-发送端先读取 `netting/publication?strategy_group=cn-futures-01` 的组名单、完整合约范围和 revision，补齐合约零目标后，原子 POST `target-batches`。批次含 `strategy_group / batch_id / expected_revision / decision_us / signal_times / strategies`。`signal_times` 留存各子策略的真实 bar 决策时间；外层 `decision_us` 是整批发布时点。批次不再携带 BBO：内部对冲由 Exec 用自己的实时行情定价。
+发送端先读取 `netting/publication?strategy_group=cn-futures-01` 的组名单、完整合约范围和 revision，补齐合约零目标后，原子 POST `target-batches`。
+绑定以 Manager 为准：本地计算但 Manager 已删除（退役）的策略不再发布，每批记录一条警告；Manager 名单里有而本地不计算的成员仍拒绝发布。
+已“停止并清仓”的成员仍在名单内，发送端照常发送，Manager 强制其目标为 0。批次含 `strategy_group / batch_id / expected_revision / decision_us / signal_times / strategies`。`signal_times` 留存各子策略的真实 bar 决策时间；外层 `decision_us` 是整批发布时点。批次不再携带 BBO：内部对冲由 Exec 用自己的实时行情定价。
 
 准备由 Exec 执行的账户启用 `publication.include_trading_day`。发布批次附带本次实时决策的原生交易日，Exec 接纳目标时与柜台交易日核对；Manager 接收批次不读取 Exec 副本。执行侧配置见 [Manager 目标交付](native_exec.md#manager-delivery)。
 

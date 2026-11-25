@@ -285,7 +285,7 @@ fn identical_targets_are_idempotent_and_revisions_cannot_conflict_or_go_backward
     assert!(s.accept(target(1), context(&c)).is_err());
 }
 #[test]
-fn roll_uses_exact_target_contracts_and_requires_zero_for_the_held_month() {
+fn roll_closes_the_held_month_whether_or_not_the_target_lists_it() {
     let mut c = core(1, 0);
     let old = c.instrument(Venue::Shfe, "cu2612").unwrap().clone();
     let mut new = old.clone();
@@ -297,7 +297,14 @@ fn roll_uses_exact_target_contracts_and_requires_zero_for_the_held_month() {
     roll.batch_id = "roll".into();
     roll.strategies =
         BTreeMap::from([("cta-a".into(), BTreeMap::from([("SHFE:cu2701".into(), 1)]))]);
-    assert!(s.accept(roll.clone(), context(&c)).is_err());
+    // Omitted, the held month is an implicit zero like `SYSTEM_POSITION_CLOSE`.
+    let mut implicit = strategy(&c, 1);
+    implicit.accept(roll.clone(), context(&c)).unwrap();
+    let (close, _) = request(decide(&mut implicit, &c, tick(NOW), NOW).remove(0));
+    assert_eq!(
+        (close.symbol.as_str(), close.side, close.offset),
+        ("cu2612", Side::Sell, Offset::Close)
+    );
 
     with_market(&mut roll, "SHFE:cu2612", 0);
     s.accept(roll, context(&c)).unwrap();
@@ -781,4 +788,85 @@ fn a_rejected_contract_keeps_backing_off_across_batches_until_its_target_changes
     s.accept(batch(3, 2), context(&c)).unwrap();
     let (intent, _) = request(decide(&mut s, &c, tick(retry), retry).remove(0));
     assert_eq!(intent.lots, 2);
+}
+
+fn empty_roster(revision: i64) -> Target {
+    let mut t = target(0);
+    t.batch_id = format!("retire-{revision}");
+    t.target_revision = revision;
+    t.strategies.clear();
+    t
+}
+
+#[test]
+fn an_empty_roster_flattens_every_held_contract() {
+    let c = core(0, 2);
+    let mut s = Exec::new(&config()).unwrap();
+    s.on_market_state(true, 7).unwrap();
+    s.accept(empty_roster(1), context(&c)).unwrap();
+    assert_eq!(
+        s.implicit_contracts(&empty_roster(1), &c),
+        [(Venue::Shfe, Symbol::new("cu2612").unwrap())]
+    );
+    let (close, _) = request(decide(&mut s, &c, tick(NOW), NOW).remove(0));
+    assert_eq!(
+        (close.side, close.offset, close.lots),
+        (Side::Buy, Offset::Close, 2)
+    );
+}
+
+#[test]
+fn a_retired_strategy_is_closed_and_keeps_its_closing_fills() {
+    let mut c = core(0, 0);
+    let mut s = Exec::new(&config()).unwrap();
+    s.on_market_state(true, 7).unwrap();
+    s.accept(target(2), context(&c)).unwrap();
+    let (open, _) = request(decide(&mut s, &c, tick(NOW), NOW).remove(0));
+    let p = c.prepare(open).unwrap();
+    let opened = fill(&p.key, "t1", Side::Buy, 2);
+    assert!(c.on_fill(&opened).unwrap());
+    s.on_fill(&opened, true);
+    s.take_ledger_events();
+
+    s.accept(empty_roster(2), context(&c)).unwrap();
+    let later = NOW + 1_000_000;
+    let (close, _) = request(decide(&mut s, &c, tick(later), later).remove(0));
+    assert_eq!(
+        (close.side, close.offset, close.lots),
+        (Side::Sell, Offset::Close, 2)
+    );
+    let p = c.prepare(close).unwrap();
+    let mut closed = fill(&p.key, "t2", Side::Sell, 2);
+    closed.offset = Offset::Close;
+    assert!(c.on_fill(&closed).unwrap());
+    s.on_fill(&closed, true);
+    match &s.take_ledger_events()[..] {
+        [LedgerEvent::StrategyFillAllocation(FillAllocation {
+            allocations,
+            ledger,
+            batch_id,
+            ..
+        })] => {
+            assert_eq!(allocations, &BTreeMap::from([("cta-a".into(), -2)]));
+            assert!(ledger.is_empty());
+            assert_eq!(batch_id.as_deref(), Some("retire-2"));
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn a_holding_that_appears_after_admission_joins_at_the_next_refresh() {
+    let flat = core(0, 0);
+    let mut s = Exec::new(&config()).unwrap();
+    s.on_market_state(true, 7).unwrap();
+    s.accept(empty_roster(1), context(&flat)).unwrap();
+    let held = core(1, 0);
+    assert!(decide(&mut s, &held, tick(NOW), NOW).is_empty());
+    s.refresh_scope(&held);
+    let (close, _) = request(decide(&mut s, &held, tick(NOW), NOW).remove(0));
+    assert_eq!(
+        (close.side, close.offset, close.lots),
+        (Side::Sell, Offset::Close, 1)
+    );
 }

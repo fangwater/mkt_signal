@@ -240,16 +240,21 @@ fn prepare_ctp_contracts(
 fn request_ctp_target(
     settings: &crate::ctp::exec::Settings,
     target: &crate::ctp::exec::Target,
-    attributes: impl Fn(&str) -> bool,
+    strategy: &impl crate::ctp::strategy::Strategy,
     session: &mut crate::ctp::session::Session,
     core: &crate::core::TradingCore,
     feed: Option<&mut crate::ctp::market_data::Feed>,
     now: std::time::Instant,
 ) -> Result<()> {
     let contracts = crate::ctp::exec::validate_target(settings, target, core, false)?;
-    let mut known = Vec::with_capacity(contracts.len());
-    for (venue, symbol, required) in contracts {
-        let wanted = required || attributes(&format!("{}:{symbol}", venue.as_str()));
+    // Held contracts outside the target are flattened to an implicit zero.
+    let implicit = strategy.implicit_contracts(target, core);
+    let mut known = Vec::with_capacity(contracts.len() + implicit.len());
+    let implicit = implicit
+        .iter()
+        .map(|(venue, symbol)| (*venue, symbol.as_str(), true));
+    for (venue, symbol, required) in contracts.into_iter().chain(implicit) {
+        let wanted = required || strategy.attributes(&format!("{}:{symbol}", venue.as_str()));
         if wanted && session.require_active_future(venue, symbol).is_ok() {
             session.request_rates(venue, symbol, now)?;
             known.push((venue, symbol));
@@ -842,10 +847,11 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     if let (Some(settings), Some(target)) =
                         (config.exec.as_ref(), strategy.standing_target())
                     {
+                        strategy.refresh_scope(&runtime.core);
                         request_ctp_target(
                             settings,
                             &target,
-                            |market| strategy.attributes(market),
+                            &strategy,
                             &mut session,
                             &runtime.core,
                             feed.as_mut(),
@@ -872,7 +878,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     .as_ref()
                                     .context("target execution is not configured")?,
                                 &target,
-                                |market| strategy.attributes(market),
+                                &strategy,
                                 &mut session,
                                 &runtime.core,
                                 feed.as_mut(),
@@ -919,7 +925,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                                     request_ctp_target(
                                         settings,
                                         &target,
-                                        |market| strategy.attributes(market),
+                                        &strategy,
                                         &mut session,
                                         &runtime.core,
                                         feed.as_mut(),

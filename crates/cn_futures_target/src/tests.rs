@@ -375,3 +375,18 @@ fn strategy_vectors_must_be_complete_and_identical() {
         round_trip
     );
 }
+
+#[test]
+fn an_empty_roster_is_a_flat_account_target() {
+    let mut retired = target(2);
+    retired.strategies.clear();
+    let decoded = Target::try_from(retired.clone().into_wire(now_us())).unwrap();
+    assert_eq!(decoded, retired);
+    assert_eq!(decoded.markets().count(), 0);
+    assert_eq!(decoded.net("SHFE:zn2702"), 0);
+    let mut no_contracts = target(3);
+    for vector in no_contracts.strategies.values_mut() {
+        vector.clear();
+    }
+    assert!(Target::try_from(no_contracts.into_wire(now_us())).is_err());
+}

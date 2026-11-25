@@ -171,7 +171,25 @@ impl Client {
                 && watermark.strategy_group == self.group,
             "native Manager metadata identity mismatch"
         );
-        let current: BTreeSet<_> = desired.positions.keys().cloned().collect();
+        // Manager owns the bindings: a strategy it retired is no longer published,
+        // and Exec flattens what that strategy still holds.
+        let unbound: Vec<_> = desired
+            .positions
+            .keys()
+            .filter(|name| !watermark.members.contains(*name))
+            .collect();
+        if !unbound.is_empty() {
+            log::warn!(
+                "native Manager group {} no longer binds {unbound:?}; skipping their targets",
+                self.group
+            );
+        }
+        let positions: BTreeMap<_, _> = desired
+            .positions
+            .iter()
+            .filter(|(name, _)| watermark.members.contains(*name))
+            .collect();
+        let current: BTreeSet<_> = positions.keys().map(|name| (*name).clone()).collect();
         let retired = watermark.members.difference(&current);
         let aggregate = format!("{}-1h", self.group);
         ensure!(
@@ -183,7 +201,7 @@ impl Client {
         );
         let mut strategies = BTreeMap::new();
         let mut signal_times = BTreeMap::new();
-        for (name, position) in &desired.positions {
+        for (name, position) in positions {
             ensure!(position.targets.iter().all(|(market,qty)|*qty==0 || watermark.contracts.contains(market)),"native target contract is not registered in Manager; retain old targets and configure rollover first");
             let rows = watermark
                 .contracts

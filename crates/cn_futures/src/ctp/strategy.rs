@@ -162,6 +162,17 @@ pub trait Strategy {
     fn attributes(&self, _market: &str) -> bool {
         false
     }
+    /// Held, working or attributed contracts outside `target`; their implicit
+    /// target is zero.
+    fn implicit_contracts(
+        &self,
+        _target: &super::exec::Target,
+        _core: &TradingCore,
+    ) -> Vec<(crate::model::Venue, crate::model::Symbol)> {
+        Vec::new()
+    }
+    /// Starts working implicit zero-target contracts that appeared since admission.
+    fn refresh_scope(&mut self, _core: &TradingCore) {}
     /// Operator cutover: credit unallocated holdings to a strategy at a cost.
     fn assign_position(
         &mut self,
@@ -244,6 +255,21 @@ impl Strategy for ConfiguredStrategy {
     }
     fn attributes(&self, market: &str) -> bool {
         self.0.as_ref().is_some_and(|c| c.attributes(market))
+    }
+    fn implicit_contracts(
+        &self,
+        target: &super::exec::Target,
+        core: &TradingCore,
+    ) -> Vec<(crate::model::Venue, crate::model::Symbol)> {
+        self.0
+            .as_ref()
+            .map(|exec| exec.implicit_contracts(target, core))
+            .unwrap_or_default()
+    }
+    fn refresh_scope(&mut self, core: &TradingCore) {
+        if let Some(exec) = &mut self.0 {
+            exec.refresh_scope(core);
+        }
     }
     fn assign_position(
         &mut self,

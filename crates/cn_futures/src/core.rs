@@ -216,6 +216,19 @@ impl TradingCore {
             .map(|id| self.position_id(id, side))
             .unwrap_or_default()
     }
+    /// Contracts with a nonzero account net or a working order. Walks the dense
+    /// symbol table; used at target admission and the once-a-second refresh.
+    pub fn active_contracts(&self) -> impl Iterator<Item = (Venue, Symbol)> + '_ {
+        // Every per-symbol table grows together in `ensure_symbol`.
+        (0..self.positions.len())
+            .map(SymbolId)
+            .filter(|id| {
+                let net = self.position_id(*id, Side::Buy).total()
+                    - self.position_id(*id, Side::Sell).total();
+                net != 0 || !self.working_by_symbol[id.0].is_empty()
+            })
+            .map(|id| self.symbols.identity(id))
+    }
     /// Live orders of one contract, including terminal reports whose factual
     /// fills have not arrived. Index walk only; never allocates.
     pub fn working_orders(

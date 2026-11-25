@@ -50,6 +50,11 @@ impl Ledger {
         Ok(Self { markets })
     }
 
+    /// Contracts where some named strategy holds lots.
+    pub fn markets(&self) -> impl Iterator<Item = &str> {
+        self.markets.keys().map(String::as_str)
+    }
+
     pub fn row(&self, market: &str) -> Row {
         self.markets.get(market).cloned().unwrap_or_default()
     }

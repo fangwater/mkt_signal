@@ -126,6 +126,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
     let mut latest_l1_generation = 0;
     let mut checked_l1_drops = 0;
     let mut commands_open = true;
+    let mut next_scope_refresh = Instant::now();
     journal.record(json!({"type":"runtime_start","adapter":"yida","sdk_reference":SDK_REFERENCE,"trading_protocol":config.trading_protocol,"public_simulation":config.public_simulation,"placement":config.placement,"poll":config.poll,"execute":execute,"venues":["SHFE","INE"]}),true)?;
     crate::position_ipc::publish(
         &mut position_ipc,
@@ -328,6 +329,11 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     taker.on_market_state(false, 0)?;
                     l1_generation = None;
                     checked_l1_drops = drops;
+                }
+                // Held contracts the standing target omits are flattened.
+                if runtime.core.is_ready() && Instant::now() >= next_scope_refresh {
+                    next_scope_refresh = Instant::now() + Duration::from_secs(1);
+                    taker.refresh_scope(&runtime.core);
                 }
                 if let Some(ingress) = &target_ingress {
                     anyhow::ensure!(!ingress.is_finished(), "position target ingress stopped");

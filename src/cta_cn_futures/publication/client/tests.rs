@@ -256,6 +256,13 @@ async fn incomplete_group_and_outbox_identity_changes_are_rejected_without_publi
     incomplete.positions.pop_first();
     assert!(client.prepare(&incomplete).await.is_err());
     assert!(state.lock().unwrap().requests.is_empty());
+    let mut extra = desired.clone();
+    extra.positions.insert(
+        "cn-futures-01-unknown-1h".into(),
+        extra.positions.values().next().unwrap().clone(),
+    );
+    client.prepare(&extra).await.unwrap();
+    client.outbox.pending = None;
     client.prepare(&desired).await.unwrap();
     assert!(Client::with_token(&settings, "cn-futures-02".into(), path, "test-secret").is_err());
     task.abort();
@@ -283,5 +290,27 @@ async fn undurable_or_stale_decisions_are_never_sent() {
     expired.trigger_us -= 180_000_000;
     assert!(client.prepare(&expired).await.is_err());
     assert!(client.outbox.pending.is_none());
+    task.abort();
+}
+
+#[tokio::test]
+async fn strategies_manager_retired_are_skipped_instead_of_halting_the_group() {
+    let desired = desired();
+    let (url, state, task) = server(&desired, false).await;
+    let retired = desired.positions.keys().next().unwrap().clone();
+    state.lock().unwrap().members.remove(&retired);
+    let temp = tempfile::tempdir().unwrap();
+    let mut client = Client::with_token(
+        &settings(url),
+        "cn-futures-01".into(),
+        temp.path().join("outbox.json"),
+        "test-secret",
+    )
+    .unwrap();
+    client.prepare(&desired).await.unwrap();
+    let request = &client.outbox.pending.as_ref().unwrap().request;
+    assert_eq!(request.strategies.len(), desired.positions.len() - 1);
+    assert!(!request.strategies.contains_key(&retired));
+    assert!(!request.signal_times.contains_key(&retired));
     task.abort();
 }

@@ -18,7 +18,12 @@ Orders derive from the net target, factual inventory and exchange-reported
 contract size rules. Remove `risk.max_order_lots`, `risk.max_position_lots_per_side` and
 `risk.max_working_lots` from the CTP configuration when enabling `[exec]`.
 `risk.enable_fak_fok` must be enabled for the venue/account.
-There is no contract allowlist: Exec trades every contract of the target.
+There is no contract allowlist: Exec trades every contract of the target, and
+every held contract the target omits (account net, working order or a named
+strategy's attribution) at an implicit target of zero, like crypto
+`SYSTEM_POSITION_CLOSE`. Such contracts are found at admission and by a
+once-a-second refresh; an empty roster (every strategy retired in Manager) is a
+valid target that flattens the account.
 Admission never waits for contract rules or MD subscriptions; Exec requests them
 at admission and every second for the standing target, and a contract whose
 rules or quotes are still pending waits alone (`contract_rule_missing`).
@@ -114,7 +119,10 @@ fill. No maker/taker fee classification is invented.
 The ledger holds signed lots per strategy and native contract. The account net
 minus all named strategies is the implicit `__unallocated__` remainder, whose
 target is always zero (crypto's `SYSTEM_POSITION_CLOSE`). Strategies that left
-the roster but still hold lots are treated as target zero.
+the roster but still hold lots are treated as target zero; their closing fills
+stay attributed to them, so Manager's two-step retirement (stop, then delete
+once the ledger is flat) needs no publisher cooperation. Locked inventory (long
+and short at a flat net) stays hedged, as for target contracts.
 
 - **Internal cross**: on a valid fresh book, opposite gaps are paired,
   `__unallocated__` first and then by strategy name, at the bid/ask mid. No
