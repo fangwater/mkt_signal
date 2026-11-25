@@ -41,6 +41,9 @@ pub(super) struct Controls {
     pub position_algorithm: crate::cta_perp::config::PositionAlgorithm,
     pub entry: crate::cta_perp::config::EntryConfig,
     pub exits: crate::cta_perp::config::ExecutionConfig,
+    /// v2 thresholds on the mean factor position; omitted keeps the current value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combination: Option<crate::cta_perp::config::CombinationConfig>,
     pub rules: Vec<Rule>,
 }
 impl From<&Config> for Controls {
@@ -55,6 +58,7 @@ impl From<&Config> for Controls {
             position_algorithm: c.position_algorithm,
             entry: c.entry.clone(),
             exits: c.exits.clone(),
+            combination: Some(c.combination.clone()),
             rules: c.rules.clone(),
         }
     }
@@ -83,6 +87,9 @@ impl Controls {
         next.position_algorithm = self.position_algorithm;
         next.entry = self.entry;
         next.exits = self.exits;
+        if let Some(combination) = self.combination {
+            next.combination = combination;
+        }
         next.rules = self.rules;
         next.validate()?;
         Ok(next)
@@ -443,6 +450,7 @@ pub(super) fn apply_extra(
             position_algorithm: next_frequency.position_algorithm,
             entry: next_frequency.entry.clone(),
             exits: next_frequency.exits.clone(),
+            combination: next_frequency.combination.clone(),
             rules: next_frequency.rules.clone(),
         },
     );

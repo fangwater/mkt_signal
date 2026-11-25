@@ -53,25 +53,105 @@ pub enum PositionAlgorithm {
     #[default]
     V0,
     V1,
+    /// v0 factor positions, then their equal-weight mean drives one held
+    /// symbol direction through [`CombinationConfig`]. Domestic futures only.
+    V2,
 }
 
 impl PositionAlgorithm {
     pub fn allocation(self) -> &'static str {
         match self {
             Self::V0 => "per_symbol_factor",
-            Self::V1 => "per_symbol",
+            Self::V1 | Self::V2 => "per_symbol",
         }
     }
 
+    /// Scale of the factor thresholds; v2 factors use raw percentiles as v0.
     pub fn decision_value(self, x: f64) -> f64 {
         match self {
-            Self::V0 => x,
+            Self::V0 | Self::V2 => x,
             Self::V1 => 2.0 * x - 1.0,
         }
     }
 
+    /// Whether per-factor state is a factor position (v0/v2), not a v1 vote.
+    pub fn holds_factor_positions(self) -> bool {
+        matches!(self, Self::V0 | Self::V2)
+    }
+
     fn minimum(self) -> f64 {
         self.decision_value(0.0)
+    }
+}
+
+/// v2 combination layer on the mean of factor positions (-1..1). All
+/// comparisons are strict; closes apply before opens, so one bar can reverse.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CombinationConfig {
+    pub open_long: f64,
+    pub open_short: f64,
+    pub close_long: f64,
+    pub close_short: f64,
+}
+
+impl Default for CombinationConfig {
+    fn default() -> Self {
+        Self {
+            open_long: 0.5,
+            open_short: -0.5,
+            close_long: -0.2,
+            close_short: 0.2,
+        }
+    }
+}
+
+impl CombinationConfig {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let values = [
+            self.open_long,
+            self.open_short,
+            self.close_long,
+            self.close_short,
+        ];
+        anyhow::ensure!(
+            values
+                .iter()
+                .all(|v| v.is_finite() && (-1.0..=1.0).contains(v)),
+            "combination thresholds must be finite values in [-1, 1]"
+        );
+        anyhow::ensure!(
+            self.open_short < self.open_long
+                && self.close_long < self.open_long
+                && self.close_short > self.open_short,
+            "combination thresholds require open_short < open_long, close_long < open_long and close_short > open_short"
+        );
+        Ok(())
+    }
+
+    /// Next symbol direction from the held one and the mean factor position.
+    /// Means are k/N, so ties with decimal thresholds stay exact in f64.
+    pub fn next_direction(&self, current: i8, mean: f64) -> i8 {
+        let current = if (current > 0 && mean < self.close_long)
+            || (current < 0 && mean > self.close_short)
+        {
+            0
+        } else {
+            current.signum()
+        };
+        if current != 0 {
+            current
+        } else if mean > self.open_long {
+            1
+        } else if mean < self.open_short {
+            -1
+        } else {
+            0
+        }
     }
 }
 
@@ -354,6 +434,10 @@ impl CtaPerpConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.position_algorithm != PositionAlgorithm::V2,
+            "position_algorithm v2 is only supported by domestic futures"
+        );
         if !self.factor_rules.is_empty() {
             anyhow::ensure!(
                 self.position_algorithm == PositionAlgorithm::V0,
@@ -593,6 +677,11 @@ mod tests {
             .validate()
             .is_err());
         raw["position_algorithm"] = serde_json::json!("v2");
+        assert!(serde_json::from_value::<CtaPerpConfig>(raw.clone())
+            .unwrap()
+            .validate()
+            .is_err());
+        raw["position_algorithm"] = serde_json::json!("v3");
         assert!(serde_json::from_value::<CtaPerpConfig>(raw).is_err());
         for overrides in [
             serde_json::json!({"ethusdt":{"factor_long_quantile":0.8}}),

@@ -1,5 +1,5 @@
 use crate::cta_factor_calc::config::Interval;
-use crate::cta_perp::config::{EntryConfig, ExecutionConfig, PositionAlgorithm};
+use crate::cta_perp::config::{CombinationConfig, EntryConfig, ExecutionConfig, PositionAlgorithm};
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -17,7 +17,7 @@ pub struct Config {
     pub interval: String,
     #[serde(default = "enabled_by_default")]
     pub enabled: bool,
-    /// Lots held per v1 direction (v0 ledgers keep their persisted multiplier).
+    /// Lots held per v1/v2 direction (v0 ledgers keep their persisted multiplier).
     /// At least the exchange's minimum opening order (GFEX LC: 2 lots since
     /// 2026-09-22) so every opening is valid.
     #[serde(default = "one_lot")]
@@ -32,6 +32,9 @@ pub struct Config {
     pub bind: String,
     pub entry: EntryConfig,
     pub exits: ExecutionConfig,
+    /// v2 thresholds on the mean factor position; unused by v0/v1.
+    #[serde(default, skip_serializing_if = "CombinationConfig::is_default")]
+    pub combination: CombinationConfig,
     pub rules: Vec<Rule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication: Option<PublicationConfig>,
@@ -59,6 +62,8 @@ pub struct FrequencyConfig {
     pub position_algorithm: PositionAlgorithm,
     pub entry: EntryConfig,
     pub exits: ExecutionConfig,
+    #[serde(default, skip_serializing_if = "CombinationConfig::is_default")]
+    pub combination: CombinationConfig,
     pub rules: Vec<Rule>,
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -258,6 +263,7 @@ impl Config {
                 position_algorithm: self.position_algorithm,
                 entry: self.entry.clone(),
                 exits: self.exits.clone(),
+                combination: self.combination.clone(),
                 rules: Vec::new(),
             });
         cfg.name = format!("{}-{}", self.name, interval.name());
@@ -267,6 +273,7 @@ impl Config {
         cfg.position_algorithm = settings.position_algorithm;
         cfg.entry = settings.entry;
         cfg.exits = settings.exits;
+        cfg.combination = settings.combination;
         cfg.rules = settings.rules;
         cfg
     }
@@ -382,6 +389,7 @@ impl Config {
                 "v1 exit thresholds must lie inside their corresponding entry thresholds"
             );
         }
+        cfg.combination.validate()?;
         ensure!(
             [
                 cfg.entry.factor_long_quantile,

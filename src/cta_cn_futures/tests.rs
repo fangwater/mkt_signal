@@ -1474,6 +1474,7 @@ fn recovery_warms_independent_minute_ledger_without_replaying_positions() {
             position_algorithm: cfg.position_algorithm,
             entry: cfg.entry.clone(),
             exits: cfg.exits.clone(),
+            combination: cfg.combination.clone(),
             rules: vec![cfg
                 .rules
                 .iter()

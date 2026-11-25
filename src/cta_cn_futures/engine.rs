@@ -42,6 +42,11 @@ pub(super) fn hourly_exit(current: i8, q: f64, long: f64, short: f64) -> bool {
     (current > 0 && q <= long) || (current < 0 && q >= short)
 }
 
+/// v2 factor exits exclude the boundary: long below `long`, short above `short`.
+pub(super) fn hourly_exit_strict(current: i8, q: f64, long: f64, short: f64) -> bool {
+    (current > 0 && q < long) || (current < 0 && q > short)
+}
+
 #[derive(Clone)]
 pub struct Bar {
     pub start_ms: i64,
@@ -525,15 +530,22 @@ impl Engine {
                 ready,
             });
         }
+        // v2 holds an invalid factor at its previous position instead of
+        // skipping the bar; it decides once any factor score is valid.
+        let decidable = if self.cfg.position_algorithm == PositionAlgorithm::V2 {
+            points.iter().any(|p| p.field.ready)
+        } else {
+            all_ready
+        };
         // Preheat never advances a position or decision clock.
         let publish =
-            self.cfg.enabled && live && all_ready && hour.end_ms > self.ledger.last_decision_ms;
+            self.cfg.enabled && live && decidable && hour.end_ms > self.ledger.last_decision_ms;
         if publish {
             self.commit(&points, &nq, hour.end_ms, contract)?;
             self.last_decision_day = Some(hour.trading_day);
             self.undecided = None;
         } else {
-            self.undecided = (self.cfg.enabled && all_ready).then(|| Undecided {
+            self.undecided = (self.cfg.enabled && decidable).then(|| Undecided {
                 points: points.clone(),
                 nq: nq.clone(),
                 end_ms: hour.end_ms,
@@ -664,9 +676,26 @@ impl Engine {
             return Ok((direction, flags));
         }
 
+        let v2 = self.cfg.position_algorithm == PositionAlgorithm::V2;
         let mut flags = BTreeMap::new();
         let mut signal = self.signal.clone();
         for (point, input) in points.iter().zip(inputs) {
+            let mut current = if self.ledger.position_algorithm.holds_factor_positions() {
+                self.ledger
+                    .flags
+                    .get(point.rule.key())
+                    .copied()
+                    .unwrap_or(0)
+            } else {
+                // The old aggregate direction has no independent factor position.
+                0
+            };
+            if v2 && !point.field.ready {
+                // An invalid score keeps the previous bar's factor position;
+                // a warming factor therefore counts as 0 in the mean.
+                flags.insert(point.rule.key().to_owned(), current);
+                continue;
+            }
             let raw_q = point.field.quantile.context("ready factor missing rank")?;
             let q = if point.rule.sign > 0 {
                 raw_q
@@ -698,18 +727,9 @@ impl Engine {
                 votes: Vec::new(),
                 nq: input,
             };
-            let mut current = if self.ledger.position_algorithm == PositionAlgorithm::V0 {
-                self.ledger
-                    .flags
-                    .get(point.rule.key())
-                    .copied()
-                    .unwrap_or(0)
-            } else {
-                // The old aggregate direction has no independent factor position.
-                0
-            };
+            let exit = if v2 { hourly_exit_strict } else { hourly_exit };
             if hourly
-                && hourly_exit(
+                && exit(
                     current,
                     q,
                     signal.execution.factor_exit_quantile_long,
@@ -722,6 +742,13 @@ impl Engine {
                 point.rule.key().to_owned(),
                 next_position_flag(current, &bar, &signal),
             );
+        }
+        if v2 {
+            ensure!(!flags.is_empty(), "v2 requires at least one factor rule");
+            let mean =
+                flags.values().map(|&flag| f64::from(flag)).sum::<f64>() / flags.len() as f64;
+            let current = self.ledger.target_lots().signum() as i8;
+            return Ok((self.cfg.combination.next_direction(current, mean), flags));
         }
         let direction = flags
             .values()
@@ -762,7 +789,7 @@ impl Engine {
             native(self.published_lots()),
         )]))
     }
-    /// A v1 direction is held with `lots_per_rule`; v0 rule sums are unchanged.
+    /// A v1/v2 direction is held with `lots_per_rule`; v0 rule sums are unchanged.
     fn published_lots(&self) -> i64 {
         let lots = self.ledger.target_lots();
         if self.ledger.target_direction.is_some() {
@@ -870,5 +897,125 @@ mod tests {
         v0.ledger.target_direction = Some(1);
         v0.ledger.flags.insert(cfg.rules[0].key().into(), 1);
         assert_eq!(v0.decide(&points([0.5, 0.5]), &nq, 1).unwrap().0, 0);
+    }
+
+    /// v2: each factor ANDs its own NQ gate into a held +1/0/-1 position
+    /// (strict hourly exits), then the equal-weight mean drives one held
+    /// direction through the combination thresholds without NQ.
+    #[test]
+    fn v2_gates_each_factor_by_its_nq_before_the_held_mean_direction() {
+        let mut cfg: Config = serde_json::from_str(include_str!(
+            "../../tests/fixtures/cta_cn_futures_legacy.json"
+        ))
+        .unwrap();
+        cfg.rules.truncate(3);
+        cfg.position_algorithm = PositionAlgorithm::V2;
+        cfg.validate().unwrap();
+        let keys: Vec<String> = cfg.rules.iter().map(|r| r.key().to_owned()).collect();
+        // `None` quantile = invalid score; `true` = gated by NQ 0.50/0.50.
+        let points = |rows: [(Option<f64>, bool); 3]| {
+            cfg.rules
+                .iter()
+                .zip(rows)
+                .map(|(rule, (q, gated))| {
+                    let mut rule = rule.clone();
+                    rule.sign = 1;
+                    ObservedRule {
+                        rule,
+                        field: Field {
+                            value: q,
+                            quantile: q,
+                            ready: q.is_some(),
+                            ..Field::default()
+                        },
+                        gates: gated.then_some((0.5, 0.5)),
+                        ready: q.is_some(),
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        // Long NQ below its median (blocked); short NQ below its median (allowed).
+        let side = |value: f64| Field {
+            value: Some(value),
+            median: Some(1.),
+            quantile: Some(0.),
+            ready: true,
+            ..Field::default()
+        };
+        let nq = BTreeMap::from([("long".into(), side(0.)), ("short".into(), side(0.))]);
+        let mut engine = Engine::new(&cfg, Ledger::default()).unwrap();
+        let mut run = |held: [i8; 3], direction: i8, rows| {
+            engine.ledger.position_algorithm = PositionAlgorithm::V2;
+            engine.ledger.target_direction = Some(direction);
+            engine.ledger.flags = keys.iter().cloned().zip(held).collect();
+            let (direction, flags) = engine.decide(&points(rows), &nq, 1).unwrap();
+            (direction, keys.iter().map(|k| flags[k]).collect::<Vec<_>>())
+        };
+        let (hi, mid, lo) = (Some(0.95), Some(0.5), Some(0.05));
+        // 2/3 long > 0.5 opens; 1/3 does not.
+        assert_eq!(
+            run([0; 3], 0, [(hi, false), (hi, false), (mid, false)]),
+            (1, vec![1, 1, 0])
+        );
+        assert_eq!(
+            run([0; 3], 0, [(hi, false), (mid, false), (mid, false)]),
+            (0, vec![1, 0, 0])
+        );
+        // NQ blocks a long entry per factor before averaging; shorts pass.
+        assert_eq!(
+            run([0; 3], 0, [(hi, true), (hi, false), (hi, false)]),
+            (1, vec![0, 1, 1])
+        );
+        assert_eq!(
+            run([0; 3], 0, [(hi, true), (hi, true), (hi, false)]),
+            (0, vec![0, 0, 1])
+        );
+        assert_eq!(
+            run([0; 3], 0, [(lo, true), (lo, true), (mid, false)]),
+            (-1, vec![-1, -1, 0])
+        );
+        // NQ never closes a held factor.
+        assert_eq!(
+            run([1, 1, 0], 1, [(mid, true), (mid, true), (mid, false)]),
+            (1, vec![1, 1, 0])
+        );
+        // Strict factor exits: q == 0.30 holds, q < 0.30 closes.
+        assert_eq!(run([1; 3], 1, [(Some(0.3), false); 3]), (1, vec![1, 1, 1]));
+        assert_eq!(
+            run([-1; 3], -1, [(Some(0.7), false); 3]),
+            (-1, vec![-1, -1, -1])
+        );
+        // All factors flat: mean 0 is not below -0.2, so the long is held.
+        assert_eq!(run([1; 3], 1, [(Some(0.29), false); 3]), (1, vec![0, 0, 0]));
+        // One factor short (-1/3 < -0.2) closes the long without opening short.
+        assert_eq!(
+            run([1, 0, 0], 1, [(lo, false), (mid, false), (mid, false)]),
+            (0, vec![-1, 0, 0])
+        );
+        // Factor and combination both reverse in the same bar.
+        assert_eq!(run([1; 3], 1, [(lo, false); 3]), (-1, vec![-1, -1, -1]));
+        // Invalid scores keep the previous factor position; a warming factor
+        // stays 0 and still counts in the denominator.
+        assert_eq!(
+            run([1, 0, 0], 0, [(None, false), (hi, false), (None, false)]),
+            (1, vec![1, 1, 0])
+        );
+        assert_eq!(
+            run([0; 3], 0, [(None, false), (hi, false), (None, false)]),
+            (0, vec![0, 1, 0])
+        );
+        // A v1 ledger's flags are votes, not positions: start factors flat.
+        engine.ledger.position_algorithm = PositionAlgorithm::V1;
+        engine.ledger.target_direction = Some(1);
+        engine.ledger.flags = keys.iter().cloned().zip([1, 1, 1]).collect();
+        let (direction, flags) = engine.decide(&points([(mid, false); 3]), &nq, 1).unwrap();
+        assert_eq!((direction, flags.values().all(|&f| f == 0)), (1, true));
+
+        let mut bad = cfg.clone();
+        bad.combination.close_long = 0.6;
+        assert!(bad.validate().is_err());
+        let mut bad = cfg.clone();
+        bad.entry.factor_short_quantile = -0.1;
+        assert!(bad.validate().is_err());
     }
 }
