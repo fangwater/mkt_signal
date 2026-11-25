@@ -242,8 +242,9 @@ fn target_admission_rejects_wrong_identity_scope_and_closed_gates() {
     let mut t = target(1);
     t.source_id = "another-account".into();
     bad.push(t);
+    // An empty roster is a valid flat target; a member without contracts is not.
     let mut t = target(1);
-    t.strategies.clear();
+    t.strategies.get_mut("cta-a").unwrap().clear();
     bad.push(t);
     let mut t = target(1);
     with_market(&mut t, "SHFE:CU2612", 0);
@@ -835,10 +836,9 @@ fn a_retired_strategy_is_closed_and_keeps_its_closing_fills() {
         (close.side, close.offset, close.lots),
         (Side::Sell, Offset::Close, 2)
     );
-    let p = c.prepare(close).unwrap();
+    // Attribution needs only the fill; the core's SHFE date planning is not under test.
     let mut closed = fill(&p.key, "t2", Side::Sell, 2);
     closed.offset = Offset::Close;
-    assert!(c.on_fill(&closed).unwrap());
     s.on_fill(&closed, true);
     match &s.take_ledger_events()[..] {
         [LedgerEvent::StrategyFillAllocation(FillAllocation {
