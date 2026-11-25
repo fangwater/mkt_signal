@@ -2,6 +2,10 @@
 //! `dat_pbs/gate-futures-rpi/incremental_depth_{50,400}` (USDT futures) and
 //! `dat_pbs/gate-margin-rpi/incremental_depth_{50,400}` (spot).
 //!
+//! The same legs also subscribe the normal `{market}.obu` at the same depth and
+//! publish the RPI-only remainder (RPI size minus normal size per price) as
+//! snapshots to `.../pure_rpi_depth_{50,400}`; see [`pure`].
+//!
 //! The RPI book is the normal book plus RPI maker orders, which only RPI-enabled
 //! takers can fill. Gate pushes it only as Order Book V2 snapshots and deltas over
 //! SBE (templateId=3). Each depth gets its own WebSocket batches, A/B replicas,
@@ -19,6 +23,8 @@ use crate::spread_pbs::adapter::SubscriptionAckPolicy;
 use crate::spread_pbs::gate_sbe::{GateSbeAdapter, GateSpotSbeAdapter};
 use mkt_parsers::gate as gate_codec;
 use std::cell::Cell;
+
+mod pure;
 
 pub(super) const ENV_GATE_RPI_DEPTHS: &str = "SPREAD_PBS_GATE_RPI_DEPTHS";
 pub(super) const ENV_GATE_RPI_SYMBOLS: &str = "SPREAD_PBS_GATE_RPI_SYMBOLS";
@@ -65,6 +71,14 @@ impl RpiMarket {
         match self {
             Self::Futures => "futures.rpi_obu",
             Self::Spot => "spot.rpi_obu",
+        }
+    }
+
+    /// Normal Order Book V2 channel, subscribed alongside for the pure RPI remainder.
+    fn std_channel(self) -> &'static str {
+        match self {
+            Self::Futures => "futures.obu",
+            Self::Spot => "spot.obu",
         }
     }
 
@@ -119,6 +133,7 @@ pub(super) struct RpiStream {
     state: Rc<RefCell<SharedState>>,
     gap_reconnects: Rc<Cell<u64>>,
     stale_snapshot_resets: Rc<Cell<u64>>,
+    pure: Rc<pure::PureSink>,
 }
 
 /// Requested depths for a market and the env var they came from (for logging).
@@ -177,20 +192,35 @@ fn channel_name(depth: u32) -> String {
     format!("incremental_depth_{depth}")
 }
 
-fn build_subscribe(market: RpiMarket, symbols: &[String], depth: u32) -> Vec<serde_json::Value> {
+fn pure_channel_name(depth: u32) -> String {
+    format!("pure_rpi_depth_{depth}")
+}
+
+/// One subscribe batch per chunk: `[normal obu, rpi_obu]` for the same contracts.
+fn build_subscribe(
+    market: RpiMarket,
+    symbols: &[String],
+    depth: u32,
+) -> Vec<Vec<serde_json::Value>> {
+    let message = |channel: &str, prefix: &str, chunk: &[String]| {
+        let streams: Vec<String> = chunk
+            .iter()
+            .map(|symbol| format!("{prefix}.{symbol}.{depth}"))
+            .collect();
+        serde_json::json!({
+            "time": get_timestamp_us() / 1_000_000,
+            "channel": channel,
+            "event": "subscribe",
+            "payload": streams,
+        })
+    };
     symbols
         .chunks(RPI_SUBSCRIBE_CHUNK)
         .map(|chunk| {
-            let streams: Vec<String> = chunk
-                .iter()
-                .map(|symbol| format!("rpi_ob.{symbol}.{depth}"))
-                .collect();
-            serde_json::json!({
-                "time": get_timestamp_us() / 1_000_000,
-                "channel": market.channel(),
-                "event": "subscribe",
-                "payload": streams,
-            })
+            vec![
+                message(market.std_channel(), "ob", chunk),
+                message(market.channel(), "rpi_ob", chunk),
+            ]
         })
         .collect()
 }
@@ -307,8 +337,11 @@ fn make_handler(
     max_levels: usize,
     gap_reconnects: Rc<Cell<u64>>,
     stale_snapshot_resets: Rc<Cell<u64>>,
+    pure_sink: Rc<pure::PureSink>,
 ) -> FrameHandler {
-    let continuity = RefCell::new(LegContinuity::default());
+    let rpi_continuity = RefCell::new(LegContinuity::default());
+    let std_continuity = RefCell::new(LegContinuity::default());
+    let leg_books = RefCell::new(pure::LegBooks::default());
     Rc::new(move |_recv_us: i64, raw: &[u8]| {
         if looks_like_json(raw) {
             log_text_notice(market, &label, raw);
@@ -317,15 +350,29 @@ fn make_handler(
         let Some(frame) = gate_codec::parse_sbe_obu(raw) else {
             return Ok(());
         };
-        if frame.channel != market.channel() || frame.depth != depth {
+        if frame.depth != depth {
             return Ok(());
         }
+        let is_rpi = if frame.channel == market.channel() {
+            true
+        } else if frame.channel == market.std_channel() {
+            false
+        } else {
+            return Ok(());
+        };
+        let continuity = if is_rpi {
+            &rpi_continuity
+        } else {
+            &std_continuity
+        };
         let verdict = continuity.borrow_mut().check(&frame.book);
         match verdict {
             Continuity::Accept => {}
             Continuity::Stale => return Ok(()),
             Continuity::Gap { last_u } => {
-                continuity.borrow_mut().clear();
+                rpi_continuity.borrow_mut().clear();
+                std_continuity.borrow_mut().clear();
+                leg_books.borrow_mut().clear();
                 gap_reconnects.set(gap_reconnects.get() + 1);
                 bail!(
                     "gate rpi obu gap stream={} local_u={:?} U={} u={}; resubscribe for a fresh snapshot",
@@ -335,6 +382,13 @@ fn make_handler(
                     frame.book.final_update_id,
                 );
             }
+        }
+
+        if let Some(pure) = leg_books.borrow_mut().apply(is_rpi, &frame.book) {
+            pure_sink.publish(&label, pure);
+        }
+        if !is_rpi {
+            return Ok(());
         }
 
         let mut s = state.borrow_mut();
@@ -395,19 +449,34 @@ pub(super) fn spawn(
             .seed_symbols(&symbols)
             .with_context(|| format!("seed gate rpi payload prefixes for {channel}"))?;
         let state = Rc::new(RefCell::new(new_state(&symbols)));
+        let pure_channel = pure_channel_name(depth);
+        let pure_publisher = Rc::new(
+            publishers
+                .incremental_channel_for(slug, dat_root, &pure_channel)
+                .with_context(|| format!("create gate rpi publisher {slug}/{pure_channel}"))?,
+        );
+        pure_publisher
+            .seed_symbols(&symbols)
+            .with_context(|| format!("seed gate rpi payload prefixes for {pure_channel}"))?;
+        let pure_sink = Rc::new(pure::PureSink::new(
+            pure_publisher,
+            Rc::new(RefCell::new(new_state(&symbols))),
+            max_levels,
+        ));
         let gap_reconnects = Rc::new(Cell::new(0));
         let stale_snapshot_resets = Rc::new(Cell::new(0));
         let subscribe_msgs = build_subscribe(market, &symbols, depth);
         log::info!(
-            "spread_pbs gate rpi market={} depth={} service={} symbols={} batches={} max_levels_per_msg={}",
+            "spread_pbs gate rpi market={} depth={} service={} pure_service={} symbols={} batches={} max_levels_per_msg={}",
             market.label(),
             depth,
             publisher.service_name(),
+            pure_sink.service_name,
             symbols.len(),
             subscribe_msgs.len(),
             max_levels,
         );
-        for (batch_index, subscribe_msg) in subscribe_msgs.into_iter().enumerate() {
+        for (batch_index, batch_msgs) in subscribe_msgs.into_iter().enumerate() {
             for (replica_index, replica) in ["a", "b"].into_iter().enumerate() {
                 let label = format!(
                     "gate-rpi-{}-{depth}-{batch_index}-{replica}",
@@ -422,6 +491,7 @@ pub(super) fn spawn(
                     max_levels,
                     gap_reconnects.clone(),
                     stale_snapshot_resets.clone(),
+                    pure_sink.clone(),
                 );
                 let first_after = if replica_index == 0 {
                     restart_duration
@@ -437,7 +507,7 @@ pub(super) fn spawn(
                         local_ip: local_ip.to_string(),
                         remote_ip: None,
                         headers: Vec::new(),
-                        subscribe_msgs: vec![subscribe_msg.clone()],
+                        subscribe_msgs: batch_msgs.clone(),
                         keepalive: market.keepalive(),
                         parse_okex_notices: false,
                         business_idle_timeout: Some(WS_BUSINESS_IDLE_TIMEOUT),
@@ -467,6 +537,7 @@ pub(super) fn spawn(
             state,
             gap_reconnects,
             stale_snapshot_resets,
+            pure: pure_sink,
         });
     }
     Ok((legs, streams))
@@ -485,6 +556,20 @@ pub(super) fn log_stats(streams: &[RpiStream]) {
             s.symbol_state.incremental_seen(),
             stream.gap_reconnects.get(),
             stream.stale_snapshot_resets.get(),
+        );
+        let pure = &stream.pure;
+        let ps = pure.state.borrow();
+        log::info!(
+            "spread_pbs[{}] gate pure rpi market={} depth={} stats paired={} published={} unchanged_skipped={} dropped_by_seq={} negative_levels={} stale_snapshot_resets={}",
+            pure.service_name,
+            stream.market.label(),
+            stream.depth,
+            pure.paired.get(),
+            ps.incremental_published,
+            pure.unchanged_skipped.get(),
+            ps.incremental_dropped_by_seq,
+            pure.negative_levels.get(),
+            pure.stale_snapshot_resets.get(),
         );
     }
 }
@@ -537,19 +622,27 @@ mod tests {
     #[test]
     fn subscribe_batches_rpi_streams_and_names_depth_channels() {
         let symbols: Vec<String> = (0..150).map(|i| format!("S{i}_USDT")).collect();
-        let msgs = build_subscribe(RpiMarket::Futures, &symbols, 400);
-        assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0]["channel"], "futures.rpi_obu");
-        assert_eq!(msgs[0]["event"], "subscribe");
-        assert_eq!(msgs[0]["payload"].as_array().unwrap().len(), 100);
-        assert_eq!(msgs[0]["payload"][0], "rpi_ob.S0_USDT.400");
-        assert_eq!(msgs[1]["payload"].as_array().unwrap().len(), 50);
+        let batches = build_subscribe(RpiMarket::Futures, &symbols, 400);
+        assert_eq!(batches.len(), 2);
+        let [std, rpi] = &batches[0][..] else {
+            panic!("each batch subscribes normal + rpi");
+        };
+        assert_eq!(std["channel"], "futures.obu");
+        assert_eq!(std["payload"][0], "ob.S0_USDT.400");
+        assert_eq!(rpi["channel"], "futures.rpi_obu");
+        assert_eq!(rpi["event"], "subscribe");
+        assert_eq!(rpi["payload"].as_array().unwrap().len(), 100);
+        assert_eq!(rpi["payload"][0], "rpi_ob.S0_USDT.400");
+        assert_eq!(batches[1][1]["payload"].as_array().unwrap().len(), 50);
         assert_eq!(channel_name(50), "incremental_depth_50");
         assert_eq!(channel_name(400), "incremental_depth_400");
+        assert_eq!(pure_channel_name(50), "pure_rpi_depth_50");
 
         let spot = build_subscribe(RpiMarket::Spot, &symbols[..1], 50);
-        assert_eq!(spot[0]["channel"], "spot.rpi_obu");
-        assert_eq!(spot[0]["payload"][0], "rpi_ob.S0_USDT.50");
+        assert_eq!(spot[0][0]["channel"], "spot.obu");
+        assert_eq!(spot[0][0]["payload"][0], "ob.S0_USDT.50");
+        assert_eq!(spot[0][1]["channel"], "spot.rpi_obu");
+        assert_eq!(spot[0][1]["payload"][0], "rpi_ob.S0_USDT.50");
     }
 
     #[test]
