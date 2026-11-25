@@ -154,6 +154,14 @@ impl Config {
         }
         Ok(group)
     }
+    /// Panel path relative to the instance root: empty for the primary product.
+    pub fn panel_path(&self) -> String {
+        if self.is_additional_product() {
+            format!("products/{}/", self.symbol.to_ascii_lowercase())
+        } else {
+            String::new()
+        }
+    }
     pub fn is_additional_product(&self) -> bool {
         self.product_runtime.is_some()
     }

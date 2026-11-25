@@ -755,6 +755,7 @@ pub async fn run() -> Result<()> {
     let (inputs, venue_clocks) =
         live::capture(root.redis_endpoint, configs.iter().map(|(_, cfg)| cfg))?;
     let mut workers = Vec::new();
+    let access_digest = panel::access_digest(&root)?;
     let mut product_index = Vec::new();
     for ((path, cfg), rx) in configs.into_iter().zip(inputs) {
         std::fs::create_dir_all(cfg.state_directory())?;
@@ -776,19 +777,15 @@ pub async fn run() -> Result<()> {
         reports.insert(cfg.symbol.clone(), state.clone());
         let catalog = Arc::new(RwLock::new(panel::catalog(&cfg)?));
         let (config_tx, config_rx) = tokio::sync::mpsc::channel(8);
-        let router = panel::router(&panel::access_path(&root), catalog.clone(), config_tx)?;
-        product_index.push((
-            cfg.exchange.clone(),
-            cfg.symbol.clone(),
-            cfg.is_additional_product(),
-        ));
+        let router = panel::router(access_digest, catalog.clone(), config_tx);
+        let panel_path = cfg.panel_path();
+        product_index.push(json!({"exchange":cfg.exchange,"symbol":cfg.symbol,"path":panel_path}));
         if cfg.is_additional_product() {
             let read = state.clone();
             let positions = state.clone();
-            let prefix = format!("/products/{}", cfg.symbol.to_ascii_lowercase());
-            app = app.route(&format!("{prefix}/"), get(panel::page));
-            app = app.nest(
-                &prefix,
+            app = panel::mount_product(
+                app,
+                &format!("/{}", panel_path.trim_end_matches('/')),
                 router
                     .route(
                         "/state",
@@ -824,12 +821,9 @@ pub async fn run() -> Result<()> {
         .context("missing primary CTA state")?;
     let read = primary.clone();
     let read_products = reports.clone();
-    let index = panel::products(&product_index, &root.name);
+    let index = Json(json!({"name":root.name,"products":product_index}));
     let app = app
-        .route(
-            "/api/products",
-            get(move || async move { Json(index.clone()) }),
-        )
+        .route("/api/products", get(move || async move { index.clone() }))
         .route(
             "/state",
             get(move || async move { Json(group_report(&read, &read_products)) }),

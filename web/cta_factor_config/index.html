@@ -82,20 +82,23 @@
 'use strict';
 const $=id=>document.getElementById(id),clone=value=>JSON.parse(JSON.stringify(value));
 const nativeMode=document.body.dataset.nativeFutures==='true';
-const nativeBase=location.pathname.replace(/products\/[a-z0-9]+\/$/,''),nativeInstance=nativeBase.match(/^(.*\/)(\d{2})\/$/);
+// Native pages live at <instance root>/ or <instance root>/products/<p>/; public roots end in /<NN>/.
+const nativeBase=location.pathname.replace(/products\/[a-z0-9]+\/$/,''),nativePath=location.pathname.slice(nativeBase.length);
+const nativeInstance=nativeBase.match(/^(.*\/)(\d{2})\/$/),currentInstance=nativeInstance?.[2];
 const accessKey='cta-cn-futures-panel-access:'+nativeBase,legacyAccessKey='cta-cn-futures-panel-access';
+if(nativeMode&&(currentInstance??'01')==='01'&&!localStorage.getItem(accessKey)&&localStorage.getItem(legacyAccessKey))localStorage.setItem(accessKey,localStorage.getItem(legacyAccessKey));
 if(nativeMode){const access=new URLSearchParams(location.hash.slice(1)).get('access');if(access&&/^[a-f0-9]{64}$/.test(access)){localStorage.setItem(accessKey,access);history.replaceState(null,'',location.pathname+location.search);}prepareNative();}
 const prepIntervals=['1min','5min','15min','1h'];
 let catalog=null,draft=null,dirty=false,groupsDirty=false,busy=true,selectedWorker=nativeMode?'cta-cn-futures':new URL(location.href).searchParams.get('worker')||'cta-prep-binance-futures';
-let nativeFrequency='1h',nativeNavLoaded=false;
+let nativeFrequency='1h';
 let accountRisk=[],riskDirty=false,riskBusy=false;
 function message(text,error=false){$('message').textContent=text;$('message').className='status '+(error?'err':'ok');}
 function changed(){dirty=true;$('dirty').textContent='有未保存修改';}
 function hasChanges(){return dirty||groupsDirty||riskDirty;}
 function setBusy(value){busy=value;document.querySelector('main').setAttribute('aria-busy',String(value));for(const el of document.querySelectorAll('input,select,button,textarea'))el.disabled=value;if(!value){for(const button of $('frequency-tabs').children)button.disabled=!button.dataset.name;$('save').disabled=!draft;}for(const el of $('account-risk').querySelectorAll('input,button'))el.disabled=value||riskBusy;if(nativeMode){$('strategy-type').disabled=true;for(const id of ['strategy-group','symbol-group'])$(id).disabled=value||$(id).options.length<2;}}
-async function api(path,options={}){
-  const url=new URL('api/'+path,location.href.split('#')[0]);url.searchParams.set('worker',selectedWorker);
-  const access=nativeMode?localStorage.getItem(accessKey)||localStorage.getItem(legacyAccessKey):null;
+async function api(path,options={},base=location.href.split('#')[0]){
+  const url=new URL('api/'+path,base);url.searchParams.set('worker',selectedWorker);
+  const access=nativeMode&&options.method==='POST'?localStorage.getItem(accessKey):null;
   const response=await fetch(url,{...options,headers:{'Content-Type':'application/json',...(access?{'Authorization':'Bearer '+access}:{}),...(options.headers||{})},credentials:'same-origin',cache:'no-store'});
   const raw=await response.text();let result;try{result=JSON.parse(raw);}catch{throw Error('读取失败，请检查登录状态');}if(!response.ok)throw Error(result.error||result.message||raw);return result;
 }
@@ -226,7 +229,6 @@ function renderCatalog(preferred){
 async function load(){
   if(busy&&catalog)return;if(hasChanges()&&!confirm('放弃未保存修改，重新读取？'))return;
   setBusy(true);try{catalog=await api('config');renderCatalog(decodeURIComponent(location.hash.slice(1)));message('读取完成');}catch(error){if(catalog){selectedWorker=catalog.worker;$('strategy-type').value=selectedWorker;}message(error.message,true);}finally{setBusy(false);}
-  if(nativeMode&&!nativeNavLoaded&&draft){setBusy(true);try{await loadNativeNav(draft);}finally{setBusy(false);}}
   if(!nativeMode)await loadAccountRisk(true);
 }
 async function action(save){
@@ -303,32 +305,30 @@ function showNative(doc){
   }
 }
 async function nativeProducts(base){
-  const response=await fetch(base+'api/products',{cache:'no-store'});if(!response.ok)throw Error('品种列表读取失败');
-  const products=(await response.json()).products;if(!Array.isArray(products)||!products.length)throw Error('品种列表为空');return products;
+  const products=(await api('products',{},new URL(base,location.href))).products;if(!Array.isArray(products)||!products.length)throw Error('品种列表为空');return products;
+}
+async function nativeInstances(){
+  if(!nativeInstance)return [];
+  try{const response=await fetch(nativeInstance[1]+'instances.json',{cache:'no-store'});const list=response.ok?await response.json():null;return Array.isArray(list)&&list.includes(currentInstance)?list:[currentInstance];}catch{return [currentInstance];}
 }
 async function loadNativeNav(doc){
-  const current=nativeInstance?.[2],path=location.pathname.slice(nativeBase.length);
-  let instances=current?[current]:[];
-  if(nativeInstance)try{const response=await fetch(nativeInstance[1]+'instances.json',{cache:'no-store'});const list=response.ok?await response.json():null;if(Array.isArray(list)&&list.includes(current))instances=list;}catch{}
+  const [instances,products]=await Promise.all([nativeInstances(),nativeProducts(nativeBase).catch(error=>{message(error.message,true);return [{exchange:doc.exchange,symbol:doc.symbol,path:nativePath}];})]);
   $('strategy-group').replaceChildren(...(instances.length?instances.map(id=>new Option('cta-cn_futures-'+id,id)):[new Option(doc.name,'')]));
-  if(current)$('strategy-group').value=current;
-  let products=[{exchange:doc.exchange,symbol:doc.symbol,path}];
-  try{products=await nativeProducts(nativeBase);}catch(error){message(error.message,true);}
+  if(currentInstance)$('strategy-group').value=currentInstance;
   $('symbol-group').replaceChildren(...products.map(item=>new Option(item.exchange+' · '+item.symbol,item.path)));
-  $('symbol-group').value=path;nativeNavLoaded=true;
+  $('symbol-group').value=nativePath;
 }
-function leaveNative(prompt){if(dirty&&!confirm(prompt))return false;dirty=false;return true;}
+function leaveNative(select,original,prompt){if(!dirty||confirm(prompt))return true;select.value=original;return false;}
+function navigate(url){dirty=false;location.assign(url);}
 async function switchInstance(){
-  const next=$('strategy-group').value,current=nativeInstance?.[2];if(!nativeInstance||next===current)return;
-  if(!leaveNative('放弃未保存修改，切换实例？')){$('strategy-group').value=current;return;}
+  const next=$('strategy-group').value;if(!nativeInstance||next===currentInstance||!leaveNative($('strategy-group'),currentInstance,'放弃未保存修改，切换实例？'))return;
   const base=nativeInstance[1]+next+'/';let products;
-  setBusy(true);try{products=await nativeProducts(base);}catch{$('strategy-group').value=current;message('cta-cn_futures-'+next+' 当前不可用（进程未运行或网关未连通），仍停留在 '+current,true);return;}finally{setBusy(false);}
-  const item=products.find(row=>row.symbol===draft?.symbol);location.assign(base+(item?item.path:''));
+  setBusy(true);try{products=await nativeProducts(base);}catch{$('strategy-group').value=currentInstance;message('cta-cn_futures-'+next+' 当前不可用（进程未运行或网关未连通），仍停留在 '+currentInstance,true);return;}finally{setBusy(false);}
+  const item=products.find(row=>row.symbol===draft?.symbol);navigate(base+(item?item.path:''));
 }
 function switchProduct(){
-  const path=location.pathname.slice(nativeBase.length),next=$('symbol-group').value;if(next===path)return;
-  if(!leaveNative('放弃未保存修改，切换品种？')){$('symbol-group').value=path;return;}
-  location.assign(nativeBase+next);
+  const next=$('symbol-group').value;if(next===nativePath||!leaveNative($('symbol-group'),nativePath,'放弃未保存修改，切换品种？'))return;
+  navigate(nativeBase+next);
 }
 async function nativeAction(save){
   if(busy||!draft)return;setBusy(true);
@@ -354,7 +354,7 @@ $('format').onclick=()=>{if(!draft||busy)return;try{const doc=clone(draft);if(na
 for(const id of ['factor-json','enabled','max-pos','native-lots','entry-long','entry-short','exit-long','exit-short','spread-long','spread-short'])$(id).addEventListener('input',changed);
 window.addEventListener('hashchange',()=>{if(nativeMode||!catalog||busy)return;const requested=decodeURIComponent(location.hash.slice(1)),next=catalog.plan.combinations[requested];if(!next||next.name===draft?.name)return;if(dirty&&!confirm('放弃未保存修改，切换频段？')){const url=new URL(location.href);url.hash=draft.name;history.replaceState(null,'',url);return;}show(next);message('');});
 window.addEventListener('beforeunload',event=>{if(hasChanges()){event.preventDefault();event.returnValue='';}});
-load();
+load().then(async()=>{if(!nativeMode||!draft)return;setBusy(true);try{await loadNativeNav(draft);}finally{setBusy(false);}});
 </script>
 </body>
 </html>

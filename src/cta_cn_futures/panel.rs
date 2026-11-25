@@ -230,49 +230,17 @@ async fn preview(
     edit(app, headers, request, false).await
 }
 
-/// Panel write credential shared by every product of one CTA instance.
-pub(super) fn access_path(root: &Config) -> PathBuf {
-    root.data_directory.join("config-access-token")
-}
-/// Product directory for the panel's product switcher; the primary product sits at the root.
-pub(super) fn products(entries: &[(String, String, bool)], name: &str) -> Value {
-    let products: Vec<_> = entries
-        .iter()
-        .map(|(exchange, symbol, additional)| {
-            let path = if *additional {
-                format!("products/{}/", symbol.to_ascii_lowercase())
-            } else {
-                String::new()
-            };
-            json!({"exchange":exchange,"symbol":symbol,"path":path})
-        })
-        .collect();
-    json!({"name":name,"products":products})
-}
-/// Panel page; relative `api/...` links need the product's trailing-slash URL.
-pub(super) async fn page() -> Html<String> {
-    Html(
-        include_str!("../../web/cta_factor_config/index.html").replacen(
-            "<body>",
-            "<body data-native-futures=\"true\">",
-            1,
-        ),
-    )
-}
-pub(super) fn router(
-    access_path: &Path,
-    catalog: Arc<RwLock<Value>>,
-    tx: mpsc::Sender<Mutation>,
-) -> Result<Router> {
+/// Panel write credential shared by every product of one CTA instance; returns its digest.
+pub(super) fn access_digest(root: &Config) -> Result<[u8; 32]> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let path = access_path;
+    let path = root.data_directory.join("config-access-token");
     if !path.exists() {
         let mut file = std::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
             .mode(0o600)
-            .open(path)?;
+            .open(&path)?;
         write!(
             file,
             "{}{}",
@@ -281,29 +249,52 @@ pub(super) fn router(
         )?;
         file.sync_all()?;
     }
-    let metadata = std::fs::symlink_metadata(path)?;
+    let metadata = std::fs::symlink_metadata(&path)?;
     ensure!(
         metadata.is_file()
             && !metadata.file_type().is_symlink()
             && metadata.permissions().mode() & 0o077 == 0,
         "panel access file must be private"
     );
-    let token = std::fs::read_to_string(path)?;
+    let token = std::fs::read_to_string(&path)?;
     ensure!(
         token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()),
         "invalid panel access file"
     );
+    Ok(Sha256::digest(token.as_bytes()).into())
+}
+async fn page() -> Html<&'static str> {
+    static PAGE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        include_str!("../../web/cta_factor_config/index.html").replacen(
+            "<body>",
+            "<body data-native-futures=\"true\">",
+            1,
+        )
+    });
+    Html(PAGE.as_str())
+}
+/// Mounts a product panel at `prefix`, also serving its page at `prefix/` so that the
+/// page's relative `api/...` links resolve under the product.
+pub(super) fn mount_product(app: Router, prefix: &str, product: Router) -> Router {
+    app.route(&format!("{prefix}/"), get(page))
+        .nest(prefix, product)
+}
+pub(super) fn router(
+    access_digest: [u8; 32],
+    catalog: Arc<RwLock<Value>>,
+    tx: mpsc::Sender<Mutation>,
+) -> Router {
     let app = App {
         catalog,
         tx,
-        access_digest: Sha256::digest(token.as_bytes()).into(),
+        access_digest,
     };
-    Ok(Router::new()
+    Router::new()
         .route("/", get(page))
         .route("/api/config", get(read).post(save))
         .route("/api/preview", post(preview))
         .layer(DefaultBodyLimit::max(128 * 1024))
-        .with_state(app))
+        .with_state(app)
 }
 
 pub(super) fn apply(
