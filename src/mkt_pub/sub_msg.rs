@@ -346,6 +346,10 @@ impl OkexPerpsSubscribeMsgs {
                 "args": mark_args
             }));
 
+            if cfg.data_types.okex_mark_price_only {
+                continue;
+            }
+
             // 指数价格订阅（使用USD作为基准）
             let mut index_args = Vec::new();
             for symbol in chunk {
@@ -378,13 +382,15 @@ impl OkexPerpsSubscribeMsgs {
         }
 
         // 强平信息只需要订阅一次
-        liquidation_orders_msgs.push(serde_json::json!({
-            "op": "subscribe",
-            "args": [serde_json::json!({
-                "channel": "liquidation-orders",
-                "instType": "SWAP"
-            })]
-        }));
+        if !cfg.data_types.okex_mark_price_only {
+            liquidation_orders_msgs.push(serde_json::json!({
+                "op": "subscribe",
+                "args": [serde_json::json!({
+                    "channel": "liquidation-orders",
+                    "instType": "SWAP"
+                })]
+            }));
+        }
 
         Self {
             mark_price_msgs,

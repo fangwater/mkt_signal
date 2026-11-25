@@ -40,6 +40,8 @@ pub struct DataTypesConfig {
     pub enable_derivatives: bool,    // 衍生品指标
     pub enable_ask_bid_spread: bool, // 买卖价差（最优买卖价）
     #[serde(default)]
+    pub okex_mark_price_only: bool,
+    #[serde(default)]
     pub max_levels_per_msg: Option<usize>, // 每条增量消息最大档数限制(bids+asks)，超过则截断
 }
 
@@ -180,6 +182,12 @@ impl Config {
             .with_context(|| format!("read mkt cfg: {}", path))?;
         let config_file: ConfigFile =
             serde_yaml::from_str(&content).with_context(|| format!("parse mkt cfg: {}", path))?;
+        anyhow::ensure!(
+            !config_file.data_types.okex_mark_price_only
+                || (venue == TradingVenue::OkexFutures
+                    && config_file.data_types.enable_derivatives),
+            "okex_mark_price_only requires derivatives enabled on okex-futures"
+        );
 
         // 构造 Config 结构体，使用默认值如果配置不存在
         let config = Config {
