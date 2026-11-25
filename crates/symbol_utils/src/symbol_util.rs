@@ -554,6 +554,20 @@ fn split_internal_symbol_assets(symbol_upper: &str) -> (&str, &str) {
     (symbol_upper, "USDT")
 }
 
+/// Pattern for every domestic (China) futures venue, for crypto-only tables
+/// that domestic execution never reaches: `domestic_venues!() => ...`.
+#[macro_export]
+macro_rules! domestic_venues {
+    () => {
+        $crate::TradingVenue::CffexFutures
+            | $crate::TradingVenue::ShfeFutures
+            | $crate::TradingVenue::IneFutures
+            | $crate::TradingVenue::DceFutures
+            | $crate::TradingVenue::CzceFutures
+            | $crate::TradingVenue::GfexFutures
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,18 +801,4 @@ mod tests {
         assert_eq!(gate_currency_pair_from_symbol("CC_USDT"), "CC_USDT");
         assert_eq!(gate_currency_pair_from_symbol("CC-USDT-SWAP"), "CC_USDT");
     }
-}
-
-/// Pattern for every domestic (China) futures venue, for crypto-only tables
-/// that domestic execution never reaches: `domestic_venues!() => ...`.
-#[macro_export]
-macro_rules! domestic_venues {
-    () => {
-        $crate::TradingVenue::CffexFutures
-            | $crate::TradingVenue::ShfeFutures
-            | $crate::TradingVenue::IneFutures
-            | $crate::TradingVenue::DceFutures
-            | $crate::TradingVenue::CzceFutures
-            | $crate::TradingVenue::GfexFutures
-    };
 }

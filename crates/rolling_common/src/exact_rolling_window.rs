@@ -53,10 +53,8 @@ impl ExactRollingWindow {
         let value = value.is_finite().then_some(value);
 
         if self.fifo.len() == self.capacity {
-            if let Some(expired) = self.fifo.pop_front() {
-                if let Some(expired) = expired {
-                    self.remove_sorted(expired);
-                }
+            if let Some(Some(expired)) = self.fifo.pop_front() {
+                self.remove_sorted(expired);
             }
         }
 

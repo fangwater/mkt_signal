@@ -751,7 +751,8 @@ impl AccountEventDeduper {
             | BasicAccountEventType::HyperliquidTwapSliceFill
             | BasicAccountEventType::HyperliquidTwapHistory
             | BasicAccountEventType::HyperliquidNativeEvent
-            | BasicAccountEventType::ExternalFuturesFill => return true,
+            | BasicAccountEventType::ExternalFuturesFill
+            | BasicAccountEventType::RapidXFinancial => return true,
             BasicAccountEventType::Error => return true,
         };
 
