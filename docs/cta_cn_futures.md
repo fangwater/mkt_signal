@@ -1,6 +1,6 @@
 # 国内期货 CTA 目标手数进程
 
-最后更新：2026-11-23
+最后更新：2026-11-25
 
 国内 CTA 按 `cta-cn_futures-01 / 02 / ...` 实例隔离；当前 `01` 位于 `/home/fanghaizhou/cta-cn_futures-01`，由环境脚本包装
 PM2 管理。01 的小时配置共覆盖 23 个品种、196 条规则：
@@ -246,9 +246,14 @@ Market Replay 由休市时段的后台任务处理。主力 REST 查询继续独
 
 ## 配置面板与状态
 
-锡的公网配置面板为 `http://124.223.189.200/cta-cn-futures/`。新增品种使用本机面板
-`http://127.0.0.1:19401/products/<小写品种>/`。每个面板按频率配置因子、方向、NQ、开关、仓位算法及开平阈值。
-GET `/api/config` 无需授权；POST `/api/preview`、`/api/config` 需要环境私有凭据。
+公网配置面板为 `http://124.223.189.200/cta-cn-futures/<实例>/`，旧地址 `/cta-cn-futures/` 跳转到 `01`。
+主品种在实例根路径，附加品种在 `products/<小写品种>/`；本机分别为 `127.0.0.1:19401/` 与 `19402/`。
+页面顶部的「实例」「品种」下拉框直接切换：品种列表来自 worker 的 `GET /api/products`，实例列表来自
+Nginx 的 `/cta-cn-futures/instances.json`。切到另一实例时保留同一品种，没有则回到该实例主品种；目标实例
+不可达时停留在原页并提示。每个面板按频率配置因子、方向、NQ、开关、仓位算法及开平阈值。
+GET `/api/config` 无需授权；POST `/api/preview`、`/api/config` 需要实例凭据 `data/config-access-token`。
+同一实例的所有品种共用这一份凭据（2026-11-25 起，`data/products/<品种>/config-access-token` 不再使用），
+浏览器按实例分别记住授权。
 配置读取不包含连接地址、路径或凭据。公网继续使用现有反向隧道，云端 Nginx
 配置为 `config/cta_cn_futures_public.nginx.conf`，通过环境本地的
 `scripts/cta_cn_futures_public.sh` 管理。

@@ -800,7 +800,7 @@ async fn native_panel_reads_without_authorization_but_protects_configuration_wri
     let (_dir, cfg, _) = live_fixture();
     let catalog = std::sync::Arc::new(std::sync::RwLock::new(panel::catalog(&cfg).unwrap()));
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
-    let app = panel::router(&cfg, catalog, tx).unwrap();
+    let app = panel::router(&panel::access_path(&cfg), catalog, tx).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -1999,4 +1999,39 @@ fn intraday_repair_replays_minutes_closed_while_it_ran_and_rearms_catch_up() {
     // A new gap opened during the job voids it.
     stream.gaps.push((gap + 10 * 60_000, gap + 10 * 60_000));
     assert!(!stream.same_gaps(&point));
+}
+
+#[test]
+fn panel_product_index_puts_primary_at_root_and_products_under_lowercase_paths() {
+    let index = super::panel::products(
+        &[
+            ("SHFE".into(), "SN".into(), false),
+            ("CFFEX".into(), "IM".into(), true),
+        ],
+        "cta-cn_futures-01",
+    );
+    assert_eq!(index["name"], "cta-cn_futures-01");
+    assert_eq!(index["products"][0]["path"], "");
+    assert_eq!(index["products"][1]["symbol"], "IM");
+    assert_eq!(index["products"][1]["path"], "products/im/");
+}
+
+#[tokio::test]
+async fn nested_product_panel_page_is_served_at_its_trailing_slash_url() {
+    use axum::routing::get;
+    let app = axum::Router::new()
+        .route("/products/ag/", get(super::panel::page))
+        .nest(
+            "/products/ag",
+            axum::Router::new()
+                .route("/", get(super::panel::page))
+                .route("/api/config", get(|| async { "cfg" })),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    for path in ["/products/ag", "/products/ag/", "/products/ag/api/config"] {
+        let status = reqwest::get(format!("{url}{path}")).await.unwrap().status();
+        assert_eq!(status, 200, "{path}");
+    }
 }

@@ -1,6 +1,6 @@
 # sh_dev 常驻多服务穿透
 
-最后更新：2026-11-20
+最后更新：2026-11-25
 
 本机主动建立到腾讯云 `sh_dev` 的反向 SSH TCP 连接，云上的服务通过
 `127.0.0.1` 访问本机或公司局域网内的已授权服务。按用户确认的范围，
@@ -18,7 +18,8 @@ HTTP、HTTP/2、gRPC、WebSocket 和 Redis
 | `market-redis` | `127.0.0.1:13005` | 公司 `10.61.20.11:9380` | 通联二级 feeder 的 Redis Pub/Sub，供 Viz 估值 |
 | `dominant` | `127.0.0.1:18313` | 本机 `127.0.0.1:18313` | 主力合约 HTTP 查询 |
 | `mcp` | `127.0.0.1:8780` | 本机 `127.0.0.1:8780` | MCP HTTP 服务 |
-| `cta-config` | `127.0.0.1:19401` | 本机 `127.0.0.1:19401` | 锡 CTA 配置面板 |
+| `cta-config` | `127.0.0.1:19401` | 本机 `127.0.0.1:19401` | CTA 01 配置面板 |
+| `cta-config-02` | `127.0.0.1:19402` | 本机 `127.0.0.1:19402` | CTA 02 配置面板（2026-11-25） |
 
 历史 gRPC 地址为 `http://127.0.0.1:18312`。远端 Viz 在 `127.0.0.1:13005`
 通过 RESP2 订阅 Redis，上期所频道为 `mdl.22.1.*`，其中 `*` 是频道名的一部分。
@@ -46,9 +47,10 @@ sh_dev_service_tunnel@market-redis.service
 sh_dev_service_tunnel@dominant.service
 sh_dev_service_tunnel@mcp.service
 sh_dev_service_tunnel@cta-config.service
+sh_dev_service_tunnel@cta-config-02.service
 ```
 
-五个实例均已启用开机启动，用户已开启 linger，退出终端后继续运行。
+六个实例均已启用开机启动，用户已开启 linger，退出终端后继续运行。
 每个服务使用独立 TCP 连接，历史批量传输与实时行情的 TCP 流控彼此隔离；
 它们仍共享主机和线路带宽，不承诺带宽预留。单服务故障或重启不重启其他服务。
 
@@ -104,7 +106,7 @@ cd /home/fanghaizhou/sh_dev_service_tunnel
 
 专用无 shell 账户为 `mkt-dev-tunnel`。云端 SSH 限制位于
 `/etc/ssh/mkt-dev-tunnel.conf`，由主配置末尾 Include 加载，只允许
-上述五个回环端口的 remote forwarding，禁用密码、交互会话、代理、X11
+上述六个回环端口的 remote forwarding，禁用密码、交互会话、代理、X11
 和 Unix socket 转发。专用账户 `GatewayPorts=no`，原 `ubuntu` 的有效
 `GatewayPorts=yes` 保持不变。CTA 网页另由 Nginx 提供公网 80 监听，
 未将 SSH 转发改为公网监听，也未改其他服务的范围。
@@ -112,7 +114,11 @@ cd /home/fanghaizhou/sh_dev_service_tunnel
 ## CTA 公网配置面板
 
 云端环境为 `/home/ubuntu/cta_cn_futures_public`，入口是
-`http://<腾讯云公网IP>/cta-cn-futures/`。按用户最终要求复用 cta-prep 配置页面，
+`http://<腾讯云公网IP>/cta-cn-futures/<实例>/`（2026-11-25 起按实例分路径，`/cta-cn-futures/` 跳转到 `01`）。
+Nginx 用 `map` 把 `01 / 02` 分别转发到云端回环 19401 / 19402，并提供页面切换用的 `instances.json`；
+新增实例需同时扩展 `map`、路径正则、`instances.json`、隧道映射和 SSH `PermitListen`。
+线上文件末尾 include Manager 的 `/etc/nginx/snippets/cn-futures-manager.conf`，配置源已同步保留。
+以下为首次上线时的说明，路径前缀均已加上实例段。按用户最终要求复用 cta-prep 配置页面，
 Nginx 对外提供 `/cta-cn-futures/`、`GET/POST /cta-cn-futures/api/config` 和
 `POST /cta-cn-futures/api/preview`，转发时移除前缀。根路径跳转到该子路径，
 省略末尾斜杠时自动补齐。配置读取无需授权，校验和保存要求专用

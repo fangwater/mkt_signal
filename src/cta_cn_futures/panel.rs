@@ -230,20 +230,49 @@ async fn preview(
     edit(app, headers, request, false).await
 }
 
+/// Panel write credential shared by every product of one CTA instance.
+pub(super) fn access_path(root: &Config) -> PathBuf {
+    root.data_directory.join("config-access-token")
+}
+/// Product directory for the panel's product switcher; the primary product sits at the root.
+pub(super) fn products(entries: &[(String, String, bool)], name: &str) -> Value {
+    let products: Vec<_> = entries
+        .iter()
+        .map(|(exchange, symbol, additional)| {
+            let path = if *additional {
+                format!("products/{}/", symbol.to_ascii_lowercase())
+            } else {
+                String::new()
+            };
+            json!({"exchange":exchange,"symbol":symbol,"path":path})
+        })
+        .collect();
+    json!({"name":name,"products":products})
+}
+/// Panel page; relative `api/...` links need the product's trailing-slash URL.
+pub(super) async fn page() -> Html<String> {
+    Html(
+        include_str!("../../web/cta_factor_config/index.html").replacen(
+            "<body>",
+            "<body data-native-futures=\"true\">",
+            1,
+        ),
+    )
+}
 pub(super) fn router(
-    cfg: &Config,
+    access_path: &Path,
     catalog: Arc<RwLock<Value>>,
     tx: mpsc::Sender<Mutation>,
 ) -> Result<Router> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let path = cfg.state_directory().join("config-access-token");
+    let path = access_path;
     if !path.exists() {
         let mut file = std::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
             .mode(0o600)
-            .open(&path)?;
+            .open(path)?;
         write!(
             file,
             "{}{}",
@@ -252,7 +281,7 @@ pub(super) fn router(
         )?;
         file.sync_all()?;
     }
-    let metadata = std::fs::symlink_metadata(&path)?;
+    let metadata = std::fs::symlink_metadata(path)?;
     ensure!(
         metadata.is_file()
             && !metadata.file_type().is_symlink()
@@ -270,18 +299,7 @@ pub(super) fn router(
         access_digest: Sha256::digest(token.as_bytes()).into(),
     };
     Ok(Router::new()
-        .route(
-            "/",
-            get(|| async {
-                Html(
-                    include_str!("../../web/cta_factor_config/index.html").replacen(
-                        "<body>",
-                        "<body data-native-futures=\"true\">",
-                        1,
-                    ),
-                )
-            }),
-        )
+        .route("/", get(page))
         .route("/api/config", get(read).post(save))
         .route("/api/preview", post(preview))
         .layer(DefaultBodyLimit::max(128 * 1024))

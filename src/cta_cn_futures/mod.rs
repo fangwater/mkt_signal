@@ -755,6 +755,7 @@ pub async fn run() -> Result<()> {
     let (inputs, venue_clocks) =
         live::capture(root.redis_endpoint, configs.iter().map(|(_, cfg)| cfg))?;
     let mut workers = Vec::new();
+    let mut product_index = Vec::new();
     for ((path, cfg), rx) in configs.into_iter().zip(inputs) {
         std::fs::create_dir_all(cfg.state_directory())?;
         let engine = engine::Engine::new(&cfg, ledger(&cfg)?)?;
@@ -775,12 +776,19 @@ pub async fn run() -> Result<()> {
         reports.insert(cfg.symbol.clone(), state.clone());
         let catalog = Arc::new(RwLock::new(panel::catalog(&cfg)?));
         let (config_tx, config_rx) = tokio::sync::mpsc::channel(8);
-        let router = panel::router(&cfg, catalog.clone(), config_tx)?;
+        let router = panel::router(&panel::access_path(&root), catalog.clone(), config_tx)?;
+        product_index.push((
+            cfg.exchange.clone(),
+            cfg.symbol.clone(),
+            cfg.is_additional_product(),
+        ));
         if cfg.is_additional_product() {
             let read = state.clone();
             let positions = state.clone();
+            let prefix = format!("/products/{}", cfg.symbol.to_ascii_lowercase());
+            app = app.route(&format!("{prefix}/"), get(panel::page));
             app = app.nest(
-                &format!("/products/{}", cfg.symbol.to_ascii_lowercase()),
+                &prefix,
                 router
                     .route(
                         "/state",
@@ -816,7 +824,12 @@ pub async fn run() -> Result<()> {
         .context("missing primary CTA state")?;
     let read = primary.clone();
     let read_products = reports.clone();
+    let index = panel::products(&product_index, &root.name);
     let app = app
+        .route(
+            "/api/products",
+            get(move || async move { Json(index.clone()) }),
+        )
         .route(
             "/state",
             get(move || async move { Json(group_report(&read, &read_products)) }),

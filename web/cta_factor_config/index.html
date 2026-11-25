@@ -82,18 +82,20 @@
 'use strict';
 const $=id=>document.getElementById(id),clone=value=>JSON.parse(JSON.stringify(value));
 const nativeMode=document.body.dataset.nativeFutures==='true';
-if(nativeMode){const access=new URLSearchParams(location.hash.slice(1)).get('access');if(access&&/^[a-f0-9]{64}$/.test(access)){localStorage.setItem('cta-cn-futures-panel-access',access);history.replaceState(null,'',location.pathname+location.search);}prepareNative();}
+const nativeBase=location.pathname.replace(/products\/[a-z0-9]+\/$/,''),nativeInstance=nativeBase.match(/^(.*\/)(\d{2})\/$/);
+const accessKey='cta-cn-futures-panel-access:'+nativeBase,legacyAccessKey='cta-cn-futures-panel-access';
+if(nativeMode){const access=new URLSearchParams(location.hash.slice(1)).get('access');if(access&&/^[a-f0-9]{64}$/.test(access)){localStorage.setItem(accessKey,access);history.replaceState(null,'',location.pathname+location.search);}prepareNative();}
 const prepIntervals=['1min','5min','15min','1h'];
 let catalog=null,draft=null,dirty=false,groupsDirty=false,busy=true,selectedWorker=nativeMode?'cta-cn-futures':new URL(location.href).searchParams.get('worker')||'cta-prep-binance-futures';
-let nativeFrequency='1h';
+let nativeFrequency='1h',nativeNavLoaded=false;
 let accountRisk=[],riskDirty=false,riskBusy=false;
 function message(text,error=false){$('message').textContent=text;$('message').className='status '+(error?'err':'ok');}
 function changed(){dirty=true;$('dirty').textContent='有未保存修改';}
 function hasChanges(){return dirty||groupsDirty||riskDirty;}
-function setBusy(value){busy=value;document.querySelector('main').setAttribute('aria-busy',String(value));for(const el of document.querySelectorAll('input,select,button,textarea'))el.disabled=value;if(!value){for(const button of $('frequency-tabs').children)button.disabled=!button.dataset.name;$('save').disabled=!draft;}for(const el of $('account-risk').querySelectorAll('input,button'))el.disabled=value||riskBusy;if(nativeMode)for(const id of ['strategy-type','strategy-group','symbol-group'])$(id).disabled=true;}
+function setBusy(value){busy=value;document.querySelector('main').setAttribute('aria-busy',String(value));for(const el of document.querySelectorAll('input,select,button,textarea'))el.disabled=value;if(!value){for(const button of $('frequency-tabs').children)button.disabled=!button.dataset.name;$('save').disabled=!draft;}for(const el of $('account-risk').querySelectorAll('input,button'))el.disabled=value||riskBusy;if(nativeMode){$('strategy-type').disabled=true;for(const id of ['strategy-group','symbol-group'])$(id).disabled=value||$(id).options.length<2;}}
 async function api(path,options={}){
   const url=new URL('api/'+path,location.href.split('#')[0]);url.searchParams.set('worker',selectedWorker);
-  const access=nativeMode?localStorage.getItem('cta-cn-futures-panel-access'):null;
+  const access=nativeMode?localStorage.getItem(accessKey)||localStorage.getItem(legacyAccessKey):null;
   const response=await fetch(url,{...options,headers:{'Content-Type':'application/json',...(access?{'Authorization':'Bearer '+access}:{}),...(options.headers||{})},credentials:'same-origin',cache:'no-store'});
   const raw=await response.text();let result;try{result=JSON.parse(raw);}catch{throw Error('读取失败，请检查登录状态');}if(!response.ok)throw Error(result.error||result.message||raw);return result;
 }
@@ -224,6 +226,7 @@ function renderCatalog(preferred){
 async function load(){
   if(busy&&catalog)return;if(hasChanges()&&!confirm('放弃未保存修改，重新读取？'))return;
   setBusy(true);try{catalog=await api('config');renderCatalog(decodeURIComponent(location.hash.slice(1)));message('读取完成');}catch(error){if(catalog){selectedWorker=catalog.worker;$('strategy-type').value=selectedWorker;}message(error.message,true);}finally{setBusy(false);}
+  if(nativeMode&&!nativeNavLoaded&&draft){setBusy(true);try{await loadNativeNav(draft);}finally{setBusy(false);}}
   if(!nativeMode)await loadAccountRisk(true);
 }
 async function action(save){
@@ -261,7 +264,7 @@ function nativeThresholds(mode,values){
 }
 function prepareNative(){
   $('strategy-type').replaceChildren(new Option('国内期货 Prep','cta-cn-futures'));$('strategy-group').replaceChildren(new Option('读取配置中…',''));
-  $('symbol-group').previousElementSibling.textContent='品种';
+  $('symbol-group').previousElementSibling.textContent='品种';$('strategy-group').previousElementSibling.textContent='实例';
   $('strategy-settings').hidden=false;
   $('strategy-settings').querySelector('.hint').textContent='v0 汇总逐因子方向，v1 根据因子等权均值判断方向并使用本频段统一 NQ。关闭策略会保留已发布目标。';
   const size=$('max-pos').parentElement,mode=$('native-position-algorithm').parentElement,lots=$('native-lots').parentElement;
@@ -282,9 +285,7 @@ function showNative(doc){
   selectedWorker='cta-cn-futures';draft=clone(doc);dirty=false;groupsDirty=false;$('dirty').textContent='';
   const market=doc.exchange+' · '+doc.symbol;
   nativeFrequency=doc.interval;$('current-frequency').textContent=market+' · '+doc.interval;
-  $('symbol-group').replaceChildren(new Option(market,doc.symbol));
   $('symbol-members').textContent='实际交割合约由主力 REST 选择。';
-  $('strategy-group').replaceChildren(new Option(doc.name,doc.name));
   $('enabled').value=String(doc.enabled);$('native-position-algorithm').value=doc.position_algorithm||'v0';$('native-lots').value=doc.lots_per_rule??1;
   nativeThresholds($('native-position-algorithm').value,[doc.entry.factor_long_quantile,doc.entry.factor_short_quantile,doc.exits.factor_exit_quantile_long,doc.exits.factor_exit_quantile_short]);
   $('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.rules);
@@ -301,6 +302,34 @@ function showNative(doc){
     $('frequency-tabs').append(button);
   }
 }
+async function nativeProducts(base){
+  const response=await fetch(base+'api/products',{cache:'no-store'});if(!response.ok)throw Error('品种列表读取失败');
+  const products=(await response.json()).products;if(!Array.isArray(products)||!products.length)throw Error('品种列表为空');return products;
+}
+async function loadNativeNav(doc){
+  const current=nativeInstance?.[2],path=location.pathname.slice(nativeBase.length);
+  let instances=current?[current]:[];
+  if(nativeInstance)try{const response=await fetch(nativeInstance[1]+'instances.json',{cache:'no-store'});const list=response.ok?await response.json():null;if(Array.isArray(list)&&list.includes(current))instances=list;}catch{}
+  $('strategy-group').replaceChildren(...(instances.length?instances.map(id=>new Option('cta-cn_futures-'+id,id)):[new Option(doc.name,'')]));
+  if(current)$('strategy-group').value=current;
+  let products=[{exchange:doc.exchange,symbol:doc.symbol,path}];
+  try{products=await nativeProducts(nativeBase);}catch(error){message(error.message,true);}
+  $('symbol-group').replaceChildren(...products.map(item=>new Option(item.exchange+' · '+item.symbol,item.path)));
+  $('symbol-group').value=path;nativeNavLoaded=true;
+}
+function leaveNative(prompt){if(dirty&&!confirm(prompt))return false;dirty=false;return true;}
+async function switchInstance(){
+  const next=$('strategy-group').value,current=nativeInstance?.[2];if(!nativeInstance||next===current)return;
+  if(!leaveNative('放弃未保存修改，切换实例？')){$('strategy-group').value=current;return;}
+  const base=nativeInstance[1]+next+'/';let products;
+  setBusy(true);try{products=await nativeProducts(base);}catch{$('strategy-group').value=current;message('cta-cn_futures-'+next+' 当前不可用（进程未运行或网关未连通），仍停留在 '+current,true);return;}finally{setBusy(false);}
+  const item=products.find(row=>row.symbol===draft?.symbol);location.assign(base+(item?item.path:''));
+}
+function switchProduct(){
+  const path=location.pathname.slice(nativeBase.length),next=$('symbol-group').value;if(next===path)return;
+  if(!leaveNative('放弃未保存修改，切换品种？')){$('symbol-group').value=path;return;}
+  location.assign(nativeBase+next);
+}
 async function nativeAction(save){
   if(busy||!draft)return;setBusy(true);
   try{const configuration=nativeCollect(),result=await api(save?'config':'preview',{method:'POST',body:JSON.stringify({configuration,expected_revision:catalog.revision})});
@@ -316,8 +345,8 @@ async function groupsAction(save){
   }catch(error){message(error.message,true);}finally{setBusy(false);}
 }
 $('strategy-type').onchange=async()=>{if(hasChanges()&&!confirm('放弃未保存修改，切换策略类型？')){$('strategy-type').value=selectedWorker;return;}selectedWorker=$('strategy-type').value;dirty=false;groupsDirty=false;const url=new URL(location.href);url.hash='';history.replaceState(null,'',url);await load();};
-$('strategy-group').onchange=()=>{if(dirty&&!confirm('放弃未保存修改，切换策略组？')){$('strategy-group').value=draft.strategy_group;return;}const next=scopeDoc(draft?.interval||'1min')||scopeDoc('1min');if(next)show(next);else{const fallback=Object.values(catalog.plan.combinations).find(c=>c.strategy_group===$('strategy-group').value);if(fallback)show(fallback);}message('');};
-$('symbol-group').onchange=()=>{if(dirty&&!confirm('放弃未保存修改，切换券池？')){$('symbol-group').value=draft.symbol_group||'';return;}const next=scopeDoc(draft?.interval||'1min')||scopeDoc('1min');if(next){show(next);message(catalog.plan.combinations[next.name]?'':'新券池配置：填写规则后保存，策略默认为关闭');}else{$('symbol-group').value=draft?.symbol_group||'';message('当前策略组没有该券池配置',true);}};
+$('strategy-group').onchange=()=>{if(nativeMode){switchInstance();return;}if(dirty&&!confirm('放弃未保存修改，切换策略组？')){$('strategy-group').value=draft.strategy_group;return;}const next=scopeDoc(draft?.interval||'1min')||scopeDoc('1min');if(next)show(next);else{const fallback=Object.values(catalog.plan.combinations).find(c=>c.strategy_group===$('strategy-group').value);if(fallback)show(fallback);}message('');};
+$('symbol-group').onchange=()=>{if(nativeMode){switchProduct();return;}if(dirty&&!confirm('放弃未保存修改，切换券池？')){$('symbol-group').value=draft.symbol_group||'';return;}const next=scopeDoc(draft?.interval||'1min')||scopeDoc('1min');if(next){show(next);message(catalog.plan.combinations[next.name]?'':'新券池配置：填写规则后保存，策略默认为关闭');}else{$('symbol-group').value=draft?.symbol_group||'';message('当前策略组没有该券池配置',true);}};
 $('symbol-groups-json').addEventListener('input',()=>{groupsDirty=true;$('dirty').textContent='券池定义有未保存修改';});
 $('save-groups').onclick=()=>groupsAction(true);$('validate-groups').onclick=()=>groupsAction(false);
 $('reload').onclick=load;$('save').onclick=()=>action(true);$('validate').onclick=()=>action(false);
