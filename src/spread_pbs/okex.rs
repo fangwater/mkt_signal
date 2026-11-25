@@ -155,27 +155,11 @@ fn build_sbe_handshake_headers() -> Result<Vec<(String, String)>> {
 
 /// 把 instId 列表切片成多条 OKX SBE subscribe 消息（240 args/帧软上限）。
 /// 用 `instIdCode` 订阅（SBE 端要求；用 `instId` 字符串会返 60018）。
-fn build_sbe_subscribe_messages(
-    sym_to_code: &FastHashMap<String, i64>,
-    symbols: &[String],
-    chunk_size: usize,
-) -> Vec<Value> {
-    build_sbe_channel_subscribe_messages(sym_to_code, symbols, chunk_size, &["bbo-tbt", "trades"])
-}
-
-fn build_sbe_incremental_subscribe_messages(
-    sym_to_code: &FastHashMap<String, i64>,
-    symbols: &[String],
-    chunk_size: usize,
-) -> Vec<Value> {
-    build_sbe_channel_subscribe_messages(sym_to_code, symbols, chunk_size, &["books-l2-tbt"])
-}
-
 fn build_sbe_channel_subscribe_messages(
     sym_to_code: &FastHashMap<String, i64>,
     symbols: &[String],
     chunk_size: usize,
-    channels: &[&str],
+    channel: &str,
 ) -> Vec<Value> {
     let chunk_size = chunk_size.max(1);
     // 先把 symbol → code 解析掉，命中后才入下游 subscribe；漏映射的告警一次。
@@ -194,9 +178,9 @@ fn build_sbe_channel_subscribe_messages(
             &missing[..missing.len().min(8)]
         );
     }
-    let mut out = Vec::new();
-    for chunk in codes.chunks(chunk_size) {
-        for channel in channels {
+    codes
+        .chunks(chunk_size)
+        .map(|chunk| {
             let args: Vec<Value> = chunk
                 .iter()
                 .map(|code| {
@@ -206,13 +190,12 @@ fn build_sbe_channel_subscribe_messages(
                     })
                 })
                 .collect();
-            out.push(serde_json::json!({
+            serde_json::json!({
                 "op": "subscribe",
                 "args": args,
-            }));
-        }
-    }
-    out
+            })
+        })
+        .collect()
 }
 
 /// 解一帧 SBE 二进制 bbo-tbt (templateId=1000)。其他 template 直接返回 Ok。
@@ -373,11 +356,30 @@ impl VenueAdapter for OkexAdapter {
     }
 
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value> {
-        build_sbe_subscribe_messages(&self.sym_to_code, symbols, OKEX_SUBSCRIBE_CHUNK)
+        build_sbe_channel_subscribe_messages(
+            &self.sym_to_code,
+            symbols,
+            OKEX_SUBSCRIBE_CHUNK,
+            "bbo-tbt",
+        )
+    }
+
+    fn build_trade_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+        build_sbe_channel_subscribe_messages(
+            &self.sym_to_code,
+            symbols,
+            OKEX_SUBSCRIBE_CHUNK,
+            "trades",
+        )
     }
 
     fn build_incremental_subscribe(&self, symbols: &[String]) -> Vec<Value> {
-        build_sbe_incremental_subscribe_messages(&self.sym_to_code, symbols, OKEX_SUBSCRIBE_CHUNK)
+        build_sbe_channel_subscribe_messages(
+            &self.sym_to_code,
+            symbols,
+            OKEX_SUBSCRIBE_CHUNK,
+            "books-l2-tbt",
+        )
     }
 
     fn inst_id_code(&self, symbol: &str) -> Option<i64> {
@@ -606,31 +608,33 @@ mod tests {
 
     #[test]
     fn subscribe_uses_instidcode_and_chunks() {
-        let mut sym_to_code = fast_hash_map();
+        let mut adapter = make_adapter();
         for i in 0..500 {
-            sym_to_code.insert(format!("INST{}-USDT-SWAP", i), i as i64);
+            adapter
+                .sym_to_code
+                .insert(format!("INST{}-USDT-SWAP", i), i as i64);
         }
         let symbols: Vec<String> = (0..500).map(|i| format!("INST{}-USDT-SWAP", i)).collect();
-        let msgs = build_sbe_subscribe_messages(&sym_to_code, &symbols, 240);
-        assert_eq!(msgs.len(), 6);
-        let first_args = msgs[0]["args"].as_array().unwrap();
-        assert_eq!(first_args.len(), 240);
-        assert_eq!(first_args[0]["channel"], "bbo-tbt");
-        assert!(first_args[0]["instIdCode"].is_number());
-        assert!(first_args[0].get("instId").is_none());
-        let second_args = msgs[1]["args"].as_array().unwrap();
-        assert_eq!(second_args.len(), 240);
-        assert_eq!(second_args[0]["channel"], "trades");
-        assert!(second_args[0]["instIdCode"].is_number());
-        assert!(second_args[0].get("instId").is_none());
+        for (channel, messages) in [
+            ("bbo-tbt", adapter.build_subscribe(&symbols)),
+            ("trades", adapter.build_trade_subscribe(&symbols)),
+        ] {
+            assert_eq!(messages.len(), 3);
+            for (message, expected_len) in messages.iter().zip([240, 240, 20]) {
+                let args = message["args"].as_array().unwrap();
+                assert_eq!(args.len(), expected_len);
+                assert!(args.iter().all(|arg| arg["channel"] == channel
+                    && arg["instIdCode"].is_number()
+                    && arg.get("instId").is_none()));
+            }
+        }
     }
 
     #[test]
     fn incremental_subscribe_uses_books_l2_tbt() {
-        let mut sym_to_code = fast_hash_map();
-        sym_to_code.insert("BTC-USDT-SWAP".to_string(), 10459);
+        let adapter = make_adapter();
         let symbols = vec!["BTC-USDT-SWAP".to_string()];
-        let msgs = build_sbe_incremental_subscribe_messages(&sym_to_code, &symbols, 240);
+        let msgs = adapter.build_incremental_subscribe(&symbols);
         assert_eq!(msgs.len(), 1);
         let args = msgs[0]["args"].as_array().unwrap();
         assert_eq!(args[0]["channel"], "books-l2-tbt");
@@ -639,18 +643,13 @@ mod tests {
 
     #[test]
     fn subscribe_skips_unknown_symbols() {
-        let mut sym_to_code = fast_hash_map();
-        sym_to_code.insert("BTC-USDT-SWAP".to_string(), 10459);
+        let adapter = make_adapter();
         let symbols = vec!["BTC-USDT-SWAP".to_string(), "MISSING-USDT-SWAP".to_string()];
-        let msgs = build_sbe_subscribe_messages(&sym_to_code, &symbols, 240);
-        assert_eq!(msgs.len(), 2);
+        let msgs = adapter.build_subscribe(&symbols);
+        assert_eq!(msgs.len(), 1);
         let args = msgs[0]["args"].as_array().unwrap();
         assert_eq!(args.len(), 1);
         assert_eq!(args[0]["channel"], "bbo-tbt");
-        assert_eq!(args[0]["instIdCode"].as_i64(), Some(10459));
-        let args = msgs[1]["args"].as_array().unwrap();
-        assert_eq!(args.len(), 1);
-        assert_eq!(args[0]["channel"], "trades");
         assert_eq!(args[0]["instIdCode"].as_i64(), Some(10459));
     }
 
