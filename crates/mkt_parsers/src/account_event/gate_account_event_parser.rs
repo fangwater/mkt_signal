@@ -1479,9 +1479,9 @@ mod tests {
         assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
         let borrow = BasicBorrowInterestMsg::from_bytes(body).expect("borrow body");
 
-        assert!((balance.wallet - 103_635.296522743857).abs() < 1e-9);
+        assert!((balance.wallet - 103_635.296_522_743_85).abs() < 1e-9);
         assert!(
-            (balance.wallet - borrow.borrowed - borrow.interest - 102_126.004737962706).abs()
+            (balance.wallet - borrow.borrowed - borrow.interest - 102_126.004_737_962_7).abs()
                 < 1e-9
         );
     }

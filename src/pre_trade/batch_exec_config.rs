@@ -1347,9 +1347,8 @@ impl BatchExecConfigReloader {
             })
             .into_iter()
             .flat_map(|positions| positions.iter())
-            .filter_map(|(symbol, position_qty)| {
-                (position_qty.abs() > POSITION_ALLOCATION_EPS).then(|| symbol.clone())
-            })
+            .filter(|&(_symbol, position_qty)| position_qty.abs() > POSITION_ALLOCATION_EPS)
+            .map(|(symbol, _position_qty)| symbol.clone())
             .collect()
     }
 

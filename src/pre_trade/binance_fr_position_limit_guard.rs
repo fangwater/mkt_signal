@@ -675,18 +675,18 @@ fn parse_binance_position_limits_response(
     path: &str,
     source: &str,
 ) -> Result<FastHashMap<String, BinanceFrPositionLimit>> {
-    let value: Value = serde_json::from_str(&body).with_context(|| {
+    let value: Value = serde_json::from_str(body).with_context(|| {
         format!(
             "Binance {} response is not JSON: {}",
             path,
-            truncate(&body, 500)
+            truncate(body, 500)
         )
     })?;
     let Some(items) = value.as_array() else {
         bail!(
             "Binance {} response is not an array: {}",
             path,
-            truncate(&body, 500)
+            truncate(body, 500)
         );
     };
 

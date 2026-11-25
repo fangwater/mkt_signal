@@ -243,6 +243,16 @@ fn next_observation(
     })
 }
 
+fn service_for(factor: &str, mode: super::config::SpreadMode) -> String {
+    model_service(factor).replacen("cta_spread-", &format!("{}-", mode.family()), 1)
+}
+fn services_for(table: &SymbolFactorTable, mode: super::config::SpreadMode) -> Vec<String> {
+    table_services(table)
+        .into_iter()
+        .map(|s| s.replacen("cta_spread-", &format!("{}-", mode.family()), 1))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,14 +413,4 @@ mod tests {
         )
         .is_none());
     }
-}
-
-fn service_for(factor: &str, mode: super::config::SpreadMode) -> String {
-    model_service(factor).replacen("cta_spread-", &format!("{}-", mode.family()), 1)
-}
-fn services_for(table: &SymbolFactorTable, mode: super::config::SpreadMode) -> Vec<String> {
-    table_services(table)
-        .into_iter()
-        .map(|s| s.replacen("cta_spread-", &format!("{}-", mode.family()), 1))
-        .collect()
 }

@@ -243,7 +243,7 @@ impl TradeEngHub {
         }
         let any = !responses.is_empty();
         for response in responses.iter() {
-            dispatch_trade_engine_response(&response);
+            dispatch_trade_engine_response(response);
         }
         responses.clear();
         *self.response_scratch.borrow_mut() = responses;
@@ -1041,10 +1041,8 @@ fn dispatch_trade_engine_response_to_strategy(
     };
 
     let matched = strategy.is_strategy_order(order_id);
-    if matched {
-        if !apply_trade_response_as_update(strategy.as_mut(), response) {
-            strategy.apply_trade_engine_response(response);
-        }
+    if matched && !apply_trade_response_as_update(strategy.as_mut(), response) {
+        strategy.apply_trade_engine_response(response);
     }
     if strategy.is_active() {
         strategy_mgr.borrow_mut().insert(strategy);

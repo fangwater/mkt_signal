@@ -244,35 +244,11 @@ impl MktConnectionRunner for BitgetUserDataConnection {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{BitgetUserDataConnection, SubscribeResponse};
-
-    #[test]
-    fn treats_subscribe_ack_without_code_as_non_failure() {
-        let payload = r#"{"event":"subscribe","arg":{"instType":"UTA","topic":"account"}}"#;
-        assert_eq!(
-            BitgetUserDataConnection::parse_subscribe_response(payload),
-            Some(SubscribeResponse::Ack)
-        );
-    }
-
-    #[test]
-    fn treats_subscribe_response_with_error_code_as_failure() {
-        let payload =
-            r#"{"event":"subscribe","code":"30001","msg":"invalid topic","arg":{"topic":"order"}}"#;
-        assert_eq!(
-            BitgetUserDataConnection::parse_subscribe_response(payload),
-            Some(SubscribeResponse::Failure)
-        );
-    }
-}
-
 #[async_trait]
 impl MktConnectionHandler for BitgetUserDataConnection {
     async fn start_ws(&mut self) -> anyhow::Result<()> {
         loop {
-            info!("Bitget: connecting to {}", &self.base_connection.url);
+            info!("Bitget: connecting to {}", self.base_connection.url);
 
             let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
                 WsConnector::connect_with_local_ip_raw(&self.base_connection.url, local_ip).await
@@ -320,5 +296,29 @@ impl MktConnectionHandler for BitgetUserDataConnection {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BitgetUserDataConnection, SubscribeResponse};
+
+    #[test]
+    fn treats_subscribe_ack_without_code_as_non_failure() {
+        let payload = r#"{"event":"subscribe","arg":{"instType":"UTA","topic":"account"}}"#;
+        assert_eq!(
+            BitgetUserDataConnection::parse_subscribe_response(payload),
+            Some(SubscribeResponse::Ack)
+        );
+    }
+
+    #[test]
+    fn treats_subscribe_response_with_error_code_as_failure() {
+        let payload =
+            r#"{"event":"subscribe","code":"30001","msg":"invalid topic","arg":{"topic":"order"}}"#;
+        assert_eq!(
+            BitgetUserDataConnection::parse_subscribe_response(payload),
+            Some(SubscribeResponse::Failure)
+        );
     }
 }

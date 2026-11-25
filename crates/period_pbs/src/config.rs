@@ -16,6 +16,7 @@ pub const STATS_LOG_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct PeriodPbsConfig {
     pub core: Option<usize>,
     pub online_symbols: Vec<String>,
@@ -35,6 +36,7 @@ pub struct ZmqConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct VenueConfig {
     pub name: String,
     pub topic: Option<String>,
@@ -62,18 +64,6 @@ pub struct VenueSymbolMap {
     source_to_canonical: AHashMap<String, String>,
 }
 
-impl Default for PeriodPbsConfig {
-    fn default() -> Self {
-        Self {
-            core: None,
-            online_symbols: Vec::new(),
-            depth_snapshot_symbols: Vec::new(),
-            zmq: ZmqConfig::default(),
-            venues: Vec::new(),
-        }
-    }
-}
-
 impl Default for ZmqConfig {
     fn default() -> Self {
         Self {
@@ -81,20 +71,6 @@ impl Default for ZmqConfig {
             sndhwm: 10_000,
             linger_ms: 0,
             send_dontwait: true,
-        }
-    }
-}
-
-impl Default for VenueConfig {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            topic: None,
-            poster_id: None,
-            poll_batch: None,
-            idle_sleep_us: None,
-            delay_ms: None,
-            symbol_map: HashMap::new(),
         }
     }
 }

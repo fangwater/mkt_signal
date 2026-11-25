@@ -89,7 +89,7 @@ fn bitget_category(req_type: TradeRequestType) -> Result<&'static str> {
         }
         TradeRequestType::BitgetNewCoinFuturesOrder
         | TradeRequestType::BitgetCancelCoinFuturesOrder => Ok("coin-futures"),
-        _ => return Err(anyhow!("unsupported bitget req_type")),
+        _ => Err(anyhow!("unsupported bitget req_type")),
     }
 }
 

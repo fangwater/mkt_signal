@@ -717,49 +717,6 @@ fn c_buf_to_string(buf: &[c_char]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-#[cfg(test)]
-mod message_tests {
-    use super::*;
-
-    #[test]
-    fn partition_eof_has_no_record_but_real_errors_are_preserved() {
-        let mut message: rdsys::rd_kafka_message_t = unsafe { std::mem::zeroed() };
-        message.err = rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR__PARTITION_EOF;
-        message.len = 42;
-        assert!(unsafe { RawKafkaConsumer::message_to_result(&mut message) }.is_none());
-
-        message.err = rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR__UNKNOWN_PARTITION;
-        let result = unsafe { RawKafkaConsumer::message_to_result(&mut message) }.unwrap();
-        assert!(result
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("Kafka message error"));
-    }
-
-    #[test]
-    fn consumer_records_keep_payload_offsets_and_validate_null_payloads() {
-        let mut message: rdsys::rd_kafka_message_t = unsafe { std::mem::zeroed() };
-        message.partition = 2;
-        message.offset = 123;
-        message.len = 3;
-        assert!(unsafe { RawKafkaConsumer::message_to_result(&mut message) }
-            .unwrap()
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("null payload"));
-
-        let mut payload = [1u8, 2, 3];
-        message.payload = payload.as_mut_ptr().cast();
-        let record = unsafe { RawKafkaConsumer::message_to_result(&mut message) }
-            .unwrap()
-            .unwrap();
-        assert_eq!(record.payload, payload);
-        assert_eq!((record.partition, record.offset), (2, 123));
-    }
-}
-
 pub fn decode_period_payload(
     payload: &[u8],
     compression: PayloadCompressionMode,
@@ -805,4 +762,47 @@ fn decompress_zlib(payload: &[u8]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     decoder.read_to_end(&mut out).context("zlib decompress")?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod message_tests {
+    use super::*;
+
+    #[test]
+    fn partition_eof_has_no_record_but_real_errors_are_preserved() {
+        let mut message: rdsys::rd_kafka_message_t = unsafe { std::mem::zeroed() };
+        message.err = rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR__PARTITION_EOF;
+        message.len = 42;
+        assert!(unsafe { RawKafkaConsumer::message_to_result(&mut message) }.is_none());
+
+        message.err = rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR__UNKNOWN_PARTITION;
+        let result = unsafe { RawKafkaConsumer::message_to_result(&mut message) }.unwrap();
+        assert!(result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Kafka message error"));
+    }
+
+    #[test]
+    fn consumer_records_keep_payload_offsets_and_validate_null_payloads() {
+        let mut message: rdsys::rd_kafka_message_t = unsafe { std::mem::zeroed() };
+        message.partition = 2;
+        message.offset = 123;
+        message.len = 3;
+        assert!(unsafe { RawKafkaConsumer::message_to_result(&mut message) }
+            .unwrap()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("null payload"));
+
+        let mut payload = [1u8, 2, 3];
+        message.payload = payload.as_mut_ptr().cast();
+        let record = unsafe { RawKafkaConsumer::message_to_result(&mut message) }
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.payload, payload);
+        assert_eq!((record.partition, record.offset), (2, 123));
+    }
 }

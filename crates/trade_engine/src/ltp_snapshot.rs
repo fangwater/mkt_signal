@@ -287,7 +287,7 @@ mod tests {
         )
         .to_bytes();
         let accepted = state
-            .reconcile_assets_snapshot(scope, false, &[borrow.clone()], 40)
+            .reconcile_assets_snapshot(scope, false, std::slice::from_ref(&borrow), 40)
             .unwrap();
         assert_eq!(accepted, vec![borrow]);
     }

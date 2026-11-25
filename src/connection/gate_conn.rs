@@ -192,7 +192,7 @@ impl MktConnectionHandler for GateConnection {
         loop {
             info!(
                 "Gate: Connecting to WebSocket URL: {}",
-                &self.base_connection.url
+                self.base_connection.url
             );
 
             let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {

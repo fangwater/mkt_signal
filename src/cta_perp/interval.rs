@@ -14,38 +14,6 @@ pub enum BarInterval {
     OneHour,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fifteen_minute_windows_keep_their_wall_clock_horizons() {
-        let interval: BarInterval = serde_json::from_str("\"15m\"").unwrap();
-        assert_eq!(interval, BarInterval::FifteenMinutes);
-        assert_eq!(interval.millis(), 900_000);
-        assert_eq!(interval.factor_quantile_window(), 192);
-        assert_eq!(interval.factor_min_samples(), 96);
-        assert_eq!(interval.nq_window_samples(), 120);
-        assert_eq!(interval.max_model_age_ms(), 1_800_000);
-        assert_eq!(serde_json::to_string(&interval).unwrap(), "\"15m\"");
-    }
-
-    #[test]
-    fn nq_keeps_120_bars_while_factor_ranks_keep_two_days() {
-        for (interval, rank_window, rank_min) in [
-            (BarInterval::OneMinute, 2880, 1440),
-            (BarInterval::FiveMinutes, 576, 288),
-            (BarInterval::FifteenMinutes, 192, 96),
-            (BarInterval::OneHour, 48, 24),
-        ] {
-            assert_eq!(interval.nq_window_samples(), 120);
-            assert_eq!(interval.factor_quantile_window(), rank_window);
-            assert_eq!(interval.factor_min_samples(), rank_min);
-            assert_eq!(rank_window as i64 * interval.millis(), 172_800_000);
-        }
-    }
-}
-
 impl BarInterval {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -84,5 +52,37 @@ impl BarInterval {
 
     pub fn factor_min_samples(self) -> usize {
         self.factor_quantile_window() / 2
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fifteen_minute_windows_keep_their_wall_clock_horizons() {
+        let interval: BarInterval = serde_json::from_str("\"15m\"").unwrap();
+        assert_eq!(interval, BarInterval::FifteenMinutes);
+        assert_eq!(interval.millis(), 900_000);
+        assert_eq!(interval.factor_quantile_window(), 192);
+        assert_eq!(interval.factor_min_samples(), 96);
+        assert_eq!(interval.nq_window_samples(), 120);
+        assert_eq!(interval.max_model_age_ms(), 1_800_000);
+        assert_eq!(serde_json::to_string(&interval).unwrap(), "\"15m\"");
+    }
+
+    #[test]
+    fn nq_keeps_120_bars_while_factor_ranks_keep_two_days() {
+        for (interval, rank_window, rank_min) in [
+            (BarInterval::OneMinute, 2880, 1440),
+            (BarInterval::FiveMinutes, 576, 288),
+            (BarInterval::FifteenMinutes, 192, 96),
+            (BarInterval::OneHour, 48, 24),
+        ] {
+            assert_eq!(interval.nq_window_samples(), 120);
+            assert_eq!(interval.factor_quantile_window(), rank_window);
+            assert_eq!(interval.factor_min_samples(), rank_min);
+            assert_eq!(rank_window as i64 * interval.millis(), 172_800_000);
+        }
     }
 }

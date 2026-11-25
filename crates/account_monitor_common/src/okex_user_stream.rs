@@ -354,6 +354,67 @@ impl MktConnectionRunner for OkexUserDataConnection {
     }
 }
 
+#[async_trait]
+impl MktConnectionHandler for OkexUserDataConnection {
+    async fn start_ws(&mut self) -> anyhow::Result<()> {
+        loop {
+            info!("OKX: Connecting to {}", self.base_connection.url);
+
+            // 连接 WebSocket (不发送订阅消息，因为需要先登录)
+            let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
+                WsConnector::connect_with_local_ip_raw(&self.base_connection.url, local_ip).await
+            } else {
+                WsConnector::connect_raw(&self.base_connection.url).await
+            };
+
+            match connect_result {
+                Ok(connection) => {
+                    debug!("OKX: Connected at {:?}", connection.connected_at);
+                    self.base_connection.connection = Some(connection);
+
+                    // 发送登录消息
+                    {
+                        let login_msg = self.credentials.build_login_message();
+                        let mut ws_stream = self
+                            .base_connection
+                            .connection
+                            .as_mut()
+                            .unwrap()
+                            .ws_stream
+                            .lock()
+                            .await;
+
+                        if let Err(e) = ws_stream.send(Message::Text(login_msg.to_string())).await {
+                            error!("OKX: Failed to send login message: {:?}", e);
+                            continue;
+                        }
+                        info!("OKX: Login message sent");
+                    }
+
+                    // 运行连接
+                    self.run_connection().await?;
+
+                    // 检查是否需要关闭
+                    if *self.base_connection.shutdown_rx.borrow() {
+                        break Ok(());
+                    } else {
+                        info!(
+                            "OKX: Connection closed, reconnecting... (total restart count: {})",
+                            self.restart_count
+                        );
+                        // 短暂等待后重连
+                        time::sleep(Duration::from_secs(2)).await;
+                    }
+                }
+                Err(e) => {
+                    error!("OKX: Failed to connect: {:?}", e);
+                    time::sleep(Duration::from_secs(5)).await;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,66 +469,5 @@ mod tests {
         assert!(!OkexUserDataConnection::is_optional_fills_permission_error(
             &err
         ));
-    }
-}
-
-#[async_trait]
-impl MktConnectionHandler for OkexUserDataConnection {
-    async fn start_ws(&mut self) -> anyhow::Result<()> {
-        loop {
-            info!("OKX: Connecting to {}", &self.base_connection.url);
-
-            // 连接 WebSocket (不发送订阅消息，因为需要先登录)
-            let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
-                WsConnector::connect_with_local_ip_raw(&self.base_connection.url, local_ip).await
-            } else {
-                WsConnector::connect_raw(&self.base_connection.url).await
-            };
-
-            match connect_result {
-                Ok(connection) => {
-                    debug!("OKX: Connected at {:?}", connection.connected_at);
-                    self.base_connection.connection = Some(connection);
-
-                    // 发送登录消息
-                    {
-                        let login_msg = self.credentials.build_login_message();
-                        let mut ws_stream = self
-                            .base_connection
-                            .connection
-                            .as_mut()
-                            .unwrap()
-                            .ws_stream
-                            .lock()
-                            .await;
-
-                        if let Err(e) = ws_stream.send(Message::Text(login_msg.to_string())).await {
-                            error!("OKX: Failed to send login message: {:?}", e);
-                            continue;
-                        }
-                        info!("OKX: Login message sent");
-                    }
-
-                    // 运行连接
-                    self.run_connection().await?;
-
-                    // 检查是否需要关闭
-                    if *self.base_connection.shutdown_rx.borrow() {
-                        break Ok(());
-                    } else {
-                        info!(
-                            "OKX: Connection closed, reconnecting... (total restart count: {})",
-                            self.restart_count
-                        );
-                        // 短暂等待后重连
-                        time::sleep(Duration::from_secs(2)).await;
-                    }
-                }
-                Err(e) => {
-                    error!("OKX: Failed to connect: {:?}", e);
-                    time::sleep(Duration::from_secs(5)).await;
-                }
-            }
-        }
     }
 }

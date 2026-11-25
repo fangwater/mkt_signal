@@ -180,7 +180,7 @@ fn parse_error_code_and_msg(body: &str) -> (i32, Option<String>) {
 }
 
 fn compact_for_log(s: &str) -> String {
-    s.trim().split_whitespace().collect::<Vec<_>>().join(" ")
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn truncate_for_log(s: &str, max_chars: usize) -> String {
@@ -345,6 +345,100 @@ fn is_post_only_rejected(exchange: Exchange, error_code: i32) -> bool {
 
 fn should_suppress_trade_resp_error_log(out: &TradeExecOutcome, error_code: i32) -> bool {
     out.req_type.is_new_order() && is_post_only_rejected(out.exchange, error_code)
+}
+
+pub fn publish_trade_response(
+    publisher: &Publisher<ipc::Service, [u8; 64], ()>,
+    out: TradeExecOutcome,
+) {
+    let (error_code, msg) = parse_error_code_and_msg(&out.body);
+    let (error_code, msg) = normalize_trade_error(out.exchange, error_code, msg);
+    let is_2xx = (200..300).contains(&(out.status as u32));
+    if !is_2xx || error_code != 0 {
+        let downgrade = should_downgrade_trade_resp_error(&out, error_code);
+        if !should_suppress_trade_resp_error_log(&out, error_code) {
+            let detail = trade_error_detail_for_log(msg.as_deref(), &out.body);
+            if let Some(detail) = detail.as_deref() {
+                if downgrade {
+                    debug!(
+                        "trade resp benign cancel terminal: ex={:?} type={:?} cli_ord_id={} status={} code={} {}",
+                        out.exchange,
+                        out.req_type,
+                        out.client_order_id,
+                        out.status,
+                        error_code,
+                        detail
+                    );
+                } else {
+                    warn!(
+                        "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={} {}",
+                        out.exchange,
+                        out.req_type,
+                        out.client_order_id,
+                        out.status,
+                        error_code,
+                        detail
+                    );
+                }
+            } else if downgrade {
+                debug!(
+                    "trade resp benign cancel terminal: ex={:?} type={:?} cli_ord_id={} status={} code={}",
+                    out.exchange,
+                    out.req_type,
+                    out.client_order_id,
+                    out.status,
+                    error_code
+                );
+            } else {
+                warn!(
+                    "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={}",
+                    out.exchange, out.req_type, out.client_order_id, out.status, error_code
+                );
+            }
+        }
+    }
+
+    let hyperliquid_account_hash = if out.exchange == Exchange::Hyperliquid {
+        match hyperliquid_trade_response_account_hash() {
+            Ok(hash) => Some(hash),
+            Err(err) => {
+                warn!("drop Hyperliquid trade response without account/network identity: {err:#}");
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    let buf = match encode_trade_response(&out, error_code, hyperliquid_account_hash) {
+        Ok(buf) => buf,
+        Err(err) => {
+            warn!(
+                "drop invalid trade response ex={:?} type={:?} cli_ord_id={}: {}",
+                out.exchange, out.req_type, out.client_order_id, err
+            );
+            return;
+        }
+    };
+    let req_type = out.req_type as u32;
+    debug!(
+        "publish trade resp header: type={}, status={}, code={}",
+        req_type, out.status, error_code
+    );
+    if let Ok(sample) = publisher.loan_uninit() {
+        let sample = sample.write_payload(buf);
+        let _ = sample.send();
+    }
+}
+
+pub fn spawn_response_handle(
+    publisher: Publisher<ipc::Service, [u8; 64], ()>,
+    mut resp_rx: mpsc::UnboundedReceiver<TradeExecOutcome>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::task::spawn_local(async move {
+        while let Some(out) = resp_rx.recv().await {
+            publish_trade_response(&publisher, out);
+        }
+    })
 }
 
 #[cfg(test)]
@@ -604,98 +698,4 @@ mod tests {
             101.25
         );
     }
-}
-
-pub fn publish_trade_response(
-    publisher: &Publisher<ipc::Service, [u8; 64], ()>,
-    out: TradeExecOutcome,
-) {
-    let (error_code, msg) = parse_error_code_and_msg(&out.body);
-    let (error_code, msg) = normalize_trade_error(out.exchange, error_code, msg);
-    let is_2xx = (200..300).contains(&(out.status as u32));
-    if !is_2xx || error_code != 0 {
-        let downgrade = should_downgrade_trade_resp_error(&out, error_code);
-        if !should_suppress_trade_resp_error_log(&out, error_code) {
-            let detail = trade_error_detail_for_log(msg.as_deref(), &out.body);
-            if let Some(detail) = detail.as_deref() {
-                if downgrade {
-                    debug!(
-                        "trade resp benign cancel terminal: ex={:?} type={:?} cli_ord_id={} status={} code={} {}",
-                        out.exchange,
-                        out.req_type,
-                        out.client_order_id,
-                        out.status,
-                        error_code,
-                        detail
-                    );
-                } else {
-                    warn!(
-                        "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={} {}",
-                        out.exchange,
-                        out.req_type,
-                        out.client_order_id,
-                        out.status,
-                        error_code,
-                        detail
-                    );
-                }
-            } else if downgrade {
-                debug!(
-                    "trade resp benign cancel terminal: ex={:?} type={:?} cli_ord_id={} status={} code={}",
-                    out.exchange,
-                    out.req_type,
-                    out.client_order_id,
-                    out.status,
-                    error_code
-                );
-            } else {
-                warn!(
-                    "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={}",
-                    out.exchange, out.req_type, out.client_order_id, out.status, error_code
-                );
-            }
-        }
-    }
-
-    let hyperliquid_account_hash = if out.exchange == Exchange::Hyperliquid {
-        match hyperliquid_trade_response_account_hash() {
-            Ok(hash) => Some(hash),
-            Err(err) => {
-                warn!("drop Hyperliquid trade response without account/network identity: {err:#}");
-                return;
-            }
-        }
-    } else {
-        None
-    };
-    let buf = match encode_trade_response(&out, error_code, hyperliquid_account_hash) {
-        Ok(buf) => buf,
-        Err(err) => {
-            warn!(
-                "drop invalid trade response ex={:?} type={:?} cli_ord_id={}: {}",
-                out.exchange, out.req_type, out.client_order_id, err
-            );
-            return;
-        }
-    };
-    let req_type = out.req_type as u32;
-    debug!(
-        "publish trade resp header: type={}, status={}, code={}",
-        req_type, out.status, error_code
-    );
-    if let Ok(sample) = publisher.loan_uninit() {
-        let sample = sample.write_payload(buf);
-        let _ = sample.send();
-    }
-}
-
-pub fn spawn_response_handle(
-    publisher: Publisher<ipc::Service, [u8; 64], ()>,
-    mut resp_rx: mpsc::UnboundedReceiver<TradeExecOutcome>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::task::spawn_local(async move {
-        while let Some(out) = resp_rx.recv().await {
-            publish_trade_response(&publisher, out);
-        }
-    })
 }

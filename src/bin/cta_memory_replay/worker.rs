@@ -30,50 +30,6 @@ struct Bars {
     candles: BTreeMap<(String, i64), Candle>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn closed_bar_vwap_is_weighted_by_trade_amount() {
-        use period_pbs::pb::{PeriodMessage, SymbolInfo, TradeInfo};
-        let start = 1_800_000_000_000;
-        let period = PeriodMessage {
-            period: 0,
-            ts: start + 60_000,
-            post_ts: start + 60_010,
-            poster_id: "fixture".into(),
-            symbol_infos: vec![SymbolInfo {
-                symbol: "BTCUSDT".into(),
-                incs: vec![],
-                trades: vec![
-                    TradeInfo {
-                        timestamp: start + 1_000,
-                        side: "buy".into(),
-                        price: 100.0,
-                        amount: 1.0,
-                    },
-                    TradeInfo {
-                        timestamp: start + 30_000,
-                        side: "sell".into(),
-                        price: 200.0,
-                        amount: 3.0,
-                    },
-                ],
-            }],
-        };
-        let rows = Bars::default().ingest(&period, &BTreeSet::from(["BTCUSDT".into()]));
-        assert_eq!(rows.len(), 1);
-        let ((symbol, interval), bar) = &rows[0];
-        assert_eq!(symbol, "BTCUSDT");
-        assert_eq!(*interval, 60_000);
-        assert_eq!(bar.volume, 4.0);
-        assert_eq!(bar.turnover, 700.0);
-        assert_eq!(bar.vwap(), Some(175.0));
-        assert_eq!(bar.open, 100.0);
-        assert_eq!(bar.close, 200.0);
-    }
-}
-
 impl Bars {
     fn ingest(
         &mut self,
@@ -341,5 +297,49 @@ pub fn run(
             );
             last_log = Instant::now();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn closed_bar_vwap_is_weighted_by_trade_amount() {
+        use period_pbs::pb::{PeriodMessage, SymbolInfo, TradeInfo};
+        let start = 1_800_000_000_000;
+        let period = PeriodMessage {
+            period: 0,
+            ts: start + 60_000,
+            post_ts: start + 60_010,
+            poster_id: "fixture".into(),
+            symbol_infos: vec![SymbolInfo {
+                symbol: "BTCUSDT".into(),
+                incs: vec![],
+                trades: vec![
+                    TradeInfo {
+                        timestamp: start + 1_000,
+                        side: "buy".into(),
+                        price: 100.0,
+                        amount: 1.0,
+                    },
+                    TradeInfo {
+                        timestamp: start + 30_000,
+                        side: "sell".into(),
+                        price: 200.0,
+                        amount: 3.0,
+                    },
+                ],
+            }],
+        };
+        let rows = Bars::default().ingest(&period, &BTreeSet::from(["BTCUSDT".into()]));
+        assert_eq!(rows.len(), 1);
+        let ((symbol, interval), bar) = &rows[0];
+        assert_eq!(symbol, "BTCUSDT");
+        assert_eq!(*interval, 60_000);
+        assert_eq!(bar.volume, 4.0);
+        assert_eq!(bar.turnover, 700.0);
+        assert_eq!(bar.vwap(), Some(175.0));
+        assert_eq!(bar.open, 100.0);
+        assert_eq!(bar.close, 200.0);
     }
 }

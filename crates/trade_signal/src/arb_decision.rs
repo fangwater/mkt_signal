@@ -113,9 +113,10 @@ impl ArbSignalKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VolGateCompare {
     GreaterThan,
+    #[default]
     LessThan,
 }
 
@@ -140,12 +141,6 @@ impl VolGateCompare {
             Self::GreaterThan => current > threshold,
             Self::LessThan => current < threshold,
         }
-    }
-}
-
-impl Default for VolGateCompare {
-    fn default() -> Self {
-        Self::LessThan
     }
 }
 
@@ -393,10 +388,7 @@ fn handle_quote_plan_error(
     }
 }
 
-fn table_for_venue<'a>(
-    runtime: &'a ArbShellRuntime,
-    venue: TradingVenue,
-) -> Option<&'a VenueMinQtyTable> {
+fn table_for_venue(runtime: &ArbShellRuntime, venue: TradingVenue) -> Option<&VenueMinQtyTable> {
     if venue == runtime.venues.0 {
         Some(&runtime.open_min_qty_table)
     } else if venue == runtime.venues.1 {
@@ -1637,14 +1629,14 @@ fn drive_funding_decision(
             continue;
         };
 
-        let final_signal = control.final_signal.clone();
+        let final_signal = control.final_signal;
         let emit_allowed = emit_funding_open_close_signals(
             decision,
             open_symbol_key,
             hedge_symbol_key,
             open_venue,
             hedge_venue,
-            final_signal.clone(),
+            final_signal,
             control.side,
             control.gate.as_ref(),
             None,
@@ -3832,7 +3824,7 @@ fn emit_funding_open_close_signals(
     };
     let sent = super::arb_emit::emit_levels_as_signals(
         &decision.runtime.signal_pub,
-        signal_type.clone(),
+        signal_type,
         batch_ts,
         contexts,
     )?;
@@ -4160,7 +4152,7 @@ pub(crate) struct ArbDecisionState {
     pub funding_close_spread_blocks: HashMap<(String, ArbSignalKind), FundingCloseSpreadBlock>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct FundingCloseSpreadBlock {
     pub count: u64,
     pub min_value: Option<f64>,
@@ -4169,20 +4161,6 @@ pub(crate) struct FundingCloseSpreadBlock {
     pub threshold: Option<f64>,
     pub compare_op: Option<super::common::CompareOp>,
     pub spread_type: Option<super::spread_factor::SpreadType>,
-}
-
-impl Default for FundingCloseSpreadBlock {
-    fn default() -> Self {
-        Self {
-            count: 0,
-            min_value: None,
-            max_value: None,
-            last_value: None,
-            threshold: None,
-            compare_op: None,
-            spread_type: None,
-        }
-    }
 }
 
 impl FundingCloseSpreadBlock {
@@ -4992,7 +4970,7 @@ impl ArbDecisionState {
                 note: open_lookup.note,
             },
             hedge: VenueVolatilityReadiness {
-                venue: hedge_venue.into(),
+                venue: hedge_venue,
                 symbol_key: hedge_lookup.symbol_key,
                 key: hedge_lookup.key,
                 value: hedge_lookup.target_factor_value,
@@ -6103,7 +6081,7 @@ mod funding_mode_signal_tests {
             99.95,
         );
         assert!(ArbDecisionState::evaluate_close_side(
-            &spread_factor,
+            spread_factor,
             symbol,
             symbol,
             TradingVenue::BitgetMargin,
@@ -6149,7 +6127,7 @@ mod funding_mode_signal_tests {
         let spread_factor = setup_spread_factor_with_forward_close(symbol);
 
         let signal = evaluate_funding_mode_signal(
-            &spread_factor,
+            spread_factor,
             symbol,
             symbol,
             symbol,
@@ -6169,7 +6147,7 @@ mod funding_mode_signal_tests {
         let spread_factor = setup_spread_factor_with_forward_close(symbol);
 
         let signal = evaluate_funding_mode_signal(
-            &spread_factor,
+            spread_factor,
             symbol,
             symbol,
             symbol,

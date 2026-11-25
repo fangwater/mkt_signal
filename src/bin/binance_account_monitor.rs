@@ -79,7 +79,7 @@ struct DirectAccountForwarder {
 }
 
 thread_local! {
-    static DIRECT_FORWARDER: RefCell<Option<DirectAccountForwarder>> = RefCell::new(None);
+    static DIRECT_FORWARDER: RefCell<Option<DirectAccountForwarder>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone, Copy)]
@@ -188,7 +188,7 @@ fn exec_account_event_allowed(venue: order_common::TradingVenue, msg: &[u8]) -> 
     let coin = venue == order_common::TradingVenue::BinanceCoinFutures;
     match kind {
         BasicAccountEventType::OrderUpdate => {
-            BinanceBasicOrderMsg::from_bytes(&payload).is_ok_and(|order| {
+            BinanceBasicOrderMsg::from_bytes(payload).is_ok_and(|order| {
                 order.venue
                     == if coin {
                         BinanceBasicOrderMsg::VENUE_CM
@@ -1685,7 +1685,8 @@ mod tests {
         let accepted = tokio::spawn(async move {
             let (mut socket, peer) = server.accept().await.unwrap();
             let mut request = [0; 4096];
-            socket.read(&mut request).await.unwrap();
+            let read = socket.read(&mut request).await.unwrap();
+            assert!(read > 0, "client sent no request");
             socket
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
                 .await
@@ -2081,7 +2082,7 @@ fn log_parsed_event(msg: &Bytes) {
 
     match event_type {
         BasicAccountEventType::OrderUpdate => {
-            if let Ok(m) = BinanceBasicOrderMsg::from_bytes(&payload) {
+            if let Ok(m) = BinanceBasicOrderMsg::from_bytes(payload) {
                 let venue = match m.venue {
                     BinanceBasicOrderMsg::VENUE_MARGIN => "margin",
                     BinanceBasicOrderMsg::VENUE_UM => "um",
@@ -2110,7 +2111,7 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::TradeUpdateLite => {
-            if let Ok(m) = BasicTradeLiteMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicTradeLiteMsg::from_bytes(payload) {
                 debug!(
                     "Binance TradeUpdateLite: scope={} venue=um sym={} side={:?} cli_id={} trade_id={} last_px={} last_qty={} maker={}",
                     account_scope.as_str(),
@@ -2125,7 +2126,7 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::BalanceUpdate => {
-            if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicBalanceMsg::from_bytes(payload) {
                 debug!(
                     "Binance BalanceUpdate: scope={} ts={} symbol={} wallet={}",
                     account_scope.as_str(),
@@ -2136,7 +2137,7 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::PositionUpdate => {
-            if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicPositionMsg::from_bytes(payload) {
                 debug!(
                     "Binance PositionUpdate: scope={} ts={} inst={} side={} amt={}",
                     account_scope.as_str(),
@@ -2148,7 +2149,7 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::BorrowInterest => {
-            if let Ok(m) = BasicBorrowInterestMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicBorrowInterestMsg::from_bytes(payload) {
                 info!(
                     "Binance BorrowInterest: scope={} ts={} symbol={} borrowed={} interest={}",
                     account_scope.as_str(),
@@ -2160,7 +2161,7 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::UnrealizedPnlUpdate => {
-            if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(payload) {
                 debug!(
                     "Binance UnrealizedPnl: scope={} ts={} inst={} side={} pnl={}",
                     account_scope.as_str(),
@@ -2172,7 +2173,7 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::AccountRisk => {
-            if let Ok(m) = BasicAccountRiskMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicAccountRiskMsg::from_bytes(payload) {
                 let calc_margin_ratio = if m.maintenance_margin_usd.abs() > f64::EPSILON {
                     m.adj_equity_usd / m.maintenance_margin_usd
                 } else {
@@ -2194,7 +2195,7 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::BinanceStdUmWalletSnapshot => {
-            if let Ok(m) = BinanceStdUmWalletSnapshotMsg::from_bytes(&payload) {
+            if let Ok(m) = BinanceStdUmWalletSnapshotMsg::from_bytes(payload) {
                 debug!(
                     "Binance StdUmWalletSnapshot event: scope={} ts={} asset={} balance={:.8} cross_wallet={:.8} cross_un_pnl={:.8} cross_equity={:.8} available={:.8} max_withdraw={:.8} margin_available={} update_time={}",
                     account_scope.as_str(),
@@ -2255,32 +2256,30 @@ impl AccountEventDeduper {
         };
 
         let key_opt = match event_type {
-            BasicAccountEventType::BalanceUpdate => BasicBalanceMsg::from_bytes(&payload)
+            BasicAccountEventType::BalanceUpdate => BasicBalanceMsg::from_bytes(payload)
                 .ok()
                 .map(|m| self.key_balance(&m)),
-            BasicAccountEventType::PositionUpdate => BasicPositionMsg::from_bytes(&payload)
+            BasicAccountEventType::PositionUpdate => BasicPositionMsg::from_bytes(payload)
                 .ok()
                 .map(|m| self.key_position(&m)),
-            BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(&payload)
+            BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(payload)
                 .ok()
                 .map(|m| self.key_borrow_interest(&m)),
-            BasicAccountEventType::UnrealizedPnlUpdate => {
-                BasicUmUnrealizedMsg::from_bytes(&payload)
-                    .ok()
-                    .map(|m| self.key_unrealized_pnl(&m))
-            }
-            BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(&payload)
+            BasicAccountEventType::UnrealizedPnlUpdate => BasicUmUnrealizedMsg::from_bytes(payload)
+                .ok()
+                .map(|m| self.key_unrealized_pnl(&m)),
+            BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(payload)
                 .ok()
                 .map(|m| self.key_trade_lite(&m)),
-            BasicAccountEventType::AccountRisk => BasicAccountRiskMsg::from_bytes(&payload)
+            BasicAccountEventType::AccountRisk => BasicAccountRiskMsg::from_bytes(payload)
                 .ok()
                 .map(|m| self.key_account_risk(&m)),
             BasicAccountEventType::BinanceStdUmWalletSnapshot => {
-                BinanceStdUmWalletSnapshotMsg::from_bytes(&payload)
+                BinanceStdUmWalletSnapshotMsg::from_bytes(payload)
                     .ok()
                     .map(|m| self.key_binance_std_um_wallet_snapshot(&m))
             }
-            BasicAccountEventType::OrderUpdate => BinanceBasicOrderMsg::from_bytes(&payload)
+            BasicAccountEventType::OrderUpdate => BinanceBasicOrderMsg::from_bytes(payload)
                 .ok()
                 .map(|m| self.key_binance_basic_order(&m)),
             BasicAccountEventType::HyperliquidFill

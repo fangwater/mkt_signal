@@ -3,6 +3,7 @@
 //! Dispatches event-driven decision triggers to one of:
 //! - `ArbDecision` (mode-driven arb core)
 //! - `MmDecision` (market-making framework)
+//!
 //! based on a startup-selected branch.
 
 use anyhow::Result;

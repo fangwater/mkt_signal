@@ -722,7 +722,7 @@ fn parse_columns(table: TableKind, raw: Option<&str>) -> Result<Vec<String>> {
         Some(raw) => {
             let mut out = Vec::new();
             for name in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                if !allowed.iter().any(|candidate| *candidate == name) {
+                if !allowed.contains(&name) {
                     return Err(anyhow!("unknown column for {}: {}", table.cf_name(), name));
                 }
                 out.push(name.to_string());

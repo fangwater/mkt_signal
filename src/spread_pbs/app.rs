@@ -2478,9 +2478,7 @@ impl SymbolSeqState {
             .filter_map(|symbol| {
                 let idx = *self.index_by_symbol.get(*symbol)?;
                 self.incremental_last_seen_at[idx]
-                    .map_or(true, |last_seen| {
-                        now.duration_since(last_seen) > stale_after
-                    })
+                    .is_none_or(|last_seen| now.duration_since(last_seen) > stale_after)
                     .then(|| (*symbol).to_string())
             })
             .collect()

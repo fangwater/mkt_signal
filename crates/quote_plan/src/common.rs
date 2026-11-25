@@ -338,23 +338,6 @@ fn extract_assets_from_internal_symbol(symbol_upper: &str) -> (&str, &str) {
     (symbol_upper, "USDT")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bitget_coin_futures_symbol_is_derived_from_spot_canonical_symbol() {
-        assert_eq!(
-            normalize_symbol_for_venue("BTCUSDT", Venue::BitgetCoinFutures),
-            "BTCUSD_CM"
-        );
-        assert_eq!(
-            min_qty_symbol_key(Venue::BitgetCoinFutures, "BTCUSDCM"),
-            "BTCUSD_CM"
-        );
-    }
-}
-
 fn value_from_int_exp(value_i64: i64, value_exp: i32) -> f64 {
     (value_i64 as f64) * 10f64.powi(value_exp)
 }
@@ -416,4 +399,21 @@ fn encode_quantized_floor(value: f64, preferred_tick: f64) -> Option<QuantizedVa
         tick_exp,
         count,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bitget_coin_futures_symbol_is_derived_from_spot_canonical_symbol() {
+        assert_eq!(
+            normalize_symbol_for_venue("BTCUSDT", Venue::BitgetCoinFutures),
+            "BTCUSD_CM"
+        );
+        assert_eq!(
+            min_qty_symbol_key(Venue::BitgetCoinFutures, "BTCUSDCM"),
+            "BTCUSD_CM"
+        );
+    }
 }

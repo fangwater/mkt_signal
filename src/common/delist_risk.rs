@@ -430,15 +430,15 @@ impl RiskBook {
                 if item.status != "past" {
                     entry.abnormal = true;
                 }
-                if item.status == "upcoming" && !item.utc.is_empty() {
-                    if entry
+                if item.status == "upcoming"
+                    && !item.utc.is_empty()
+                    && entry
                         .next_utc
                         .as_ref()
                         .map(|existing| item.utc.as_str() < existing.as_str())
                         .unwrap_or(true)
-                    {
-                        entry.next_utc = Some(item.utc.clone());
-                    }
+                {
+                    entry.next_utc = Some(item.utc.clone());
                 }
             }
         }

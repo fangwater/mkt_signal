@@ -41,49 +41,6 @@ pub struct Config {
     pub position_target_ingress: Option<cn_futures_target::Config>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn fixed_combined_examples_validate_without_reading_credentials_or_applying_affinity() {
-        let trade: Config =
-            toml::from_str(include_str!("../../../config/ctp_trade.example.toml")).unwrap();
-        let mut md: crate::ctp::market_data::Config =
-            toml::from_str(include_str!("../../../config/ctp_market_data.example.toml")).unwrap();
-        trade.validate_market_data(&md).unwrap();
-        md.placement.business_cpu = 9;
-        assert!(trade.validate_market_data(&md).is_err());
-        md.placement = crate::placement::PlacementConfig {
-            sdk_cpus: vec![2],
-            ..trade.placement.clone()
-        };
-        md.symbols.clear();
-        trade.validate_market_data(&md).unwrap();
-    }
-    #[test]
-    fn blocking_ctp_configuration_knobs_are_rejected() {
-        let trade = include_str!("../../../config/ctp_trade.example.toml");
-        for knob in ["sync_before_send = true\n", "sync_before_send = false\n"] {
-            assert!(toml::from_str::<Config>(&format!("{knob}{trade}")).is_err());
-        }
-    }
-    #[test]
-    fn poll_mode_defaults_to_busy_and_rejects_the_removed_idle_knob() {
-        let trade = include_str!("../../../config/ctp_trade.example.toml");
-        let example: Config = toml::from_str(trade).unwrap();
-        assert_eq!(
-            example.poll,
-            crate::poll::PollMode::Sleep { idle_us: 64_000 }
-        );
-        example.validate().unwrap();
-        let mut table: toml::Table = toml::from_str(trade).unwrap();
-        table.remove("poll");
-        let default: Config = toml::Value::Table(table.clone()).try_into().unwrap();
-        assert_eq!(default.poll, crate::poll::PollMode::default());
-        table.insert("idle_sleep_us".into(), toml::Value::Integer(0));
-        assert!(toml::Value::Table(table).try_into::<Config>().is_err());
-    }
-}
 /// Intentionally not Debug / Serialize. Secrets are only passed to the official SDK.
 pub struct Credentials {
     pub broker: CString,
@@ -236,5 +193,49 @@ impl Config {
             app_id: env(&self.app_id_env, 32, self.require_authentication)?,
             auth_code: env(&self.auth_code_env, 16, self.require_authentication)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn fixed_combined_examples_validate_without_reading_credentials_or_applying_affinity() {
+        let trade: Config =
+            toml::from_str(include_str!("../../../config/ctp_trade.example.toml")).unwrap();
+        let mut md: crate::ctp::market_data::Config =
+            toml::from_str(include_str!("../../../config/ctp_market_data.example.toml")).unwrap();
+        trade.validate_market_data(&md).unwrap();
+        md.placement.business_cpu = 9;
+        assert!(trade.validate_market_data(&md).is_err());
+        md.placement = crate::placement::PlacementConfig {
+            sdk_cpus: vec![2],
+            ..trade.placement.clone()
+        };
+        md.symbols.clear();
+        trade.validate_market_data(&md).unwrap();
+    }
+    #[test]
+    fn blocking_ctp_configuration_knobs_are_rejected() {
+        let trade = include_str!("../../../config/ctp_trade.example.toml");
+        for knob in ["sync_before_send = true\n", "sync_before_send = false\n"] {
+            assert!(toml::from_str::<Config>(&format!("{knob}{trade}")).is_err());
+        }
+    }
+    #[test]
+    fn poll_mode_defaults_to_busy_and_rejects_the_removed_idle_knob() {
+        let trade = include_str!("../../../config/ctp_trade.example.toml");
+        let example: Config = toml::from_str(trade).unwrap();
+        assert_eq!(
+            example.poll,
+            crate::poll::PollMode::Sleep { idle_us: 64_000 }
+        );
+        example.validate().unwrap();
+        let mut table: toml::Table = toml::from_str(trade).unwrap();
+        table.remove("poll");
+        let default: Config = toml::Value::Table(table.clone()).try_into().unwrap();
+        assert_eq!(default.poll, crate::poll::PollMode::default());
+        table.insert("idle_sleep_us".into(), toml::Value::Integer(0));
+        assert!(toml::Value::Table(table).try_into::<Config>().is_err());
     }
 }

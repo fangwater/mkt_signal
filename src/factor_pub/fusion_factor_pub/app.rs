@@ -207,30 +207,38 @@ impl DepthDerived {
 
     #[inline]
     pub fn bid_amount(&self, idx: usize) -> f64 {
-        (idx < self.available_levels)
-            .then(|| self.bids[idx].amount)
-            .unwrap_or(f64::NAN)
+        if idx < self.available_levels {
+            self.bids[idx].amount
+        } else {
+            f64::NAN
+        }
     }
 
     #[inline]
     pub fn ask_amount(&self, idx: usize) -> f64 {
-        (idx < self.available_levels)
-            .then(|| self.asks[idx].amount)
-            .unwrap_or(f64::NAN)
+        if idx < self.available_levels {
+            self.asks[idx].amount
+        } else {
+            f64::NAN
+        }
     }
 
     #[inline]
     pub fn bid_price(&self, idx: usize) -> f64 {
-        (idx < self.available_levels)
-            .then(|| self.bids[idx].price)
-            .unwrap_or(f64::NAN)
+        if idx < self.available_levels {
+            self.bids[idx].price
+        } else {
+            f64::NAN
+        }
     }
 
     #[inline]
     pub fn ask_price(&self, idx: usize) -> f64 {
-        (idx < self.available_levels)
-            .then(|| self.asks[idx].price)
-            .unwrap_or(f64::NAN)
+        if idx < self.available_levels {
+            self.asks[idx].price
+        } else {
+            f64::NAN
+        }
     }
 
     #[inline]

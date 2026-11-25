@@ -21,6 +21,12 @@ const GATE_SUBSCRIBE_CHUNK: usize = 100;
 
 pub struct GateSbeAdapter;
 
+impl Default for GateSbeAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GateSbeAdapter {
     pub fn new() -> Self {
         Self
@@ -130,6 +136,12 @@ impl VenueAdapter for GateSbeAdapter {
 }
 
 pub struct GateSpotSbeAdapter;
+
+impl Default for GateSpotSbeAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl GateSpotSbeAdapter {
     pub fn new() -> Self {

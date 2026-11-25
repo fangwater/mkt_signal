@@ -409,7 +409,7 @@ fn intern_string(
     Ok(index)
 }
 
-fn dictionary_value<'a>(values: &'a [String], index: u16, kind: &str) -> Result<String> {
+fn dictionary_value(values: &[String], index: u16, kind: &str) -> Result<String> {
     values
         .get(usize::from(index))
         .cloned()

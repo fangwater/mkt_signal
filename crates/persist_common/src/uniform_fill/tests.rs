@@ -210,7 +210,7 @@ fn persisted_execution_role_is_joined_only_to_its_factual_trade() {
     let output = normalize(
         &rows,
         &[first.clone(), second],
-        &[role.clone()],
+        std::slice::from_ref(&role),
         "123",
         "BINANCE",
     )

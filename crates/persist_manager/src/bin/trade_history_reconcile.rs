@@ -824,8 +824,7 @@ fn build_summary(
         uniform_fill_event_count: uniform.values().map(|group| group.event_count).sum(),
         uniform_order_count: uniform
             .values()
-            .map(|group| group.client_order_ids.iter().copied())
-            .flatten()
+            .flat_map(|group| group.client_order_ids.iter().copied())
             .collect::<BTreeSet<_>>()
             .len(),
         unmatched_fill_event_count: unmatched.values().map(|order| order.event_count).sum(),

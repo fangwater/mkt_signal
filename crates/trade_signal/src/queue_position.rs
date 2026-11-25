@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::hash::{BuildHasher, Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use ahash::RandomState;
@@ -278,9 +277,11 @@ impl QueuePositionState {
             return None;
         };
         let event_len = BASIC_ACCOUNT_EVENT_HEADER_LEN + data.len();
-        let mut hasher = self.account_hash_state.build_hasher();
-        payload[..event_len].hash(&mut hasher);
-        if !self.account_dedup.insert_check(hasher.finish()) {
+
+        if !self
+            .account_dedup
+            .insert_check(self.account_hash_state.hash_one(&payload[..event_len]))
+        {
             return None;
         }
         if event_type != BasicAccountEventType::OrderUpdate {

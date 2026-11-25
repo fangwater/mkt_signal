@@ -639,14 +639,12 @@ impl StrategyManager {
                 );
             }
         }
-        if old.is_some() {
-            if !suppress_pre_submit_hot_path_logs() {
-                info!(
-                    "策略管理器: 替换已有策略 id={}，当前活跃策略数={}",
-                    id,
-                    self.strategies.len()
-                );
-            }
+        if old.is_some() && !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "策略管理器: 替换已有策略 id={}，当前活跃策略数={}",
+                id,
+                self.strategies.len()
+            );
         }
         old
     }
@@ -684,9 +682,7 @@ impl StrategyManager {
     /// 取出指定策略，调用方处理后可重新插入
     pub fn take(&mut self, strategy_id: i32) -> Option<Box<dyn Strategy>> {
         let removed = self.strategies.remove(&strategy_id);
-        if removed.is_none() {
-            return None;
-        }
+        removed.as_ref()?;
         self.unregister_mm_open_price_entry(strategy_id);
         self.unregister_arb_open_price_entry(strategy_id);
         if let Some(strategy) = removed.as_ref() {

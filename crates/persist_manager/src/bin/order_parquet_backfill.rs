@@ -377,7 +377,7 @@ fn flush_writes(store: &RocksDbStore, writes: &mut Vec<(String, Vec<u8>, Vec<u8>
 }
 
 fn maybe_log_progress(job: &ImportJob, args: &Args, stats: &ImportStats) {
-    if args.progress_rows == 0 || stats.rows % args.progress_rows != 0 {
+    if args.progress_rows == 0 || !stats.rows.is_multiple_of(args.progress_rows) {
         return;
     }
     info!(
@@ -880,7 +880,7 @@ fn required_bool(col: &BooleanChunked, row: usize, name: &str) -> Result<bool> {
 
 fn parse_cf_name(raw: &str) -> Result<String> {
     let trimmed = raw.trim();
-    if STANDARD_CFS.iter().any(|cf| *cf == trimmed) {
+    if STANDARD_CFS.contains(&trimmed) {
         return Ok(trimmed.to_string());
     }
     Err(anyhow!("unsupported cf: {raw}"))

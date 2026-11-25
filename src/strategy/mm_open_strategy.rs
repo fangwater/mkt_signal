@@ -224,6 +224,12 @@ impl Strategy for MarketMakerOpenStrategy {
     }
 }
 
+impl Drop for MarketMakerOpenStrategy {
+    fn drop(&mut self) {
+        self.cleanup_strategy_orders();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::MarketMakerOpenStrategy;
@@ -265,11 +271,5 @@ mod tests {
     #[test]
     fn monotonic_cumulative_fill_accepts_forward_progress() {
         assert!((monotonic_cumulative_fill(4.2, 5.6) - 5.6).abs() < 1e-12);
-    }
-}
-
-impl Drop for MarketMakerOpenStrategy {
-    fn drop(&mut self) {
-        self.cleanup_strategy_orders();
     }
 }

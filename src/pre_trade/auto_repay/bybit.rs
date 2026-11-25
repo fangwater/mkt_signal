@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn render_table_marks_skip_and_repay() {
-        let entries = vec![
+        let entries = [
             BorrowEntry {
                 coin: "USDT".into(),
                 wallet_balance: 0.5,

@@ -1001,8 +1001,7 @@ pub trait OpenStrategyCommon {
         let total_start_us = get_timestamp_us();
         let is_arb_open = input.signal_type_u8 == SignalType::ArbOpen as u8;
         let mut precreate_stage_start_us: i64;
-        let pre_order_gate_us: i64;
-        let pre_balance_gate_us: i64;
+
         let symbol = if input.opening_symbol_normalized {
             input.opening_symbol
         } else {
@@ -1256,7 +1255,7 @@ pub trait OpenStrategyCommon {
             }
         };
         let stage_done_us = get_timestamp_us();
-        pre_order_gate_us = stage_done_us.saturating_sub(precreate_stage_start_us);
+        let pre_order_gate_us: i64 = stage_done_us.saturating_sub(precreate_stage_start_us);
         precreate_stage_start_us = stage_done_us;
 
         let order_price = input.price;
@@ -1362,7 +1361,7 @@ pub trait OpenStrategyCommon {
                     gate,
                     symbol: &symbol,
                     side,
-                    asset: &check_asset,
+                    asset: check_asset,
                     required_amount,
                     available_balance,
                     now_us: get_timestamp_us(),
@@ -1381,7 +1380,7 @@ pub trait OpenStrategyCommon {
             );
         }
         let stage_done_us = get_timestamp_us();
-        pre_balance_gate_us = stage_done_us.saturating_sub(precreate_stage_start_us);
+        let pre_balance_gate_us: i64 = stage_done_us.saturating_sub(precreate_stage_start_us);
 
         let add_base_qty = match self.open_order_qty_to_base(signed_qty, qty_multiplier) {
             Ok(base_qty) => base_qty,

@@ -2603,7 +2603,12 @@ impl HyperliquidAccountProcessor {
             .get("data")
             .context("clearinghouseState missing data")?;
         self.validate_user(data)?;
-        if data.get("dex").and_then(Value::as_str).unwrap_or("") != "" {
+        if !data
+            .get("dex")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .is_empty()
+        {
             return Ok(Vec::new());
         }
         let state = data

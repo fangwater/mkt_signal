@@ -363,6 +363,117 @@ fn validate(state: &RecoveryState) -> Result<()> {
     Ok(())
 }
 
+fn apply(state: &mut RecoveryState, record: &Record) -> Result<()> {
+    match record {
+        Record::State(snapshot) => {
+            ensure!(
+                snapshot.portfolio == state.portfolio && snapshot.exchange == state.exchange,
+                "recovery snapshot scope mismatch"
+            );
+            *state = snapshot.clone();
+        }
+        Record::Change {
+            facts,
+            identities,
+            statement_end,
+        } => {
+            for fact in facts {
+                let key = fact.key()?;
+                if let Some(old) = state.pending.get(&key) {
+                    ensure!(old == fact, "conflicting pending RapidX fact");
+                } else {
+                    state.pending.insert(key, fact.clone());
+                }
+            }
+            state.identities.extend(identities.iter().cloned());
+            if let Some(end) = statement_end {
+                ensure!(
+                    *end > 0 && state.statement_history_end_ms.is_none_or(|old| *end >= old),
+                    "statement checkpoint regression"
+                );
+                state.statement_history_end_ms = Some(*end);
+            }
+        }
+        Record::ExecutionCheckpoint(end) => {
+            ensure!(
+                *end >= state.execution_history_end_ms,
+                "execution checkpoint regression"
+            );
+            state.execution_history_end_ms = *end;
+        }
+        Record::ImportCursor(path, cursor) => {
+            state.legacy_cursors.insert(path.clone(), cursor.clone());
+            ensure!(
+                state.legacy_cursors.len() <= 16384,
+                "legacy import cursor limit exceeded"
+            );
+        }
+        Record::Ack(acks) => {
+            let acks: BTreeSet<_> = acks.iter().collect();
+            state
+                .pending
+                .retain(|_, fact| fact.ack().map_or(true, |ack| !acks.contains(&ack)));
+        }
+    }
+    validate(state)
+}
+
+impl Disk {
+    fn write(&mut self, record: Record, sync: bool) -> Result<()> {
+        ensure!(
+            self.healthy,
+            "RapidX delivery durability unavailable; restart required"
+        );
+        let mut next = self.state.clone();
+        apply(&mut next, &record)?;
+        let mut bytes = serde_json::to_vec(&record)?;
+        bytes.push(b'\n');
+        ensure!(bytes.len() <= MAX_LINE, "delivery record too large");
+        let result = (|| -> Result<()> {
+            self.file.write_all(&bytes)?;
+            if sync {
+                self.file.sync_data()?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.healthy = false;
+        }
+        result.context("write RapidX pending facts")?;
+        self.retired += self.state.pending.len().saturating_sub(next.pending.len());
+        self.state = next;
+        self.appended_bytes += bytes.len() as u64;
+        if self.retired >= 128 || self.appended_bytes >= COMPACT_BYTES {
+            if let Err(error) = self.compact() {
+                self.healthy = false;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+    fn compact(&mut self) -> Result<()> {
+        let temp = self.path.with_extension("pending");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temp)?;
+        let mut bytes = serde_json::to_vec(&Record::State(self.state.clone()))?;
+        bytes.push(b'\n');
+        ensure!(bytes.len() <= MAX_LINE, "delivery snapshot too large");
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&temp, &self.path)?;
+        File::open(self.path.parent().context("delivery parent missing")?)?.sync_all()?;
+        self.file = file;
+        self.retired = 0;
+        self.appended_bytes = 0;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,116 +675,5 @@ mod tests {
         drop(store);
         assert!(DeliveryStore::open(&dir, "456", "BINANCE").is_err());
         std::fs::remove_dir_all(dir).unwrap();
-    }
-}
-
-fn apply(state: &mut RecoveryState, record: &Record) -> Result<()> {
-    match record {
-        Record::State(snapshot) => {
-            ensure!(
-                snapshot.portfolio == state.portfolio && snapshot.exchange == state.exchange,
-                "recovery snapshot scope mismatch"
-            );
-            *state = snapshot.clone();
-        }
-        Record::Change {
-            facts,
-            identities,
-            statement_end,
-        } => {
-            for fact in facts {
-                let key = fact.key()?;
-                if let Some(old) = state.pending.get(&key) {
-                    ensure!(old == fact, "conflicting pending RapidX fact");
-                } else {
-                    state.pending.insert(key, fact.clone());
-                }
-            }
-            state.identities.extend(identities.iter().cloned());
-            if let Some(end) = statement_end {
-                ensure!(
-                    *end > 0 && state.statement_history_end_ms.is_none_or(|old| *end >= old),
-                    "statement checkpoint regression"
-                );
-                state.statement_history_end_ms = Some(*end);
-            }
-        }
-        Record::ExecutionCheckpoint(end) => {
-            ensure!(
-                *end >= state.execution_history_end_ms,
-                "execution checkpoint regression"
-            );
-            state.execution_history_end_ms = *end;
-        }
-        Record::ImportCursor(path, cursor) => {
-            state.legacy_cursors.insert(path.clone(), cursor.clone());
-            ensure!(
-                state.legacy_cursors.len() <= 16384,
-                "legacy import cursor limit exceeded"
-            );
-        }
-        Record::Ack(acks) => {
-            let acks: BTreeSet<_> = acks.iter().collect();
-            state
-                .pending
-                .retain(|_, fact| fact.ack().map_or(true, |ack| !acks.contains(&ack)));
-        }
-    }
-    validate(state)
-}
-
-impl Disk {
-    fn write(&mut self, record: Record, sync: bool) -> Result<()> {
-        ensure!(
-            self.healthy,
-            "RapidX delivery durability unavailable; restart required"
-        );
-        let mut next = self.state.clone();
-        apply(&mut next, &record)?;
-        let mut bytes = serde_json::to_vec(&record)?;
-        bytes.push(b'\n');
-        ensure!(bytes.len() <= MAX_LINE, "delivery record too large");
-        let result = (|| -> Result<()> {
-            self.file.write_all(&bytes)?;
-            if sync {
-                self.file.sync_data()?;
-            }
-            Ok(())
-        })();
-        if result.is_err() {
-            self.healthy = false;
-        }
-        result.context("write RapidX pending facts")?;
-        self.retired += self.state.pending.len().saturating_sub(next.pending.len());
-        self.state = next;
-        self.appended_bytes += bytes.len() as u64;
-        if self.retired >= 128 || self.appended_bytes >= COMPACT_BYTES {
-            if let Err(error) = self.compact() {
-                self.healthy = false;
-                return Err(error);
-            }
-        }
-        Ok(())
-    }
-    fn compact(&mut self) -> Result<()> {
-        let temp = self.path.with_extension("pending");
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temp)?;
-        let mut bytes = serde_json::to_vec(&Record::State(self.state.clone()))?;
-        bytes.push(b'\n');
-        ensure!(bytes.len() <= MAX_LINE, "delivery snapshot too large");
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&temp, &self.path)?;
-        File::open(self.path.parent().context("delivery parent missing")?)?.sync_all()?;
-        self.file = file;
-        self.retired = 0;
-        self.appended_bytes = 0;
-        Ok(())
     }
 }

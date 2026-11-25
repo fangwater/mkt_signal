@@ -2224,7 +2224,7 @@ impl BatchExecStrategy {
         } else {
             Side::Sell
         };
-        let reference_price = self.inverse_reference_price.unwrap_or_else(|| match side {
+        let reference_price = self.inverse_reference_price.unwrap_or(match side {
             Side::Buy => quote.bid,
             Side::Sell => quote.ask,
         });

@@ -551,7 +551,7 @@ impl Strategy for HedgeOrphanOrderStrategy {
                 if update.status() == OrderStatus::New {
                     publish_uniform_new_order(
                         update,
-                        &order,
+                        order,
                         prev_cumulative_filled_qty,
                         ctx,
                         "HedgeOrphanOrderStrategy",
@@ -566,7 +566,7 @@ impl Strategy for HedgeOrphanOrderStrategy {
                 {
                     publish_uniform_trade_order_from_order_update(
                         update,
-                        &order,
+                        order,
                         prev_cumulative_filled_qty,
                         ctx,
                         "HedgeOrphanOrderStrategy",

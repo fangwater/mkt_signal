@@ -220,6 +220,45 @@ impl MktConnectionRunner for BybitConnection {
     }
 }
 
+#[async_trait]
+impl MktConnectionHandler for BybitConnection {
+    async fn start_ws(&mut self) -> anyhow::Result<()> {
+        loop {
+            let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
+                WsConnector::connect_with_local_ip(
+                    &self.base_connection.url,
+                    &self.base_connection.sub_msg,
+                    local_ip,
+                )
+                .await
+            } else {
+                WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg).await
+            };
+
+            match connect_result {
+                Ok(connection) => {
+                    debug!(
+                        "Successfully connected to bybit at {:?}",
+                        connection.connected_at
+                    );
+                    self.base_connection.connection = Some(connection);
+                    self.run_connection().await?;
+                    //检查shutdown的当前情况，如果是true则break
+                    if *self.base_connection.shutdown_rx.borrow() {
+                        break Ok(());
+                    } else {
+                        info!("Connection closed, reconnecting...");
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to connect to bybit: {:?}", e);
+                    time::sleep(Duration::from_secs(5)).await;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{is_bybit_control_msg, is_bybit_pong_msg};
@@ -269,44 +308,5 @@ mod tests {
         });
 
         assert!(!is_bybit_control_msg(&msg));
-    }
-}
-
-#[async_trait]
-impl MktConnectionHandler for BybitConnection {
-    async fn start_ws(&mut self) -> anyhow::Result<()> {
-        loop {
-            let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
-                WsConnector::connect_with_local_ip(
-                    &self.base_connection.url,
-                    &self.base_connection.sub_msg,
-                    local_ip,
-                )
-                .await
-            } else {
-                WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg).await
-            };
-
-            match connect_result {
-                Ok(connection) => {
-                    debug!(
-                        "Successfully connected to bybit at {:?}",
-                        connection.connected_at
-                    );
-                    self.base_connection.connection = Some(connection);
-                    self.run_connection().await?;
-                    //检查shutdown的当前情况，如果是true则break
-                    if *self.base_connection.shutdown_rx.borrow() {
-                        break Ok(());
-                    } else {
-                        info!("Connection closed, reconnecting...");
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to connect to bybit: {:?}", e);
-                    time::sleep(Duration::from_secs(5)).await;
-                }
-            }
-        }
     }
 }

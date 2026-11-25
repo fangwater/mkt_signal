@@ -320,7 +320,7 @@ fn replay_symbol(
                 )?);
             }
         }
-        if read_rows % PROGRESS_ROWS == 0 {
+        if read_rows.is_multiple_of(PROGRESS_ROWS) {
             info!(
                 "Futures fusion progress: symbol={} read_rows={} written_rows={} elapsed={:.2?}",
                 symbol,
@@ -504,7 +504,7 @@ fn read_input_row(reader: &mut impl Read) -> Result<Option<InputRow>> {
         ask_prices.len(),
         ask_amounts.len(),
     ];
-    if lengths.iter().any(|length| *length == 0) {
+    if lengths.contains(&0) {
         bail!(
             "cn_features replay rejects trade rows without a joined native five-level book: symbol={symbol} ts_ms={ts_ms} trading_day={trading_day} depth_lengths={lengths:?}"
         );

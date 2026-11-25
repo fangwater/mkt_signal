@@ -106,7 +106,7 @@ impl MktConnectionRunner for OkexConnection {
                                     }
                                 }
                                 Message::Text(text) => {
-                                    debug!("[OKEX][ws] recv text len={} head={}", text.len(), &text.chars().take(80).collect::<String>());
+                                    debug!("[OKEX][ws] recv text len={} head={}", text.len(), text.chars().take(80).collect::<String>());
                                     // 收到正常业务消息后刷新倒计时；若正在等待 pong，则继续等待 frame 级 pong。
                                     if !waiting_pong {
                                         reset_timer = Instant::now() + Duration::from_secs(25);
@@ -183,7 +183,7 @@ impl MktConnectionHandler for OkexConnection {
         loop {
             // Debug: Print subscription message before attempting connection
             // info!("OKEx subscription message: {}", serde_json::to_string_pretty(&self.base_connection.sub_msg).unwrap_or_else(|_| "Failed to serialize".to_string()));
-            info!("OKEx WebSocket URL: {}", &self.base_connection.url);
+            info!("OKEx WebSocket URL: {}", self.base_connection.url);
 
             let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
                 WsConnector::connect_with_local_ip(

@@ -356,6 +356,25 @@ fn portfolio_scope(row: &Map<String, Value>, portfolio: &str) -> Result<()> {
         Err(anyhow!("portfolio mismatch"))
     }
 }
+fn scope_exchange(row: &Map<String, Value>, exchange: &str) -> Result<()> {
+    if required_string(row, "exchangeType")?.eq_ignore_ascii_case(exchange) {
+        Ok(())
+    } else {
+        Err(anyhow!("exchange mismatch"))
+    }
+}
+fn success_data(response: &Value) -> Result<&Value> {
+    let code = response
+        .get("code")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("missing response code"))?;
+    if !matches!(code, 200 | 200000) {
+        return Err(anyhow!("response code {code}"));
+    };
+    response
+        .get("data")
+        .ok_or_else(|| anyhow!("missing response data"))
+}
 
 #[cfg(test)]
 mod tests {
@@ -473,23 +492,4 @@ mod tests {
         assert!(state.assets.is_empty());
         assert!(state.debts.is_empty());
     }
-}
-fn scope_exchange(row: &Map<String, Value>, exchange: &str) -> Result<()> {
-    if required_string(row, "exchangeType")?.eq_ignore_ascii_case(exchange) {
-        Ok(())
-    } else {
-        Err(anyhow!("exchange mismatch"))
-    }
-}
-fn success_data(response: &Value) -> Result<&Value> {
-    let code = response
-        .get("code")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| anyhow!("missing response code"))?;
-    if !matches!(code, 200 | 200000) {
-        return Err(anyhow!("response code {code}"));
-    };
-    response
-        .get("data")
-        .ok_or_else(|| anyhow!("missing response data"))
 }

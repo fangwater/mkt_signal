@@ -9234,7 +9234,7 @@ pub(crate) mod tests {
             mode,
             TradingVenue::HyperliquidMargin
         ));
-        let mut complete = begin.clone();
+        let mut complete = begin;
         complete.phase = HyperliquidSnapshotPhase::Complete as u8;
         readiness
             .apply_control(TradingVenue::HyperliquidFutures, &complete, 1100)
@@ -10387,11 +10387,11 @@ pub(crate) mod tests {
         }
 
         fn handle_signal(&mut self, signal: &TradeSignal) {
-            if signal.signal_type.clone() as u32 == SignalType::MMCancel as u32 {
+            if signal.signal_type as u32 == SignalType::MMCancel as u32 {
                 let ctx = MmCancelCtx::from_slice(signal.context.as_ref()).expect("mm cancel ctx");
                 self.cancel_trigger_count += 1;
                 self.last_trigger_ts = ctx.trigger_ts;
-            } else if signal.signal_type.clone() as u32 == SignalType::ArbCancel as u32 {
+            } else if signal.signal_type as u32 == SignalType::ArbCancel as u32 {
                 let ctx =
                     ArbCancelCtx::from_slice(signal.context.as_ref()).expect("arb cancel ctx");
                 self.arb_cancel_trigger_count += 1;

@@ -2,16 +2,16 @@
 //!
 //! - URL:     `wss://ws.okx.com/ws/v5/public-sbe`
 //! - 鉴权:    handshake 时带 REST 风格 `OK-ACCESS-*` 头（不是连上后发 login）
-//!            prehash = `<unix_seconds>GET/users/self/verify`
+//!   prehash = `<unix_seconds>GET/users/self/verify`
 //! - 订阅:    JSON 文本，args 用 `instIdCode` (int) **而不是** `instId` (string)
-//!            `instIdCode` 由 REST `GET /api/v5/public/instruments` 一次性拉到映射
+//!   `instIdCode` 由 REST `GET /api/v5/public/instruments` 一次性拉到映射
 //! - 数据帧:  WebSocket 二进制帧 (opcode 2), littleEndian
-//!            header 8B (blockLength u16, templateId u16, schemaId u16, version u16)
-//!            bbo-tbt body 74B = 8*i64 + 2*i32 + 2*i8
-//!            trades body 62B = 7*i64 + i16 + 4*i8
+//!   header 8B (blockLength u16, templateId u16, schemaId u16, version u16)
+//!   bbo-tbt body 74B = 8*i64 + 2*i32 + 2*i8
+//!   trades body 62B = 7*i64 + i16 + 4*i8
 //! - 心跳:    SBE 端不接受 text "ping" (返 60012)；返 None 走 ws 协议级 Ping/Pong
 //! - 时间戳:  使用 SBE `outTime` 填 `BboFrame.ts_us`，与现行口径 (JSON `ts`) 同语义
-//!            (= binance `E`)；SBE 多出来的 `tsUs` (撮合时刻, = binance `T`) 暂未用到
+//!   (= binance `E`)；SBE 多出来的 `tsUs` (撮合时刻, = binance `T`) 暂未用到
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;

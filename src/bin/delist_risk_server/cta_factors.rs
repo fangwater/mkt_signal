@@ -318,7 +318,7 @@ pub fn view(snapshot: Result<&Snapshot>, worker: Worker) -> ProcessView {
         view.updated_ms = runtime.get("updated_ms").and_then(Value::as_i64);
         view.stale = view.updated_ms.is_none_or(|ts| {
             let age = Utc::now().timestamp_millis().saturating_sub(ts);
-            ts <= 0 || age > 180_000 || age < -30_000
+            ts <= 0 || !(-30_000..=180_000).contains(&age)
         });
         view.warming = runtime
             .get("warming")

@@ -18,7 +18,6 @@ fn suffix(path: &Path, suffix: &str) -> PathBuf {
 
 fn open_memory_file(path: &Path, truncate: bool) -> io::Result<File> {
     let file = OpenOptions::new()
-        .write(true)
         .create(true)
         .append(true)
         .mode(0o600)

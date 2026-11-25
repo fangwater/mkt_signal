@@ -835,238 +835,6 @@ impl SignalChannel {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        arb_open_latency_log_level, is_maker_signal_type, is_position_reducing,
-        is_retired_cta_open, normalize_fixed_symbol_for_internal,
-        normalize_fixed_symbol_for_internal_cow, should_drop_open_signal_for_slow_round,
-        should_drop_startup_buffered_signal, should_suppress_arb_open_inactive_warning,
-        stale_arb_open_receive_lag_us, OpenSignalDropReason, ARB_OPEN_MAX_RECEIVE_LAG_US,
-    };
-    use bytes::Bytes;
-    use signal_common::trade_signal::{SignalType, TradeSignal};
-    use std::borrow::Cow;
-    use trade_signal::ArbMode;
-
-    #[test]
-    fn retired_cta_signals_cannot_fall_back_to_intra_execution() {
-        assert!(is_retired_cta_open(b"model:cta_rule=rx01:long"));
-        assert!(is_retired_cta_open(b"model:cta_special=1"));
-        assert!(!is_retired_cta_open(b"intra:binance:long"));
-        assert!(!is_retired_cta_open(b""));
-    }
-
-    fn fixed_symbol(value: &str) -> [u8; 32] {
-        let mut out = [0u8; 32];
-        let bytes = value.as_bytes();
-        out[..bytes.len().min(32)].copy_from_slice(&bytes[..bytes.len().min(32)]);
-        out
-    }
-
-    #[test]
-    fn funding_arb_open_latency_logs_at_debug_level() {
-        assert_eq!(
-            arb_open_latency_log_level(ArbMode::FundingArb),
-            log::Level::Debug
-        );
-        assert_eq!(
-            arb_open_latency_log_level(ArbMode::IntraArb),
-            log::Level::Info
-        );
-        assert_eq!(
-            arb_open_latency_log_level(ArbMode::CrossArb),
-            log::Level::Info
-        );
-    }
-
-    #[test]
-    fn normalizes_fixed_ascii_symbols_without_general_string_path() {
-        assert_eq!(
-            normalize_fixed_symbol_for_internal(&fixed_symbol("BTCUSDT")),
-            "BTCUSDT"
-        );
-        assert_eq!(
-            normalize_fixed_symbol_for_internal(&fixed_symbol("btc-usdt-swap")),
-            "BTCUSDT"
-        );
-        assert_eq!(
-            normalize_fixed_symbol_for_internal(&fixed_symbol(" eth_usdt ")),
-            "ETHUSDT"
-        );
-    }
-
-    #[test]
-    fn normalize_fixed_symbol_handles_empty_or_blank_values() {
-        assert_eq!(normalize_fixed_symbol_for_internal(&[0u8; 32]), "");
-        assert_eq!(
-            normalize_fixed_symbol_for_internal(&fixed_symbol("   ")),
-            ""
-        );
-    }
-
-    #[test]
-    fn normalize_fixed_symbol_borrows_internal_symbol() {
-        let internal = fixed_symbol("BTCUSDT");
-        let normalized = normalize_fixed_symbol_for_internal_cow(&internal);
-        assert!(matches!(normalized, Cow::Borrowed("BTCUSDT")));
-
-        let exchange_format = fixed_symbol("btc-usdt-swap");
-        let normalized = normalize_fixed_symbol_for_internal_cow(&exchange_format);
-        assert!(matches!(
-            normalized,
-            Cow::Owned(ref symbol) if symbol == "BTCUSDT"
-        ));
-    }
-
-    #[test]
-    fn position_reducing_allows_smaller_abs_position() {
-        assert!(is_position_reducing(10.0, -2.0));
-        assert!(is_position_reducing(-10.0, 2.0));
-        assert!(is_position_reducing(10.0, -10.0));
-    }
-
-    #[test]
-    fn position_reducing_rejects_larger_or_reversing_position() {
-        assert!(!is_position_reducing(10.0, 2.0));
-        assert!(!is_position_reducing(-10.0, -2.0));
-        assert!(!is_position_reducing(1.0, -2.0));
-        assert!(!is_position_reducing(0.0, 1.0));
-    }
-
-    #[test]
-    fn startup_filter_drops_older_signals() {
-        let signal = TradeSignal::create(SignalType::MMOpen, 999, 0.0, Bytes::new());
-        assert!(should_drop_startup_buffered_signal(
-            signal.generation_time,
-            1_000
-        ));
-    }
-
-    #[test]
-    fn startup_filter_keeps_signals_from_current_generation_onward() {
-        let fresh = TradeSignal::create(SignalType::MMOpen, 1_000, 0.0, Bytes::new());
-        let newer = TradeSignal::create(SignalType::MMOpen, 1_001, 0.0, Bytes::new());
-        let missing_ts = TradeSignal::create(SignalType::MMOpen, 0, 0.0, Bytes::new());
-        assert!(!should_drop_startup_buffered_signal(
-            fresh.generation_time,
-            1_000
-        ));
-        assert!(!should_drop_startup_buffered_signal(
-            newer.generation_time,
-            1_000
-        ));
-        assert!(!should_drop_startup_buffered_signal(
-            missing_ts.generation_time,
-            1_000
-        ));
-    }
-
-    #[test]
-    fn stale_arb_open_filter_uses_100us_boundary_when_fast_polling() {
-        assert_eq!(ARB_OPEN_MAX_RECEIVE_LAG_US, 100);
-        assert_eq!(
-            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, true, 1_000, 1_099),
-            None
-        );
-        assert_eq!(
-            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, true, 1_000, 1_100),
-            Some(100)
-        );
-        assert_eq!(
-            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, true, 1_000, 1_101),
-            Some(101)
-        );
-    }
-
-    #[test]
-    fn stale_arb_open_filter_requires_fast_poll_and_arb_open() {
-        assert_eq!(
-            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, false, 1_000, 2_000),
-            None
-        );
-        assert_eq!(
-            stale_arb_open_receive_lag_us(&SignalType::ArbClose, true, 1_000, 2_000),
-            None
-        );
-        assert_eq!(
-            stale_arb_open_receive_lag_us(&SignalType::MMOpen, true, 1_000, 2_000),
-            None
-        );
-        assert_eq!(
-            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, true, 0, 2_000),
-            None
-        );
-    }
-
-    #[test]
-    fn slow_round_filter_only_drops_open_signals() {
-        let reason = Some(OpenSignalDropReason {
-            source: "test",
-            elapsed_us: 2_000,
-            threshold_us: 1_000,
-        });
-        assert!(should_drop_open_signal_for_slow_round(
-            &SignalType::ArbOpen,
-            reason
-        ));
-        assert!(should_drop_open_signal_for_slow_round(
-            &SignalType::MMOpen,
-            reason
-        ));
-        assert!(!should_drop_open_signal_for_slow_round(
-            &SignalType::ArbClose,
-            reason
-        ));
-        assert!(!should_drop_open_signal_for_slow_round(
-            &SignalType::ArbCancel,
-            None
-        ));
-    }
-
-    #[test]
-    fn account_order_stream_health_blocks_only_maker_signals() {
-        for signal_type in [
-            SignalType::ArbOpen,
-            SignalType::ArbClose,
-            SignalType::MMOpen,
-            SignalType::MMOpenBatch,
-        ] {
-            assert!(is_maker_signal_type(&signal_type));
-        }
-        for signal_type in [
-            SignalType::ArbCancel,
-            SignalType::ArbCancelTrigger,
-            SignalType::ArbHedge,
-            SignalType::MMCancel,
-            SignalType::MMCancelTrigger,
-            SignalType::MMHedge,
-        ] {
-            assert!(!is_maker_signal_type(&signal_type));
-        }
-    }
-
-    #[test]
-    fn suppresses_expected_arb_open_inactive_risk_noise() {
-        assert!(should_suppress_arb_open_inactive_warning(
-            "AVAUSDT",
-            "pending limit order risk failed: symbol=AVAUSDT side=BUY 当前限价挂单数=5，达到方向上限 5"
-        ));
-        assert!(should_suppress_arb_open_inactive_warning(
-            "AVAUSDT",
-            "open order rate limit triggered: symbol=AVAUSDT"
-        ));
-        assert!(!should_suppress_arb_open_inactive_warning(
-            "AVAUSDT",
-            "decode ArbOpen failed: broken payload"
-        ));
-        assert!(!should_suppress_arb_open_inactive_warning(
-            "SIRENUSDT",
-            "symbol exposure risk failed: symbol=SIRENUSDT 敞口比例超过限制 0.01"
-        ));
-    }
-}
-
 fn handle_trade_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
     match signal.signal_type {
         SignalType::ArbOpen => handle_arb_open_signal_view(signal, receive_us),
@@ -1092,7 +860,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
 
     match ArbOpenCtxView::from_bytes(signal.context) {
         Ok(open_ctx) => {
-            if is_retired_cta_open(&open_ctx.from_key) {
+            if is_retired_cta_open(open_ctx.from_key) {
                 warn!("ArbOpen rejected: legacy CTA execution is retired; publish targets through Exec");
                 return;
             }
@@ -2331,5 +2099,237 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
             }
             Err(err) => warn!("failed to decode MMHedge context: {err}"),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        arb_open_latency_log_level, is_maker_signal_type, is_position_reducing,
+        is_retired_cta_open, normalize_fixed_symbol_for_internal,
+        normalize_fixed_symbol_for_internal_cow, should_drop_open_signal_for_slow_round,
+        should_drop_startup_buffered_signal, should_suppress_arb_open_inactive_warning,
+        stale_arb_open_receive_lag_us, OpenSignalDropReason, ARB_OPEN_MAX_RECEIVE_LAG_US,
+    };
+    use bytes::Bytes;
+    use signal_common::trade_signal::{SignalType, TradeSignal};
+    use std::borrow::Cow;
+    use trade_signal::ArbMode;
+
+    #[test]
+    fn retired_cta_signals_cannot_fall_back_to_intra_execution() {
+        assert!(is_retired_cta_open(b"model:cta_rule=rx01:long"));
+        assert!(is_retired_cta_open(b"model:cta_special=1"));
+        assert!(!is_retired_cta_open(b"intra:binance:long"));
+        assert!(!is_retired_cta_open(b""));
+    }
+
+    fn fixed_symbol(value: &str) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        let bytes = value.as_bytes();
+        out[..bytes.len().min(32)].copy_from_slice(&bytes[..bytes.len().min(32)]);
+        out
+    }
+
+    #[test]
+    fn funding_arb_open_latency_logs_at_debug_level() {
+        assert_eq!(
+            arb_open_latency_log_level(ArbMode::FundingArb),
+            log::Level::Debug
+        );
+        assert_eq!(
+            arb_open_latency_log_level(ArbMode::IntraArb),
+            log::Level::Info
+        );
+        assert_eq!(
+            arb_open_latency_log_level(ArbMode::CrossArb),
+            log::Level::Info
+        );
+    }
+
+    #[test]
+    fn normalizes_fixed_ascii_symbols_without_general_string_path() {
+        assert_eq!(
+            normalize_fixed_symbol_for_internal(&fixed_symbol("BTCUSDT")),
+            "BTCUSDT"
+        );
+        assert_eq!(
+            normalize_fixed_symbol_for_internal(&fixed_symbol("btc-usdt-swap")),
+            "BTCUSDT"
+        );
+        assert_eq!(
+            normalize_fixed_symbol_for_internal(&fixed_symbol(" eth_usdt ")),
+            "ETHUSDT"
+        );
+    }
+
+    #[test]
+    fn normalize_fixed_symbol_handles_empty_or_blank_values() {
+        assert_eq!(normalize_fixed_symbol_for_internal(&[0u8; 32]), "");
+        assert_eq!(
+            normalize_fixed_symbol_for_internal(&fixed_symbol("   ")),
+            ""
+        );
+    }
+
+    #[test]
+    fn normalize_fixed_symbol_borrows_internal_symbol() {
+        let internal = fixed_symbol("BTCUSDT");
+        let normalized = normalize_fixed_symbol_for_internal_cow(&internal);
+        assert!(matches!(normalized, Cow::Borrowed("BTCUSDT")));
+
+        let exchange_format = fixed_symbol("btc-usdt-swap");
+        let normalized = normalize_fixed_symbol_for_internal_cow(&exchange_format);
+        assert!(matches!(
+            normalized,
+            Cow::Owned(ref symbol) if symbol == "BTCUSDT"
+        ));
+    }
+
+    #[test]
+    fn position_reducing_allows_smaller_abs_position() {
+        assert!(is_position_reducing(10.0, -2.0));
+        assert!(is_position_reducing(-10.0, 2.0));
+        assert!(is_position_reducing(10.0, -10.0));
+    }
+
+    #[test]
+    fn position_reducing_rejects_larger_or_reversing_position() {
+        assert!(!is_position_reducing(10.0, 2.0));
+        assert!(!is_position_reducing(-10.0, -2.0));
+        assert!(!is_position_reducing(1.0, -2.0));
+        assert!(!is_position_reducing(0.0, 1.0));
+    }
+
+    #[test]
+    fn startup_filter_drops_older_signals() {
+        let signal = TradeSignal::create(SignalType::MMOpen, 999, 0.0, Bytes::new());
+        assert!(should_drop_startup_buffered_signal(
+            signal.generation_time,
+            1_000
+        ));
+    }
+
+    #[test]
+    fn startup_filter_keeps_signals_from_current_generation_onward() {
+        let fresh = TradeSignal::create(SignalType::MMOpen, 1_000, 0.0, Bytes::new());
+        let newer = TradeSignal::create(SignalType::MMOpen, 1_001, 0.0, Bytes::new());
+        let missing_ts = TradeSignal::create(SignalType::MMOpen, 0, 0.0, Bytes::new());
+        assert!(!should_drop_startup_buffered_signal(
+            fresh.generation_time,
+            1_000
+        ));
+        assert!(!should_drop_startup_buffered_signal(
+            newer.generation_time,
+            1_000
+        ));
+        assert!(!should_drop_startup_buffered_signal(
+            missing_ts.generation_time,
+            1_000
+        ));
+    }
+
+    #[test]
+    fn stale_arb_open_filter_uses_100us_boundary_when_fast_polling() {
+        assert_eq!(ARB_OPEN_MAX_RECEIVE_LAG_US, 100);
+        assert_eq!(
+            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, true, 1_000, 1_099),
+            None
+        );
+        assert_eq!(
+            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, true, 1_000, 1_100),
+            Some(100)
+        );
+        assert_eq!(
+            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, true, 1_000, 1_101),
+            Some(101)
+        );
+    }
+
+    #[test]
+    fn stale_arb_open_filter_requires_fast_poll_and_arb_open() {
+        assert_eq!(
+            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, false, 1_000, 2_000),
+            None
+        );
+        assert_eq!(
+            stale_arb_open_receive_lag_us(&SignalType::ArbClose, true, 1_000, 2_000),
+            None
+        );
+        assert_eq!(
+            stale_arb_open_receive_lag_us(&SignalType::MMOpen, true, 1_000, 2_000),
+            None
+        );
+        assert_eq!(
+            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, true, 0, 2_000),
+            None
+        );
+    }
+
+    #[test]
+    fn slow_round_filter_only_drops_open_signals() {
+        let reason = Some(OpenSignalDropReason {
+            source: "test",
+            elapsed_us: 2_000,
+            threshold_us: 1_000,
+        });
+        assert!(should_drop_open_signal_for_slow_round(
+            &SignalType::ArbOpen,
+            reason
+        ));
+        assert!(should_drop_open_signal_for_slow_round(
+            &SignalType::MMOpen,
+            reason
+        ));
+        assert!(!should_drop_open_signal_for_slow_round(
+            &SignalType::ArbClose,
+            reason
+        ));
+        assert!(!should_drop_open_signal_for_slow_round(
+            &SignalType::ArbCancel,
+            None
+        ));
+    }
+
+    #[test]
+    fn account_order_stream_health_blocks_only_maker_signals() {
+        for signal_type in [
+            SignalType::ArbOpen,
+            SignalType::ArbClose,
+            SignalType::MMOpen,
+            SignalType::MMOpenBatch,
+        ] {
+            assert!(is_maker_signal_type(&signal_type));
+        }
+        for signal_type in [
+            SignalType::ArbCancel,
+            SignalType::ArbCancelTrigger,
+            SignalType::ArbHedge,
+            SignalType::MMCancel,
+            SignalType::MMCancelTrigger,
+            SignalType::MMHedge,
+        ] {
+            assert!(!is_maker_signal_type(&signal_type));
+        }
+    }
+
+    #[test]
+    fn suppresses_expected_arb_open_inactive_risk_noise() {
+        assert!(should_suppress_arb_open_inactive_warning(
+            "AVAUSDT",
+            "pending limit order risk failed: symbol=AVAUSDT side=BUY 当前限价挂单数=5，达到方向上限 5"
+        ));
+        assert!(should_suppress_arb_open_inactive_warning(
+            "AVAUSDT",
+            "open order rate limit triggered: symbol=AVAUSDT"
+        ));
+        assert!(!should_suppress_arb_open_inactive_warning(
+            "AVAUSDT",
+            "decode ArbOpen failed: broken payload"
+        ));
+        assert!(!should_suppress_arb_open_inactive_warning(
+            "SIRENUSDT",
+            "symbol exposure risk failed: symbol=SIRENUSDT 敞口比例超过限制 0.01"
+        ));
     }
 }

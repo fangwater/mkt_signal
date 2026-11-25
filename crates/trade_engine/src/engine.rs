@@ -2314,7 +2314,7 @@ impl TradeEngine {
             let max_inflight = WsConstants::MAX_INFLIGHT;
 
             let mut endpoints = Vec::with_capacity(urls.len());
-            for (idx, (ip, url)) in local_ips.into_iter().zip(urls.into_iter()).enumerate() {
+            for (idx, (ip, url)) in local_ips.into_iter().zip(urls).enumerate() {
                 let cmd_queue = WsCommandQueue::new();
                 let state = StdRc::new(RefCell::new(Default::default()));
                 let client = TradeWsClient::new(

@@ -7,6 +7,88 @@ pub(super) struct BorrowSnapshot {
     pub borrowed_usd: Option<f64>,
 }
 
+impl BorrowSnapshot {
+    pub fn validate_freshness(&self, now_ms: i64) -> Result<()> {
+        let age = now_ms
+            .checked_sub(self.observed_at_ms)
+            .context("Hyperliquid borrow snapshot age overflow")?;
+        if !(0..HYPERLIQUID_BORROW_SNAPSHOT_TTL_MS).contains(&age) {
+            anyhow::bail!("Hyperliquid borrow snapshot is stale or future-dated: age_ms={age}");
+        }
+        Ok(())
+    }
+}
+
+impl HyperliquidAccountProcessor {
+    /// Receipt time is local, not a claim that HTTP borrowing and WS balances
+    /// form an atomic venue snapshot. The paired normalization preserves net.
+    pub fn seed_borrow_lend_user_state(
+        &mut self,
+        state: &Value,
+        observed_at_ms: i64,
+    ) -> Result<()> {
+        if observed_at_ms < 0
+            || self
+                .borrow_snapshot
+                .as_ref()
+                .is_some_and(|previous| observed_at_ms < previous.observed_at_ms)
+        {
+            anyhow::bail!("Hyperliquid borrow snapshot timestamp regressed");
+        }
+        let mut by_asset = HashMap::new();
+        for row in state
+            .get("tokenToState")
+            .and_then(Value::as_array)
+            .context("missing Hyperliquid borrow/lend tokenToState")?
+        {
+            let pair = row
+                .as_array()
+                .filter(|pair| pair.len() == 2)
+                .context("invalid Hyperliquid borrow/lend user pair")?;
+            let token = pair[0].as_i64().context("invalid borrow/lend user token")?;
+            let asset = self
+                .catalog
+                .spot_assets_by_token
+                .get(&token)
+                .with_context(|| format!("unknown Hyperliquid borrow/lend token: {token}"))?;
+            let mut debt = (0.0, 0.0);
+            for leg in ["borrow", "supply"] {
+                let values = pair[1]
+                    .get(leg)
+                    .context("missing Hyperliquid borrow/lend leg")?;
+                let basis = required_f64(values, "basis")?;
+                let value = required_f64(values, "value")?;
+                validate_nonnegative_finite("basis", basis)?;
+                validate_nonnegative_finite("value", value)?;
+                if value < basis {
+                    anyhow::bail!(
+                        "Hyperliquid {leg} value is smaller than its basis for token {token}"
+                    );
+                }
+                if leg == "borrow" {
+                    debt = (basis, value - basis);
+                }
+            }
+            if by_asset.insert(asset.clone(), debt).is_some() {
+                anyhow::bail!("duplicate Hyperliquid borrow/lend asset: {asset}");
+            }
+        }
+        required_nonempty_string(state, "health")?;
+        let health_factor = state
+            .get("healthFactor")
+            .context("missing Hyperliquid borrow/lend healthFactor")?;
+        if !health_factor.is_null() {
+            validate_nonnegative_finite("healthFactor", required_f64(state, "healthFactor")?)?;
+        }
+        self.borrow_snapshot = Some(BorrowSnapshot {
+            observed_at_ms,
+            by_asset,
+            borrowed_usd: None,
+        });
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,87 +257,5 @@ mod tests {
             (wallet.wallet, borrow.borrowed, borrow.interest),
             (0.0, 0.0, 0.0)
         );
-    }
-}
-
-impl BorrowSnapshot {
-    pub fn validate_freshness(&self, now_ms: i64) -> Result<()> {
-        let age = now_ms
-            .checked_sub(self.observed_at_ms)
-            .context("Hyperliquid borrow snapshot age overflow")?;
-        if !(0..HYPERLIQUID_BORROW_SNAPSHOT_TTL_MS).contains(&age) {
-            anyhow::bail!("Hyperliquid borrow snapshot is stale or future-dated: age_ms={age}");
-        }
-        Ok(())
-    }
-}
-
-impl HyperliquidAccountProcessor {
-    /// Receipt time is local, not a claim that HTTP borrowing and WS balances
-    /// form an atomic venue snapshot. The paired normalization preserves net.
-    pub fn seed_borrow_lend_user_state(
-        &mut self,
-        state: &Value,
-        observed_at_ms: i64,
-    ) -> Result<()> {
-        if observed_at_ms < 0
-            || self
-                .borrow_snapshot
-                .as_ref()
-                .is_some_and(|previous| observed_at_ms < previous.observed_at_ms)
-        {
-            anyhow::bail!("Hyperliquid borrow snapshot timestamp regressed");
-        }
-        let mut by_asset = HashMap::new();
-        for row in state
-            .get("tokenToState")
-            .and_then(Value::as_array)
-            .context("missing Hyperliquid borrow/lend tokenToState")?
-        {
-            let pair = row
-                .as_array()
-                .filter(|pair| pair.len() == 2)
-                .context("invalid Hyperliquid borrow/lend user pair")?;
-            let token = pair[0].as_i64().context("invalid borrow/lend user token")?;
-            let asset = self
-                .catalog
-                .spot_assets_by_token
-                .get(&token)
-                .with_context(|| format!("unknown Hyperliquid borrow/lend token: {token}"))?;
-            let mut debt = (0.0, 0.0);
-            for leg in ["borrow", "supply"] {
-                let values = pair[1]
-                    .get(leg)
-                    .context("missing Hyperliquid borrow/lend leg")?;
-                let basis = required_f64(values, "basis")?;
-                let value = required_f64(values, "value")?;
-                validate_nonnegative_finite("basis", basis)?;
-                validate_nonnegative_finite("value", value)?;
-                if value < basis {
-                    anyhow::bail!(
-                        "Hyperliquid {leg} value is smaller than its basis for token {token}"
-                    );
-                }
-                if leg == "borrow" {
-                    debt = (basis, value - basis);
-                }
-            }
-            if by_asset.insert(asset.clone(), debt).is_some() {
-                anyhow::bail!("duplicate Hyperliquid borrow/lend asset: {asset}");
-            }
-        }
-        required_nonempty_string(state, "health")?;
-        let health_factor = state
-            .get("healthFactor")
-            .context("missing Hyperliquid borrow/lend healthFactor")?;
-        if !health_factor.is_null() {
-            validate_nonnegative_finite("healthFactor", required_f64(state, "healthFactor")?)?;
-        }
-        self.borrow_snapshot = Some(BorrowSnapshot {
-            observed_at_ms,
-            by_asset,
-            borrowed_usd: None,
-        });
-        Ok(())
     }
 }

@@ -362,7 +362,7 @@ fn format_utc_datetime(ts: DateTime<Utc>) -> String {
 }
 
 fn format_output_dir_component(ts: DateTime<Utc>) -> String {
-    format_utc_datetime(ts).replace('-', "").replace(':', "")
+    format_utc_datetime(ts).replace(['-', ':'], "")
 }
 
 #[cfg(test)]

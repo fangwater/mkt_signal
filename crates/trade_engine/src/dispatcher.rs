@@ -143,7 +143,7 @@ fn build_signed_query(params: &[(String, String)], recv_window: &str, timestamp:
     ser.finish()
 }
 
-fn signed_query_keys_for_log<'a>(params: &'a [(String, String)]) -> Vec<&'a str> {
+fn signed_query_keys_for_log(params: &[(String, String)]) -> Vec<&str> {
     let mut keys = Vec::with_capacity(params.len() + 2);
     let mut inserted_recv_window = false;
     let mut inserted_timestamp = false;

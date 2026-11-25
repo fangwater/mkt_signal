@@ -228,7 +228,7 @@ async fn collect(
             .context("Viz HTTP error")?;
         let bytes = response.bytes().await.context("read Viz snapshot")?;
         anyhow::ensure!(bytes.len() <= 4_000_000, "Viz snapshot too large");
-        Ok(serde_json::from_slice(&bytes).context("invalid Viz JSON")?)
+        serde_json::from_slice(&bytes).context("invalid Viz JSON")
     }
     .await;
     let scope = format!("{}/orders", s.id);

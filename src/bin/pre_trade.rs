@@ -1060,8 +1060,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
 
             // 3. 初始化 MonitorChannel（包含所有账户管理器）
             info!("Initializing MonitorChannel singleton...");
-            if let Err(err) =
-                MonitorChannel::init_singleton(
+            MonitorChannel::init_singleton(
                     strategy_mgr.clone(),
                     open_venue,
                     hedge_venue,
@@ -1070,10 +1069,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     hyperliquid_account_mode,
                     !exec_pre_trade,
                 )
-                .await
-            {
-                return Err(err);
-            }
+                .await?;
             info!("MonitorChannel initialized successfully");
             if exec_pre_trade {
                 trade_signal::MktChannel::init_bbo_singleton_readonly(open_venue, hedge_venue)?;

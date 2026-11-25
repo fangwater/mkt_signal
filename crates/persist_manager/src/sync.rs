@@ -119,9 +119,7 @@ pub fn order_export_sync_column_families() -> &'static [&'static str] {
 }
 
 pub fn is_order_export_sync_cf(cf_name: &str) -> bool {
-    order_export_sync_column_families()
-        .iter()
-        .any(|candidate| *candidate == cf_name)
+    order_export_sync_column_families().contains(&cf_name)
 }
 
 /// Column families carried by the generic persist replication stream. Keep
@@ -141,9 +139,7 @@ pub fn persist_sync_column_families() -> &'static [&'static str] {
 }
 
 pub fn is_persist_sync_cf(cf_name: &str) -> bool {
-    persist_sync_column_families()
-        .iter()
-        .any(|candidate| *candidate == cf_name)
+    persist_sync_column_families().contains(&cf_name)
 }
 
 pub fn required_center_column_families(base_cfs: &[&'static str]) -> Vec<&'static str> {

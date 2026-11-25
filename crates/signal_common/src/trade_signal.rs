@@ -91,7 +91,7 @@ impl TradeSignal {
         let mut buf = BytesMut::with_capacity(total_size);
 
         // 写入信号类型
-        buf.put_u32_le(self.signal_type.clone() as u32);
+        buf.put_u32_le(self.signal_type as u32);
 
         // 写入生成时间
         buf.put_i64_le(self.generation_time);

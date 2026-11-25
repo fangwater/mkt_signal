@@ -138,7 +138,7 @@ impl PremiumPriceState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct SymbolQuotes {
     spot: QuoteState,
     swap: QuoteState,
@@ -148,21 +148,6 @@ struct SymbolQuotes {
     hedge_premium: PremiumPriceState,
     factor_states: HashMap<String, FactorResampleState>,
     started: bool,
-}
-
-impl Default for SymbolQuotes {
-    fn default() -> Self {
-        Self {
-            spot: QuoteState::default(),
-            swap: QuoteState::default(),
-            open_funding_rate: None,
-            hedge_funding_rate: None,
-            open_premium: PremiumPriceState::default(),
-            hedge_premium: PremiumPriceState::default(),
-            factor_states: HashMap::new(),
-            started: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -671,7 +656,7 @@ async fn run_reader_loop(
             let capacity_snapshot = series_capacity.load(Ordering::SeqCst).max(1);
             for (symbol, state) in quotes.iter_mut() {
                 let key = format!("{}::{}", prefix, symbol);
-                let series = get_or_insert_series(&*series_map, &key, capacity_snapshot);
+                let series = get_or_insert_series(&series_map, &key, capacity_snapshot);
                 for (factor_name, factor_cfg) in cfg_snapshot.factors_iter() {
                     let ring = series.ensure_ring(factor_name);
                     let entry = state
@@ -958,7 +943,7 @@ fn maybe_push_sr(
     };
     let ts_ms = (get_timestamp_us() / 1000) as i64;
     let key = format!("{}::{}", prefix, symbol);
-    let series = get_or_insert_series(&*series_map, &key, capacity);
+    let series = get_or_insert_series(series_map, &key, capacity);
     series.set_spread_rate(spread_rate);
     if !quotes.started {
         quotes.started = true;
@@ -997,7 +982,7 @@ fn maybe_push_premium_rates(
     let cfg_snapshot = { config.read().clone() };
     let capacity = series_capacity.load(Ordering::SeqCst).max(1);
     let key = format!("{}::{}", prefix, symbol);
-    let series = get_or_insert_series(&*series_map, &key, capacity);
+    let series = get_or_insert_series(series_map, &key, capacity);
     let open_premium_rate = quotes.open_premium.premium_rate();
     let hedge_premium_rate = quotes.hedge_premium.premium_rate();
     series.set_open_premium_rate_latest(open_premium_rate);
@@ -1040,7 +1025,7 @@ fn maybe_push_spread_fr(
     let cfg_snapshot = { config.read().clone() };
     let capacity = series_capacity.load(Ordering::SeqCst).max(1);
     let key = format!("{}::{}", prefix, symbol);
-    let series = get_or_insert_series(&*series_map, &key, capacity);
+    let series = get_or_insert_series(series_map, &key, capacity);
     let spread_fr = compute_spread_fr(quotes.open_funding_rate, quotes.hedge_funding_rate);
     series.set_spread_fr_latest(spread_fr);
 
@@ -1102,7 +1087,7 @@ fn record_factor_samples<F>(
         let state = quotes
             .factor_states
             .entry(factor_name.to_string())
-            .or_insert_with(FactorResampleState::default);
+            .or_default();
         state.record(
             factor_cfg.resample_interval_ms.max(1),
             ts_ms,

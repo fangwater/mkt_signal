@@ -692,13 +692,13 @@ impl RateFetcher {
 
     fn init_binance_coin_futures() {
         let should_spawn = Self::with_inner_mut(|inner| {
-            if inner.venue_states.contains_key(&BINANCE_COIN_CONFIG.venue) {
-                false
-            } else {
-                inner
-                    .venue_states
-                    .insert(BINANCE_COIN_CONFIG.venue, VenueState::default());
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                inner.venue_states.entry(BINANCE_COIN_CONFIG.venue)
+            {
+                e.insert(VenueState::default());
                 true
+            } else {
+                false
             }
         });
         if should_spawn {
@@ -709,13 +709,13 @@ impl RateFetcher {
 
     fn init_bitget_coin_futures() {
         let should_spawn = Self::with_inner_mut(|inner| {
-            if inner.venue_states.contains_key(&BITGET_COIN_CONFIG.venue) {
-                false
-            } else {
-                inner
-                    .venue_states
-                    .insert(BITGET_COIN_CONFIG.venue, VenueState::default());
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                inner.venue_states.entry(BITGET_COIN_CONFIG.venue)
+            {
+                e.insert(VenueState::default());
                 true
+            } else {
+                false
             }
         });
         if should_spawn {

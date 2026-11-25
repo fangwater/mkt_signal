@@ -126,7 +126,7 @@ impl ExecAlgorithmSwitch {
         Ok(())
     }
 
-    pub fn belongs_to(self: &Self, family: ExecFamily) -> bool {
+    pub fn belongs_to(&self, family: ExecFamily) -> bool {
         self.from_family == family || self.to_family == family
     }
 }

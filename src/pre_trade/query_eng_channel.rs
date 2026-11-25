@@ -1324,6 +1324,117 @@ impl QueryEngChannel {
     }
 }
 
+fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponseMessage) {
+    let client_order_id = resp.client_query_id();
+    let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+        return;
+    };
+
+    let Some(order) = order_mgr.borrow().get(client_order_id) else {
+        debug!(
+            "queryResponse unmatched and order missing in order_manager: strategy_id={} cli_qid={}",
+            strategy_id, client_order_id
+        );
+        return;
+    };
+
+    let Some(parsed) = parse_compact_order_query_resp(resp.body_bytes()) else {
+        debug!(
+            "queryResponse unmatched but body not compact-order payload: strategy_id={} cli_qid={} req_type={}",
+            strategy_id,
+            client_order_id,
+            resp.req_type()
+        );
+        return;
+    };
+    let hyperliquid_nonfactual_fill = is_hyperliquid_order_query(resp.req_type());
+    let executed_qty = if hyperliquid_nonfactual_fill {
+        order.cumulative_filled_quantity
+    } else {
+        parsed.executed_qty
+    };
+
+    let event_time_us = parsed.update_time_ms.saturating_mul(1_000);
+    let order_id = if parsed.order_id > 0 {
+        parsed.order_id
+    } else {
+        order.exchange_order_id.unwrap_or(client_order_id)
+    };
+    let tif = TimeInForce::from_u8(parsed.time_in_force_u8).unwrap_or(TimeInForce::GTC);
+
+    PersistChannel::with(|ch| {
+        if executed_qty > order.cumulative_filled_quantity + 1e-12 {
+            let order_status = if parsed.status_u8 == OrderExecutionStatus::Filled.to_u8() {
+                Some(OrderStatus::Filled)
+            } else {
+                Some(OrderStatus::PartiallyFilled)
+            };
+            let trade = OrderQueryTradeUpdate::new(
+                &order,
+                order_id,
+                event_time_us,
+                executed_qty,
+                Some(parsed.response_price),
+                order_status,
+                tif,
+            );
+            ch.publish_trade_update_unmatched(&trade);
+        }
+
+        let status_u8 = parsed.status_u8;
+        if status_u8 == OrderExecutionStatus::Create.to_u8() {
+            let update = OrderQueryOrderUpdate::new_with_price(
+                &order,
+                order_id,
+                event_time_us,
+                OrderStatus::New,
+                ExecutionType::New,
+                executed_qty,
+                tif,
+                Some(parsed.order_price),
+            );
+            ch.publish_order_update_unmatched(&update);
+        } else if status_u8 == OrderExecutionStatus::Cancelled.to_u8() {
+            let update = OrderQueryOrderUpdate::new_with_price(
+                &order,
+                order_id,
+                event_time_us,
+                OrderStatus::Canceled,
+                ExecutionType::Canceled,
+                executed_qty,
+                tif,
+                Some(parsed.order_price),
+            );
+            ch.publish_order_update_unmatched(&update);
+        } else if status_u8 == OrderExecutionStatus::Filled.to_u8() && !hyperliquid_nonfactual_fill
+        {
+            let update = OrderQueryOrderUpdate::new_with_price(
+                &order,
+                order_id,
+                event_time_us,
+                OrderStatus::Filled,
+                ExecutionType::Trade,
+                executed_qty,
+                tif,
+                Some(parsed.order_price),
+            );
+            ch.publish_order_update_unmatched(&update);
+        } else if status_u8 == OrderExecutionStatus::Rejected.to_u8() {
+            let update = OrderQueryOrderUpdate::new_with_price(
+                &order,
+                order_id,
+                event_time_us,
+                OrderStatus::Expired,
+                ExecutionType::Rejected,
+                executed_qty,
+                tif,
+                Some(parsed.order_price),
+            );
+            ch.publish_order_update_unmatched(&update);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1640,115 +1751,4 @@ mod tests {
         assert!(source_manager.borrow().contains(301));
         assert!(orphan_manager.borrow().contains(401));
     }
-}
-
-fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponseMessage) {
-    let client_order_id = resp.client_query_id();
-    let Some(order_mgr) = MonitorChannel::try_order_manager() else {
-        return;
-    };
-
-    let Some(order) = order_mgr.borrow().get(client_order_id) else {
-        debug!(
-            "queryResponse unmatched and order missing in order_manager: strategy_id={} cli_qid={}",
-            strategy_id, client_order_id
-        );
-        return;
-    };
-
-    let Some(parsed) = parse_compact_order_query_resp(resp.body_bytes()) else {
-        debug!(
-            "queryResponse unmatched but body not compact-order payload: strategy_id={} cli_qid={} req_type={}",
-            strategy_id,
-            client_order_id,
-            resp.req_type()
-        );
-        return;
-    };
-    let hyperliquid_nonfactual_fill = is_hyperliquid_order_query(resp.req_type());
-    let executed_qty = if hyperliquid_nonfactual_fill {
-        order.cumulative_filled_quantity
-    } else {
-        parsed.executed_qty
-    };
-
-    let event_time_us = parsed.update_time_ms.saturating_mul(1_000);
-    let order_id = if parsed.order_id > 0 {
-        parsed.order_id
-    } else {
-        order.exchange_order_id.unwrap_or(client_order_id)
-    };
-    let tif = TimeInForce::from_u8(parsed.time_in_force_u8).unwrap_or(TimeInForce::GTC);
-
-    PersistChannel::with(|ch| {
-        if executed_qty > order.cumulative_filled_quantity + 1e-12 {
-            let order_status = if parsed.status_u8 == OrderExecutionStatus::Filled.to_u8() {
-                Some(OrderStatus::Filled)
-            } else {
-                Some(OrderStatus::PartiallyFilled)
-            };
-            let trade = OrderQueryTradeUpdate::new(
-                &order,
-                order_id,
-                event_time_us,
-                executed_qty,
-                Some(parsed.response_price),
-                order_status,
-                tif,
-            );
-            ch.publish_trade_update_unmatched(&trade);
-        }
-
-        let status_u8 = parsed.status_u8;
-        if status_u8 == OrderExecutionStatus::Create.to_u8() {
-            let update = OrderQueryOrderUpdate::new_with_price(
-                &order,
-                order_id,
-                event_time_us,
-                OrderStatus::New,
-                ExecutionType::New,
-                executed_qty,
-                tif,
-                Some(parsed.order_price),
-            );
-            ch.publish_order_update_unmatched(&update);
-        } else if status_u8 == OrderExecutionStatus::Cancelled.to_u8() {
-            let update = OrderQueryOrderUpdate::new_with_price(
-                &order,
-                order_id,
-                event_time_us,
-                OrderStatus::Canceled,
-                ExecutionType::Canceled,
-                executed_qty,
-                tif,
-                Some(parsed.order_price),
-            );
-            ch.publish_order_update_unmatched(&update);
-        } else if status_u8 == OrderExecutionStatus::Filled.to_u8() && !hyperliquid_nonfactual_fill
-        {
-            let update = OrderQueryOrderUpdate::new_with_price(
-                &order,
-                order_id,
-                event_time_us,
-                OrderStatus::Filled,
-                ExecutionType::Trade,
-                executed_qty,
-                tif,
-                Some(parsed.order_price),
-            );
-            ch.publish_order_update_unmatched(&update);
-        } else if status_u8 == OrderExecutionStatus::Rejected.to_u8() {
-            let update = OrderQueryOrderUpdate::new_with_price(
-                &order,
-                order_id,
-                event_time_us,
-                OrderStatus::Expired,
-                ExecutionType::Rejected,
-                executed_qty,
-                tif,
-                Some(parsed.order_price),
-            );
-            ch.publish_order_update_unmatched(&update);
-        }
-    });
 }

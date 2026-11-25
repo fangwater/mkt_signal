@@ -425,10 +425,7 @@ impl Inputs {
             let orig = decimal(o, "origQty")?;
             positive(o, "origQty")?;
             if market {
-                ensure!(
-                    decimal(o, "price")? == BigDecimal::from(0),
-                    "MARKET order price must be zero"
-                );
+                ensure!(decimal(o, "price")? == 0, "MARKET order price must be zero");
             } else {
                 positive(o, "price")?;
             }
@@ -543,7 +540,7 @@ impl Inputs {
                 );
             }
             ensure!(
-                cum == decimal(o, "executedQty")? && cum > BigDecimal::from(0) && cum <= orig,
+                cum == decimal(o, "executedQty")? && cum > 0 && cum <= orig,
                 "incomplete order fills"
             );
             ensure!(quote == decimal(o, "cumQuote")?, "order quote mismatch");

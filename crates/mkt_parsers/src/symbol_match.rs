@@ -112,6 +112,7 @@ pub fn normalize_symbol_for_whitelist_cow(symbol: &str, venue: TradingVenue) -> 
 ///   - **USD 与 USDT 视为同一种**：尾部 USD（不是 USDT）补一个 T
 ///     OKEx 的 USDT 永续 mark 用 BTC-USDT-SWAP，index-tickers 用 BTC-USD；
 ///     这两个代表同一个 USDT 永续的 mark/index，应配对算 premium。
+///
 /// 这样 mark "BTCUSDT" 和 index "BTCUSD" 都归一为 "BTCUSDT"，
 /// 在同一个 key 下配对，且不破坏下游按 "BTCUSDT" 取数的 schema。
 pub fn normalize_symbol_for_premium_pair(symbol: &str) -> String {

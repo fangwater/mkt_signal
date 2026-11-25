@@ -1133,7 +1133,7 @@ fn replay_hourly_kll_symbol(
         }
         source_events = source_events.saturating_add(1);
         let (files_done, _) = reader.records.file_progress();
-        if files_done != last_progress_files || source_events % PROGRESS_LOG_EVENTS == 0 {
+        if files_done != last_progress_files || source_events.is_multiple_of(PROGRESS_LOG_EVENTS) {
             log_stage_progress(
                 "kll",
                 symbol,
@@ -1776,8 +1776,8 @@ fn replay_market_1s_symbol(
                 end_ms,
             )?;
         if already_in_clickhouse {
-            apply_depth_file_to_tracker(symbol, &depth_path, &mut tracker)?;
-            seed_close = last_trade_price_from_file(&trade_path)?.or(seed_close);
+            apply_depth_file_to_tracker(symbol, depth_path, &mut tracker)?;
+            seed_close = last_trade_price_from_file(trade_path)?.or(seed_close);
             if config.market_1s.write_hdf && !output.is_file() {
                 let bars = load_market_1s_day_from_clickhouse(
                     &config.clickhouse.url,
@@ -1808,8 +1808,8 @@ fn replay_market_1s_symbol(
         let bars = aggregate_market_1s_day(
             symbol,
             day,
-            &trade_path,
-            &depth_path,
+            trade_path,
+            depth_path,
             &mut tracker,
             seed_close,
         )?;
@@ -2152,7 +2152,7 @@ fn replay_trade_stage_symbol(
         }
         source_events += 1;
         let (files_done, _) = reader.records.file_progress();
-        if files_done != last_progress_files || source_events % PROGRESS_LOG_EVENTS == 0 {
+        if files_done != last_progress_files || source_events.is_multiple_of(PROGRESS_LOG_EVENTS) {
             log_stage_progress(
                 "trade",
                 symbol,
@@ -2559,7 +2559,7 @@ fn replay_symbol(
         }
         source_events += 1;
         let (files_done, _) = input.file_progress();
-        if files_done != last_progress_files || source_events % PROGRESS_LOG_EVENTS == 0 {
+        if files_done != last_progress_files || source_events.is_multiple_of(PROGRESS_LOG_EVENTS) {
             log_replay_progress(symbol, files_done, total_files, source_events);
             last_progress_files = files_done;
         }
@@ -2825,8 +2825,8 @@ fn replay_ylabel_symbol(
                 day_end_ms,
             )?;
         if already_written {
-            apply_depth_file_to_tracker(symbol, &depth_path, &mut tracker)?;
-            if let Some(last) = last_trade_from_file(&trade_path)? {
+            apply_depth_file_to_tracker(symbol, depth_path, &mut tracker)?;
+            if let Some(last) = last_trade_from_file(trade_path)? {
                 seed_trade = Some(last);
             }
             seed_midp = tracker.snapshot().map(|book| book.midp()).or(seed_midp);
@@ -2839,8 +2839,8 @@ fn replay_ylabel_symbol(
         let (bars_by_horizon, day_last_trade) = aggregate_ylabel_day(
             symbol,
             day,
-            &trade_path,
-            &depth_path,
+            trade_path,
+            depth_path,
             &mut tracker,
             seed_trade,
             seed_midp,

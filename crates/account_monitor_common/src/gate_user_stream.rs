@@ -338,7 +338,7 @@ impl MktConnectionRunner for GateUserDataConnection {
 impl MktConnectionHandler for GateUserDataConnection {
     async fn start_ws(&mut self) -> anyhow::Result<()> {
         loop {
-            info!("Gate: Connecting to {}", &self.base_connection.url);
+            info!("Gate: Connecting to {}", self.base_connection.url);
 
             // 连接 WebSocket
             let decimal_headers = if self.ping_channel == "futures.ping" {

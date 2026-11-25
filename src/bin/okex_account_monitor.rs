@@ -90,7 +90,7 @@ struct DirectAccountForwarder {
 }
 
 thread_local! {
-    static DIRECT_FORWARDER: RefCell<Option<DirectAccountForwarder>> = RefCell::new(None);
+    static DIRECT_FORWARDER: RefCell<Option<DirectAccountForwarder>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone, Copy)]
@@ -575,7 +575,7 @@ fn log_parsed_event(msg: &Bytes, source: &str) {
 
     match okex_event_type {
         BasicAccountEventType::OrderUpdate => {
-            if let Ok(m) = OkexOrderMsg::from_bytes(&payload) {
+            if let Ok(m) = OkexOrderMsg::from_bytes(payload) {
                 let order_status = m.state;
                 info!(
                     "OKEx basic OrderUpdate: source={} scope={} inst={} side={} state={} ord_id={} cli_id={} price={} qty={} filled={} update_time={}",
@@ -594,7 +594,7 @@ fn log_parsed_event(msg: &Bytes, source: &str) {
             }
         }
         BasicAccountEventType::BalanceUpdate => {
-            if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicBalanceMsg::from_bytes(payload) {
                 info!(
                     "OKEx basic BalanceUpdate: source={} scope={} ts={} symbol={} wallet={}",
                     source,
@@ -606,7 +606,7 @@ fn log_parsed_event(msg: &Bytes, source: &str) {
             }
         }
         BasicAccountEventType::PositionUpdate => {
-            if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicPositionMsg::from_bytes(payload) {
                 info!(
                     "OKEx basic PositionUpdate: source={} scope={} ts={} inst={} side={} amt={}",
                     source,
@@ -619,7 +619,7 @@ fn log_parsed_event(msg: &Bytes, source: &str) {
             }
         }
         BasicAccountEventType::BorrowInterest => {
-            if let Ok(m) = BasicBorrowInterestMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicBorrowInterestMsg::from_bytes(payload) {
                 info!(
                     "OKEx basic BorrowInterest: source={} scope={} ts={} symbol={} borrowed={} interest={}",
                     source,
@@ -632,7 +632,7 @@ fn log_parsed_event(msg: &Bytes, source: &str) {
             }
         }
         BasicAccountEventType::UnrealizedPnlUpdate => {
-            if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(payload) {
                 info!(
                     "OKEx basic UnrealizedPnl: source={} scope={} ts={} inst={} side={} pnl={}",
                     source,
@@ -645,7 +645,7 @@ fn log_parsed_event(msg: &Bytes, source: &str) {
             }
         }
         BasicAccountEventType::AccountRisk => {
-            if let Ok(m) = BasicAccountRiskMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicAccountRiskMsg::from_bytes(payload) {
                 info!(
                     "OKEx basic AccountRisk: source={} scope={} ts={} adj_eq_usd={:.2} actual_eq_usd={:.2} maint_margin_usd={:.2} initial_margin_usd={:.2} margin_ratio={:.6}",
                     source,
@@ -660,7 +660,7 @@ fn log_parsed_event(msg: &Bytes, source: &str) {
             }
         }
         BasicAccountEventType::TradeUpdateLite => {
-            if let Ok(m) = BasicTradeLiteMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicTradeLiteMsg::from_bytes(payload) {
                 info!(
                     "OKEx TradeUpdateLite: scope={} venue={} ts={} symbol={} cloid={} trade_id={} side={} maker={} last_px={} last_qty={}",
                     account_scope.as_str(),
@@ -717,27 +717,25 @@ impl AccountEventDeduper {
 
         // 根据事件类型计算去重 key
         let key_opt = match okex_event_type {
-            BasicAccountEventType::OrderUpdate => OkexOrderMsg::from_bytes(&payload)
+            BasicAccountEventType::OrderUpdate => OkexOrderMsg::from_bytes(payload)
                 .ok()
                 .map(|msg| self.key_okex_order(&msg)),
-            BasicAccountEventType::BalanceUpdate => BasicBalanceMsg::from_bytes(&payload)
+            BasicAccountEventType::BalanceUpdate => BasicBalanceMsg::from_bytes(payload)
                 .ok()
                 .map(|msg| self.key_okex_balance(&msg)),
-            BasicAccountEventType::PositionUpdate => BasicPositionMsg::from_bytes(&payload)
+            BasicAccountEventType::PositionUpdate => BasicPositionMsg::from_bytes(payload)
                 .ok()
                 .map(|msg| self.key_okex_position(&msg)),
-            BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(&payload)
+            BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(payload)
                 .ok()
                 .map(|msg| self.key_okex_borrow_interest(&msg)),
-            BasicAccountEventType::UnrealizedPnlUpdate => {
-                BasicUmUnrealizedMsg::from_bytes(&payload)
-                    .ok()
-                    .map(|msg| self.key_okex_unrealized_pnl(&msg))
-            }
-            BasicAccountEventType::AccountRisk => BasicAccountRiskMsg::from_bytes(&payload)
+            BasicAccountEventType::UnrealizedPnlUpdate => BasicUmUnrealizedMsg::from_bytes(payload)
+                .ok()
+                .map(|msg| self.key_okex_unrealized_pnl(&msg)),
+            BasicAccountEventType::AccountRisk => BasicAccountRiskMsg::from_bytes(payload)
                 .ok()
                 .map(|msg| self.key_okex_account_risk(&msg)),
-            BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(&payload)
+            BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(payload)
                 .ok()
                 .map(|msg| self.key_trade_lite(&msg)),
             BasicAccountEventType::BinanceStdUmWalletSnapshot => return true,

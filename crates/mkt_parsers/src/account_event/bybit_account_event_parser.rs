@@ -776,7 +776,7 @@ mod tests {
         assert_eq!(parser.parse(Bytes::from(raw.to_string()), &sink), 1);
         let received = sink.recv().unwrap();
         let (_, _, body) = split_basic_account_event(&received).unwrap();
-        let fill = ExternalFuturesFill::from_bytes(&body).unwrap();
+        let fill = ExternalFuturesFill::from_bytes(body).unwrap();
         assert_eq!(fill.reason.as_deref(), Some("liquidation"));
         assert_eq!(fill.trade_id, "factual-trade");
         let mut funding = raw;
@@ -898,7 +898,7 @@ mod tests {
             split_basic_account_event(&wrapped_borrow).expect("wrapped borrow");
         assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
         let bi = BasicBorrowInterestMsg::from_bytes(payload).expect("borrow payload");
-        assert!((bi.borrowed - 24.474621056148061433).abs() < 1e-9);
+        assert!((bi.borrowed - 24.474_621_056_148_063).abs() < 1e-9);
         assert!((bi.interest - 0.0000466).abs() < 1e-9);
     }
 
@@ -1019,7 +1019,7 @@ mod tests {
         assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);
         assert_eq!(scope, BasicAccountScope::BybitUnified);
 
-        let msg = BasicTradeLiteMsg::from_bytes(&payload).expect("trade lite payload");
+        let msg = BasicTradeLiteMsg::from_bytes(payload).expect("trade lite payload");
         assert_eq!(msg.symbol, "BTCUSDT");
         assert_eq!(msg.client_order_id, 12345);
         assert_eq!(msg.trade_id_str(), "9001");

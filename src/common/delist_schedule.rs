@@ -69,18 +69,18 @@ pub trait DelistScheduleProvider: Send + Sync {
 
 pub fn provider_for_venue(venue: TradingVenue) -> Box<dyn DelistScheduleProvider> {
     match venue {
-        TradingVenue::BinanceMargin => Box::new(BinanceSpotDelistProvider::default()),
-        TradingVenue::BinanceFutures => Box::new(BinanceFuturesDelistProvider::default()),
-        TradingVenue::BinanceCoinFutures => Box::new(BinanceCoinFuturesDelistProvider::default()),
-        TradingVenue::AsterFutures => Box::new(AsterFuturesDelistProvider::default()),
-        TradingVenue::OkexMargin => Box::new(OkxSpotDelistProvider::default()),
-        TradingVenue::OkexFutures => Box::new(OkxSwapDelistProvider::default()),
-        TradingVenue::BybitFutures => Box::new(BybitLinearDelistProvider::default()),
-        TradingVenue::BitgetMargin => Box::new(BitgetSpotDelistProvider::default()),
+        TradingVenue::BinanceMargin => Box::new(BinanceSpotDelistProvider),
+        TradingVenue::BinanceFutures => Box::new(BinanceFuturesDelistProvider),
+        TradingVenue::BinanceCoinFutures => Box::new(BinanceCoinFuturesDelistProvider),
+        TradingVenue::AsterFutures => Box::new(AsterFuturesDelistProvider),
+        TradingVenue::OkexMargin => Box::new(OkxSpotDelistProvider),
+        TradingVenue::OkexFutures => Box::new(OkxSwapDelistProvider),
+        TradingVenue::BybitFutures => Box::new(BybitLinearDelistProvider),
+        TradingVenue::BitgetMargin => Box::new(BitgetSpotDelistProvider),
         TradingVenue::BitgetFutures => Box::new(BitgetUsdtFuturesDelistProvider),
         TradingVenue::BitgetCoinFutures => Box::new(BitgetCoinFuturesDelistProvider),
-        TradingVenue::GateMargin => Box::new(GateSpotRiskProvider::default()),
-        TradingVenue::GateFutures => Box::new(GateFuturesDelistProvider::default()),
+        TradingVenue::GateMargin => Box::new(GateSpotRiskProvider),
+        TradingVenue::GateFutures => Box::new(GateFuturesDelistProvider),
         TradingVenue::BybitMargin
         | TradingVenue::AsterMargin
         | TradingVenue::HyperliquidMargin
@@ -655,7 +655,7 @@ async fn bitget_futures_delist_events(
                 let value = value.trim();
                 !value.is_empty() && value != "0" && value != "-1"
             })
-            .or_else(|| item.delivery_time.as_deref());
+            .or(item.delivery_time.as_deref());
         let Some(raw_time) = raw_time else {
             continue;
         };

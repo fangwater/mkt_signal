@@ -150,7 +150,7 @@ impl MktConnectionHandler for BitgetConnection {
         loop {
             info!(
                 "Bitget: Connecting to WebSocket URL: {}",
-                &self.base_connection.url
+                self.base_connection.url
             );
 
             let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {

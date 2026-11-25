@@ -35,6 +35,118 @@ pub fn required_column_families() -> &'static [&'static str] {
     ]
 }
 
+pub struct RapidXFactPersistor<R> {
+    subscriber: Subscriber<ipc::Service, [u8; MAX_BYTES], ()>,
+    ack_publisher: Publisher<ipc::Service, [u8; ACK_BYTES], ()>,
+    store: Arc<RocksDbStore>,
+    sync_enabled: bool,
+    record_type: PhantomData<R>,
+}
+
+pub type RapidXExecutionPersistor = RapidXFactPersistor<ExecutionRecord>;
+pub type RapidXStatementPersistor = RapidXFactPersistor<StatementRecord>;
+pub type RapidXRolePersistor = RapidXFactPersistor<ExecutionRoleRecord>;
+
+impl<R: RapidXFact> RapidXFactPersistor<R> {
+    pub fn new(store: Arc<RocksDbStore>, sync_enabled: bool) -> Result<Self> {
+        Ok(Self {
+            subscriber: create_sized_record_subscriber_with_max_publishers(R::RECORD_CHANNEL, 32)?,
+            ack_publisher: create_sized_record_publisher("persist_acks", R::ACK_CHANNEL)?,
+            store,
+            sync_enabled,
+            record_type: PhantomData,
+        })
+    }
+
+    pub(crate) fn poll_available(&self) -> PollStats {
+        let mut stats = PollStats::default();
+        for _ in 0..MAX_DRAIN_PER_CHANNEL {
+            match self.subscriber.receive() {
+                Ok(Some(sample)) => {
+                    stats.record_received();
+                    if let Err(err) = self.persist_and_ack(sample.payload()) {
+                        warn!("reject RapidX {} without ACK: {err:#}", R::COLUMN_FAMILY);
+                        stats.record_error();
+                    }
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    warn!("RapidX {} receive error: {err}", R::COLUMN_FAMILY);
+                    stats.record_error();
+                    break;
+                }
+            }
+        }
+        stats
+    }
+
+    fn persist_and_ack(&self, payload: &[u8]) -> Result<()> {
+        let record = R::from_ipc_payload(payload).context("decode RapidX fact record")?;
+        crate::rapidx_uniform::validate_fact(&self.store, &record)?;
+        let ack = persist_record(&self.store, &record, self.sync_enabled)?;
+        // Exact ACK requires the durable normalization work item too. A crash
+        // after raw persistence is retried idempotently before acknowledging.
+        crate::rapidx_uniform::enqueue_fact(&self.store, &record, self.sync_enabled)?;
+        self.send_ack(ack)
+    }
+}
+
+fn persist_record<R: RapidXFact>(
+    store: &RocksDbStore,
+    record: &R,
+    sync_enabled: bool,
+) -> Result<[u8; ACK_BYTES]> {
+    let key = record.stable_key()?;
+    let canonical = record
+        .to_json_bytes()
+        .context("canonicalize RapidX fact record")?;
+    match store.get(R::COLUMN_FAMILY, &key)? {
+        Some(existing) if existing == canonical => record.ack(),
+        Some(existing) if record.accepts_existing(&existing)? => {
+            let cf = R::OBSERVATIONS_CF.context("equivalent fact has no observation store")?;
+            let ack = record.ack()?;
+            match store.get(cf, &ack)? {
+                Some(bytes) if bytes == canonical => {}
+                Some(_) => return Err(anyhow!("RapidX observation conflict")),
+                None => persist_with_outbox_sync(
+                    store,
+                    cf,
+                    &ack,
+                    &canonical,
+                    get_timestamp_us(),
+                    sync_enabled,
+                )?,
+            }
+            Ok(ack)
+        }
+        Some(_) => Err(anyhow!("RapidX {} stable-key conflict", R::COLUMN_FAMILY)),
+        None => {
+            persist_with_outbox_sync(
+                store,
+                R::COLUMN_FAMILY,
+                &key,
+                &canonical,
+                get_timestamp_us(),
+                sync_enabled,
+            )
+            .context("persist RapidX fact and sync outbox")?;
+            record.ack()
+        }
+    }
+}
+
+impl<R: RapidXFact> RapidXFactPersistor<R> {
+    fn send_ack(&self, ack: [u8; ACK_BYTES]) -> Result<()> {
+        self.ack_publisher
+            .loan_uninit()
+            .context("loan RapidX fact ACK")?
+            .write_payload(ack)
+            .send()
+            .context("send RapidX fact ACK")?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,117 +412,5 @@ mod tests {
         assert!(persist_record(&store, &repeated, true).is_err());
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
-    }
-}
-
-pub struct RapidXFactPersistor<R> {
-    subscriber: Subscriber<ipc::Service, [u8; MAX_BYTES], ()>,
-    ack_publisher: Publisher<ipc::Service, [u8; ACK_BYTES], ()>,
-    store: Arc<RocksDbStore>,
-    sync_enabled: bool,
-    record_type: PhantomData<R>,
-}
-
-pub type RapidXExecutionPersistor = RapidXFactPersistor<ExecutionRecord>;
-pub type RapidXStatementPersistor = RapidXFactPersistor<StatementRecord>;
-pub type RapidXRolePersistor = RapidXFactPersistor<ExecutionRoleRecord>;
-
-impl<R: RapidXFact> RapidXFactPersistor<R> {
-    pub fn new(store: Arc<RocksDbStore>, sync_enabled: bool) -> Result<Self> {
-        Ok(Self {
-            subscriber: create_sized_record_subscriber_with_max_publishers(R::RECORD_CHANNEL, 32)?,
-            ack_publisher: create_sized_record_publisher("persist_acks", R::ACK_CHANNEL)?,
-            store,
-            sync_enabled,
-            record_type: PhantomData,
-        })
-    }
-
-    pub(crate) fn poll_available(&self) -> PollStats {
-        let mut stats = PollStats::default();
-        for _ in 0..MAX_DRAIN_PER_CHANNEL {
-            match self.subscriber.receive() {
-                Ok(Some(sample)) => {
-                    stats.record_received();
-                    if let Err(err) = self.persist_and_ack(sample.payload()) {
-                        warn!("reject RapidX {} without ACK: {err:#}", R::COLUMN_FAMILY);
-                        stats.record_error();
-                    }
-                }
-                Ok(None) => break,
-                Err(err) => {
-                    warn!("RapidX {} receive error: {err}", R::COLUMN_FAMILY);
-                    stats.record_error();
-                    break;
-                }
-            }
-        }
-        stats
-    }
-
-    fn persist_and_ack(&self, payload: &[u8]) -> Result<()> {
-        let record = R::from_ipc_payload(payload).context("decode RapidX fact record")?;
-        crate::rapidx_uniform::validate_fact(&self.store, &record)?;
-        let ack = persist_record(&self.store, &record, self.sync_enabled)?;
-        // Exact ACK requires the durable normalization work item too. A crash
-        // after raw persistence is retried idempotently before acknowledging.
-        crate::rapidx_uniform::enqueue_fact(&self.store, &record, self.sync_enabled)?;
-        self.send_ack(ack)
-    }
-}
-
-fn persist_record<R: RapidXFact>(
-    store: &RocksDbStore,
-    record: &R,
-    sync_enabled: bool,
-) -> Result<[u8; ACK_BYTES]> {
-    let key = record.stable_key()?;
-    let canonical = record
-        .to_json_bytes()
-        .context("canonicalize RapidX fact record")?;
-    match store.get(R::COLUMN_FAMILY, &key)? {
-        Some(existing) if existing == canonical => record.ack(),
-        Some(existing) if record.accepts_existing(&existing)? => {
-            let cf = R::OBSERVATIONS_CF.context("equivalent fact has no observation store")?;
-            let ack = record.ack()?;
-            match store.get(cf, &ack)? {
-                Some(bytes) if bytes == canonical => {}
-                Some(_) => return Err(anyhow!("RapidX observation conflict")),
-                None => persist_with_outbox_sync(
-                    store,
-                    cf,
-                    &ack,
-                    &canonical,
-                    get_timestamp_us(),
-                    sync_enabled,
-                )?,
-            }
-            Ok(ack)
-        }
-        Some(_) => Err(anyhow!("RapidX {} stable-key conflict", R::COLUMN_FAMILY)),
-        None => {
-            persist_with_outbox_sync(
-                store,
-                R::COLUMN_FAMILY,
-                &key,
-                &canonical,
-                get_timestamp_us(),
-                sync_enabled,
-            )
-            .context("persist RapidX fact and sync outbox")?;
-            record.ack()
-        }
-    }
-}
-
-impl<R: RapidXFact> RapidXFactPersistor<R> {
-    fn send_ack(&self, ack: [u8; ACK_BYTES]) -> Result<()> {
-        self.ack_publisher
-            .loan_uninit()
-            .context("loan RapidX fact ACK")?
-            .write_payload(ack)
-            .send()
-            .context("send RapidX fact ACK")?;
-        Ok(())
     }
 }

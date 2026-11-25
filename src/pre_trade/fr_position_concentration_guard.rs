@@ -63,7 +63,7 @@ impl NotificationThrottle {
             return true;
         }
 
-        self.last_sent_at.map_or(true, |last_sent_at| {
+        self.last_sent_at.is_none_or(|last_sent_at| {
             now.saturating_duration_since(last_sent_at) >= UNCHANGED_NOTIFICATION_INTERVAL
         })
     }

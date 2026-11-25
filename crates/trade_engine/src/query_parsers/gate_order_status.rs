@@ -180,6 +180,56 @@ pub fn parse_gate_spot_order_status_json(json: &str) -> Option<CompactOrderQuery
     })
 }
 
+pub fn parse_gate_futures_order_status_json(json: &str) -> Option<CompactOrderQueryResp> {
+    let root: Value = serde_json::from_str(json).ok()?;
+    let result = extract_result(&root)?;
+
+    let order_id =
+        parse_i64_value(result.get("id")).or_else(|| parse_i64_value(result.get("order_id")))?;
+    // Gate futures query: size/left 口径均为 contracts。
+    // 这里保持 executed_qty 为 contracts；策略层再统一通过 qty_to_base 转换为 base qty。
+    let size = parse_f64_value(result.get("size")).unwrap_or(0.0);
+    let left = parse_f64_value(result.get("left")).unwrap_or(0.0);
+    let executed_qty = (size.abs() - left.abs()).max(0.0);
+
+    let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    let finish_as = result
+        .get("finish_as")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let status_u8 = map_gate_status(
+        status,
+        finish_as,
+        executed_qty,
+        Some(left.abs()),
+        Some(size.abs()),
+    );
+
+    let update_time_ms = parse_i64_ms(result.get("update_time"))
+        .or_else(|| parse_i64_ms(result.get("finish_time")))
+        .or_else(|| parse_i64_ms(result.get("create_time")))
+        .unwrap_or(0);
+
+    let tif = result.get("tif").and_then(|v| v.as_str()).unwrap_or("gtc");
+    let tif_u8 = GateBasicOrderMsg::time_in_force_to_u8(tif);
+
+    let order_price = parse_f64_value(result.get("price")).unwrap_or(0.0);
+    let fill_price = parse_f64_value(result.get("fill_price"))
+        .or_else(|| parse_f64_value(result.get("avg_price")))
+        .unwrap_or(0.0);
+    let response_price = select_gate_response_price(status, finish_as, fill_price, order_price);
+
+    Some(CompactOrderQueryResp {
+        executed_qty,
+        order_id,
+        status_u8,
+        update_time_ms,
+        time_in_force_u8: tif_u8,
+        response_price,
+        order_price,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,54 +294,4 @@ mod tests {
 
         assert!((resp.executed_qty - 9.52).abs() < 1e-12);
     }
-}
-
-pub fn parse_gate_futures_order_status_json(json: &str) -> Option<CompactOrderQueryResp> {
-    let root: Value = serde_json::from_str(json).ok()?;
-    let result = extract_result(&root)?;
-
-    let order_id =
-        parse_i64_value(result.get("id")).or_else(|| parse_i64_value(result.get("order_id")))?;
-    // Gate futures query: size/left 口径均为 contracts。
-    // 这里保持 executed_qty 为 contracts；策略层再统一通过 qty_to_base 转换为 base qty。
-    let size = parse_f64_value(result.get("size")).unwrap_or(0.0);
-    let left = parse_f64_value(result.get("left")).unwrap_or(0.0);
-    let executed_qty = (size.abs() - left.abs()).max(0.0);
-
-    let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("");
-    let finish_as = result
-        .get("finish_as")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let status_u8 = map_gate_status(
-        status,
-        finish_as,
-        executed_qty,
-        Some(left.abs()),
-        Some(size.abs()),
-    );
-
-    let update_time_ms = parse_i64_ms(result.get("update_time"))
-        .or_else(|| parse_i64_ms(result.get("finish_time")))
-        .or_else(|| parse_i64_ms(result.get("create_time")))
-        .unwrap_or(0);
-
-    let tif = result.get("tif").and_then(|v| v.as_str()).unwrap_or("gtc");
-    let tif_u8 = GateBasicOrderMsg::time_in_force_to_u8(tif);
-
-    let order_price = parse_f64_value(result.get("price")).unwrap_or(0.0);
-    let fill_price = parse_f64_value(result.get("fill_price"))
-        .or_else(|| parse_f64_value(result.get("avg_price")))
-        .unwrap_or(0.0);
-    let response_price = select_gate_response_price(status, finish_as, fill_price, order_price);
-
-    Some(CompactOrderQueryResp {
-        executed_qty,
-        order_id,
-        status_u8,
-        update_time_ms,
-        time_in_force_u8: tif_u8,
-        response_price,
-        order_price,
-    })
 }

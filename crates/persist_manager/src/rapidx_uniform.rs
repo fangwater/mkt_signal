@@ -111,7 +111,7 @@ fn load_group(store: &RocksDbStore, tag: u8, hash: &[u8; 32]) -> Result<Vec<(Vec
 fn allocation_key(store: &RocksDbStore) -> Result<i64> {
     let cursor = store
         .get(STATE_CF, b"last_key")?
-        .map(|b| String::from_utf8(b))
+        .map(String::from_utf8)
         .transpose()?
         .map(|s| s.parse::<i64>())
         .transpose()?

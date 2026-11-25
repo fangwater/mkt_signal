@@ -1361,7 +1361,7 @@ impl ChaseExecStrategy {
             return;
         }
         let side = release_side;
-        let reference_price = self.inverse_reference_price.unwrap_or_else(|| match side {
+        let reference_price = self.inverse_reference_price.unwrap_or(match side {
             Side::Buy => quote.bid,
             Side::Sell => quote.ask,
         });
@@ -2539,13 +2539,11 @@ impl Strategy for ChaseExecStrategy {
                 .children
                 .get(&client_order_id)
                 .is_some_and(|meta| meta.amend_in_flight)
-        {
-            if !(order_price.is_finite()
+            && !(order_price.is_finite()
                 && order_price > 0.0
                 && self.confirm_pending_amend(client_order_id, order_price))
-            {
-                self.reject_pending_amend(client_order_id);
-            }
+        {
+            self.reject_pending_amend(client_order_id);
         }
         if !cancel_already_retried {
             self.clear_order_query_state(client_order_id);

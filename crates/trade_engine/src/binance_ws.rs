@@ -300,7 +300,7 @@ fn build_payload_json(
     let mut out =
         String::with_capacity(32 + id.len() + method.len() + params_bytes + signature_bytes);
     out.push_str("{\"id\":");
-    out.push_str(&id);
+    out.push_str(id);
     out.push_str(",\"method\":");
     push_json_string(&mut out, method);
     out.push_str(",\"params\":{");

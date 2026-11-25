@@ -744,7 +744,7 @@ async fn main() -> Result<()> {
                     if completed.get(&id) != Some(&today) {
                         let result = if let Some((site, url)) = target {
                             backup::backup_today(
-                                &backup_dir,
+                                backup_dir,
                                 site,
                                 url,
                                 account,
@@ -786,7 +786,7 @@ async fn main() -> Result<()> {
                     if let Some(cos) = cos.as_ref() {
                         let source = format!("cos_{family}_backup_{}", account.slug);
                         let result = if let Some((site, _)) = target {
-                            upload::sync_archives(cos, &backup_dir, site, account, keep).await
+                            upload::sync_archives(cos, backup_dir, site, account, keep).await
                         } else {
                             Err(anyhow::anyhow!(
                                 "parameter backup account site is unsupported or unavailable"
@@ -805,7 +805,7 @@ async fn main() -> Result<()> {
                                     let cleanup_source =
                                         format!("cos_{family}_retention_{}", account.slug);
                                     let result = if let Some((site, _)) = target {
-                                        upload::prune_remote(cos, &backup_dir, site, account, keep)
+                                        upload::prune_remote(cos, backup_dir, site, account, keep)
                                             .await
                                     } else {
                                         Err(anyhow::anyhow!(

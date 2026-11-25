@@ -1056,8 +1056,7 @@ impl OrderManager {
 
     /// 添加订单
     pub fn insert(&mut self, order: Order) {
-        let pending_key =
-            Self::pending_limit_key(&order).map(|(scope, symbol, side)| (scope, symbol, side));
+        let pending_key = Self::pending_limit_key(&order);
 
         let order_id = order.client_order_id;
         let prev = self.orders.insert(order_id, order);

@@ -641,7 +641,7 @@ fn main() -> Result<()> {
                     .into_iter()
                     .find(|m| m.topic() == record.topic)
                     .context("unknown replay topic")?;
-                if !first.contains_key(&market) {
+                if let std::collections::btree_map::Entry::Vacant(e) = first.entry(market) {
                     engine.validate_minute_state_start(market, period.ts)?;
                     if let Some(history) = histories.get(&market) {
                         ensure!(
@@ -650,7 +650,7 @@ fn main() -> Result<()> {
                             market.name()
                         );
                     }
-                    first.insert(market, period.ts);
+                    e.insert(period.ts);
                 }
                 for point in engine.on_period(market, &period)? {
                     if engine.plan.calculations[&point.factor_id].id.interval == Interval::Hour {

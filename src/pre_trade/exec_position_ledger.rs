@@ -125,27 +125,25 @@ pub fn cross_family_unexecuted_targets(
             .copied()
             .filter_map(|strategy_id| {
                 let strategy = manager.get(strategy_id)?;
-                let (family, symbol, target, position, ready) = if let Some(exec) =
-                    strategy.as_any().downcast_ref::<BatchExecStrategy>()
-                {
-                    (
-                        ExecFamily::BatchExec,
-                        exec.exec_symbol(),
-                        exec.target_qty(),
-                        exec.virtual_position_qty(),
-                        exec.exec_venue() == venue && exec.position_allocation_ready(),
-                    )
-                } else if let Some(exec) = strategy.as_any().downcast_ref::<ChaseExecStrategy>() {
-                    (
-                        ExecFamily::ChaseExec,
-                        exec.exec_symbol(),
-                        exec.target_qty(),
-                        exec.virtual_position_qty(),
-                        exec.exec_venue() == venue && exec.position_allocation_ready(),
-                    )
-                } else {
-                    return None;
-                };
+                let (family, symbol, target, position, ready) =
+                    if let Some(exec) = strategy.as_any().downcast_ref::<BatchExecStrategy>() {
+                        (
+                            ExecFamily::BatchExec,
+                            exec.exec_symbol(),
+                            exec.target_qty(),
+                            exec.virtual_position_qty(),
+                            exec.exec_venue() == venue && exec.position_allocation_ready(),
+                        )
+                    } else {
+                        let exec = strategy.as_any().downcast_ref::<ChaseExecStrategy>()?;
+                        (
+                            ExecFamily::ChaseExec,
+                            exec.exec_symbol(),
+                            exec.target_qty(),
+                            exec.virtual_position_qty(),
+                            exec.exec_venue() == venue && exec.position_allocation_ready(),
+                        )
+                    };
                 let (Some(target), Some(position)) = (target, position) else {
                     return None;
                 };

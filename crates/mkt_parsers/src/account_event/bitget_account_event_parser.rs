@@ -819,7 +819,7 @@ mod tests {
             while let Some(raw) = sink.recv() {
                 let (kind, _, body) = split_basic_account_event(&raw).unwrap();
                 if kind == BasicAccountEventType::ExternalFuturesFill {
-                    let fill = ExternalFuturesFill::from_bytes(&body).unwrap();
+                    let fill = ExternalFuturesFill::from_bytes(body).unwrap();
                     if fill.reason.is_some() {
                         factual.push(fill);
                     }

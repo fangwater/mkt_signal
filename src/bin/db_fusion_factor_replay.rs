@@ -1054,7 +1054,7 @@ fn replay_symbol(
                 &mut batch,
             )?);
         }
-        if read_rows % PROGRESS_ROWS == 0 {
+        if read_rows.is_multiple_of(PROGRESS_ROWS) {
             info!(
                 "Database fusion replay progress: symbol={} start_ms={} end_ms={} rows_read={} rows_written={} elapsed={:.2?}",
                 symbol, start_ms, end_ms, read_rows, written_rows, started_at.elapsed(),

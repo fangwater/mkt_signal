@@ -878,7 +878,7 @@ mod tests {
         let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
         assert_eq!(event_type, BasicAccountEventType::PositionUpdate);
         assert_eq!(scope, BasicAccountScope::OkexUnified);
-        let pos = BasicPositionMsg::from_bytes(&payload).expect("position msg");
+        let pos = BasicPositionMsg::from_bytes(payload).expect("position msg");
         assert_eq!(pos.inst_id, "XTZ-USDT-SWAP");
         assert_eq!(pos.position_side, 'N');
         assert_eq!(pos.position_amount, 0.0);
@@ -888,7 +888,7 @@ mod tests {
         let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
         assert_eq!(event_type, BasicAccountEventType::UnrealizedPnlUpdate);
         assert_eq!(scope, BasicAccountScope::OkexUnified);
-        let pnl = BasicUmUnrealizedMsg::from_bytes(&payload).expect("pnl msg");
+        let pnl = BasicUmUnrealizedMsg::from_bytes(payload).expect("pnl msg");
         assert_eq!(pnl.inst_id, "XTZ-USDT-SWAP");
         assert_eq!(pnl.position_side, 'N');
         assert_eq!(pnl.unrealized_pnl, 0.0);
@@ -920,7 +920,7 @@ mod tests {
         let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
         assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
         assert_eq!(scope, BasicAccountScope::OkexUnified);
-        let balance = BasicBalanceMsg::from_bytes(&payload).expect("balance msg");
+        let balance = BasicBalanceMsg::from_bytes(payload).expect("balance msg");
         assert_eq!(balance.symbol, "USDT");
         assert!((balance.wallet - 53493.666831427916).abs() < 1e-10);
 
@@ -928,7 +928,7 @@ mod tests {
         let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
         assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
         assert_eq!(scope, BasicAccountScope::OkexUnified);
-        let borrow = BasicBorrowInterestMsg::from_bytes(&payload).expect("borrow msg");
+        let borrow = BasicBorrowInterestMsg::from_bytes(payload).expect("borrow msg");
         assert_eq!(borrow.symbol, "USDT");
         assert!((borrow.borrowed - 50.0).abs() < 1e-10);
         assert!((borrow.interest - 0.5).abs() < 1e-10);

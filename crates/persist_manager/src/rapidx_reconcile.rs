@@ -164,17 +164,11 @@ impl Reconciler {
             "invalid liquidation position side"
         );
         let quantity = text("reduceQty")?;
-        ensure!(
-            decimal(&quantity)? > BigDecimal::from(0),
-            "nonpositive liquidation reduction"
-        );
+        ensure!(decimal(&quantity)? > 0, "nonpositive liquidation reduction");
         let pnl = text("closedPnl")?;
         decimal(&pnl)?;
         let penalty = text("liqFee")?;
-        ensure!(
-            decimal(&penalty)? >= BigDecimal::from(0),
-            "negative liquidation penalty"
-        );
+        ensure!(decimal(&penalty)? >= 0, "negative liquidation penalty");
         let trading_fee = match &row["totalTradingFee"] {
             Value::Null => None,
             Value::String(fee) => {
@@ -419,7 +413,7 @@ fn reconcile(
         let charge = decimal(rest.fee.as_deref().context("REST fee missing")?)?;
         let expected = signed.max(BigDecimal::from(0));
         ensure!(charge == expected, "WS/REST charged fee conflict");
-        if charge != BigDecimal::from(0) {
+        if charge != 0 {
             ensure!(
                 ws.signed_fee_currency == rest.fee_currency,
                 "WS/REST fee currency conflict"
@@ -441,7 +435,7 @@ fn reconcile(
             .context("WS fee currency missing")?;
         if !coin.is_empty() {
             let mut fee = zero_fees();
-            if signed < BigDecimal::from(0) {
+            if signed < 0 {
                 fee.rebated = (-&signed).normalized().to_string();
             } else {
                 fee.charged = signed.normalized().to_string();
@@ -458,7 +452,7 @@ fn reconcile(
                 .as_deref()
                 .context("REST rebate missing")?,
         )?;
-        let complete = rebate == BigDecimal::from(0);
+        let complete = rebate == 0;
         let coin = rest
             .fee_currency
             .as_ref()

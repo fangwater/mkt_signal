@@ -134,10 +134,11 @@ fn shift_prices(row: &mut MinuteBar, gap: f64) {
         &mut row.twap,
         &mut row.buy_vwap,
         &mut row.sell_vwap,
-    ] {
-        if let Some(price) = price {
-            *price += gap;
-        }
+    ]
+    .into_iter()
+    .flatten()
+    {
+        *price += gap;
     }
     if let Some(book) = &mut row.book {
         for level in book.bids.iter_mut().chain(&mut book.asks) {

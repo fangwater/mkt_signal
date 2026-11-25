@@ -1670,6 +1670,241 @@ impl MarketMakerHedgeStrategy {
     }
 }
 
+impl HedgeOrderReconcileCommon for MarketMakerHedgeStrategy {
+    fn hedge_reconcile_strategy_name(&self) -> &'static str {
+        "MMHedge"
+    }
+
+    fn hedge_reconcile_strategy_id(&self) -> i32 {
+        self.strategy_id
+    }
+
+    fn hedge_reconcile_state(&self) -> &HedgeOrderReconcileState {
+        &self.order_reconcile_state
+    }
+
+    fn hedge_reconcile_state_mut(&mut self) -> &mut HedgeOrderReconcileState {
+        &mut self.order_reconcile_state
+    }
+
+    fn is_hedge_order_tracked(&self, client_order_id: i64) -> bool {
+        self.hedge_order_ids.contains(&client_order_id)
+    }
+
+    fn handoff_hedge_order_after_query_failure(
+        &mut self,
+        client_order_id: i64,
+        reason: &str,
+    ) -> bool {
+        warn!(
+            "MMHedgeReconcile: strategy_id={} orphan_handoff_start reason={} {}",
+            self.strategy_id,
+            reason,
+            self.hedge_order_trace_snapshot(client_order_id)
+        );
+
+        let handoff = OrphanHandoff::from_hedge(
+            client_order_id,
+            self.strategy_id,
+            self.uniform_hedge_publish_ctx(client_order_id),
+            reason,
+        );
+        let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} orphan manager unavailable client_order_id={} reason={}",
+                self.strategy_id, client_order_id, reason
+            );
+            return false;
+        };
+        let adopted = orphan_mgr
+            .borrow_mut()
+            .adopt_orphan_order_id(OrphanStrategyRole::Mm, &handoff);
+        if !adopted {
+            warn!(
+                "MarketMakerHedgeStrategy: strategy_id={} mm orphan handoff rejected client_order_id={} reason={}",
+                self.strategy_id, client_order_id, reason
+            );
+            return false;
+        }
+        self.release_hedge_order_keep_local(client_order_id, "mm_orphan_handoff");
+
+        warn!(
+            "MarketMakerHedgeStrategy: strategy_id={} handoff hedge order to mm orphan adopted: client_order_id={} reason={}",
+            self.strategy_id, client_order_id, reason
+        );
+        true
+    }
+
+    fn handle_hedge_open_failed(
+        &mut self,
+        response: &dyn TradeEngineResponse,
+        _code_desc: &str,
+        client_order_id: i64,
+    ) {
+        warn!(
+            "MarketMakerHedgeStrategy: strategy_id={} trade open failed: req_type={} status={} code={} client_order_id={}",
+            self.strategy_id,
+            response.req_type(),
+            response.status(),
+            response.error_code(),
+            client_order_id
+        );
+        self.release_hedge_order(client_order_id, "open_failed");
+    }
+}
+
+impl Strategy for MarketMakerHedgeStrategy {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn get_id(&self) -> i32 {
+        self.strategy_id
+    }
+
+    fn symbol(&self) -> Option<&str> {
+        Some(&self.symbol)
+    }
+
+    fn has_order_terminal_recorder(&self) -> bool {
+        true
+    }
+
+    fn order_terminal_recorder_mut(&mut self) -> Option<&mut dyn OrderTerminalRecorder> {
+        Some(self)
+    }
+
+    fn is_strategy_order(&self, order_id: i64) -> bool {
+        self.hedge_order_ids.contains(&order_id)
+    }
+
+    fn handle_signal(&mut self, signal: &TradeSignal) {
+        MarketMakerHedgeStrategy::handle_signal(self, signal);
+    }
+
+    fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
+        let should_persist = MarketMakerHedgeStrategy::apply_order_update(self, update);
+        if should_persist {
+            PersistChannel::with(|ch| ch.publish_order_update(update));
+        }
+    }
+
+    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
+        let should_persist = MarketMakerHedgeStrategy::apply_trade_update(self, trade);
+        if should_persist {
+            PersistChannel::with(|ch| ch.publish_trade_update(trade));
+        }
+    }
+
+    fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
+        self.apply_hedge_trade_engine_response_common(response);
+    }
+
+    fn handle_period_clock(&mut self, _current_tp: i64) {
+        if self.is_active() {
+            self.handle_query_timer();
+            self.handle_query_watchdog();
+            self.handle_order_query_watchdogs();
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        self.alive_flag
+    }
+}
+
+impl OrderTerminalRecorder for MarketMakerHedgeStrategy {
+    fn record_open_order_terminal(
+        &mut self,
+        terminal_ts: i64,
+        side: Side,
+        order_base_qty: f64,
+        filled_base_qty: f64,
+        price: f64,
+        _close_ts: i64,
+        _open_client_order_id: i64,
+        _open_from_key: &[u8],
+    ) -> bool {
+        let order_base_qty = order_base_qty.abs();
+        let filled_base_qty = filled_base_qty.abs();
+        if filled_base_qty <= TERMINAL_QTY_EPS {
+            return false;
+        }
+        let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
+        let buy_qty = if signed_base_qty > 0.0 {
+            signed_base_qty
+        } else {
+            0.0
+        };
+        let sell_qty = if signed_base_qty < 0.0 {
+            -signed_base_qty
+        } else {
+            0.0
+        };
+        info!(
+            "MMHedgeRecord: strategy_id={} symbol={} leg=open side={:?} order_base_qty={:.8} filled_base_qty={:.8} qv={:.8} price={:.8} terminal_ts={}",
+            self.get_id(),
+            self.symbol().unwrap_or(""),
+            side,
+            order_base_qty,
+            filled_base_qty,
+            signed_base_qty,
+            price,
+            terminal_ts
+        );
+        self.apply_net_qty_fill(terminal_ts, signed_base_qty, price, "open_order_terminal");
+        self.period_buy_qty += buy_qty;
+        self.period_sell_qty += sell_qty;
+        // MM open terminal 计入当前 period 的买/卖成交量，后续 hedge query 会带上这段增量。
+        true
+    }
+
+    fn record_hedge_order_terminal(
+        &mut self,
+        terminal_ts: i64,
+        side: Side,
+        order_base_qty: f64,
+        filled_base_qty: f64,
+        price: f64,
+        _bound_open_client_order_id: i64,
+        _hedge_client_order_id: i64,
+    ) -> bool {
+        let order_base_qty = order_base_qty.abs();
+        let filled_base_qty = filled_base_qty.abs();
+        if order_base_qty <= TERMINAL_QTY_EPS && filled_base_qty <= TERMINAL_QTY_EPS {
+            return false;
+        }
+        let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
+        info!(
+            "MMHedgeRecord: strategy_id={} symbol={} leg=hedge side={:?} order_base_qty={:.8} filled_base_qty={:.8} qv={:.8} price={:.8} terminal_ts={}",
+            self.get_id(),
+            self.symbol().unwrap_or(""),
+            side,
+            order_base_qty,
+            filled_base_qty,
+            signed_base_qty,
+            price,
+            terminal_ts
+        );
+        // MM hedge terminal 只更新净库存；period 买/卖量只由 open/external fill 累加。
+        if filled_base_qty > TERMINAL_QTY_EPS {
+            self.apply_net_qty_fill(terminal_ts, signed_base_qty, price, "hedge_order_terminal");
+        }
+        true
+    }
+}
+
+impl Drop for MarketMakerHedgeStrategy {
+    fn drop(&mut self) {
+        self.alive_flag = false;
+        self.cleanup_strategy_orders();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{HedgeBatchMeta, HedgeOrderMeta, MarketMakerHedgeStrategy};
@@ -1938,240 +2173,5 @@ mod tests {
             .all(|meta| meta.batch_meta.from_key == b"mm_hedge"));
 
         std::mem::forget(strategy);
-    }
-}
-
-impl HedgeOrderReconcileCommon for MarketMakerHedgeStrategy {
-    fn hedge_reconcile_strategy_name(&self) -> &'static str {
-        "MMHedge"
-    }
-
-    fn hedge_reconcile_strategy_id(&self) -> i32 {
-        self.strategy_id
-    }
-
-    fn hedge_reconcile_state(&self) -> &HedgeOrderReconcileState {
-        &self.order_reconcile_state
-    }
-
-    fn hedge_reconcile_state_mut(&mut self) -> &mut HedgeOrderReconcileState {
-        &mut self.order_reconcile_state
-    }
-
-    fn is_hedge_order_tracked(&self, client_order_id: i64) -> bool {
-        self.hedge_order_ids.contains(&client_order_id)
-    }
-
-    fn handoff_hedge_order_after_query_failure(
-        &mut self,
-        client_order_id: i64,
-        reason: &str,
-    ) -> bool {
-        warn!(
-            "MMHedgeReconcile: strategy_id={} orphan_handoff_start reason={} {}",
-            self.strategy_id,
-            reason,
-            self.hedge_order_trace_snapshot(client_order_id)
-        );
-
-        let handoff = OrphanHandoff::from_hedge(
-            client_order_id,
-            self.strategy_id,
-            self.uniform_hedge_publish_ctx(client_order_id),
-            reason,
-        );
-        let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
-            warn!(
-                "MarketMakerHedgeStrategy: strategy_id={} orphan manager unavailable client_order_id={} reason={}",
-                self.strategy_id, client_order_id, reason
-            );
-            return false;
-        };
-        let adopted = orphan_mgr
-            .borrow_mut()
-            .adopt_orphan_order_id(OrphanStrategyRole::Mm, &handoff);
-        if !adopted {
-            warn!(
-                "MarketMakerHedgeStrategy: strategy_id={} mm orphan handoff rejected client_order_id={} reason={}",
-                self.strategy_id, client_order_id, reason
-            );
-            return false;
-        }
-        self.release_hedge_order_keep_local(client_order_id, "mm_orphan_handoff");
-
-        warn!(
-            "MarketMakerHedgeStrategy: strategy_id={} handoff hedge order to mm orphan adopted: client_order_id={} reason={}",
-            self.strategy_id, client_order_id, reason
-        );
-        true
-    }
-
-    fn handle_hedge_open_failed(
-        &mut self,
-        response: &dyn TradeEngineResponse,
-        _code_desc: &str,
-        client_order_id: i64,
-    ) {
-        warn!(
-            "MarketMakerHedgeStrategy: strategy_id={} trade open failed: req_type={} status={} code={} client_order_id={}",
-            self.strategy_id,
-            response.req_type(),
-            response.status(),
-            response.error_code(),
-            client_order_id
-        );
-        self.release_hedge_order(client_order_id, "open_failed");
-    }
-}
-
-impl Strategy for MarketMakerHedgeStrategy {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn get_id(&self) -> i32 {
-        self.strategy_id
-    }
-
-    fn symbol(&self) -> Option<&str> {
-        Some(&self.symbol)
-    }
-
-    fn has_order_terminal_recorder(&self) -> bool {
-        true
-    }
-
-    fn order_terminal_recorder_mut(&mut self) -> Option<&mut dyn OrderTerminalRecorder> {
-        Some(self)
-    }
-
-    fn is_strategy_order(&self, order_id: i64) -> bool {
-        self.hedge_order_ids.contains(&order_id)
-    }
-
-    fn handle_signal(&mut self, signal: &TradeSignal) {
-        MarketMakerHedgeStrategy::handle_signal(self, signal);
-    }
-
-    fn apply_order_update(&mut self, update: &dyn OrderUpdate) {
-        let should_persist = MarketMakerHedgeStrategy::apply_order_update(self, update);
-        if should_persist {
-            PersistChannel::with(|ch| ch.publish_order_update(update));
-        }
-    }
-
-    fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
-        let should_persist = MarketMakerHedgeStrategy::apply_trade_update(self, trade);
-        if should_persist {
-            PersistChannel::with(|ch| ch.publish_trade_update(trade));
-        }
-    }
-
-    fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
-        self.apply_hedge_trade_engine_response_common(response);
-    }
-
-    fn handle_period_clock(&mut self, _current_tp: i64) {
-        if self.is_active() {
-            self.handle_query_timer();
-            self.handle_query_watchdog();
-            self.handle_order_query_watchdogs();
-        }
-    }
-
-    fn is_active(&self) -> bool {
-        self.alive_flag
-    }
-}
-
-impl OrderTerminalRecorder for MarketMakerHedgeStrategy {
-    fn record_open_order_terminal(
-        &mut self,
-        terminal_ts: i64,
-        side: Side,
-        order_base_qty: f64,
-        filled_base_qty: f64,
-        price: f64,
-        _close_ts: i64,
-        _open_client_order_id: i64,
-        _open_from_key: &[u8],
-    ) -> bool {
-        let order_base_qty = order_base_qty.abs();
-        let filled_base_qty = filled_base_qty.abs();
-        if filled_base_qty <= TERMINAL_QTY_EPS {
-            return false;
-        }
-        let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
-        let buy_qty = if signed_base_qty > 0.0 {
-            signed_base_qty
-        } else {
-            0.0
-        };
-        let sell_qty = if signed_base_qty < 0.0 {
-            -signed_base_qty
-        } else {
-            0.0
-        };
-        info!(
-            "MMHedgeRecord: strategy_id={} symbol={} leg=open side={:?} order_base_qty={:.8} filled_base_qty={:.8} qv={:.8} price={:.8} terminal_ts={}",
-            self.get_id(),
-            self.symbol().unwrap_or(""),
-            side,
-            order_base_qty,
-            filled_base_qty,
-            signed_base_qty,
-            price,
-            terminal_ts
-        );
-        self.apply_net_qty_fill(terminal_ts, signed_base_qty, price, "open_order_terminal");
-        self.period_buy_qty += buy_qty;
-        self.period_sell_qty += sell_qty;
-        // MM open terminal 计入当前 period 的买/卖成交量，后续 hedge query 会带上这段增量。
-        true
-    }
-
-    fn record_hedge_order_terminal(
-        &mut self,
-        terminal_ts: i64,
-        side: Side,
-        order_base_qty: f64,
-        filled_base_qty: f64,
-        price: f64,
-        _bound_open_client_order_id: i64,
-        _hedge_client_order_id: i64,
-    ) -> bool {
-        let order_base_qty = order_base_qty.abs();
-        let filled_base_qty = filled_base_qty.abs();
-        if order_base_qty <= TERMINAL_QTY_EPS && filled_base_qty <= TERMINAL_QTY_EPS {
-            return false;
-        }
-        let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
-        info!(
-            "MMHedgeRecord: strategy_id={} symbol={} leg=hedge side={:?} order_base_qty={:.8} filled_base_qty={:.8} qv={:.8} price={:.8} terminal_ts={}",
-            self.get_id(),
-            self.symbol().unwrap_or(""),
-            side,
-            order_base_qty,
-            filled_base_qty,
-            signed_base_qty,
-            price,
-            terminal_ts
-        );
-        // MM hedge terminal 只更新净库存；period 买/卖量只由 open/external fill 累加。
-        if filled_base_qty > TERMINAL_QTY_EPS {
-            self.apply_net_qty_fill(terminal_ts, signed_base_qty, price, "hedge_order_terminal");
-        }
-        true
-    }
-}
-
-impl Drop for MarketMakerHedgeStrategy {
-    fn drop(&mut self) {
-        self.alive_flag = false;
-        self.cleanup_strategy_orders();
     }
 }

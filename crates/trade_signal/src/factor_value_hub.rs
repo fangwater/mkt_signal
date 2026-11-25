@@ -336,7 +336,7 @@ impl FactorValueHub {
         node: &Node<ipc::Service>,
         service_name: &str,
     ) -> Result<FactorValueService> {
-        node.service_builder(&ServiceName::new(&service_name)?)
+        node.service_builder(&ServiceName::new(service_name)?)
             .publish_subscribe::<[u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES]>()
             .max_publishers(1)
             .max_subscribers(10)

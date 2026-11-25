@@ -65,7 +65,7 @@ fn spawn(ctx: &LegCtx, sources: &[Sources], slot: usize, subscriptions: &[Value]
         return None;
     }
     let shard = slot / 2;
-    let (role, ip) = if slot % 2 == 0 {
+    let (role, ip) = if slot.is_multiple_of(2) {
         ("primary", &sources[shard].primary_local_ip)
     } else {
         ("secondary", &sources[shard].secondary_local_ip)

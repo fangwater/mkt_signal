@@ -222,11 +222,7 @@ impl HyperliquidCatalog {
         let mut perp_wire_coins = HashSet::<String>::new();
         let mut default_perp_by_base = HashMap::<String, MarketRoute>::new();
         let mut dex_names = HashSet::<String>::new();
-        for (index, (dex, meta)) in perp_dexs
-            .into_iter()
-            .zip(all_perp_metas.into_iter())
-            .enumerate()
-        {
+        for (index, (dex, meta)) in perp_dexs.into_iter().zip(all_perp_metas).enumerate() {
             let dex_name = match (index, dex) {
                 (0, None) => String::new(),
                 (0, Some(_)) => {

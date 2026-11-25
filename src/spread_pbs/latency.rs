@@ -108,7 +108,7 @@ pub struct PublicationLatency {
 
 impl PublicationLatency {
     pub fn should_sample(published: u64) -> bool {
-        published % 1024 == 0
+        published.is_multiple_of(1024)
     }
 
     pub fn record(&mut self, recv_us: i64, published_us: i64, exchange_us: i64) {

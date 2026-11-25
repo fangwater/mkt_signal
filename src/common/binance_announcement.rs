@@ -566,8 +566,7 @@ fn extract_listed_segment(
 fn split_name_list(raw: &str) -> Vec<String> {
     raw.replace(" and ", ",")
         .replace(" AND ", ",")
-        .replace('&', ",")
-        .replace('，', ",")
+        .replace(['&', '，'], ",")
         .split(',')
         .map(|part| part.trim().to_string())
         .filter(|part| !part.is_empty())
@@ -643,7 +642,7 @@ fn normalize_ticker(raw: &str) -> Option<String> {
 }
 
 fn is_stop_token(token: &str) -> bool {
-    STOP_TOKENS.iter().any(|stop| *stop == token)
+    STOP_TOKENS.contains(&token)
 }
 
 fn is_quote_asset(token: &str) -> bool {

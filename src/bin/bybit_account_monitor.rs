@@ -82,7 +82,7 @@ struct DirectAccountForwarder {
 }
 
 thread_local! {
-    static DIRECT_FORWARDER: RefCell<Option<DirectAccountForwarder>> = RefCell::new(None);
+    static DIRECT_FORWARDER: RefCell<Option<DirectAccountForwarder>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone, Copy)]
@@ -352,7 +352,7 @@ fn spawn_bybit_balance_poll(
                         "/v5/account/wallet-balance",
                         "accountType=UNIFIED",
                     ).await {
-                        Ok((status, body)) if status == 200 => {
+                        Ok((200, body)) => {
                             if let Some(msgs) = parse_bybit_account_balance_snapshot(&body) {
                                 let mut current_borrow_symbols: HashSet<String> = HashSet::new();
                                 for payload in msgs {
@@ -567,7 +567,7 @@ fn log_parsed_event(msg: &Bytes) {
 
     match event_type {
         BasicAccountEventType::OrderUpdate => {
-            if let Ok(m) = BybitBasicOrderMsg::from_bytes(&payload) {
+            if let Ok(m) = BybitBasicOrderMsg::from_bytes(payload) {
                 let label = if m.execution_type == 5 {
                     "Bybit TradeUpdate"
                 } else {
@@ -584,7 +584,7 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::BalanceUpdate => {
-            if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicBalanceMsg::from_bytes(payload) {
                 debug!(
                     "Bybit BalanceUpdate: scope={} ts={} symbol={} wallet={}",
                     account_scope.as_str(),
@@ -595,7 +595,7 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::PositionUpdate => {
-            if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicPositionMsg::from_bytes(payload) {
                 info!(
                     "Bybit PositionUpdate: scope={} ts={} inst={} side={} pos={}",
                     account_scope.as_str(),
@@ -607,7 +607,7 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::UnrealizedPnlUpdate => {
-            if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(payload) {
                 info!(
                     "Bybit UnrealizedPnl: scope={} ts={} inst={} side={} pnl={}",
                     account_scope.as_str(),
@@ -619,7 +619,7 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::BorrowInterest => {
-            if let Ok(m) = BasicBorrowInterestMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicBorrowInterestMsg::from_bytes(payload) {
                 info!(
                     "Bybit BorrowInterest: scope={} ts={} symbol={} borrowed={} interest={}",
                     account_scope.as_str(),
@@ -631,7 +631,7 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::TradeUpdateLite => {
-            if let Ok(m) = BasicTradeLiteMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicTradeLiteMsg::from_bytes(payload) {
                 info!(
                     "Bybit TradeUpdateLite: scope={} venue={} ts={} trade_ts={} symbol={} cloid={} trade_id={} side={} maker={} last_px={} last_qty={}",
                     account_scope.as_str(),
@@ -649,7 +649,7 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::AccountRisk => {
-            if let Ok(m) = BasicAccountRiskMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicAccountRiskMsg::from_bytes(payload) {
                 info!(
                     "Bybit AccountRisk: scope={} ts={} adj_eq_usd={:.2} actual_eq_usd={:.2} maint_margin_usd={:.2} initial_margin_usd={:.2} margin_ratio={:.6}",
                     account_scope.as_str(),
@@ -691,27 +691,25 @@ impl AccountEventDeduper {
             return true;
         };
         let key_opt = match event_type {
-            BasicAccountEventType::OrderUpdate => BybitBasicOrderMsg::from_bytes(&payload)
+            BasicAccountEventType::OrderUpdate => BybitBasicOrderMsg::from_bytes(payload)
                 .ok()
                 .map(|msg| self.key_order(&msg)),
-            BasicAccountEventType::BalanceUpdate => BasicBalanceMsg::from_bytes(&payload)
+            BasicAccountEventType::BalanceUpdate => BasicBalanceMsg::from_bytes(payload)
                 .ok()
                 .map(|msg| self.key_balance(&msg)),
-            BasicAccountEventType::PositionUpdate => BasicPositionMsg::from_bytes(&payload)
+            BasicAccountEventType::PositionUpdate => BasicPositionMsg::from_bytes(payload)
                 .ok()
                 .map(|msg| self.key_position(&msg)),
-            BasicAccountEventType::UnrealizedPnlUpdate => {
-                BasicUmUnrealizedMsg::from_bytes(&payload)
-                    .ok()
-                    .map(|msg| self.key_unrealized_pnl(&msg))
-            }
-            BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(&payload)
+            BasicAccountEventType::UnrealizedPnlUpdate => BasicUmUnrealizedMsg::from_bytes(payload)
+                .ok()
+                .map(|msg| self.key_unrealized_pnl(&msg)),
+            BasicAccountEventType::BorrowInterest => BasicBorrowInterestMsg::from_bytes(payload)
                 .ok()
                 .map(|msg| self.key_borrow_interest(&msg)),
-            BasicAccountEventType::AccountRisk => BasicAccountRiskMsg::from_bytes(&payload)
+            BasicAccountEventType::AccountRisk => BasicAccountRiskMsg::from_bytes(payload)
                 .ok()
                 .map(|msg| self.key_account_risk(&msg)),
-            BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(&payload)
+            BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(payload)
                 .ok()
                 .map(|msg| self.key_trade_lite(&msg)),
             BasicAccountEventType::BinanceStdUmWalletSnapshot => return true,

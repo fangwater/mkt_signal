@@ -531,7 +531,7 @@ fn check_binance_unified_margin_balance(
 
     use crate::pre_trade::monitor_channel::MonitorChannel;
     let available_balance =
-        MonitorChannel::instance().balance_position_for_venue(order.venue, &check_asset);
+        MonitorChannel::instance().balance_position_for_venue(order.venue, check_asset);
 
     if available_balance < required_amount {
         let borrow_amount = required_amount - available_balance;

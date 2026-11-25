@@ -702,7 +702,7 @@ async fn read_sofh_frame(stream: &mut FixMdStream, frame: &mut Vec<u8>) -> Resul
         .await
         .context("read Binance FIX MD SOFH")?;
     let message_len = read_u32(frame, 0)? as usize;
-    if message_len < SOFH_LEN + SBE_HEADER_LEN || message_len > 8 * 1024 * 1024 {
+    if !(SOFH_LEN + SBE_HEADER_LEN..=8 * 1024 * 1024).contains(&message_len) {
         bail!("invalid FIX/SBE SOFH message length {message_len}");
     }
     frame.resize(message_len, 0);

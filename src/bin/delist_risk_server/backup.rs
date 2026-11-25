@@ -975,7 +975,7 @@ pub fn archive_paths(root: &Path, site: &str, account: &AccountSpec) -> Result<V
             archives.push((stamp, entry.path()));
         }
     }
-    archives.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    archives.sort_unstable_by_key(|a| a.0);
     Ok(archives.into_iter().map(|(_, path)| path).collect())
 }
 

@@ -373,7 +373,6 @@ impl BaselineBar {
             &values,
             &depth_values,
         )
-        .map_err(Into::into)
     }
 
     pub fn trade_feature_values(&self) -> [f64; TRADE_FLOW_FEATURE_DIM] {

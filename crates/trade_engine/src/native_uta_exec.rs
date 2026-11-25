@@ -430,24 +430,24 @@ pub fn account_event_allowed(venue: TradingVenue, raw: &[u8]) -> bool {
     let valid = |symbol: &str| runtime_common::exec_market::validate_symbol(venue, symbol).is_ok();
     match kind {
         BasicAccountEventType::ExternalFuturesFill => {
-            mkt_parsers::msg::external_futures_fill::ExternalFuturesFill::from_bytes(&body)
+            mkt_parsers::msg::external_futures_fill::ExternalFuturesFill::from_bytes(body)
                 .is_ok_and(|m| m.venue == venue as u8 && valid(&m.symbol))
         }
         BasicAccountEventType::BalanceUpdate
         | BasicAccountEventType::BorrowInterest
         | BasicAccountEventType::AccountRisk => true,
         BasicAccountEventType::PositionUpdate => {
-            BasicPositionMsg::from_bytes(&body).is_ok_and(|m| valid(&m.inst_id))
+            BasicPositionMsg::from_bytes(body).is_ok_and(|m| valid(&m.inst_id))
         }
         BasicAccountEventType::UnrealizedPnlUpdate => {
-            BasicUmUnrealizedMsg::from_bytes(&body).is_ok_and(|m| valid(&m.inst_id))
+            BasicUmUnrealizedMsg::from_bytes(body).is_ok_and(|m| valid(&m.inst_id))
         }
-        BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(&body)
+        BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(body)
             .is_ok_and(|m| m.venue == venue as u8 && valid(&m.symbol)),
         BasicAccountEventType::OrderUpdate => match venue {
-            TradingVenue::BybitFutures => BybitBasicOrderMsg::from_bytes(&body)
+            TradingVenue::BybitFutures => BybitBasicOrderMsg::from_bytes(body)
                 .is_ok_and(|m| m.venue == BybitBasicOrderMsg::VENUE_FUTURES && valid(&m.symbol)),
-            TradingVenue::BitgetFutures => BitgetBasicOrderMsg::from_bytes(&body)
+            TradingVenue::BitgetFutures => BitgetBasicOrderMsg::from_bytes(body)
                 .is_ok_and(|m| m.venue == BitgetBasicOrderMsg::VENUE_FUTURES && valid(&m.symbol)),
             _ => false,
         },

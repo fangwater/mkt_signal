@@ -454,7 +454,7 @@ async fn main() -> Result<()> {
                     &mut mismatch_logs,
                 );
 
-                if args.max_pending_age > 0 && seq % 4096 == 0 {
+                if args.max_pending_age > 0 && seq.is_multiple_of(4096) {
                     evict_old_pending(
                         seq,
                         args.max_pending_age,

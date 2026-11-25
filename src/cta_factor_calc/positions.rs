@@ -406,7 +406,7 @@ impl Table {
                             factors: vec![binding.factor.clone()],
                             weights: vec![binding.weight.signum()],
                         },
-                        &[input.clone()],
+                        std::slice::from_ref(&input),
                         &spread_config.entry,
                     );
                     if let Some(bar) = &mut bar {

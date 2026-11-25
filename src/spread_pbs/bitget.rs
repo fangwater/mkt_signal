@@ -3,12 +3,12 @@
 //! - WS URL: `wss://ws.bitget.com/v3/ws/public/sbe`
 //! - 鉴权:   **不需要**（公开行情，与 OKEx SBE 不同）
 //! - 订阅:   JSON 文本，UTA v3 命名: `topic` + `symbol` + 小写 `instType`
-//!           `{"op":"subscribe","args":[{"instType":"usdt-futures","topic":"books1","symbol":"BTCUSDT"}]}`
+//!   `{"op":"subscribe","args":[{"instType":"usdt-futures","topic":"books1","symbol":"BTCUSDT"}]}`
 //! - 数据帧: WebSocket 二进制帧 (opcode=2)，littleEndian
-//!           header 8B + root 64B + varString8 symbol  ≈ 80B/帧
-//!           BBO templateId=1002, schemaId=1, schemaVer=3
+//!   header 8B + root 64B + varString8 symbol  ≈ 80B/帧
+//!   BBO templateId=1002, schemaId=1, schemaVer=3
 //! - 时间戳: 使用 SBE `sts` 填 `BboFrame.ts_us`（gateway 推送时刻，与现行 JSON `ts*1000` 同语义）
-//!           SBE 多出的 `ts` (撮合时刻，类似 binance T) 暂未消费
+//!   SBE 多出的 `ts` (撮合时刻，类似 binance T) 暂未消费
 //! - 心跳:   text "ping" 每 25s（与 v2 一致, ws.rs 默认行为）
 //!
 //! schema 参考: https://www.bitget.com/api-doc/uta/sbe/sbe-bbo

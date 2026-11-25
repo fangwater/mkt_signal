@@ -320,7 +320,7 @@ pub(super) fn apply(
         || request.expected_revision != revision(&current)?
         || revision(cfg)? != revision(&current)?
     {
-        return Err(CatalogConflict("configuration changed; reload before saving (external file changes require a worker restart)".into()).into());
+        return Err(CatalogConflict("configuration changed; reload before saving (external file changes require a worker restart)").into());
     }
     let next = request.configuration.merge(cfg)?;
     let changed = revision(&next)? != revision(&current)?;
@@ -357,9 +357,7 @@ pub(super) fn apply(
             },
             || {
                 if revision(&Config::load(&config_path)?)? != request.expected_revision {
-                    return Err(
-                        CatalogConflict("configuration changed before saving".into()).into(),
-                    );
+                    return Err(CatalogConflict("configuration changed before saving").into());
                 }
                 parameter_audit::atomic(&config_path, &next)
             },
@@ -429,7 +427,7 @@ pub(super) fn apply_extra(
         || request.expected_revision != revision(&current)?
         || revision(cfg)? != revision(&current)?
     {
-        return Err(CatalogConflict("configuration changed; reload before saving (external file changes require a worker restart)".into()).into());
+        return Err(CatalogConflict("configuration changed; reload before saving (external file changes require a worker restart)").into());
     }
     let interval = match request.configuration.interval.as_str() {
         "1min" => crate::cta_factor_calc::config::Interval::Minute,
@@ -493,9 +491,7 @@ pub(super) fn apply_extra(
             },
             || {
                 if revision(&Config::load(path)?)? != request.expected_revision {
-                    return Err(
-                        CatalogConflict("configuration changed before saving".into()).into(),
-                    );
+                    return Err(CatalogConflict("configuration changed before saving").into());
                 }
                 parameter_audit::atomic(path, &next)
             },

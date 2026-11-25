@@ -1655,160 +1655,6 @@ impl ModelMsg {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn model_msg_roundtrip_preserves_score_quantile() {
-        let msg = ModelMsg::create(
-            "BTCUSDT".to_string(),
-            100,
-            200,
-            3,
-            0.42,
-            Some(0.91),
-            false,
-            MODEL_STATUS_OK,
-            vec![1, 7],
-            vec![0.5, -0.25],
-        )
-        .with_decision_context(
-            Some(0.4),
-            Some(-0.4),
-            Some(0.03),
-            Some(0.02),
-            Some(-0.04),
-            Some(-0.03),
-            true,
-        )
-        .with_filter_quantiles(Some(0.75), Some(0.25));
-
-        let decoded = ModelMsg::from_bytes(msg.to_bytes().unwrap().as_ref()).unwrap();
-        assert_eq!(decoded.symbol, "BTCUSDT");
-        assert_eq!(decoded.score, 0.42);
-        assert_eq!(decoded.score_quantile, Some(0.91));
-        assert!(!decoded.score_ready);
-        assert_eq!(decoded.score_long_threshold, Some(0.4));
-        assert_eq!(decoded.score_short_threshold, Some(-0.4));
-        assert_eq!(decoded.filter_long_value, Some(0.03));
-        assert_eq!(decoded.filter_long_threshold, Some(0.02));
-        assert_eq!(decoded.filter_short_value, Some(-0.04));
-        assert_eq!(decoded.filter_short_threshold, Some(-0.03));
-        assert_eq!(decoded.filter_long_quantile, Some(0.75));
-        assert_eq!(decoded.filter_short_quantile, Some(0.25));
-        assert!(decoded.filter_ready);
-        assert_eq!(decoded.factor_indices, vec![1, 7]);
-        assert_eq!(decoded.factor_values, vec![0.5, -0.25]);
-    }
-
-    #[test]
-    fn model_msg_accepts_payload_without_filter_quantiles() {
-        let msg = ModelMsg::create(
-            "BTCUSDT".to_string(),
-            100,
-            200,
-            3,
-            0.42,
-            Some(0.91),
-            true,
-            MODEL_STATUS_OK,
-            vec![],
-            vec![],
-        );
-        let encoded = msg.to_bytes().unwrap();
-        let legacy_len = encoded.len() - 20;
-        let decoded = ModelMsg::from_bytes(&encoded[..legacy_len]).unwrap();
-        assert_eq!(decoded.filter_long_quantile, None);
-        assert_eq!(decoded.filter_short_quantile, None);
-    }
-
-    #[test]
-    fn model_msg_zero_padded_legacy_payload_has_no_filter_quantiles() {
-        let msg = ModelMsg::create(
-            "BTCUSDT".to_string(),
-            100,
-            200,
-            3,
-            0.42,
-            Some(0.91),
-            true,
-            MODEL_STATUS_OK,
-            vec![],
-            vec![],
-        );
-        let encoded = msg.to_bytes().unwrap();
-        let legacy_len = encoded.len() - 20;
-        let mut padded = encoded[..legacy_len].to_vec();
-        padded.resize(crate::msg::model_ipc::MODEL_PAYLOAD_MAX_BYTES, 0);
-        let decoded = ModelMsg::from_bytes(&padded).unwrap();
-        assert_eq!(decoded.filter_long_quantile, None);
-        assert_eq!(decoded.filter_short_quantile, None);
-    }
-
-    #[test]
-    fn borrowed_symbol_encoders_match_struct_bytes() {
-        assert_eq!(
-            ask_bid_spread_msg_bytes_borrowed("BTCUSDT", 11, 1.0, 2.0, 3.0, 4.0),
-            AskBidSpreadMsg::create("BTCUSDT".to_string(), 11, 1.0, 2.0, 3.0, 4.0).to_bytes()
-        );
-        assert_eq!(
-            trade_msg_bytes_borrowed("BTCUSDT", 12, 13, 'B', 4.0, 5.0),
-            TradeMsg::create("BTCUSDT".to_string(), 12, 13, 'B', 4.0, 5.0).to_bytes()
-        );
-        assert_eq!(
-            kline_msg_bytes_borrowed("BTCUSDT", 1.0, 2.0, 0.5, 1.5, 99.0, 14),
-            KlineMsg::create("BTCUSDT".to_string(), 1.0, 2.0, 0.5, 1.5, 99.0, 14).to_bytes()
-        );
-        assert_eq!(
-            mark_price_msg_bytes_borrowed("BTCUSDT", 25.0, 15),
-            MarkPriceMsg::create("BTCUSDT".to_string(), 25.0, 15).to_bytes()
-        );
-        assert_eq!(
-            index_price_msg_bytes_borrowed("BTCUSDT", 24.9, 16),
-            IndexPriceMsg::create("BTCUSDT".to_string(), 24.9, 16).to_bytes()
-        );
-        assert_eq!(
-            funding_rate_msg_bytes_borrowed("BTCUSDT", 0.0001, 17, 18),
-            FundingRateMsg::create("BTCUSDT".to_string(), 0.0001, 17, 18).to_bytes()
-        );
-        assert_eq!(
-            liquidation_msg_bytes_borrowed("BTCUSDT", 'S', 2.0, 3.0, 19),
-            LiquidationMsg::create("BTCUSDT".to_string(), 'S', 2.0, 3.0, 19).to_bytes()
-        );
-        assert_eq!(
-            signal_msg_bytes(SignalSource::Tcp, 23),
-            SignalMsg::create(SignalSource::Tcp, 23).to_bytes()
-        );
-
-        let mut inc = IncMsg::create("BTCUSDT".to_string(), 20, 21, 22, true, 1, 2);
-        inc.set_is_last(false);
-        inc.set_chunk_index(3);
-        inc.set_bid_level(0, Level::from_values(100.0, 1.0));
-        inc.set_ask_level(0, Level::from_values(101.0, 2.0));
-        inc.set_ask_level(1, Level::from_values(102.0, 3.0));
-        assert_eq!(
-            inc_msg_bytes_borrowed(
-                "BTCUSDT",
-                20,
-                21,
-                22,
-                true,
-                false,
-                3,
-                1,
-                2,
-                [Level::from_values(100.0, 1.0)],
-                [
-                    Level::from_values(101.0, 2.0),
-                    Level::from_values(102.0, 3.0),
-                ],
-            ),
-            inc.to_bytes()
-        );
-    }
-}
-
 impl MarkPriceMsg {
     /// Create a mark price message
     pub fn create(symbol: String, mark_price: f64, timestamp: i64) -> Self {
@@ -1983,5 +1829,159 @@ impl MktMsg {
         buf.put_u32_le(self.msg_length);
         buf.put(self.data.clone());
         buf.freeze()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_msg_roundtrip_preserves_score_quantile() {
+        let msg = ModelMsg::create(
+            "BTCUSDT".to_string(),
+            100,
+            200,
+            3,
+            0.42,
+            Some(0.91),
+            false,
+            MODEL_STATUS_OK,
+            vec![1, 7],
+            vec![0.5, -0.25],
+        )
+        .with_decision_context(
+            Some(0.4),
+            Some(-0.4),
+            Some(0.03),
+            Some(0.02),
+            Some(-0.04),
+            Some(-0.03),
+            true,
+        )
+        .with_filter_quantiles(Some(0.75), Some(0.25));
+
+        let decoded = ModelMsg::from_bytes(msg.to_bytes().unwrap().as_ref()).unwrap();
+        assert_eq!(decoded.symbol, "BTCUSDT");
+        assert_eq!(decoded.score, 0.42);
+        assert_eq!(decoded.score_quantile, Some(0.91));
+        assert!(!decoded.score_ready);
+        assert_eq!(decoded.score_long_threshold, Some(0.4));
+        assert_eq!(decoded.score_short_threshold, Some(-0.4));
+        assert_eq!(decoded.filter_long_value, Some(0.03));
+        assert_eq!(decoded.filter_long_threshold, Some(0.02));
+        assert_eq!(decoded.filter_short_value, Some(-0.04));
+        assert_eq!(decoded.filter_short_threshold, Some(-0.03));
+        assert_eq!(decoded.filter_long_quantile, Some(0.75));
+        assert_eq!(decoded.filter_short_quantile, Some(0.25));
+        assert!(decoded.filter_ready);
+        assert_eq!(decoded.factor_indices, vec![1, 7]);
+        assert_eq!(decoded.factor_values, vec![0.5, -0.25]);
+    }
+
+    #[test]
+    fn model_msg_accepts_payload_without_filter_quantiles() {
+        let msg = ModelMsg::create(
+            "BTCUSDT".to_string(),
+            100,
+            200,
+            3,
+            0.42,
+            Some(0.91),
+            true,
+            MODEL_STATUS_OK,
+            vec![],
+            vec![],
+        );
+        let encoded = msg.to_bytes().unwrap();
+        let legacy_len = encoded.len() - 20;
+        let decoded = ModelMsg::from_bytes(&encoded[..legacy_len]).unwrap();
+        assert_eq!(decoded.filter_long_quantile, None);
+        assert_eq!(decoded.filter_short_quantile, None);
+    }
+
+    #[test]
+    fn model_msg_zero_padded_legacy_payload_has_no_filter_quantiles() {
+        let msg = ModelMsg::create(
+            "BTCUSDT".to_string(),
+            100,
+            200,
+            3,
+            0.42,
+            Some(0.91),
+            true,
+            MODEL_STATUS_OK,
+            vec![],
+            vec![],
+        );
+        let encoded = msg.to_bytes().unwrap();
+        let legacy_len = encoded.len() - 20;
+        let mut padded = encoded[..legacy_len].to_vec();
+        padded.resize(crate::msg::model_ipc::MODEL_PAYLOAD_MAX_BYTES, 0);
+        let decoded = ModelMsg::from_bytes(&padded).unwrap();
+        assert_eq!(decoded.filter_long_quantile, None);
+        assert_eq!(decoded.filter_short_quantile, None);
+    }
+
+    #[test]
+    fn borrowed_symbol_encoders_match_struct_bytes() {
+        assert_eq!(
+            ask_bid_spread_msg_bytes_borrowed("BTCUSDT", 11, 1.0, 2.0, 3.0, 4.0),
+            AskBidSpreadMsg::create("BTCUSDT".to_string(), 11, 1.0, 2.0, 3.0, 4.0).to_bytes()
+        );
+        assert_eq!(
+            trade_msg_bytes_borrowed("BTCUSDT", 12, 13, 'B', 4.0, 5.0),
+            TradeMsg::create("BTCUSDT".to_string(), 12, 13, 'B', 4.0, 5.0).to_bytes()
+        );
+        assert_eq!(
+            kline_msg_bytes_borrowed("BTCUSDT", 1.0, 2.0, 0.5, 1.5, 99.0, 14),
+            KlineMsg::create("BTCUSDT".to_string(), 1.0, 2.0, 0.5, 1.5, 99.0, 14).to_bytes()
+        );
+        assert_eq!(
+            mark_price_msg_bytes_borrowed("BTCUSDT", 25.0, 15),
+            MarkPriceMsg::create("BTCUSDT".to_string(), 25.0, 15).to_bytes()
+        );
+        assert_eq!(
+            index_price_msg_bytes_borrowed("BTCUSDT", 24.9, 16),
+            IndexPriceMsg::create("BTCUSDT".to_string(), 24.9, 16).to_bytes()
+        );
+        assert_eq!(
+            funding_rate_msg_bytes_borrowed("BTCUSDT", 0.0001, 17, 18),
+            FundingRateMsg::create("BTCUSDT".to_string(), 0.0001, 17, 18).to_bytes()
+        );
+        assert_eq!(
+            liquidation_msg_bytes_borrowed("BTCUSDT", 'S', 2.0, 3.0, 19),
+            LiquidationMsg::create("BTCUSDT".to_string(), 'S', 2.0, 3.0, 19).to_bytes()
+        );
+        assert_eq!(
+            signal_msg_bytes(SignalSource::Tcp, 23),
+            SignalMsg::create(SignalSource::Tcp, 23).to_bytes()
+        );
+
+        let mut inc = IncMsg::create("BTCUSDT".to_string(), 20, 21, 22, true, 1, 2);
+        inc.set_is_last(false);
+        inc.set_chunk_index(3);
+        inc.set_bid_level(0, Level::from_values(100.0, 1.0));
+        inc.set_ask_level(0, Level::from_values(101.0, 2.0));
+        inc.set_ask_level(1, Level::from_values(102.0, 3.0));
+        assert_eq!(
+            inc_msg_bytes_borrowed(
+                "BTCUSDT",
+                20,
+                21,
+                22,
+                true,
+                false,
+                3,
+                1,
+                2,
+                [Level::from_values(100.0, 1.0)],
+                [
+                    Level::from_values(101.0, 2.0),
+                    Level::from_values(102.0, 3.0),
+                ],
+            ),
+            inc.to_bytes()
+        );
     }
 }

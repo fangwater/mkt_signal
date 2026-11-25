@@ -107,7 +107,7 @@ impl TakerDecisionConfig {
         self.symbol_configs
             .get(symbol)
             .cloned()
-            .unwrap_or_else(|| TakerDecisionSymbolConfig {
+            .unwrap_or(TakerDecisionSymbolConfig {
                 keep_long_percentile: self.keep_long_percentile,
                 keep_short_percentile: self.keep_short_percentile,
                 open_cancel_long_percentile: self.open_cancel_long_percentile,
@@ -932,9 +932,7 @@ impl PreTradeTakerDecisionModel {
                     return Err(err);
                 }
             };
-        if let Err(err) = Self::initialize(cfg) {
-            return Err(err);
-        }
+        Self::initialize(cfg)?;
         Self::reload_thresholds_global(redis).await
     }
 
@@ -1235,7 +1233,7 @@ impl PreTradeTakerDecisionModel {
         }
         if self
             .score_thresholds_for_symbol(&symbol_key)
-            .map_or(true, |thresholds| !thresholds.has_any())
+            .is_none_or(|thresholds| !thresholds.has_any())
         {
             return Some(TakerDecisionOpenGateSnapshot {
                 allowed: false,

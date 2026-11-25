@@ -237,7 +237,7 @@ fn current_worker_signals(
     let age = Utc::now().timestamp_millis().saturating_sub(updated_ms);
     // A 15-minute table can legitimately keep its last decision for 15 minutes.
     // The shared worker heartbeat determines process freshness.
-    let stale = updated_ms <= 0 || age > 180_000 || age < -30_000;
+    let stale = updated_ms <= 0 || !(-30_000..=180_000).contains(&age);
     let positions: WorkerPositions = match runtime.and_then(|r| r.get("position_tables")) {
         Some(value) if !value.is_null() => {
             serde_json::from_value(value.clone()).context("decode worker position tables")?

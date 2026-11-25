@@ -2126,10 +2126,10 @@ impl ArbHedgeStrategy {
         if self.adl_spot_hedge {
             return self.try_adl_spot_hedge(now_ts);
         }
-        if self.due_force_close_open_id(now_ts).is_some() {
-            if self.send_unimmr_force_close_hedge_direct(now_ts) {
-                return true;
-            }
+        if self.due_force_close_open_id(now_ts).is_some()
+            && self.send_unimmr_force_close_hedge_direct(now_ts)
+        {
+            return true;
         }
         if self.coalesce_while_hedge_query_inflight(now_ts, reason) {
             return false;
@@ -3159,13 +3159,13 @@ impl ArbHedgeStrategy {
             .map(|order| (order, self.uniform_hedge_publish_ctx(client_order_id)));
         if let Some((order, _)) = order_snapshot.as_ref() {
             if status == OrderStatus::New {
-                self.publish_uniform_new_order(order_update, &order, prev_cumulative_filled_qty);
+                self.publish_uniform_new_order(order_update, order, prev_cumulative_filled_qty);
             } else if !status.is_finished()
                 && matches!(status, OrderStatus::PartiallyFilled | OrderStatus::Filled)
             {
                 self.publish_uniform_trade_order_from_order_update(
                     order_update,
-                    &order,
+                    order,
                     prev_cumulative_filled_qty,
                 );
             }
@@ -3192,14 +3192,14 @@ impl ArbHedgeStrategy {
             ) {
                 self.publish_uniform_terminal_order_with_ctx(
                     order_update,
-                    &order,
+                    order,
                     prev_cumulative_filled_qty,
                     uniform_ctx,
                 );
             } else if status == OrderStatus::Filled {
                 self.publish_uniform_trade_order_from_order_update_with_ctx(
                     order_update,
-                    &order,
+                    order,
                     prev_cumulative_filled_qty,
                     uniform_ctx,
                 );
@@ -3290,7 +3290,7 @@ impl ArbHedgeStrategy {
         if let Some((order, uniform_ctx)) = order_snapshot.as_ref() {
             self.publish_uniform_trade_order_with_ctx(
                 trade,
-                &order,
+                order,
                 prev_cumulative_filled_qty,
                 status,
                 uniform_ctx,
