@@ -122,7 +122,8 @@ fn account_retry_success_resets_limit_and_other_errors_still_fail() {
     let (kind, mut e) = dispatch(&mut s, &mut now, 101);
     assert_ne!(kind, ACCOUNT);
     e.error = 90;
-    assert!(s.on_raw_event(&e, now).is_err());
+    let error = s.on_raw_event(&e, now).unwrap_err();
+    assert_eq!(crate::restart::exit_status(&error), 75);
 }
 
 fn config() -> Config {

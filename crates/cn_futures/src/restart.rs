@@ -23,6 +23,9 @@ pub enum ColdRestartRequired {
     /// The broker counter answered a bootstrap or control request with CTP error 7
     /// (「还没有初始化」), e.g. while it re-initialises after the daily close.
     VenueNotInitialized,
+    /// A non-account CTP query answered error 90 (「查询未就绪，请稍后重试」),
+    /// e.g. the trade query while the counter reloads after the daily close.
+    QueryNotReady(&'static str),
 }
 
 impl ColdRestartRequired {
@@ -37,6 +40,7 @@ impl ColdRestartRequired {
             Self::MarketDataTradingDay => "market_data_trading_day",
             Self::ServerRestarted => "server_restarted",
             Self::VenueNotInitialized => "venue_not_initialized",
+            Self::QueryNotReady(_) => "query_not_ready",
         }
     }
 
@@ -52,6 +56,7 @@ impl ColdRestartRequired {
             }
             Self::ServerRestarted => "venue server restarted; cold restart required",
             Self::VenueNotInitialized => "venue counter not initialized; cold restart required",
+            Self::QueryNotReady(_) => "venue query not ready; cold restart required",
         }
     }
 }
@@ -71,6 +76,12 @@ impl std::fmt::Display for ColdRestartRequired {
             }
             Self::VenueNotInitialized => {
                 "CTP counter not initialized (error 7); retry after SDK restart"
+            }
+            Self::QueryNotReady(kind) => {
+                return write!(
+                    f,
+                    "CTP {kind} query not ready (error 90); retry after SDK restart"
+                );
             }
         })
     }

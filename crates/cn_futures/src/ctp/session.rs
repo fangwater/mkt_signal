@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 /// avoid flooding the callback queue that gates order dispatch.
 /// CTP `ErrorID` 7, 「CTP:还没有初始化」.
 const CTP_NOT_INITIALIZED: i32 = 7;
+/// 「查询未就绪，请稍后重试」: the counter is still loading after a restart.
+const CTP_QUERY_NOT_READY: i32 = 90;
 
 pub(crate) const RULE_REFRESH_INTERVAL: Duration = Duration::from_secs(30 * 60);
 /// Background position query for display-only by-trade valuation.
@@ -114,7 +116,7 @@ impl Session {
         self.position_costs.as_ref()
     }
     pub fn retries_account_query(&self, request: i32, error: i32) -> bool {
-        error == 90
+        error == CTP_QUERY_NOT_READY
             && self.available.is_none()
             && self
                 .waiting
@@ -475,6 +477,11 @@ impl Session {
             self.cost_rows_valid = false;
             self.finish_cost_poll(now);
             return Ok(None);
+        }
+        // Only the account query retries in place (no partial rows to discard);
+        // any other query restarts the tested bootstrap in a new SDK session.
+        if e.error == CTP_QUERY_NOT_READY {
+            return Err(ColdRestartRequired::QueryNotReady(kind_name(kind)).into());
         }
         ensure!(
             e.error == 0,
