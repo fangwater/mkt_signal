@@ -232,24 +232,69 @@ impl Feed {
                 }
             }
             22 => {
-                if !self.session.ready()
-                    || Some(super::super::text_ref(&event.trading_day)?)
-                        != self.session.trading_day()
+                if !self.session.ready() {
+                    return Ok(None);
+                }
+                let Some(session_day) = self.session.trading_day() else {
+                    return Ok(None);
+                };
+                let tick_day = super::super::text_ref(&event.trading_day)?;
+                // A wrong-day tick is a stale snapshot of an earlier session, except
+                // CZCE night ticks, which carry the natural date as their trading day.
+                if tick_day != session_day
+                    && !(self.session.tick_venue(&event).ok() == Some(crate::model::Venue::Czce)
+                        && czce_night_tick(tick_day, session_day, &event.update_time))
                 {
                     return Ok(None);
                 }
                 let venue = self.session.tick_venue(&event)?;
                 self.last_quote = Some((super::native::quote_bucket(&event.symbol), sequence));
-                FeedEvent::Tick(TickRecord::capture(
-                    &event,
-                    received_us,
-                    self.session.generation,
-                    venue,
-                ))
+                let mut record =
+                    TickRecord::capture(&event, received_us, self.session.generation, venue);
+                if tick_day != session_day {
+                    record.trading_day = [0; 9];
+                    record.trading_day[..session_day.len()].copy_from_slice(session_day.as_bytes());
+                }
+                FeedEvent::Tick(record)
             }
             16 => bail!("MD error {}; stop before retrying credentials", event.error),
             _ => return Ok(None),
         };
         Ok(Some(output))
+    }
+}
+
+/// CZCE stamps night-session ticks with the natural date instead of the next
+/// trading day. Accept only an earlier day with an evening update time (the
+/// 21:00-23:00 session and its 20:55 call auction); a 15:00 day-session
+/// snapshot replayed after the day switch stays rejected.
+fn czce_night_tick(tick_day: &str, session_day: &str, update_time: &[u8; 9]) -> bool {
+    let hour = std::str::from_utf8(&update_time[..2])
+        .ok()
+        .and_then(|h| h.parse::<u8>().ok());
+    tick_day.len() == 8
+        && session_day.len() == 8
+        && tick_day.bytes().all(|b| b.is_ascii_digit())
+        && tick_day < session_day
+        && matches!(hour, Some(20..=23))
+}
+
+#[cfg(test)]
+mod czce_tests {
+    use super::czce_night_tick;
+
+    fn at(time: &str) -> [u8; 9] {
+        let mut t = [0; 9];
+        t[..time.len()].copy_from_slice(time.as_bytes());
+        t
+    }
+
+    #[test]
+    fn czce_night_ticks_pass_and_day_snapshots_stay_rejected() {
+        assert!(czce_night_tick("20261125", "20261126", &at("21:05:00")));
+        assert!(czce_night_tick("20261125", "20261126", &at("20:59:00")));
+        assert!(!czce_night_tick("20261125", "20261126", &at("15:00:00")));
+        assert!(!czce_night_tick("20261126", "20261125", &at("21:05:00")));
+        assert!(!czce_night_tick("", "20261126", &at("21:05:00")));
     }
 }
