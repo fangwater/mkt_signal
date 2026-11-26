@@ -793,6 +793,16 @@ dependencies = [
 [[package]]
 name = "cn_futures_core"
 version = "0.1.0"
+source = "git+ssh://git@github.com/fangwater/market_replay.git?rev=3b8b05d2781266482eccf55b3d13b62e80f058e1#3b8b05d2781266482eccf55b3d13b62e80f058e1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-tz 0.10.4",
+]
+
+[[package]]
+name = "cn_futures_core"
+version = "0.1.0"
 source = "git+ssh://git@github.com/fangwater/market_replay.git?rev=5ee7d1d793e1fd02f78280c224d710390767aa59#5ee7d1d793e1fd02f78280c224d710390767aa59"
 dependencies = [
  "anyhow",
@@ -808,7 +818,7 @@ dependencies = [
  "chrono",
  "clap",
  "cn_futures",
- "cn_futures_core",
+ "cn_futures_core 0.1.0 (git+ssh://git@github.com/fangwater/market_replay.git?rev=5ee7d1d793e1fd02f78280c224d710390767aa59)",
  "iceoryx2",
  "redis",
  "runtime_common",
@@ -2908,7 +2918,7 @@ dependencies = [
  "chrono-tz 0.8.6",
  "clap",
  "cme_roll_metadata",
- "cn_futures_core",
+ "cn_futures_core 0.1.0 (git+ssh://git@github.com/fangwater/market_replay.git?rev=3b8b05d2781266482eccf55b3d13b62e80f058e1)",
  "cn_futures_pbs",
  "cn_market_proto",
  "comfy-table",
