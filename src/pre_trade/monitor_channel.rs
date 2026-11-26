@@ -7950,6 +7950,10 @@ where
         TradeUpdate::factual_is_maker(self.inner)
     }
 
+    fn last_filled_quantity(&self) -> Option<f64> {
+        TradeUpdate::last_filled_quantity(self.inner)
+    }
+
     fn trading_venue(&self) -> TradingVenue {
         TradeUpdate::trading_venue(self.inner)
     }

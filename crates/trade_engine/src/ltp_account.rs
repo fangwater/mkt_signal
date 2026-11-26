@@ -214,6 +214,7 @@ pub fn parse_order_push(
                 .parse()
                 .map_err(|_| anyhow!("non-numeric RapidX clientOrderId"))?,
             trade_id: 0,
+            reported_is_maker: None,
             state: match order.order_state.as_str() {
                 "OPEN" => 2,
                 "PARTIALLY_FILLED" => 3,
@@ -246,6 +247,7 @@ pub fn parse_order_push(
             },
             price: decimal_text(&order.limit_price)?,
             fill_price: decimal_text(&order.last_executed_price)?,
+            fill_size: 0.0,
             quantity: decimal_text(&order.order_qty)?,
             cumulative_filled_quantity: decimal_text(&order.executed_qty)?,
             create_time: order.create_at_ms,

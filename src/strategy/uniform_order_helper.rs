@@ -251,8 +251,20 @@ pub fn publish_uniform_trade_order(
         Some(trade.price()),
         ctx.price_offset,
         amount_update,
-        FillLiquidity::from_is_maker(trade.factual_is_maker()),
+        uniform_trade_liquidity(trade, amount_update),
     );
+}
+
+fn uniform_trade_liquidity(trade: &dyn TradeUpdate, amount_update: f64) -> FillLiquidity {
+    // A cumulative update may cover missed fills with different roles. The
+    // latest fill's role applies only when its quantity covers the whole delta.
+    if let Some(last_fill) = trade.last_filled_quantity() {
+        let roundoff = 4.0 * f64::EPSILON * trade.cumulative_filled_quantity().abs();
+        if (amount_update - last_fill).abs() > roundoff {
+            return FillLiquidity::Unknown;
+        }
+    }
+    FillLiquidity::from_is_maker(trade.factual_is_maker())
 }
 
 pub fn publish_uniform_trade_order_from_order_update(
@@ -295,6 +307,9 @@ pub fn publish_uniform_trade_order_from_order_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mkt_parsers::account_event::okex_account_event_parser::OkexAccountEventParser;
+    use mkt_parsers::account_event::{AccountEventSink, Parser};
+    use mkt_parsers::msg::basic_account_msg::{split_basic_account_event, OkexOrderMsg};
     use order_common::TradingVenue;
 
     #[test]
@@ -316,5 +331,46 @@ mod tests {
 
         let missing_qty = TradingLeg::new(TradingVenue::BinanceMargin, 100.0, 100.1, 13);
         assert!(signal_bbo_from_legs(Some(&missing_qty), None).is_none());
+    }
+
+    #[test]
+    fn okx_order_role_applies_only_to_a_single_fill_delta() {
+        #[derive(Default)]
+        struct Sink(std::cell::RefCell<Option<bytes::Bytes>>);
+
+        impl AccountEventSink for Sink {
+            fn emit(&self, msg: bytes::Bytes) -> bool {
+                self.0.replace(Some(msg));
+                true
+            }
+        }
+
+        let parser = OkexAccountEventParser::new();
+        let sink = Sink::default();
+        let message = bytes::Bytes::from_static(
+            br#"{
+            "arg":{"channel":"orders","instType":"SWAP"},
+            "data":[{"instId":"BTC-USDT-SWAP","instType":"SWAP","ordId":"42",
+                     "clOrdId":"43","tradeId":"7","state":"partially_filled",
+                     "side":"buy","ordType":"limit","fillPx":"70000","fillSz":"0.1",
+                     "accFillSz":"0.3","execType":"T"}]
+        }"#,
+        );
+        assert_eq!(parser.parse(message, &sink), 1);
+        let event = sink.0.into_inner().unwrap();
+        let (_, _, payload) = split_basic_account_event(&event).unwrap();
+        let update = OkexOrderMsg::from_bytes(payload).unwrap();
+
+        let cumulative = TradeUpdate::cumulative_filled_quantity(&update);
+        let delta =
+            OrderManager::compute_uniform_amount_update_from_cumulative(0.2, cumulative).unwrap();
+        assert_eq!(
+            uniform_trade_liquidity(&update, delta),
+            FillLiquidity::Taker
+        );
+        assert_eq!(
+            uniform_trade_liquidity(&update, cumulative),
+            FillLiquidity::Unknown
+        );
     }
 }

@@ -322,6 +322,7 @@ pub struct OkexOrderMsg {
     pub ord_id: i64,
     pub cl_ord_id: i64,
     pub trade_id: i64,
+    pub reported_is_maker: Option<bool>,
     pub state: u8,
     pub side: u8,
     pub ord_type: u8,
@@ -334,6 +335,8 @@ pub struct OkexOrderMsg {
     pub price: f64,
     /// Price of the latest execution, if present.
     pub fill_price: f64,
+    /// Quantity of the latest execution, in the same units as the cumulative quantity.
+    pub fill_size: f64,
     pub quantity: f64,
     pub cumulative_filled_quantity: f64,
     pub create_time: i64,
@@ -456,7 +459,8 @@ impl OkexOrderMsg {
             + 1  // amend_source u8
             + 1  // amend_result i8
             + 8 * 4  // price, fill_price, quantity, cumulative_filled_quantity
-            + 8 * 3; // create_time, update_time, fill_time
+            + 8 * 3  // create_time, update_time, fill_time
+            + 8 + 1; // fill_size, reported_is_maker
 
         let mut buf = BytesMut::with_capacity(total_size);
 
@@ -493,6 +497,12 @@ impl OkexOrderMsg {
         buf.put_i64_le(self.create_time);
         buf.put_i64_le(self.update_time);
         buf.put_i64_le(self.fill_time);
+        buf.put_f64_le(self.fill_size);
+        buf.put_u8(match self.reported_is_maker {
+            None => 0,
+            Some(true) => 1,
+            Some(false) => 2,
+        });
 
         buf.freeze()
     }
@@ -570,12 +580,19 @@ impl OkexOrderMsg {
         let quantity = cursor.get_f64_le();
         let cumulative_filled_quantity = cursor.get_f64_le();
 
-        if cursor.remaining() < 8 * 3 {
-            anyhow::bail!("Not enough data for timestamps");
+        if cursor.remaining() != 8 * 4 + 1 {
+            anyhow::bail!("Invalid OKX order timestamp and fill tail length");
         }
         let create_time = cursor.get_i64_le();
         let update_time = cursor.get_i64_le();
         let fill_time = cursor.get_i64_le();
+        let fill_size = cursor.get_f64_le();
+        let reported_is_maker = match cursor.get_u8() {
+            0 => None,
+            1 => Some(true),
+            2 => Some(false),
+            value => anyhow::bail!("Invalid OKX reported fill role: {value}"),
+        };
 
         Ok(Self {
             msg_type: BasicAccountEventType::OrderUpdate,
@@ -584,6 +601,7 @@ impl OkexOrderMsg {
             ord_id,
             cl_ord_id,
             trade_id,
+            reported_is_maker,
             state,
             side,
             ord_type,
@@ -592,6 +610,7 @@ impl OkexOrderMsg {
             amend_result,
             price,
             fill_price,
+            fill_size,
             quantity,
             cumulative_filled_quantity,
             create_time,

@@ -377,6 +377,12 @@ impl OkexAccountEventParser {
             let amend_result = parse_okex_amend_result(order.get("amendResult"));
             let price = parse_f64_field(order.get("px"));
             let fill_price = parse_f64_field(order.get("fillPx"));
+            let fill_size = parse_f64_field(order.get("fillSz"));
+            let reported_is_maker = match order.get("execType").and_then(|v| v.as_str()) {
+                Some("M") => Some(true),
+                Some("T") => Some(false),
+                _ => None,
+            };
             let quantity = parse_f64_field(order.get("sz"));
             let cumulative_filled_quantity = parse_f64_field(order.get("accFillSz"));
             let create_time = parse_i64_field(order.get("cTime"));
@@ -406,6 +412,7 @@ impl OkexAccountEventParser {
                 ord_id,
                 cl_ord_id,
                 trade_id,
+                reported_is_maker,
                 state: order_status,
                 side,
                 ord_type,
@@ -414,6 +421,7 @@ impl OkexAccountEventParser {
                 amend_result,
                 price,
                 fill_price,
+                fill_size,
                 quantity,
                 cumulative_filled_quantity,
                 create_time,
@@ -854,6 +862,35 @@ mod tests {
         assert_eq!(order.amend_result, 0);
         assert_eq!(order.price, 70_100.0);
         assert_eq!(order.fill_price, 70_000.0);
+    }
+
+    #[test]
+    fn orders_carry_the_role_and_size_of_each_fill() {
+        for (role, expected) in [
+            ("M", Some(true)),
+            ("T", Some(false)),
+            ("", None),
+            ("X", None),
+        ] {
+            let parser = OkexAccountEventParser::new();
+            let sink = TestAccountEventSink::new();
+            let message = serde_json::json!({
+                "arg": {"channel": "orders", "instType": "SWAP"},
+                "data": [{
+                    "instId": "BTC-USDT-SWAP", "instType": "SWAP", "ordId": "42",
+                    "clOrdId": "43", "tradeId": "7", "state": "partially_filled",
+                    "side": "buy", "ordType": "limit", "fillPx": "70000", "fillSz": "1",
+                    "accFillSz": "3", "execType": role
+                }]
+            });
+            assert_eq!(parser.parse(Bytes::from(message.to_string()), &sink), 1);
+            let event = sink.recv().expect("order event");
+            let (_, _, payload) = split_basic_account_event(&event).expect("wrapped order event");
+            let order = OkexOrderMsg::from_bytes(payload).expect("order payload");
+            assert_eq!(order.reported_is_maker, expected);
+            assert_eq!(order.fill_size, 1.0);
+            assert_eq!(order.cumulative_filled_quantity, 3.0);
+        }
     }
 
     #[test]

@@ -174,7 +174,24 @@ impl TradeUpdate for OkexOrderMsg {
     }
 
     fn is_maker(&self) -> bool {
-        matches!(self.ord_type, 1 | 2)
+        self.factual_is_maker()
+            .unwrap_or_else(|| matches!(self.ord_type, 1 | 2))
+    }
+
+    fn factual_is_maker(&self) -> Option<bool> {
+        if self.trade_id > 0
+            && matches!(self.state, 3 | 4)
+            && self.fill_price.is_finite()
+            && self.fill_price > 0.0
+            && self.last_filled_quantity().is_some()
+        {
+            return self.reported_is_maker;
+        }
+        None
+    }
+
+    fn last_filled_quantity(&self) -> Option<f64> {
+        (self.fill_size.is_finite() && self.fill_size > 0.0).then_some(self.fill_size)
     }
 
     fn trading_venue(&self) -> TradingVenue {
@@ -203,6 +220,7 @@ mod tests {
             ord_id: 42,
             cl_ord_id: 43,
             trade_id: 44,
+            reported_is_maker: None,
             state,
             side: 1,
             ord_type: 2,
@@ -211,6 +229,7 @@ mod tests {
             amend_result,
             price: 70_100.0,
             fill_price: 70_000.0,
+            fill_size: 1.0,
             quantity: 2.0,
             cumulative_filled_quantity: 1.0,
             create_time: 1_800_000_000_000,
@@ -227,6 +246,21 @@ mod tests {
         assert_eq!(OrderUpdate::price(&update), 70_100.0);
         assert_eq!(TradeUpdate::price(&update), 70_000.0);
         assert!(TradeUpdate::is_maker(&update));
+        assert_eq!(TradeUpdate::factual_is_maker(&update), None);
+    }
+
+    #[test]
+    fn explicit_taker_role_overrides_limit_inference_on_a_real_fill() {
+        let mut update = order(3, OkexOrderMsg::AMEND_RESULT_NONE);
+        update.reported_is_maker = Some(false);
+        assert_eq!(TradeUpdate::factual_is_maker(&update), Some(false));
+        assert!(!TradeUpdate::is_maker(&update));
+        assert_eq!(TradeUpdate::last_filled_quantity(&update), Some(1.0));
+
+        update.fill_size = 0.0;
+        assert_eq!(TradeUpdate::factual_is_maker(&update), None);
+        update.fill_size = 1.0;
+        update.trade_id = 0;
         assert_eq!(TradeUpdate::factual_is_maker(&update), None);
     }
 
