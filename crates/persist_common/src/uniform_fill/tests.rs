@@ -64,6 +64,22 @@ fn execution(
 }
 
 #[test]
+fn earlier_venue_order_event_validates_fills_when_local_clock_is_ahead() {
+    let mut row = lifecycle(100.0, 1.0, Some(FillLiquidity::Unknown));
+    row.value.record.create_ts = 122_054;
+    row.value.record.update_ts = 99_000;
+    let mut fill = execution("a", 100.0, 1.0, Some("MAKER"), false);
+
+    let projected = normalize_new(&[row.clone()], &[fill.clone()], &[], "123", "BINANCE").unwrap();
+    assert_eq!(projected[0].record.update_ts, 100_000);
+    assert_eq!(projected[0].record.create_ts, 122_054);
+    assert_eq!(projected[0].record.fill_liquidity, FillLiquidity::Maker);
+
+    fill.execution.timestamp_ms = 98;
+    assert!(normalize_new(&[row], &[fill], &[], "123", "BINANCE").is_err());
+}
+
+#[test]
 fn uniform_normalization_recovers_once_and_preserves_provenance_and_raw_role() {
     let rows = [lifecycle(0.0, 3.0, Some(FillLiquidity::Unknown))];
     let a = execution("a", 100.0, 1.0, Some("MAKER"), false);

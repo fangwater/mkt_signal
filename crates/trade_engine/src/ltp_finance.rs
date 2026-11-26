@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use bigdecimal::{BigDecimal, Zero};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
@@ -59,6 +60,25 @@ impl PortfolioFinancialSnapshot {
             exchange,
             ..Self::default()
         })
+    }
+
+    pub fn has_zero_debt(&self) -> bool {
+        let is_zero = |value: &str| {
+            value
+                .parse::<BigDecimal>()
+                .is_ok_and(|value| value.is_zero())
+        };
+        self.total_loan_value.as_deref().is_none_or(is_zero)
+            && self
+                .raw_account
+                .as_ref()
+                .and_then(|row| row.get("loanValue"))
+                .is_none_or(|value| value.as_str().is_some_and(is_zero))
+            && self.assets.values().all(|asset| {
+                asset.debt.as_deref().is_some_and(is_zero)
+                    && asset.borrowed.as_deref().is_none_or(is_zero)
+                    && asset.loan.as_deref().is_none_or(is_zero)
+            })
     }
 
     pub fn apply_account_push(
@@ -427,6 +447,36 @@ mod tests {
 
     fn snapshot() -> PortfolioFinancialSnapshot {
         PortfolioFinancialSnapshot::new("p".into(), "BINANCE".into()).unwrap()
+    }
+
+    #[test]
+    fn loan_disabled_requires_reported_zero_asset_debt() {
+        let mut state = snapshot();
+        let mut row = serde_json::json!({
+            "portfolioId": "p", "exchangeType": "BINANCE", "coin": "USDT",
+            "debt": "0.000", "borrow": "0"
+        });
+        for (debt, borrowed, total, expected) in [
+            (Some("0.000"), "0", None, true),
+            (None, "0", None, false),
+            (Some("0.1"), "0", None, false),
+            (Some("-0"), "1", None, false),
+            (Some("0"), "0", Some("1"), false),
+        ] {
+            match debt {
+                Some(debt) => row["debt"] = debt.into(),
+                None => {
+                    row.as_object_mut().unwrap().remove("debt");
+                }
+            }
+            row["borrow"] = borrowed.into();
+            let body = serde_json::json!({"channel":"Assets", "data": [&row]});
+            state
+                .apply_account_push(&body.to_string(), true, 1)
+                .unwrap();
+            state.total_loan_value = total.map(str::to_owned);
+            assert_eq!(state.has_zero_debt(), expected);
+        }
     }
 
     #[test]

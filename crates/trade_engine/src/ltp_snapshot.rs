@@ -24,18 +24,18 @@ impl RecoveryReadiness {
         self.complete.contains(channel)
     }
 
-    pub fn is_ready(&self) -> bool {
+    pub fn is_ready(&self, loan_required: bool) -> bool {
         [
             "Assets",
             "Positions",
             "Accounts",
-            "LoanInfo",
-            "LoanCapacity",
             "Statements",
             "Executions",
         ]
         .iter()
         .all(|channel| self.is_complete(channel))
+            && (!loan_required
+                || (self.is_complete("LoanInfo") && self.is_complete("LoanCapacity")))
     }
 }
 
@@ -204,16 +204,22 @@ mod tests {
             "LoanCapacity",
         ] {
             readiness.mark_complete(channel);
-            assert!(!readiness.is_ready());
+            assert!(!readiness.is_ready(true));
         }
         readiness.mark_complete("Statements");
-        assert!(!readiness.is_ready());
+        assert!(!readiness.is_ready(true));
+        assert!(!readiness.is_ready(false));
         readiness.mark_complete("Executions");
-        assert!(readiness.is_ready());
+        assert!(readiness.is_ready(true));
         readiness.mark_incomplete("LoanInfo");
-        assert!(!readiness.is_ready());
+        assert!(!readiness.is_ready(true));
+        assert!(readiness.is_ready(false));
         assert!(readiness.is_complete("Accounts"));
         assert!(readiness.is_complete("LoanCapacity"));
+        readiness.mark_incomplete("LoanCapacity");
+        assert!(readiness.is_ready(false));
+        readiness.mark_incomplete("Assets");
+        assert!(!readiness.is_ready(false));
     }
 
     fn balance(scope: BasicAccountScope, coin: &str, wallet: f64, ts: i64) -> Bytes {

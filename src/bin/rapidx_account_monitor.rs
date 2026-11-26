@@ -11,7 +11,9 @@ use persist_common::{
     rapidx_statement::StatementRecord,
 };
 use runtime_common::exchange::Exchange;
-use runtime_common::execution_backend::{account_stream_slug, ExecBackend};
+use runtime_common::execution_backend::{
+    account_stream_slug, rapidx_exec_loan_disabled, ExecBackend,
+};
 use runtime_common::ws_connection::WsConnector;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -53,6 +55,7 @@ struct Forwarder {
     assets: AccountSnapshotState,
     readiness: RecoveryReadiness,
     financial: PortfolioFinancialSnapshot,
+    loan_disabled: bool,
     borrowing_not_permitted: bool,
     last_risk_timestamp: i64,
 }
@@ -73,6 +76,11 @@ fn decode_private_push(payload: &str) -> Result<Option<Value>> {
 }
 
 impl Forwarder {
+    fn recovery_ready(&self) -> bool {
+        self.readiness.is_ready(!self.loan_disabled)
+            && (!self.loan_disabled || self.financial.has_zero_debt())
+    }
+
     async fn process(
         &mut self,
         payload: &str,
@@ -147,6 +155,9 @@ impl Forwarder {
         if source == "rest_snapshot" {
             self.readiness.mark_complete(channel);
         }
+        if self.loan_disabled && channel == "Assets" && !self.financial.has_zero_debt() {
+            self.publish_invalid_risk()?;
+        }
         for event in events.drain(..) {
             if let Some((BasicAccountEventType::AccountRisk, _, data)) =
                 mkt_parsers::msg::basic_account_msg::split_basic_account_event(&event)
@@ -159,8 +170,9 @@ impl Forwarder {
             }
             if mkt_parsers::msg::basic_account_msg::split_basic_account_event(&event)
                 .is_some_and(|(kind, _, _)| kind == BasicAccountEventType::AccountRisk)
-                && (!self.readiness.is_ready()
-                    || self.financial.loan_status.as_deref() != Some("NORMAL")
+                && (!self.recovery_ready()
+                    || (!self.loan_disabled
+                        && self.financial.loan_status.as_deref() != Some("NORMAL"))
                     || self
                         .financial
                         .raw_account
@@ -202,10 +214,11 @@ impl Forwarder {
         let body = serde_json::to_vec(&json!({
             "portfolio":self.portfolio,"exchange":self.exchange,
             "published_ms":chrono::Utc::now().timestamp_millis(),
-            "recovery_ready":self.readiness.is_ready(),
+            "recovery_ready":self.recovery_ready(),
             "accounts_observed_ms":self.financial.source_observed_ms.get("Accounts"),
             "equity_usdt":equity,
             "borrowing_not_permitted":self.borrowing_not_permitted,
+            "loan_disabled":self.loan_disabled,
             "frozen_margin":self.financial.frozen_margin,
             "execution_persistence_pending":pending.values().filter(|f| matches!(f, Fact::Execution(_) | Fact::Role(_))).count(),
             "statement_persistence_pending":pending.values().filter(|f| matches!(f, Fact::Statement(_))).count(),
@@ -334,11 +347,13 @@ impl Refresh {
 async fn refresh_accounts(
     rest: LtpRestClient,
     exchange: &'static str,
+    loan_disabled: bool,
     tx: tokio::sync::mpsc::Sender<Result<Refresh>>,
 ) {
     let mut tick = tokio::time::interval(Duration::from_secs(5));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut index = 0usize;
+    let channel_count = if loan_disabled { 3 } else { 5 };
     loop {
         tick.tick().await;
         let started_ms = chrono::Utc::now().timestamp_millis();
@@ -365,7 +380,7 @@ async fn refresh_accounts(
         if tx.send(result).await.is_err() || failed {
             return;
         }
-        index = (index + 1) % 5;
+        index = (index + 1) % channel_count;
     }
 }
 
@@ -434,6 +449,10 @@ async fn main() -> Result<()> {
     if ExecBackend::for_exchange(exchange)? != ExecBackend::Ltp {
         bail!("rapidx_account_monitor requires the RapidX execution backend for its exchange");
     }
+    let loan_disabled = rapidx_exec_loan_disabled(exchange)?;
+    if loan_disabled {
+        log::info!("RapidX Exec loan disabled; using account and asset snapshots for debt checks");
+    }
     let local_ip = match args.local_ip {
         Some(ip) => ip,
         None if runtime_common::mkt_cfg::find_trade_engine_local_cfg_path()?.is_some() => {
@@ -496,6 +515,7 @@ async fn main() -> Result<()> {
         positions,
         assets,
         readiness: RecoveryReadiness::default(),
+        loan_disabled,
         financial: PortfolioFinancialSnapshot::new(
             rest.portfolio_id().into(),
             wire_exchange.into(),
@@ -538,7 +558,7 @@ async fn main() -> Result<()> {
                 if !response.is_login() || !response.is_success() { bail!("RapidX account login rejected"); }
                 log::info!("RapidX account websocket login successful exchange={wire_exchange}");
                 let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-                workers.push(tokio::spawn(refresh_accounts(rest.clone(), wire_exchange, tx.clone())));
+                workers.push(tokio::spawn(refresh_accounts(rest.clone(), wire_exchange, loan_disabled, tx.clone())));
                 let statement_begin = forwarder.delivery.store.state().statement_history_end_ms
                     .map(|end| end - 60_000)
                     .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());

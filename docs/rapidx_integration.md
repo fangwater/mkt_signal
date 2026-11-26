@@ -30,6 +30,15 @@ export RAPIDX_BINANCE_CASH_BUSINESS_TYPE=SPOT
 Only `SPOT` and `MARGIN` are accepted. This setting changes the cash-leg order
 symbol between `BINANCE_SPOT_*` and `BINANCE_MARGIN_*`; futures remain `PERP`.
 
+Binance RapidX Exec deployments can run with borrowing disabled by setting
+`RAPIDX_EXEC_DISABLE_LOAN=1` and `RAPIDX_BINANCE_CASH_BUSINESS_TYPE=SPOT`
+in the same environment. The monitor skips `loan/info` and `loan/maxLoan`,
+and requires complete account and asset snapshots with zero reported debt
+before publishing valid risk. Position, execution and statement recovery are
+still required. `exec-pre-trade` skips RapidX automatic repayment and the
+trade engine rejects new `MARGIN` orders before dispatch. The default keeps
+loan checks and the existing cash route.
+
 Confirmed by live smoke on the rx01 portfolio (small DOGE orders, then cleaned
 up): an unfilled post-only `BINANCE_MARGIN` sell opens and cancels with no loan
 created; a filled `BINANCE_MARGIN` sell auto-borrows the base asset at fill

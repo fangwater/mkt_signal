@@ -129,6 +129,14 @@ pub fn normalize(
     );
     let template = &rows[0];
     let key = order_key(&template.value);
+    // create_ts is local. An earlier venue lifecycle event proves the order
+    // already existed even when RapidX's clock is behind the local clock.
+    let record = &template.value.record;
+    let earliest_order_ms = if record.update_ts > 0 {
+        record.create_ts.min(record.update_ts)
+    } else {
+        record.create_ts
+    } / 1000;
     let mut expected = 0.0;
     let mut unpriced = false;
     for row in rows {
@@ -192,7 +200,7 @@ pub fn normalize(
             .checked_mul(1000)
             .context("execution time overflow")?;
         ensure!(
-            timestamp_us >= template.value.record.create_ts / 1000 * 1000,
+            execution.timestamp_ms >= earliest_order_ms,
             "execution predates order creation"
         );
         ensure!(

@@ -29,6 +29,33 @@ pub fn rapidx_binance_cash_business_type() -> Result<RapidXCashBusinessType> {
     )
 }
 
+pub fn rapidx_exec_loan_disabled(exchange: Exchange) -> Result<bool> {
+    let disabled = match std::env::var("RAPIDX_EXEC_DISABLE_LOAN") {
+        Ok(value) => parse_rapidx_exec_disable_loan(value.trim())?,
+        Err(std::env::VarError::NotPresent) => false,
+        Err(err) => return Err(err).context("invalid RAPIDX_EXEC_DISABLE_LOAN"),
+    };
+    if disabled {
+        anyhow::ensure!(
+            exchange == Exchange::Binance,
+            "RAPIDX_EXEC_DISABLE_LOAN requires RapidX Binance Exec"
+        );
+        anyhow::ensure!(
+            rapidx_binance_cash_business_type()? == RapidXCashBusinessType::Spot,
+            "RAPIDX_EXEC_DISABLE_LOAN requires RAPIDX_BINANCE_CASH_BUSINESS_TYPE=SPOT"
+        );
+    }
+    Ok(disabled)
+}
+
+fn parse_rapidx_exec_disable_loan(value: &str) -> Result<bool> {
+    match value {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        _ => bail!("RAPIDX_EXEC_DISABLE_LOAN must be 0 or 1"),
+    }
+}
+
 impl ExecBackend {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -162,5 +189,13 @@ mod tests {
             RapidXCashBusinessType::Margin
         );
         assert!(RapidXCashBusinessType::resolve("perp").is_err());
+    }
+
+    #[test]
+    fn rapidx_exec_disable_loan_requires_an_explicit_value() {
+        assert!(!parse_rapidx_exec_disable_loan("0").unwrap());
+        assert!(parse_rapidx_exec_disable_loan("1").unwrap());
+        assert!(parse_rapidx_exec_disable_loan("").is_err());
+        assert!(parse_rapidx_exec_disable_loan("disabled").is_err());
     }
 }

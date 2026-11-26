@@ -763,6 +763,15 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     }
     let rapidx_binance = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Binance);
     let rapidx_okex = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Okex);
+    let mut rapidx_loan_disabled = false;
+    for &exchange in &rapidx_exchanges {
+        rapidx_loan_disabled |=
+            runtime_common::execution_backend::rapidx_exec_loan_disabled(exchange)?;
+    }
+    anyhow::ensure!(
+        !rapidx_loan_disabled || exec_pre_trade,
+        "RAPIDX_EXEC_DISABLE_LOAN is supported by exec-pre-trade only"
+    );
     let exec_venues = if exec_pre_trade {
         exec_runtime_venues(open_venue)?
     } else {
@@ -1202,11 +1211,13 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                         )));
                     }
                 } else if binance_in_play && rapidx_binance {
-                    match LtpRestClient::from_env() {
-                        Ok(client) => repay_svc.register(Box::new(RapidXRepayer::new(
-                            client, "BINANCE",
-                        ))),
-                        Err(e) => warn!("rapidx auto-repay disabled: {e:#}"),
+                    if !rapidx_loan_disabled {
+                        match LtpRestClient::from_env() {
+                            Ok(client) => repay_svc.register(Box::new(RapidXRepayer::new(
+                                client, "BINANCE",
+                            ))),
+                            Err(e) => warn!("rapidx auto-repay disabled: {e:#}"),
+                        }
                     }
                 } else if binance_in_play {
                     info!(

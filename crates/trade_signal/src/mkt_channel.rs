@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use super::common::{FundingRateData, Quote};
 use super::symbol_list::SymbolList;
 use super::ArbDecision;
+use iceoryx2::service::builder::publish_subscribe::PublishSubscribeOpenError;
 use mkt_parsers::msg::mkt_msg::{
     get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
 };
@@ -112,19 +113,32 @@ fn open_market_data_service(
     history_size: usize,
 ) -> Result<PortFactory<ipc::Service, [u8; MARKET_DATA_PAYLOAD], ()>> {
     let name = ServiceName::new(service_name)?;
-    let mut builder = node
-        .service_builder(&name)
-        .publish_subscribe::<[u8; MARKET_DATA_PAYLOAD]>()
-        .max_publishers(1)
-        .max_subscribers(MARKET_DATA_MAX_SUBSCRIBERS)
-        .history_size(history_size)
-        .subscriber_max_buffer_size(MARKET_DATA_SUBSCRIBER_MAX_BUFFER);
-    if let Some(capacity) = binance_futures_market_data_capacity(service_name) {
-        builder = builder.max_nodes(capacity).max_subscribers(capacity);
+    let builder = || {
+        node.service_builder(&name)
+            .publish_subscribe::<[u8; MARKET_DATA_PAYLOAD]>()
+            .max_publishers(1)
+            .max_subscribers(MARKET_DATA_MAX_SUBSCRIBERS)
+            .history_size(history_size)
+            .subscriber_max_buffer_size(MARKET_DATA_SUBSCRIBER_MAX_BUFFER)
+    };
+    let Some(capacity) = binance_futures_market_data_capacity(service_name) else {
+        return builder()
+            .open_or_create()
+            .with_context(|| format!("open or create market data service {service_name}"));
+    };
+    // Enforce the shared creation capacity only when creating the service.
+    // An existing publisher can serve subscribers while its capacity is lower.
+    match builder().open() {
+        Ok(service) => Ok(service),
+        Err(PublishSubscribeOpenError::DoesNotExist) => builder()
+            .max_nodes(capacity)
+            .max_subscribers(capacity)
+            .open_or_create()
+            .with_context(|| format!("open or create market data service {service_name}")),
+        Err(error) => {
+            Err(error).with_context(|| format!("open market data service {service_name}"))
+        }
     }
-    builder
-        .open_or_create()
-        .with_context(|| format!("open or create market data service {service_name}"))
 }
 
 fn should_trigger_decision(symbol: &str) -> bool {
@@ -1482,6 +1496,25 @@ mod tests {
                 assert_eq!(service.static_config().max_nodes(), 256);
                 assert_eq!(service.static_config().max_subscribers(), 256);
                 assert_eq!(service.static_config().history_size(), history);
+                drop(service);
+
+                let existing = node
+                    .service_builder(&ServiceName::new(&name).unwrap())
+                    .publish_subscribe::<[u8; MARKET_DATA_PAYLOAD]>()
+                    .max_publishers(1)
+                    .max_nodes(20)
+                    .max_subscribers(MARKET_DATA_MAX_SUBSCRIBERS)
+                    .history_size(history)
+                    .subscriber_max_buffer_size(MARKET_DATA_SUBSCRIBER_MAX_BUFFER)
+                    .create()
+                    .unwrap();
+                let connected = open_market_data_service(&node, &name, history).unwrap();
+                assert_eq!(connected.static_config().max_nodes(), 20);
+                assert_eq!(
+                    connected.static_config().max_subscribers(),
+                    MARKET_DATA_MAX_SUBSCRIBERS
+                );
+                assert_eq!(connected.service_id(), existing.service_id());
             }
         }
         std::fs::remove_dir_all(directory).unwrap();

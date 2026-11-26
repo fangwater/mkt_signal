@@ -1633,6 +1633,12 @@ impl TradeEngine {
             !use_ltp_backend || exec_venue != Some(order_common::TradingVenue::BinanceCoinFutures),
             "COIN-M execution requires the native Binance backend"
         );
+        let rapidx_loan_disabled = use_ltp_backend
+            && runtime_common::execution_backend::rapidx_exec_loan_disabled(exchange)?;
+        anyhow::ensure!(
+            !rapidx_loan_disabled || exec_venue == Some(order_common::TradingVenue::BinanceFutures),
+            "RAPIDX_EXEC_DISABLE_LOAN requires Binance linear Exec"
+        );
         if use_ltp_backend {
             runtime_common::execution_backend::rapidx_portfolio_id()?;
         }
@@ -2754,17 +2760,27 @@ impl TradeEngine {
                         .send(read_only_trade_rejection(&msg, exchange_for_req_worker));
                     continue;
                 }
-                if exec_markets.is_some_and(|markets| {
+                let market_rejected = exec_markets.is_some_and(|markets| {
                     !markets
                         .into_iter()
                         .flatten()
                         .any(|market| exec_trade_request_allowed(market, msg.req_type))
-                }) {
+                });
+                let reject_reason = if market_rejected {
+                    Some("request does not belong to this Exec market")
+                } else if rapidx_loan_disabled
+                    && msg.req_type == TradeRequestType::BinanceNewMarginOrder
+                {
+                    Some("RapidX Exec loan disabled; margin order rejected")
+                } else {
+                    None
+                };
+                if let Some(reason) = reject_reason {
                     let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
                         req_type: msg.req_type,
                         client_order_id: msg.client_order_id,
                         status: 400,
-                        body: "request does not belong to this Exec market".to_string(),
+                        body: reason.to_string(),
                         exchange: exchange_for_req_worker,
                         order_id: 0,
                         order_status_u8: 0,
