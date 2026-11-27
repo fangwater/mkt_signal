@@ -138,6 +138,22 @@ FG、SA、TA 夜盘平仓并删除三组。
 待处理：创元 IC、IM、AP、SM、lc 各组仍持仓（无夜盘），目标常驻为 0，下一日盘开盘后平掉，再对这 5 组执行 retire。易达账户在 Manager 范围外
 的 10 个期货与 20 个期权旧仓不在 L1 订阅内，Exec 无行情，不会平。
 
+## Manager 计划超过 16 KiB 后停止下发（2026-11-27 夜盘修复）
+
+16:40 部署 29 品种名单（32 个成员 × 39 个合约）后，Manager 计划为稠密向量，约 19 KB，超过 Manager
+`netting_plan.rs` 编码上限和 Exec `MAX_WIRE_SIZE` 两处 16 KiB 限制。每次下发都报
+`manager_plan_transport_error`（`encoded message length too large … 16384`），Exec 一直停在 rev 1524 的旧目标上，
+柜台与 Manager 目标不一致。两处上限都改为 8 MiB，覆盖 `validate_shape` 允许的最大形状（512 策略 × 128 合约，
+测试 `the_largest_valid_target_fits_the_wire_limit`）；Manager 入站请求上限仍为 16 KiB。
+
+22:10 换装 ctp-trader `d7e8601e…`（sh_dev 上 cn_futures 199 项、cn_futures_target 17 项测试通过，备份
+`data/ops/wire-limit-20261127T141021Z/`）。22:16 Manager 换为 release `20261127T142000Z-3d7c4de+plan-wire-8m`
+（仅替换 `cn_futures_web`，前端与 sync-server 沿用上一版），Exec 随即收到 rev 1923 并成交；rev 1941 时 39 个合约
+全部与柜台一致。易达 trader 未换装（名单为空），绑定策略前须同版本换装。
+
+`exec_quote_decision` 中的 `contract_rule_missing` 也出现在零目标、空仓、无需交易的合约上（这类合约不查费率），
+不代表执行受阻。
+
 ## 操作入口
 
 ```bash

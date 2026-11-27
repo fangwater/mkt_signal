@@ -377,6 +377,31 @@ fn strategy_vectors_must_be_complete_and_identical() {
 }
 
 #[test]
+fn the_largest_valid_target_fits_the_wire_limit() {
+    use prost::Message;
+    let id = |prefix: &str, i: usize| format!("{prefix}{i:0>width$}", width = 128 - prefix.len());
+    let vector: Vector = (0..MAX_CONTRACTS)
+        .map(|i| (format!("SHFE:{i:0>63}"), i32::MIN / MAX_STRATEGIES as i32))
+        .collect();
+    let largest = Target {
+        source_id: id("s", 0),
+        batch_id: id("b", 0),
+        target_revision: i64::MAX,
+        strategies: (0..MAX_STRATEGIES)
+            .map(|i| (id("x", i), vector.clone()))
+            .collect(),
+    };
+    largest.validate_shape().unwrap();
+    let update = PlanUpdate {
+        target: Some(largest.clone().into_wire(u64::MAX)),
+        status: PlanStatus::Ready as i32,
+        batch_id: largest.batch_id.clone(),
+        target_revision: largest.target_revision,
+    };
+    assert!(update.encoded_len() <= ingress::MAX_WIRE_SIZE);
+}
+
+#[test]
 fn an_empty_roster_is_a_flat_account_target() {
     let mut retired = target(2);
     retired.strategies.clear();

@@ -33,7 +33,12 @@ use tonic::{
 };
 
 const QUEUE_CAPACITY: usize = 8;
-pub(crate) const MAX_WIRE_SIZE: usize = 16 * 1024;
+/// Targets are dense (every strategy carries every contract), so the frame
+/// grows with strategies x contracts. Sized to hold the largest shape
+/// `validate_shape` admits (`MAX_STRATEGIES` x `MAX_CONTRACTS`, longest ids),
+/// so the transport never rejects a valid target; a 16 KiB cap silently froze
+/// Exec on its last plan once a 32 x 39 roster crossed it.
+pub(crate) const MAX_WIRE_SIZE: usize = 8 * 1024 * 1024;
 const ADMISSION_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Deserialize)]
